@@ -9,7 +9,7 @@ An MCP coordination server that lets multiple AI coding agents share a single wo
 Three commands from zero to coordinated agents. No repo clone required.
 
 ```bash
-# 1. Install the `tt` binary (from GitHub — npm install coming soon)
+# 1. Install the `tt` binary straight from GitHub
 npm i -g github:mostlydev/talking-stick
 
 # 2. Register Talking Stick as an MCP server + install the coordination skill
@@ -27,9 +27,9 @@ That's it. The next time two agents `cd` into the same repo, they see each other
 
 | Method | Command | Notes |
 |---|---|---|
-| **From GitHub** (works today) | `npm i -g github:mostlydev/talking-stick` | Requires Node ≥ 22. Builds on install via the `prepare` hook. |
-| **From npm registry** | `npm i -g talking-stick` | Once published to npm. Same end result. |
-| **From source** | `git clone … && npm install && npm link` | For contributors and edge cases. |
+| **From GitHub** | `npm i -g github:mostlydev/talking-stick` | Works today. Requires Node ≥ 22. Builds on install via the `prepare` hook. |
+| **From npm registry** | `npm i -g talking-stick@alpha` | Planned — registry publish pending. |
+| **From source** | `git clone … && npm install && npm link` | For contributors. |
 
 All three produce a `tt` binary on your `PATH`. Everything else below works identically.
 
