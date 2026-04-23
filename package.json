@@ -4,7 +4,7 @@
   "description": "MCP coordination server for path-scoped agent handoffs.",
   "type": "module",
   "bin": {
-    "tt": "./dist/cli.js"
+    "tt": "dist/cli.js"
   },
   "exports": {
     ".": "./dist/index.js"
