@@ -74,17 +74,38 @@ Optional topics may be added later if unrelated efforts in the same workspace ne
 
 ### Agent Identity
 
-Each harness must present a stable `agent_id`.
+`agent_id` is derived by the MCP adapter at connection time, not supplied by the harness. Harnesses should not set or guess their own identity; the server knows more about which process is calling than the harness does about itself.
 
-The ID should identify the running harness instance, not just the product name:
+Derivation signals, in order of preference:
+
+1. `clientInfo.name` and `clientInfo.version` from the MCP `initialize` handshake. Every MCP client sends these; Claude Code, Codex, and Gemini CLI all set distinctive values.
+2. The MCP server's own parent process identity: `(parent_pid, parent_start_time)`. Together these uniquely identify the harness instance on a host. `parent_pid` alone is unsafe because PIDs are reused after exit.
+3. Environment variables the harness exports, such as `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `TERM_PROGRAM`, `ITERM_SESSION_ID`, `TMUX`, `SSH_TTY`.
+
+Composed identity, stable for the life of one harness instance:
 
 ```text
-codex:terminal-1
-claude:session-2026-04-22-a
-reviewer:model-x:pid-12345
+<harness-slug>:<short-hash>
+
+e.g.
+  claude-code:a3f1
+  codex:9b22
+  gemini:1c4e
 ```
 
-A server may also track an optional display name, model name, process metadata, and capabilities, but the protocol only requires `agent_id`.
+The hash is a short digest over the signals above, so reconnects from the same harness instance land on the same `agent_id`. Distinct tabs, splits, or parallel spawns of the same harness get distinct hashes because their `parent_pid`/`parent_start_time` differ.
+
+For the Human CLI (see deferred extension), the same idea applies with different signals: `$USER`, parent shell `(pid, start_time)`, and tty yield identities like:
+
+```text
+human:wojtek:s003
+```
+
+The `join_path` response returns the assigned `agent_id` to the harness so it appears in logs, downstream handoffs, and event records. An optional `agent_id_override` is accepted for tests and debugging and is flagged in the event stream.
+
+No MCP tool input other than `join_path` carries `agent_id_override`. For every other owner mutation the adapter injects the derived identity from the connection context, and the service layer continues to use `agent_id` internally for fencing and membership checks.
+
+This collapses the distinction between a durable "participant" (the harness product) and a live "session" (this particular spawn) into the derived `agent_id` string. No separate participant/session table is needed at the MVP stage; if richer identity modeling is ever justified, the derivation can be replaced without changing the protocol surface.
 
 ### Membership Sequence
 
@@ -111,14 +132,13 @@ Only the owner may perform owner actions:
 - `pass_stick`
 - `close_room` if that optional tool is implemented
 
-Every owner action must include:
+Every owner action carries:
 
 - `room_id`
-- `agent_id`
 - `lease_id`
 - `expected_turn_id`
 
-These values are fencing tokens. Old actions from stale agents must be rejected.
+`agent_id` is derived by the MCP adapter from the connection rather than sent by the caller. The service layer still uses `(agent_id, lease_id, turn_id)` together for fencing; the caller just does not get to name themselves. Old actions from stale agents must be rejected.
 
 ### Turn ID Semantics
 
@@ -229,6 +249,18 @@ State meanings:
 
 An active member is one whose `last_seen_at` is within `presence_ttl`. As with lease expiry, activity can be derived lazily on reads and writes rather than maintained by a background process.
 
+### Room Termination vs Dormancy
+
+`closed` is entered only via an explicit `close_room` call. The server never auto-closes a room on its own. This matters because "no live processes currently point at this room" is a common state during normal work — an operator steps away, or all harnesses exit between turns — and it must not be confused with "this conversation is over."
+
+The MVP therefore distinguishes three situations, not two:
+
+- **Active:** at least one member has recent presence within `presence_ttl`. Normal operation.
+- **Dormant:** no member has recent presence, but no `close_room` has been issued. The room persists, its event log stays readable, and any member returning later can resume. Dormancy is a derived condition, not a stored state; `get_room_state` and `list_rooms` can surface it by comparing `last_seen_at` values against `presence_ttl` on read.
+- **Closed:** `close_room` has been issued. The room is terminal; no further owner mutations are accepted. The event log remains for inspection.
+
+Retention policy for long-dormant rooms (archive, prune, purge after N days with no activity) is out of scope for MVP and is expected to be a separate administrative concern, not a protocol state transition. This prevents surprise deletions and keeps the protocol's responsibilities narrow.
+
 ## Default Lifecycle
 
 ### Discover
@@ -245,11 +277,13 @@ Rooms are returned for the ancestor chain from `context_path` to the resolved wo
 
 ```ts
 join_path({
-  agent_id,
   context_path,
-  force_new?        // defaults to false
+  force_new?,           // defaults to false
+  agent_id_override?    // optional; tests and debugging only
 })
 ```
+
+`agent_id` is not an input. It is derived server-side from the MCP connection and returned in the response so the harness can surface it in logs.
 
 Resolution:
 
@@ -272,7 +306,6 @@ Effects:
 
 ```ts
 wait_for_turn({
-  agent_id,
   room_id,
   cursor?,
   max_wait_ms?
@@ -339,7 +372,7 @@ When a claim succeeds, the server atomically:
 While holding the stick, an agent should call:
 
 ```ts
-heartbeat({ room_id, agent_id, lease_id, expected_turn_id })
+heartbeat({ room_id, lease_id, expected_turn_id })
 ```
 
 The heartbeat extends the owner lease and updates the owner's `last_seen_at`. A `stale_lease` response means another agent has taken over or otherwise invalidated the lease; the caller must stop acting as owner and re-read the room state.
@@ -353,7 +386,6 @@ The owner may release the stick without naming a recipient:
 ```ts
 release_stick({
   room_id,
-  agent_id,
   lease_id,
   expected_turn_id,
   handoff
@@ -381,7 +413,6 @@ Effects on success:
 ```ts
 pass_stick({
   room_id,
-  agent_id,
   lease_id,
   expected_turn_id,
   to_agent_id,
@@ -410,7 +441,6 @@ Another active member may take over when the expected owner or reserved recipien
 
 ```ts
 takeover_stick({
-  agent_id,
   room_id,
   expected_turn_id,
   reason
@@ -533,7 +563,7 @@ Required safety rules:
 
 - Store room state in a transactional database.
 - Use row-level locking or a single atomic compare-and-swap update for each room mutation.
-- Require `room_id` and `agent_id` for all owner mutations.
+- Require `room_id` for all owner mutations. `agent_id` is derived by the MCP adapter from the connection and supplied to the service layer; it is not a tool input.
 - Require `lease_id` for all owner mutations.
 - Require `expected_turn_id` for all owner mutations.
 - Increment `turn_id` whenever an agent is granted ownership.
@@ -641,15 +671,15 @@ This is not needed for MVP. Polling is sufficient for typical multi-tab workflow
 
 ## Timeout Policy
 
-Recommended defaults:
+Recommended defaults (product scale, sized for real agent work rather than chat turns):
 
 ```ts
-owner_lease_ttl_ms         = 5 * 60 * 1000;
-heartbeat_interval_ms      = 30 * 1000;
-claim_ttl_ms               = 2 * 60 * 1000;
-wait_for_turn_max_wait_ms  = 30 * 1000;
-wait_for_turn_poll_ms      = 250;
-presence_ttl_ms            = 10 * 60 * 1000;
+owner_lease_ttl_ms         = 45 * 60 * 1000;       // 45 minutes
+heartbeat_interval_ms      =  5 * 60 * 1000;       // 5 minutes
+claim_ttl_ms               = 20 * 60 * 1000;       // 20 minutes
+wait_for_turn_max_wait_ms  = 30 * 1000;            // 30 seconds
+wait_for_turn_poll_ms      = 250;                  // transport polling cadence
+presence_ttl_ms            =  4 * 60 * 60 * 1000;  // 4 hours
 ```
 
 Timeout meanings:
@@ -659,6 +689,8 @@ Timeout meanings:
 - `claim_ttl` is how long a reserved recipient has exclusive first right of refusal before others may take over.
 - `owner_lease_ttl` is how long an owner may remain silent before takeover becomes possible.
 - `presence_ttl` determines whether a member is active for sequence selection and takeover eligibility.
+
+Rationale for these defaults: a real agent turn often runs 20-30 minutes (plan-and-edit, build-and-verify, review-and-respond), and a human collaborator walking through a few rooms may easily be idle for an hour without being "gone." Earlier drafts inherited chat-scale defaults (5-minute lease, 10-minute presence) which would silently open takeover windows mid-turn. The selected values accept a slower takeover response in exchange for not interrupting legitimate long work; operators who want faster response can shorten them via per-room policy once that ships. Ownership timings (lease, claim, presence) are the product-facing knobs; transport timings (wait max, poll cadence) are unchanged because they only affect polling efficiency, not ownership semantics.
 
 Per-room policy is expected to become a first-class need quickly (batch workflows want longer TTLs; interactive workflows want shorter claims). Storing timeouts on the room record rather than as global server defaults is the recommended near-term extension, enabled via `set_room_policy`.
 
@@ -750,7 +782,7 @@ Harnesses using this MCP server should follow these rules:
 3. Do not perform shared task work unless `wait_for_turn` returns `your_turn`.
 4. When you receive `your_turn`, read the attached `handoff` before doing anything else. Load `artifacts[]` entries directly rather than re-exploring the workspace.
 5. While working, heartbeat periodically.
-6. Include `room_id`, `agent_id`, `lease_id`, and `expected_turn_id` on every owner mutation.
+6. Include `room_id`, `lease_id`, and `expected_turn_id` on every owner mutation. Do not send an `agent_id`; the server derives it from the MCP connection.
 7. If any owner mutation returns `stale_lease`, `turn_mismatch`, or `unknown_member`, stop working and read current state.
 8. To release the stick, construct a `Handoff` with a truthful `status` and an actionable `next_action`. Include `artifacts[]` entries when the next agent needs to load specific files or line ranges.
 9. Use `release_stick` to continue the default sequence.
@@ -1039,7 +1071,9 @@ takeover behavior:       another active member after timeout; timeout itself doe
                          active candidate exists
 handoff requirement:     release_stick and pass_stick require non-empty status and next_action
 recovery context:        get_room_events supplies prior handoffs to takeover winner
-owner lease TTL:         5 minutes
-claim TTL:               2 minutes
+owner lease TTL:         45 minutes
+heartbeat interval:      5 minutes
+claim TTL:               20 minutes
+presence TTL:            4 hours
 wait_for_turn max wait:  30 seconds, polled at 250 ms
 ```
