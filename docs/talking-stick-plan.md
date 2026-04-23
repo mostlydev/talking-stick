@@ -101,11 +101,26 @@ For the Human CLI (see deferred extension), the same idea applies with different
 human:wojtek:s003
 ```
 
+The derived string is the protocol-facing identity, but the server must also persist the source liveness facts behind it:
+
+- `host_id`
+- `pid`
+- `process_started_at`
+- `session_kind` (`mcp_harness`, `human_guardian`, later others)
+- optional display metadata such as tty or client name
+
+The digest alone is not enough for liveness decisions. If the system is going to say "that owner is really gone," it must be able to check whether the exact spawning process identified by `(host_id, pid, process_started_at)` still exists.
+
+For the Human CLI, this implies a split between one-shot commands and holders:
+
+- one-shot commands like `list`, `join`, `state`, and `events` are ordinary short-lived processes and do not own the room,
+- indefinite human ownership uses an attached hold mode or a lightweight local guardian process, so the owner is still represented by one live process that can be checked and can exit cleanly.
+
 The `join_path` response returns the assigned `agent_id` to the harness so it appears in logs, downstream handoffs, and event records. An optional `agent_id_override` is accepted for tests and debugging and is flagged in the event stream.
 
-No MCP tool input other than `join_path` carries `agent_id_override`. For every other owner mutation the adapter injects the derived identity from the connection context, and the service layer continues to use `agent_id` internally for fencing and membership checks.
+No MCP tool input other than `join_path` carries `agent_id_override`. If `join_path` receives an override, that override becomes the connection's derived identity for subsequent calls on that same connection until disconnect. Otherwise, for every owner mutation the adapter injects the derived identity from the connection context, and the service layer continues to use `agent_id` internally for fencing and membership checks.
 
-This collapses the distinction between a durable "participant" (the harness product) and a live "session" (this particular spawn) into the derived `agent_id` string. No separate participant/session table is needed at the MVP stage; if richer identity modeling is ever justified, the derivation can be replaced without changing the protocol surface.
+This keeps the protocol surface simple: `agent_id` is the session-scoped identity. The MVP still does not need a separate global participant/session abstraction, but it does need to persist process metadata alongside room membership so it can make exact local liveness checks.
 
 ### Membership Sequence
 
@@ -130,7 +145,7 @@ Only the owner may perform owner actions:
 - `heartbeat`
 - `release_stick`
 - `pass_stick`
-- `close_room` if that optional tool is implemented
+- `close_room` if that optional later tool is implemented
 
 Every owner action carries:
 
@@ -208,6 +223,9 @@ type RoomState =
   | "owned"
   | "reserved"
   | "stale_owner"
+  | "owner_gone"
+  | "recipient_gone"
+  | "dormant"
   | "closed";
 
 interface PathRoom {
@@ -245,19 +263,24 @@ State meanings:
 - `owned`: one agent has a live lease and may work.
 - `reserved`: the stick has been released or passed to a specific agent, which has a limited time to claim it.
 - `stale_owner`: derived state indicating the owner missed its lease heartbeat and takeover is available. The owner is not revoked until a takeover commits.
+- `owner_gone`: derived state indicating the exact owning process is known to have exited. Takeover is immediately available; no lease timeout wait is required.
+- `recipient_gone`: derived state indicating the reserved recipient's exact process is known to have exited. Takeover is immediately available; no claim timeout wait is required.
+- `dormant`: derived state indicating no member is currently live or recently present, but the room was not explicitly closed. In implementation, takeover-relevant states such as `owner_gone`, `recipient_gone`, and `stale_owner` take precedence over `dormant`; the room should report the most actionable recovery state first.
 - `closed`: no further turns are expected.
 
-An active member is one whose `last_seen_at` is within `presence_ttl`. As with lease expiry, activity can be derived lazily on reads and writes rather than maintained by a background process.
+An active member is one whose `last_seen_at` is within `presence_ttl` and whose exact spawning process is still alive when liveness metadata is available. Death beats timeout for the current owner and reserved recipient: if the server can prove either exact process is gone, recovery opens immediately rather than waiting for `presence_ttl`.
+
+As with lease expiry, activity can be derived lazily on reads and writes rather than maintained by a background process. Process liveness checks must use `pid + process_started_at`; `kill(pid, 0)` or pid-only lookup is not sufficient because PIDs are reused. To keep write transactions short, the MVP uses exact process checks for owner/reserved recovery and recent presence for broader sequence scans; timeout recovery remains the fallback for a stale sequence target.
 
 ### Room Termination vs Dormancy
 
-`closed` is entered only via an explicit `close_room` call. The server never auto-closes a room on its own. This matters because "no live processes currently point at this room" is a common state during normal work — an operator steps away, or all harnesses exit between turns — and it must not be confused with "this conversation is over."
+The protocol model reserves a `closed` state for an optional later `close_room` tool. The MVP implementation does not provide that tool and therefore never enters `closed`; rooms remain resumable unless they become dormant. This still matters because "no live processes currently point at this room" is a common state during normal work — an operator steps away, or all harnesses exit between turns — and it must not be confused with "this conversation is over."
 
 The MVP therefore distinguishes three situations, not two:
 
 - **Active:** at least one member has recent presence within `presence_ttl`. Normal operation.
-- **Dormant:** no member has recent presence, but no `close_room` has been issued. The room persists, its event log stays readable, and any member returning later can resume. Dormancy is a derived condition, not a stored state; `get_room_state` and `list_rooms` can surface it by comparing `last_seen_at` values against `presence_ttl` on read.
-- **Closed:** `close_room` has been issued. The room is terminal; no further owner mutations are accepted. The event log remains for inspection.
+- **Dormant:** no member has recent presence or a currently live process, and no optional later close mechanism has been invoked. The room persists, its event log stays readable, and any member returning later can resume. Dormancy is a derived condition, not a stored state; `get_room_state` and `list_rooms` can surface it by comparing `last_seen_at` values against `presence_ttl` and by checking persisted process metadata when available.
+- **Closed:** reserved for a future `close_room` extension. If that tool is added later, the room becomes terminal and no further owner mutations are accepted. The event log remains for inspection.
 
 Retention policy for long-dormant rooms (archive, prune, purge after N days with no activity) is out of scope for MVP and is expected to be a separate administrative concern, not a protocol state transition. This prevents surprise deletions and keeps the protocol's responsibilities narrow.
 
@@ -294,7 +317,7 @@ Resolution:
 5. If found and `force_new = true`: create a nested room at the canonical `context_path`, returning a warning that an ancestor room exists. If a room already exists at that exact path, join it.
 6. If not found: create a new room at the preferred workspace root.
 
-The response includes the resolved `room_id`, the `canonical_path` the agent actually joined (which may differ from the request path when workspace root resolution or ancestor lookup redirected the call), and a `handoff_template` hint describing the expected handoff shape.
+The response includes the resolved `room_id`, the `canonical_path` the agent actually joined (which may differ from the request path when workspace root resolution or ancestor lookup redirected the call), and a `handoff_template` hint describing the expected handoff shape. For the MVP this template is static server-wide; room-specific prompting can be added later if real workflows need it.
 
 Effects:
 
@@ -334,8 +357,17 @@ type WaitForTurnResult =
       status: "takeover_available";
       room_id: string;
       turn_id: number;
-      room_state: "owned" | "reserved" | "stale_owner";
-      reason: "claim_timeout" | "owner_timeout";
+      room_state:
+        | "owned"
+        | "reserved"
+        | "stale_owner"
+        | "owner_gone"
+        | "recipient_gone";
+      reason:
+        | "claim_timeout"
+        | "owner_timeout"
+        | "owner_gone"
+        | "recipient_gone";
       current_owner?: AgentId;
       reserved_for?: AgentId;
     }
@@ -351,6 +383,8 @@ type WaitForTurnResult =
 - If the room is `reserved`, `reserved_for` may claim as long as no takeover has committed, even after `claim_expires_at`.
 
 Each `wait_for_turn` call updates the caller's `last_seen_at`, so polling agents remain active.
+
+As part of each read/write operation, the server may also refresh derived liveness for the current owner and reserved recipient. If the exact spawning process for either is proven absent, the room moves to `owner_gone` or `recipient_gone` as a derived condition and `takeover_available` is returned immediately to other eligible members.
 
 `wait_for_turn` does not perform takeover for a non-reserved caller. If timeout has made takeover possible, it returns `takeover_available`; the caller must then invoke `takeover_stick` with an explicit reason.
 
@@ -378,6 +412,8 @@ heartbeat({ room_id, lease_id, expected_turn_id })
 The heartbeat extends the owner lease and updates the owner's `last_seen_at`. A `stale_lease` response means another agent has taken over or otherwise invalidated the lease; the caller must stop acting as owner and re-read the room state.
 
 Lease expiry opens takeover eligibility. It does not invalidate the owner's lease by itself. If an expired owner heartbeats before another agent successfully takes over, the heartbeat may renew the lease.
+
+By contrast, exact process death is definitive. If the server can prove that the owning process is gone, the owner may not renew; takeover is immediately available to other eligible members.
 
 ### Release
 
@@ -453,9 +489,13 @@ Allowed when:
 
 - room is `reserved` and `claim_expires_at` has passed, or
 - room is `owned` and `lease_expires_at` has passed, or
+- room is `reserved` and the reserved recipient's exact process is known gone, or
+- room is `owned` and the owner's exact process is known gone, or
 - room is `stale_owner`.
 
 In timeout cases, an active member other than the current owner or reserved recipient may attempt takeover. The previous owner or reserved recipient is not revoked merely because a timeout elapsed; they are revoked only if another agent's `takeover_stick` transaction commits first.
+
+In process-gone cases, the server has positive evidence that the exact spawning process has exited. The dead owner or dead reserved recipient is therefore immediately ineligible to reclaim, heartbeat, release, or pass. Ownership still transfers only by explicit `takeover_stick`; the server never auto-promotes another member in the background.
 
 For claim timeouts, there is one additional anti-monopoly guard: the immediately prior owner, identified by the pending handoff event's `from_agent_id`, is not eligible to take over while any other active member is eligible. If no other active member is available, the prior owner may take over rather than deadlocking the room. This preserves the important "do not immediately grab the stick back" behavior without adding full round-fairness state.
 
@@ -529,6 +569,10 @@ owned
   lease expires
     -> stale_owner/takeover_available as derived state
 
+owned
+  owning process is known gone
+    -> owner_gone/takeover_available as derived state
+
 reserved
   reserved_for calls wait_for_turn before any takeover commits
     -> owned
@@ -536,6 +580,10 @@ reserved
 reserved
   claim timeout expires
     -> reserved, but takeover_available is returned to other active members
+
+reserved
+  reserved recipient process is known gone
+    -> recipient_gone/takeover_available as derived state
 
 reserved
   takeover_stick by another active member after claim timeout
@@ -550,9 +598,17 @@ stale_owner
   takeover_stick by another active member
     -> owned
 
-owned/reserved/idle/stale_owner
-  close_room
+owner_gone/recipient_gone
+  takeover_stick by another active member
+    -> owned
+
+owned/reserved/idle/stale_owner/owner_gone/recipient_gone/dormant
+  optional later close_room
     -> closed
+
+owned/reserved/idle/stale_owner/owner_gone/recipient_gone
+  all members inactive or gone and no explicit close
+    -> dormant as derived state
 ```
 
 ## Race Condition Prevention
@@ -566,10 +622,13 @@ Required safety rules:
 - Require `room_id` for all owner mutations. `agent_id` is derived by the MCP adapter from the connection and supplied to the service layer; it is not a tool input.
 - Require `lease_id` for all owner mutations.
 - Require `expected_turn_id` for all owner mutations.
+- Persist enough process metadata to identify the exact spawning process for each member (`pid` plus `process_started_at`, and preferably `host_id`).
 - Increment `turn_id` whenever an agent is granted ownership.
 - Never reuse `lease_id`.
 - Treat `lease_id` as a fencing token.
 - Treat `lease_expires_at` as takeover eligibility, not automatic lease revocation. A lease becomes stale only when the room's current `(lease_id, turn_id)` no longer matches the caller's values.
+- Treat exact process death as stronger than timeout. If the exact owner or reserved-recipient process is known absent, expose immediate takeover eligibility and mark that member inactive.
+- Never infer process death from `pid` alone.
 - On claim-timeout takeover, reject the immediately prior owner when another active takeover candidate exists.
 - Reject stale mutations with a structured error that includes the current owner and current turn.
 
@@ -616,6 +675,7 @@ The protocol avoids permanent deadlock by combining:
 
 - finite claim timeouts for reserved recipients,
 - renewable leases for active owners,
+- exact process-gone detection for owners and reserved recipients when metadata is available,
 - takeover after missed claim or missed lease,
 - prior-owner takeover fallback when no other active candidate exists,
 - explicit stale state,
@@ -690,7 +750,9 @@ Timeout meanings:
 - `owner_lease_ttl` is how long an owner may remain silent before takeover becomes possible.
 - `presence_ttl` determines whether a member is active for sequence selection and takeover eligibility.
 
-Rationale for these defaults: a real agent turn often runs 20-30 minutes (plan-and-edit, build-and-verify, review-and-respond), and a human collaborator walking through a few rooms may easily be idle for an hour without being "gone." Earlier drafts inherited chat-scale defaults (5-minute lease, 10-minute presence) which would silently open takeover windows mid-turn. The selected values accept a slower takeover response in exchange for not interrupting legitimate long work; operators who want faster response can shorten them via per-room policy once that ships. Ownership timings (lease, claim, presence) are the product-facing knobs; transport timings (wait max, poll cadence) are unchanged because they only affect polling efficiency, not ownership semantics.
+Rationale for these defaults: a real agent turn often runs 20-30 minutes (plan-and-edit, build-and-verify, review-and-respond), and a human collaborator walking through a few rooms may easily be idle for an hour without being "gone." Earlier drafts inherited chat-scale defaults (5-minute lease, 10-minute presence) which would silently open takeover windows mid-turn. The selected values accept a slower takeover response in exchange for not interrupting legitimate long work; operators who want faster response can shorten them via per-room policy once that ships.
+
+These timers are fallback recovery, not the only recovery path. When the server can prove that the exact spawning process is gone, it should expose `owner_gone` or `recipient_gone` immediately instead of waiting for timeout. Ownership timings (lease, claim, presence) are the product-facing knobs; transport timings (wait max, poll cadence) are unchanged because they only affect polling efficiency, not ownership semantics.
 
 Per-room policy is expected to become a first-class need quickly (batch workflows want longer TTLs; interactive workflows want shorter claims). Storing timeouts on the room record rather than as global server defaults is the recommended near-term extension, enabled via `set_room_policy`.
 
@@ -740,6 +802,11 @@ CREATE TABLE room_members (
   joined_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
   status TEXT NOT NULL,
+  host_id TEXT,
+  pid INTEGER,
+  process_started_at TEXT,
+  session_kind TEXT NOT NULL,
+  display_name TEXT,
   PRIMARY KEY (room_id, agent_id),
   FOREIGN KEY (room_id) REFERENCES path_rooms(room_id)
 );
@@ -768,6 +835,8 @@ CREATE INDEX room_events_room_turn_idx
 Ancestor lookup uses the `canonical_path` index: given a request path `P` and resolved workspace root `W`, generate ancestor paths from `P` up to `W` in code and issue a single `IN` query against `canonical_path`, picking the longest match. At small scale this is microsecond-fast; at very large scale consider materialized paths.
 
 `room_events` is append-only. `path_rooms` is a projection of the event stream for fast reads. The event log is also the takeover recovery context: a new owner after `takeover_stick` reads recent events to reconstruct what was happening before the prior owner went silent.
+
+`room_members` stores the process metadata needed for exact local liveness checks. If `pid` and `process_started_at` are unavailable on a platform, those columns may be null and the server falls back to timeout-based recovery for that member rather than making unsafe pid-only guesses.
 
 Heartbeats update `path_rooms.lease_expires_at` and `updated_at`; they are not written to `room_events` by default. Otherwise waiters would wake up on routine heartbeat traffic.
 
@@ -921,7 +990,7 @@ The protocol's original shape treated ownership transfer as metadata about the l
 
 Making the handoff a structured artifact (`status`, `next_action`, `artifacts[]`) turns ownership transfer into state transfer. The `artifacts[]` entries map directly onto how LLMs consume code — path and optional line range — so the next owner can load exactly the relevant context without rediscovering it.
 
-Requiring `status` and `next_action` to be non-empty is a small amount of server-side validation that prevents a large class of low-quality handoffs. Handoff quality still depends on harness behavior, which the protocol cannot enforce, so `join_path` returns a `handoff_template` hint that harnesses can surface to their models.
+Requiring `status` and `next_action` to be non-empty is a small amount of server-side validation that prevents a large class of low-quality handoffs. Handoff quality still depends on harness behavior, which the protocol cannot enforce, so `join_path` returns a `handoff_template` hint that harnesses can surface to their models. The MVP keeps that template static across rooms to avoid turning prompting policy into room configuration before a concrete need exists.
 
 ### Why takeovers do not carry a handoff
 
@@ -963,16 +1032,10 @@ Centralizing all rooms in a single SQLite file (rather than one file per room) m
 
 The following questions are worth revisiting once the MVP has seen real use:
 
-- After an explicit pass, should the default sequence resume from the passed-to agent's position (the current default) or preserve the skipped member's next-turn claim?
-- Should strict round fairness be added as a per-room policy after MVP, or is ordered release plus explicit pass/takeover enough?
-- Should explicit pass eventually allow non-members through an invite mechanism, or should it always require an already active member?
 - Should non-owners be able to append notes, or would that encourage side-channel work that bypasses the handoff discipline?
-- Should optional topics be added for multiple simultaneous conversations at one workspace path?
 - Should a human operator override use the same `takeover_stick` tool as peer agents, or a separate admin tool that bypasses timeout gating?
-- Should per-room timeout and policy configuration be shipped with MVP or deferred until a concrete workflow needs it?
-- Should the `handoff_template` returned by `join_path` be static (one template per server) or configurable per room?
-- Should `wait_for_turn` use a notification mechanism (Unix socket, signal, or SQLite's `sqlite3_update_hook` shared via a local IPC file) instead of polling, before shipping a full daemon mode?
-- Should the database path default be per-user (current design) or support a per-project mode (e.g., auto-detect `./.talking-stick/` in the workspace ancestor chain)?
+
+Current implementation note: no timeout-bypass or admin override exists today. Human operators use the same explicit `takeover_stick` flow as peer agents, and any bypass semantics remain intentionally undecided.
 
 ## Implementation Plan
 
@@ -1000,8 +1063,12 @@ The following questions are worth revisiting once the MVP has seen real use:
     - prior owner rejected on claim-timeout takeover when another active candidate exists,
     - prior owner allowed on claim-timeout takeover when no other active candidate exists,
     - owner timeout and takeover,
+    - owner process gone yields immediate `owner_gone` takeover availability,
+    - reserved recipient process gone yields immediate `recipient_gone` takeover availability,
     - original reserved recipient claiming after claim timeout but before takeover,
     - expired owner heartbeating after lease timeout but before takeover,
+    - dead owner or dead reserved recipient cannot reclaim after exact process-gone detection,
+    - dormant rooms remain readable and resumable, rather than auto-closing,
     - event log reconstruction after takeover,
     - database path resolution across platforms and with `TALKING_STICK_DATA_DIR` set.
 13. Add a small CLI or script for manual inspection during development.
@@ -1019,6 +1086,9 @@ Current first-slice test coverage:
 - `wait_for_turn` returns `takeover_available` after owner lease timeout,
 - expired owner may heartbeat before takeover commits,
 - owner-timeout takeover fences stale owner writes,
+- owner process death yields immediate `owner_gone`,
+- reserved recipient process death yields immediate `recipient_gone`,
+- dormant rooms stay readable and resumable,
 - prior-owner takeover guard after claim timeout,
 - multi-process contention against an idle room.
 
@@ -1069,11 +1139,16 @@ explicit pass behavior:  reserve active target member
 takeover behavior:       another active member after timeout; timeout itself does not revoke
                          claim-timeout takeover skips the prior owner when another
                          active candidate exists
+                         exact owner/recipient process death yields immediate
+                         takeover availability without waiting for timeout
 handoff requirement:     release_stick and pass_stick require non-empty status and next_action
 recovery context:        get_room_events supplies prior handoffs to takeover winner
 owner lease TTL:         45 minutes
 heartbeat interval:      5 minutes
 claim TTL:               20 minutes
 presence TTL:            4 hours
+close semantics:         no `close_room` tool in the MVP implementation;
+                         rooms remain resumable and can become dormant
+                         when nobody is live
 wait_for_turn max wait:  30 seconds, polled at 250 ms
 ```

@@ -4,7 +4,7 @@ An MCP server that lets multiple agent harnesses coordinate work in a shared wor
 
 ## Status
 
-**MVP scaffold in progress.** The repository now has a TypeScript MCP server skeleton, SQLite migrations, and the first TDD slice for path joining, claiming, releasing with a handoff, and claiming the reserved turn.
+**MVP scaffold in progress.** The repository now has a TypeScript MCP server, SQLite migrations, liveness-aware recovery, a shared command layer, and a first human CLI surface.
 
 This repository is being shared as a work-in-progress for review and feedback.
 
@@ -30,7 +30,28 @@ npm run typecheck
 npm run build
 ```
 
-The MCP server entry point is `talking-stick-mcp` after build/install, backed by `src/server.ts`.
+The human CLI entry point is `tt` after build/install. The MCP stdio server is available as `tt mcp`.
+
+## CLI surface (early MVP)
+
+```text
+tt list [path]
+tt join [path]
+tt wait [path] [--timeout 30s]
+tt try [path]
+tt state [path]
+tt events [path]
+tt release [path] --status TEXT --next-action TEXT
+tt pass [target] [path] --status TEXT --next-action TEXT
+tt takeover [path] --reason TEXT
+tt mcp
+```
+
+Notes:
+
+- Human CLI commands use a stable default identity like `human:<username>`.
+- When `tt wait` or `tt takeover` wins the turn, a small background guardian process keeps the lease alive and heartbeats on the human's behalf.
+- MCP tool callers no longer provide `agent_id`; the adapter derives identity from the spawning harness process and only accepts `agent_id_override` on `join_path` for tests/debugging.
 
 ## MCP surface (MVP)
 

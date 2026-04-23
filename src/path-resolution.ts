@@ -1,0 +1,133 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+
+const workspaceMarkers = [
+  "CLAUDE.md",
+  "AGENTS.md",
+  "package.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod"
+];
+
+export interface ResolvedContextPath {
+  requested_path: string;
+  canonical_context_path: string;
+  workspace_root: string;
+}
+
+export function resolveContextPath(contextPath: string): ResolvedContextPath {
+  const requestedPath = path.resolve(contextPath);
+  const canonicalContextPath = canonicalizeContextPath(requestedPath);
+  const workspaceRoot = resolveWorkspaceRoot(canonicalContextPath);
+
+  return {
+    requested_path: requestedPath,
+    canonical_context_path: canonicalContextPath,
+    workspace_root: workspaceRoot
+  };
+}
+
+export function canonicalizeContextPath(contextPath: string): string {
+  const resolved = path.resolve(contextPath);
+
+  let directoryPath = resolved;
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.isFile()) {
+      directoryPath = path.dirname(resolved);
+    }
+  } catch {
+    directoryPath = resolved;
+  }
+
+  try {
+    return fs.realpathSync.native(directoryPath);
+  } catch {
+    return path.normalize(directoryPath);
+  }
+}
+
+export function resolveWorkspaceRoot(canonicalContextPath: string): string {
+  const gitRoot = resolveGitRoot(canonicalContextPath);
+  if (gitRoot) {
+    return gitRoot;
+  }
+
+  const markerRoot = findNearestWorkspaceMarker(canonicalContextPath);
+  if (markerRoot) {
+    return markerRoot;
+  }
+
+  return canonicalContextPath;
+}
+
+export function ancestorPaths(
+  canonicalContextPath: string,
+  workspaceRoot: string
+): string[] {
+  const ancestors: string[] = [];
+  let current = canonicalContextPath;
+
+  while (true) {
+    ancestors.push(current);
+    if (samePath(current, workspaceRoot)) {
+      break;
+    }
+
+    const parent = path.dirname(current);
+    if (samePath(parent, current)) {
+      break;
+    }
+
+    current = parent;
+  }
+
+  return ancestors.filter((candidate) => isWithinOrSame(candidate, workspaceRoot));
+}
+
+function resolveGitRoot(canonicalContextPath: string): string | null {
+  try {
+    const output = execFileSync(
+      "git",
+      ["-C", canonicalContextPath, "rev-parse", "--show-toplevel"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+    ).trim();
+
+    if (!output) {
+      return null;
+    }
+
+    return fs.realpathSync.native(output);
+  } catch {
+    return null;
+  }
+}
+
+function findNearestWorkspaceMarker(startPath: string): string | null {
+  let current = startPath;
+
+  while (true) {
+    for (const marker of workspaceMarkers) {
+      if (fs.existsSync(path.join(current, marker))) {
+        return current;
+      }
+    }
+
+    const parent = path.dirname(current);
+    if (samePath(parent, current)) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  return path.normalize(left) === path.normalize(right);
+}
+
+function isWithinOrSame(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
