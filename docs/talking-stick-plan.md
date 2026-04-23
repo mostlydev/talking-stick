@@ -321,6 +321,8 @@ Each `wait_for_turn` call updates the caller's `last_seen_at`, so polling agents
 
 `wait_for_turn` does not perform takeover for a non-reserved caller. If timeout has made takeover possible, it returns `takeover_available`; the caller must then invoke `takeover_stick` with an explicit reason.
 
+`max_wait_ms = 0` is a valid non-blocking call. It still performs one atomic read/claim attempt before returning `your_turn`, `takeover_available`, `closed`, or `not_yet`.
+
 When a claim succeeds, the server atomically:
 
 - increments `turn_id`,
@@ -414,6 +416,8 @@ takeover_stick({
   reason
 })
 ```
+
+The takeover call itself refreshes the caller's presence before eligibility is checked. Other members' activity is still evaluated from their existing `last_seen_at` values. This lets a returning active harness recover a timed-out room with one explicit operation, while the prior-owner guard still depends on whether some other member has been active recently.
 
 Allowed when:
 
@@ -568,6 +572,13 @@ Handoff and membership errors use the same structured form:
   "to_agent_id": "gemini:session-1"
 }
 ```
+
+Owner mutation error precedence is deterministic:
+
+1. If `expected_turn_id` does not match the room's current `turn_id`, return `turn_mismatch`.
+2. If the turn matches but `owner`, `agent_id`, or `lease_id` does not match the current owner epoch, return `stale_lease`.
+
+This keeps "I am writing against the wrong epoch" distinct from "I am in the current epoch but do not hold the current fencing token."
 
 ## Deadlock Prevention
 
@@ -962,6 +973,22 @@ The following questions are worth revisiting once the MVP has seen real use:
     - event log reconstruction after takeover,
     - database path resolution across platforms and with `TALKING_STICK_DATA_DIR` set.
 13. Add a small CLI or script for manual inspection during development.
+
+Current first-slice test coverage:
+
+- happy path: `join_path` -> idle `wait_for_turn` claim -> `release_stick` with handoff -> reserved recipient claim,
+- handoff validation,
+- stale lease rejection,
+- turn mismatch rejection,
+- deepest ancestor lookup,
+- workspace-root room creation,
+- `wait_for_turn` returns `takeover_available` after claim timeout,
+- reserved recipient may still claim after `claim_ttl` until takeover commits,
+- `wait_for_turn` returns `takeover_available` after owner lease timeout,
+- expired owner may heartbeat before takeover commits,
+- owner-timeout takeover fences stale owner writes,
+- prior-owner takeover guard after claim timeout,
+- multi-process contention against an idle room.
 
 ## Minimum Viable Version
 

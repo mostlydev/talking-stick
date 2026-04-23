@@ -4,22 +4,33 @@ An MCP server that lets multiple agent harnesses coordinate work in a shared wor
 
 ## Status
 
-**Early planning.** No code yet. The full protocol design lives in [`docs/talking-stick-plan.md`](docs/talking-stick-plan.md) and is still evolving.
+**MVP scaffold in progress.** The repository now has a TypeScript MCP server skeleton, SQLite migrations, and the first TDD slice for path joining, claiming, releasing with a handoff, and claiming the reserved turn.
 
 This repository is being shared as a work-in-progress for review and feedback.
 
 ## The idea in one paragraph
 
-A workspace maps to a coordination room, identified by the deepest ancestor directory that already has one (like how `git` and `package.json` are discovered). Exactly one agent holds the "talking stick" at a time. To release or pass it, an agent must produce a structured handoff — `status`, `next_action`, and optional file-plus-line-range pointers — so the next agent does not have to re-explore the workspace. Round fairness prevents any agent from holding twice before every other active member has had a turn. Fencing tokens (`lease_id` + `turn_id`) make stale writes impossible. Multiple MCP server processes across terminal tabs share a single SQLite database in WAL mode.
+A workspace maps to a coordination room, usually the workspace root discovered from `git` or common project markers. Exactly one agent holds the "talking stick" at a time. To release or pass it, an agent must produce a structured handoff — `status`, `next_action`, and optional file-plus-line-range pointers — so the next agent does not have to re-explore the workspace. Fencing tokens (`lease_id` + `turn_id`) make stale writes impossible. Multiple MCP server processes across terminal tabs share a single SQLite database in WAL mode.
 
 ## Design highlights
 
-- **Hierarchical room resolution.** An agent at any depth under `/repo/` joins the `/repo/` room automatically if one exists. Nested rooms require explicit `force_new`.
-- **Optional topics.** Multiple concurrent conversations at the same path use `(canonical_path, topic)` as the room key. Default topic is empty.
+- **Workspace-root room resolution.** An agent at any depth under `/repo/` joins the `/repo/` room automatically when that path resolves to the workspace root. Nested rooms require explicit `force_new`.
+- **Topics deferred.** The MVP keeps one default room per workspace path.
 - **Structured handoffs.** `release_stick` and `pass_stick` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
-- **Round fairness.** `last_held_turn_id` per member and `current_round_started_at_turn_id` per room enforce "no consecutive turns" across normal claims, reserved claims, and takeovers. Explicit pass is the only fairness-exempt operation.
+- **Simple turn order.** Normal release follows member order. Timeout takeover is explicit, and claim-timeout takeover skips the prior owner while another active member is available.
 - **Multi-process safe.** Shared SQLite with WAL mode, `BEGIN IMMEDIATE` writes, 250 ms polling for `wait_for_turn`. No daemon required.
-- **Platform-conventional storage.** `~/.local/share/talking-stick/rooms.sqlite` on Linux, `~/Library/Application Support/talking-stick/rooms.sqlite` on macOS, `%APPDATA%\talking-stick\rooms.sqlite` on Windows. Override with `TALKING_STICK_DATA_DIR`.
+- **CLI-oriented storage.** `~/.local/share/talking-stick/rooms.sqlite` on Linux and macOS, `%APPDATA%\talking-stick\rooms.sqlite` on Windows. Override with `TALKING_STICK_DATA_DIR`.
+
+## Development
+
+```bash
+npm install
+npm test
+npm run typecheck
+npm run build
+```
+
+The MCP server entry point is `talking-stick-mcp` after build/install, backed by `src/server.ts`.
 
 ## MCP surface (MVP)
 
