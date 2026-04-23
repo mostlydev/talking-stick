@@ -145,7 +145,7 @@ C releases -> A gets first right of refusal
 The sequence is not a hard fairness lock in the MVP:
 
 - An owner may explicitly pass to any active member.
-- If a reserved recipient misses `claim_ttl`, another active member may take over.
+- If a reserved recipient misses `claim_ttl`, another active member may take over, but the immediately prior owner should not be the takeover winner while any other active member can take it.
 - If an owner misses `owner_lease_ttl`, another active member may take over.
 
 This is intentionally simpler than strict round fairness. The protocol should prevent accidental parallel ownership first; social fairness can be added as a configurable policy once real usage shows which workflows need it.
@@ -400,7 +400,7 @@ Effects:
 - Sets `claim_expires_at`.
 - Changes state to `reserved`.
 
-If the target misses the claim timeout, another active member may take over.
+If the target misses the claim timeout, another active member may take over. The immediately prior owner should not be the takeover winner while any other active member can take it.
 
 ### Takeover
 
@@ -422,6 +422,8 @@ Allowed when:
 - room is `stale_owner`.
 
 In timeout cases, an active member other than the current owner or reserved recipient may attempt takeover. The previous owner or reserved recipient is not revoked merely because a timeout elapsed; they are revoked only if another agent's `takeover_stick` transaction commits first.
+
+For claim timeouts, there is one additional anti-monopoly guard: the immediately prior owner, identified by the pending handoff event's `from_agent_id`, is not eligible to take over while any other active member is eligible. If no other active member is available, the prior owner may take over rather than deadlocking the room. This preserves the important "do not immediately grab the stick back" behavior without adding full round-fairness state.
 
 Effects:
 
@@ -503,6 +505,7 @@ reserved
 
 reserved
   takeover_stick by another active member after claim timeout
+    prior owner is skipped if another candidate exists
     -> owned
 
 stale_owner
@@ -533,6 +536,7 @@ Required safety rules:
 - Never reuse `lease_id`.
 - Treat `lease_id` as a fencing token.
 - Treat `lease_expires_at` as takeover eligibility, not automatic lease revocation. A lease becomes stale only when the room's current `(lease_id, turn_id)` no longer matches the caller's values.
+- On claim-timeout takeover, reject the immediately prior owner when another active takeover candidate exists.
 - Reject stale mutations with a structured error that includes the current owner and current turn.
 
 Example stale mutation response:
@@ -572,6 +576,7 @@ The protocol avoids permanent deadlock by combining:
 - finite claim timeouts for reserved recipients,
 - renewable leases for active owners,
 - takeover after missed claim or missed lease,
+- prior-owner takeover fallback when no other active candidate exists,
 - explicit stale state,
 - read-only room inspection via `get_room_state` and `get_room_events`.
 
@@ -811,6 +816,8 @@ The room reserves the next turn for gemini, skipping claude. After gemini releas
 codex holds, then releases; reserved for claude.
 claude does not claim before claim_ttl.
 wait_for_turn now returns takeover_available to other active members.
+codex attempts takeover -- REJECTED while gemini is active, because codex was
+  the immediately prior owner.
 gemini calls takeover_stick(reason = "claim timeout expired") -- ACCEPTED.
 server grants gemini a fresh lease and increments turn_id.
 gemini calls get_room_events to read codex's original handoff.
@@ -887,7 +894,7 @@ Incrementing on grant keeps fencing math trivial: the current `(lease_id, turn_i
 
 Strict round fairness sounds attractive, but it adds state and policy complexity to the part of the system that must stay easiest to trust. It also creates awkward edge cases: a missed recipient, a single active member, a stale owner, or a deliberate explicit pass can all look like fairness violations even when continuing is the useful behavior.
 
-The MVP uses ordered release for the normal path and explicit takeover for failure recovery. That prevents accidental parallel ownership, which is the core safety requirement. If agents later need stronger turn fairness, it can be added as a per-room policy using additional member state.
+The MVP uses ordered release for the normal path and explicit takeover for failure recovery. It also includes a narrow prior-owner guard for claim-timeout takeover, preventing the agent that just released or passed the stick from immediately grabbing it back when another active participant is available. That covers the most important anti-monopoly case without tracking full rounds. If agents later need stronger turn fairness, it can be added as a per-room policy using additional member state.
 
 ### Why takeover is explicit rather than automatic
 
@@ -947,6 +954,8 @@ The following questions are worth revisiting once the MVP has seen real use:
     - pass to unknown or inactive member rejection,
     - release sequence,
     - claim timeout and takeover,
+    - prior owner rejected on claim-timeout takeover when another active candidate exists,
+    - prior owner allowed on claim-timeout takeover when no other active candidate exists,
     - owner timeout and takeover,
     - original reserved recipient claiming after claim timeout but before takeover,
     - expired owner heartbeating after lease timeout but before takeover,
@@ -999,6 +1008,8 @@ topics:                  deferred extension, not MVP
 release behavior:        reserve next active member in sequence
 explicit pass behavior:  reserve active target member
 takeover behavior:       another active member after timeout; timeout itself does not revoke
+                         claim-timeout takeover skips the prior owner when another
+                         active candidate exists
 handoff requirement:     release_stick and pass_stick require non-empty status and next_action
 recovery context:        get_room_events supplies prior handoffs to takeover winner
 owner lease TTL:         5 minutes
