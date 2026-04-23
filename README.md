@@ -6,29 +6,50 @@ An MCP coordination server that lets multiple AI coding agents share a single wo
 
 ## Quickstart
 
+Three commands from zero to coordinated agents. No repo clone required.
+
 ```bash
-npm i -g talking-stick
+# 1. Install the `tt` binary (from GitHub — npm install coming soon)
+npm i -g github:mostlydev/talking-stick
+
+# 2. Register Talking Stick as an MCP server + install the coordination skill
+#    across every harness detected on your machine
 tt install --all
 tt install-skill --all
+
+# 3. Restart your agent harness (Claude Code, Codex, Gemini, OpenCode).
+#    The `talking_stick` tools now appear in any workspace.
 ```
 
-`tt install --all` detects every supported harness on your machine and registers Talking Stick as a user-global MCP server in each one. Restart your harness; the `talking_stick` tools will be available in any workspace.
+That's it. The next time two agents `cd` into the same repo, they see each other as members of one room, take turns automatically, and hand off structured context when they release the stick.
 
-`tt install-skill --all` installs the global Talking Stick skill into each detected harness so the coordination behavior lives in one maintainable place instead of being copied into repo-local instructions. By default it installs symlinks, so skill updates follow your current checkout automatically.
+### Install options
 
-Want to see what it would do first?
+| Method | Command | Notes |
+|---|---|---|
+| **From GitHub** (works today) | `npm i -g github:mostlydev/talking-stick` | Requires Node ≥ 22. Builds on install via the `prepare` hook. |
+| **From npm registry** | `npm i -g talking-stick` | Once published to npm. Same end result. |
+| **From source** | `git clone … && npm install && npm link` | For contributors and edge cases. |
+
+All three produce a `tt` binary on your `PATH`. Everything else below works identically.
+
+### Verify without installing
+
+Want to see exactly what `tt install`/`tt install-skill` would change before touching anything?
 
 ```bash
 tt install --all --print
+tt install-skill --all --print
 ```
 
-Want to install into a specific subset?
+### Install into a subset
 
 ```bash
 tt install claude-code codex
+tt install-skill gemini
 ```
 
-Want to remove it?
+### Remove
 
 ```bash
 tt uninstall --all
