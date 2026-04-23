@@ -51,6 +51,44 @@ describe("mcp smoke coverage", () => {
     ]);
   });
 
+  test("handoff line ranges use a provider-friendly array schema", async () => {
+    const harness = await createMcpHarness();
+
+    const tools = await harness.client.listTools();
+    const releaseStick = tools.tools.find((tool) => tool.name === "release_stick");
+    expect(releaseStick).toBeDefined();
+
+    const linesSchema = (
+      releaseStick as {
+        inputSchema: {
+          properties?: {
+            handoff?: {
+              properties?: {
+                artifacts?: {
+                  items?: {
+                    properties?: {
+                      lines?: Record<string, unknown>;
+                    };
+                  };
+                };
+              };
+            };
+          };
+        };
+      }
+    ).inputSchema.properties?.handoff?.properties?.artifacts?.items?.properties?.lines;
+
+    expect(linesSchema).toMatchObject({
+      type: "array",
+      minItems: 2,
+      maxItems: 2,
+      items: {
+        type: "integer"
+      }
+    });
+    expect(Array.isArray(linesSchema?.items)).toBe(false);
+  });
+
   test("two MCP clients can hand off through join_path, wait_for_turn, and release_stick", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-mcp-"));
     tempRoots.push(tempRoot);

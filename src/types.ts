@@ -9,7 +9,12 @@ export type RoomState =
   | "recipient_gone"
   | "dormant";
 
-export type SessionKind = "mcp_harness" | "human_guardian" | string;
+export type SessionKind =
+  | "mcp_harness"
+  | "human_guardian"
+  | "human_cli"
+  | "harness_cli"
+  | string;
 
 export interface ProcessMetadata {
   host_id?: string | null;
@@ -28,7 +33,7 @@ export type HandoffArtifactRole =
 
 export interface HandoffArtifact {
   path: string;
-  lines?: [number, number];
+  lines?: number[];
   role: HandoffArtifactRole;
   note?: string;
 }

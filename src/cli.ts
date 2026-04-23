@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   clearCliSessionLease,
   createSystemProcessInspector,
+  deriveHarnessCliIdentity,
   deriveHumanCliIdentity,
   findCliSessionForContextPath,
   isProtocolError,
@@ -20,6 +21,18 @@ import {
   type PathRoom,
   upsertCliSession
 } from "./index.js";
+import {
+  SUPPORTED_HARNESSES,
+  detectHarness,
+  parseHarnessList,
+  planInstall,
+  planUninstall,
+  runAction,
+  type HarnessId,
+  type InstallAction,
+  type InstallResult
+} from "./install.js";
+import { planSkillInstall, planSkillUninstall } from "./skill-install.js";
 import { resolveContextPath } from "./path-resolution.js";
 
 interface ParsedCommand {
@@ -51,6 +64,26 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
 
   if (parsed.name === "guard") {
     await runGuardCommand(parsed);
+    return;
+  }
+
+  if (parsed.name === "install") {
+    await runInstallCommand(parsed);
+    return;
+  }
+
+  if (parsed.name === "uninstall") {
+    await runUninstallCommand(parsed);
+    return;
+  }
+
+  if (parsed.name === "install-skill") {
+    await runInstallSkillCommand(parsed);
+    return;
+  }
+
+  if (parsed.name === "uninstall-skill") {
+    await runUninstallSkillCommand(parsed);
     return;
   }
 
@@ -387,11 +420,20 @@ async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
 
 function deriveCliIdentity(parsed: ParsedCommand): DerivedIdentity {
   const agentIdOption = getStringOption(parsed, "agent");
-  const displayName = agentIdOption?.replace(/^human:/, "");
-  return deriveHumanCliIdentity({
-    agentId: agentIdOption,
-    displayName
-  });
+  if (agentIdOption) {
+    const displayName = agentIdOption.replace(/^[^:]+:/, "");
+    return deriveHumanCliIdentity({
+      agentId: agentIdOption,
+      displayName
+    });
+  }
+
+  const harnessIdentity = deriveHarnessCliIdentity();
+  if (harnessIdentity) {
+    return harnessIdentity;
+  }
+
+  return deriveHumanCliIdentity();
 }
 
 function resolveSessionForReads(
@@ -534,10 +576,16 @@ function parseWaitTimeout(parsed: ParsedCommand): number | undefined {
   return parseDurationMs(value);
 }
 
+const DEFAULT_CLI_HANDOFF_STATUS =
+  "(human handoff — no structured status provided)";
+const DEFAULT_CLI_HANDOFF_NEXT_ACTION =
+  "(no explicit guidance — proceed as previously established)";
+
 function requireHandoff(parsed: ParsedCommand): Handoff {
   return {
-    status: requireStringOption(parsed, "status"),
-    next_action: requireStringOption(parsed, "next-action")
+    status: getStringOption(parsed, "status") ?? DEFAULT_CLI_HANDOFF_STATUS,
+    next_action:
+      getStringOption(parsed, "next-action") ?? DEFAULT_CLI_HANDOFF_NEXT_ACTION
   };
 }
 
@@ -717,6 +765,142 @@ function printResult(
   process.stdout.write(`${renderText()}\n`);
 }
 
+async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
+  normalizeBooleanFlag(parsed, "print");
+  const harnesses = selectHarnesses(parsed);
+  const dryRun = hasOption(parsed, "print");
+  const actions = harnesses.map((harness) => planInstall(harness));
+
+  if (dryRun) {
+    for (const action of actions) {
+      printActionPlan(action);
+    }
+    return;
+  }
+
+  const results = await Promise.all(actions.map((action) => runAction(action)));
+  reportInstallResults(results, "install");
+}
+
+async function runUninstallCommand(parsed: ParsedCommand): Promise<void> {
+  normalizeBooleanFlag(parsed, "print");
+  const harnesses = selectHarnesses(parsed);
+  const dryRun = hasOption(parsed, "print");
+  const actions = harnesses.map((harness) => planUninstall(harness));
+
+  if (dryRun) {
+    for (const action of actions) {
+      printActionPlan(action);
+    }
+    return;
+  }
+
+  const results = await Promise.all(actions.map((action) => runAction(action)));
+  reportInstallResults(results, "uninstall");
+}
+
+async function runInstallSkillCommand(parsed: ParsedCommand): Promise<void> {
+  normalizeBooleanFlag(parsed, "print");
+  normalizeBooleanFlag(parsed, "copy");
+  normalizeBooleanFlag(parsed, "link");
+  const harnesses = selectHarnesses(parsed);
+  const dryRun = hasOption(parsed, "print");
+  const link = resolveSkillInstallLinkMode(parsed);
+  const actions = harnesses.map((harness) =>
+    planSkillInstall(harness, { link })
+  );
+
+  if (dryRun) {
+    for (const action of actions) {
+      printActionPlan(action);
+    }
+    return;
+  }
+
+  const results = await Promise.all(actions.map((action) => runAction(action)));
+  reportInstallResults(results, "install");
+}
+
+async function runUninstallSkillCommand(parsed: ParsedCommand): Promise<void> {
+  normalizeBooleanFlag(parsed, "print");
+  const harnesses = selectHarnesses(parsed);
+  const dryRun = hasOption(parsed, "print");
+  const actions = harnesses.map((harness) => planSkillUninstall(harness));
+
+  if (dryRun) {
+    for (const action of actions) {
+      printActionPlan(action);
+    }
+    return;
+  }
+
+  const results = await Promise.all(actions.map((action) => runAction(action)));
+  reportInstallResults(results, "uninstall");
+}
+
+function normalizeBooleanFlag(parsed: ParsedCommand, key: string): void {
+  const value = parsed.options.get(key);
+  if (typeof value === "string") {
+    parsed.positionals.unshift(value);
+    parsed.options.set(key, true);
+  }
+}
+
+function resolveSkillInstallLinkMode(parsed: ParsedCommand): boolean {
+  const wantsCopy = hasOption(parsed, "copy");
+  const wantsLink = hasOption(parsed, "link");
+
+  if (wantsCopy && wantsLink) {
+    throw new Error("Pass only one of --copy or --link.");
+  }
+
+  if (wantsCopy) {
+    return false;
+  }
+
+  return true;
+}
+
+function selectHarnesses(parsed: ParsedCommand): HarnessId[] {
+  if (hasOption(parsed, "all")) {
+    const detected = SUPPORTED_HARNESSES.filter((harness) => detectHarness(harness).detected);
+    if (detected.length === 0) {
+      throw new Error(
+        `No supported harnesses detected. Install one of: ${SUPPORTED_HARNESSES.join(", ")}, or pass harnesses explicitly.`
+      );
+    }
+    return [...detected];
+  }
+
+  if (parsed.positionals.length === 0) {
+    throw new Error(
+      `Specify at least one harness (${SUPPORTED_HARNESSES.join(", ")}) or pass --all to target every detected one.`
+    );
+  }
+
+  return parseHarnessList(parsed.positionals);
+}
+
+function printActionPlan(action: InstallAction): void {
+  if (action.kind === "exec") {
+    process.stdout.write(`[${action.harness}] ${action.description}\n`);
+    return;
+  }
+  process.stdout.write(`[${action.harness}] ${action.description}\n`);
+}
+
+function reportInstallResults(results: InstallResult[], mode: "install" | "uninstall"): void {
+  let anyFailed = false;
+  for (const result of results) {
+    const status = result.ok ? "ok" : "FAIL";
+    process.stdout.write(`[${result.harness}] ${status}: ${result.message}\n`);
+    if (!result.ok) anyFailed = true;
+  }
+  if (anyFailed) {
+    throw new Error(`${mode} completed with failures.`);
+  }
+}
+
 function printHelp(): void {
   process.stdout.write(`Usage: tt <command> [options]
 
@@ -731,6 +915,12 @@ Commands:
   tt pass [target] [path] --status TEXT --next-action TEXT
   tt takeover [path] --reason TEXT
   tt mcp
+  tt install <harness...> | --all [--print]
+  tt uninstall <harness...> | --all [--print]
+  tt install-skill <harness...> | --all [--print] [--copy] [--link]
+  tt uninstall-skill <harness...> | --all [--print]
+
+Harnesses: ${SUPPORTED_HARNESSES.join(", ")}
 
 Common options:
   --agent ID   Override the default human identity

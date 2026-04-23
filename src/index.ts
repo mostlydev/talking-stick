@@ -21,9 +21,12 @@ export {
 } from "./db.js";
 export { ProtocolError, isProtocolError } from "./errors.js";
 export {
+  deriveHarnessCliIdentity,
   deriveHumanCliIdentity,
   deriveMcpHarnessIdentity,
-  type DerivedIdentity
+  type DeriveHarnessCliIdentityOptions,
+  type DerivedIdentity,
+  type HarnessCliHarness
 } from "./identity.js";
 export {
   ancestorPaths,
@@ -32,6 +35,32 @@ export {
   resolveWorkspaceRoot
 } from "./path-resolution.js";
 export { createMcpServer, runStdioServer } from "./mcp-server.js";
+export {
+  SUPPORTED_HARNESSES,
+  detectHarness,
+  parseHarnessList,
+  planInstall,
+  planUninstall,
+  resolveOpencodeConfigPath,
+  runAction,
+  type ExecAction,
+  type ExecResult,
+  type FilePatchAction,
+  type HarnessDetection,
+  type HarnessId,
+  type InstallAction,
+  type InstallOptions,
+  type InstallResult,
+  type InstallerHooks
+} from "./install.js";
+export {
+  DEFAULT_SKILL_NAME,
+  planSkillInstall,
+  planSkillUninstall,
+  resolveBundledSkillPath,
+  resolveSkillTargetPath,
+  type SkillInstallOptions
+} from "./skill-install.js";
 export {
   createSystemProcessInspector,
   terminateKnownProcess,

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Talking Stick"
+  short_description: "Coordinate turn-taking across agent harnesses"
+  default_prompt: "Use $talking-stick when a workspace uses tt/talking-stick coordination or when multiple agent harnesses should avoid parallel work."

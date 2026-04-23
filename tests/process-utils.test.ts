@@ -108,6 +108,7 @@ describe("createSystemProcessInspector", () => {
     let calls = 0;
     const inspector = createSystemProcessInspector({
       cacheTtlMs: 1_000,
+      processExists: () => true,
       execFile(_file, args) {
         calls += 1;
         expect(args).toEqual([
@@ -132,6 +133,31 @@ describe("createSystemProcessInspector", () => {
     });
     expect(second).toEqual(first);
     expect(calls).toBe(1);
+  });
+
+  test("returns null (decisively gone) when processExists says no, without calling ps", () => {
+    let psCalls = 0;
+    const inspector = createSystemProcessInspector({
+      processExists: () => false,
+      execFile() {
+        psCalls += 1;
+        return "";
+      }
+    });
+
+    expect(inspector.inspect(25253)).toBeNull();
+    expect(psCalls).toBe(0);
+  });
+
+  test("returns undefined (unknown) only when ps itself fails unexpectedly", () => {
+    const inspector = createSystemProcessInspector({
+      processExists: () => true,
+      execFile() {
+        throw new Error("ps failed unexpectedly");
+      }
+    });
+
+    expect(inspector.inspect(4242)).toBeUndefined();
   });
 });
 

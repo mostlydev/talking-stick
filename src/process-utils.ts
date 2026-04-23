@@ -30,6 +30,7 @@ export interface ProcessInspectorOptions {
       stdio: ["ignore", "pipe", "ignore"];
     }
   ) => string;
+  processExists?: (pid: number) => boolean;
 }
 
 export function terminateKnownProcess(
@@ -113,6 +114,11 @@ function inspectSystemProcess(
     return undefined;
   }
 
+  const exists = options.processExists ?? processExistsViaSignal;
+  if (!exists(pid)) {
+    return null;
+  }
+
   try {
     const output = (options.execFile ?? defaultExecFile)(
       "ps",
@@ -137,6 +143,17 @@ function inspectSystemProcess(
     };
   } catch {
     return undefined;
+  }
+}
+
+function processExistsViaSignal(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    return true;
   }
 }
 

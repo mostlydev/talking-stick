@@ -18,7 +18,7 @@ const handoffSchema = z
       .array(
         z.object({
           path: z.string(),
-          lines: z.tuple([z.number().int(), z.number().int()]).optional(),
+          lines: z.array(z.number().int()).length(2).optional(),
           role: z.enum(["examine", "review", "edit", "context", "output"]),
           note: z.string().optional()
         })
