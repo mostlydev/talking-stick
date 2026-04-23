@@ -200,6 +200,30 @@ describe("talking-stick vertical slice", () => {
     expect(join.canonical_path).toBe(project);
   });
 
+  test("join_path returns the effective policy including heartbeat cadence", () => {
+    const harness = createHarness({
+      policy: {
+        ownerLeaseTtlMs: 50_000,
+        heartbeatIntervalMs: 12_000,
+        claimTtlMs: 30_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    expect(join.policy).toMatchObject({
+      ownerLeaseTtlMs: 50_000,
+      heartbeatIntervalMs: 12_000,
+      claimTtlMs: 30_000,
+      waitForTurnMaxWaitMs: 30_000,
+      waitForTurnPollMs: 250
+    });
+  });
+
   test("claim-timeout takeover rejects the prior owner while another member is active", async () => {
     const harness = createHarness({
       policy: {
@@ -659,6 +683,69 @@ describe("talking-stick vertical slice", () => {
     });
 
     expect(livenessChecks).toBeLessThanOrEqual(2);
+  });
+
+  test("list_rooms summaries do not probe exact process liveness", async () => {
+    let livenessChecks = 0;
+    const harness = createHarness({
+      processLivenessChecker: () => {
+        livenessChecks += 1;
+        return "alive";
+      }
+    });
+    const firstProject = createProject(harness.tempRoot);
+    const secondProject = path.join(harness.tempRoot, "project-b");
+    fs.mkdirSync(secondProject, { recursive: true });
+    fs.writeFileSync(path.join(secondProject, "package.json"), "{}\n");
+
+    const firstJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: firstProject,
+      process_metadata: harness.processRegistry.create("codex")
+    });
+    const secondJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: secondProject,
+      process_metadata: harness.processRegistry.create("claude")
+    });
+    harness.service.joinPath({
+      agent_id: "gemini:test",
+      context_path: secondProject,
+      process_metadata: harness.processRegistry.create("gemini")
+    });
+
+    asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: firstJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const secondTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "claude:test",
+        room_id: secondJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.service.releaseStick({
+      room_id: secondJoin.room_id,
+      agent_id: "claude:test",
+      lease_id: secondTurn.lease_id,
+      expected_turn_id: secondTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    livenessChecks = 0;
+    const rooms = harness.service.listRooms();
+
+    expect(rooms.rooms).toHaveLength(2);
+    expect(rooms.rooms.map((room) => room.state).sort()).toEqual([
+      "owned",
+      "reserved"
+    ]);
+    expect(livenessChecks).toBe(0);
   });
 
   test("recipient_gone yields immediate takeover availability", async () => {

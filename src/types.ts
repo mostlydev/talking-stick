@@ -43,6 +43,7 @@ export interface Handoff {
 
 export interface Policy {
   ownerLeaseTtlMs: number;
+  heartbeatIntervalMs: number;
   claimTtlMs: number;
   waitForTurnMaxWaitMs: number;
   waitForTurnPollMs: number;
@@ -106,6 +107,7 @@ export interface JoinPathResult {
   workspace_root: string;
   joined_existing_room: boolean;
   warning?: string;
+  policy: Policy;
   room_state: PathRoom;
   handoff_template: Handoff;
 }

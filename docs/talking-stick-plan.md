@@ -116,7 +116,7 @@ For the Human CLI, this implies a split between one-shot commands and holders:
 - one-shot commands like `list`, `join`, `state`, and `events` are ordinary short-lived processes and do not own the room,
 - indefinite human ownership uses an attached hold mode or a lightweight local guardian process, so the owner is still represented by one live process that can be checked and can exit cleanly.
 
-The `join_path` response returns the assigned `agent_id` to the harness so it appears in logs, downstream handoffs, and event records. An optional `agent_id_override` is accepted for tests and debugging and is flagged in the event stream.
+The `join_path` response returns the assigned `agent_id` to the harness so it appears in logs, downstream handoffs, and event records. It also returns the effective policy for that room, including the server's expected heartbeat cadence, so harnesses and human-holder helpers can renew leases without guessing. An optional `agent_id_override` is accepted for tests and debugging and is flagged in the event stream.
 
 No MCP tool input other than `join_path` carries `agent_id_override`. If `join_path` receives an override, that override becomes the connection's derived identity for subsequent calls on that same connection until disconnect. Otherwise, for every owner mutation the adapter injects the derived identity from the connection context, and the service layer continues to use `agent_id` internally for fencing and membership checks.
 
@@ -279,7 +279,7 @@ The protocol model reserves a `closed` state for an optional later `close_room` 
 The MVP therefore distinguishes three situations, not two:
 
 - **Active:** at least one member has recent presence within `presence_ttl`. Normal operation.
-- **Dormant:** no member has recent presence or a currently live process, and no optional later close mechanism has been invoked. The room persists, its event log stays readable, and any member returning later can resume. Dormancy is a derived condition, not a stored state; `get_room_state` and `list_rooms` can surface it by comparing `last_seen_at` values against `presence_ttl` and by checking persisted process metadata when available.
+- **Dormant:** no member has recent presence or a currently live process, and no optional later close mechanism has been invoked. The room persists, its event log stays readable, and any member returning later can resume. Dormancy is a derived condition, not a stored state; `get_room_state` is the authoritative projection and may use persisted process metadata when available, while `list_rooms` may use a cheaper summary projection based on room ownership fields and recent presence so it does not need to probe every room holder.
 - **Closed:** reserved for a future `close_room` extension. If that tool is added later, the room becomes terminal and no further owner mutations are accepted. The event log remains for inspection.
 
 Retention policy for long-dormant rooms (archive, prune, purge after N days with no activity) is out of scope for MVP and is expected to be a separate administrative concern, not a protocol state transition. This prevents surprise deletions and keeps the protocol's responsibilities narrow.
@@ -317,7 +317,7 @@ Resolution:
 5. If found and `force_new = true`: create a nested room at the canonical `context_path`, returning a warning that an ancestor room exists. If a room already exists at that exact path, join it.
 6. If not found: create a new room at the preferred workspace root.
 
-The response includes the resolved `room_id`, the `canonical_path` the agent actually joined (which may differ from the request path when workspace root resolution or ancestor lookup redirected the call), and a `handoff_template` hint describing the expected handoff shape. For the MVP this template is static server-wide; room-specific prompting can be added later if real workflows need it.
+The response includes the resolved `room_id`, the `canonical_path` the agent actually joined (which may differ from the request path when workspace root resolution or ancestor lookup redirected the call), the effective room policy (including `heartbeat_interval_ms`), and a `handoff_template` hint describing the expected handoff shape. For the MVP this template is static server-wide; room-specific prompting can be added later if real workflows need it.
 
 Effects:
 
@@ -755,6 +755,8 @@ Rationale for these defaults: a real agent turn often runs 20-30 minutes (plan-a
 These timers are fallback recovery, not the only recovery path. When the server can prove that the exact spawning process is gone, it should expose `owner_gone` or `recipient_gone` immediately instead of waiting for timeout. Ownership timings (lease, claim, presence) are the product-facing knobs; transport timings (wait max, poll cadence) are unchanged because they only affect polling efficiency, not ownership semantics.
 
 Per-room policy is expected to become a first-class need quickly (batch workflows want longer TTLs; interactive workflows want shorter claims). Storing timeouts on the room record rather than as global server defaults is the recommended near-term extension, enabled via `set_room_policy`.
+
+Even before per-room policy ships, the effective policy must be part of the `join_path` response so holders can schedule heartbeats from server truth rather than from compiled-in defaults.
 
 ## Persistence Model
 

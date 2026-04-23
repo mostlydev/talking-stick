@@ -3,6 +3,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { isProtocolError } from "./errors.js";
 import { deriveMcpHarnessIdentity, type DerivedIdentity } from "./identity.js";
+import {
+  createSystemProcessInspector,
+  type ProcessInspector
+} from "./process-utils.js";
 import { TalkingStickCommands } from "./commands.js";
 import { TalkingStickService } from "./service.js";
 
@@ -29,10 +33,10 @@ export function createMcpServer(
   service = new TalkingStickService()
 ): McpServer {
   const commands = new TalkingStickCommands(service);
-  const connectionOverrides = new Map<string, string>();
+  const resolveConnectionIdentity = createConnectionIdentityResolver();
   const server = new McpServer({
     name: "talking-stick",
-    version: "0.1.0"
+    version: "0.1.0-alpha"
   });
 
   server.registerTool(
@@ -61,11 +65,7 @@ export function createMcpServer(
     async (input, extra) =>
       toolJson(() =>
         commands.joinPath(
-          resolveConnectionIdentity(
-            extra.sessionId,
-            connectionOverrides,
-            input.agent_id_override
-          ),
+          resolveConnectionIdentity(extra.sessionId, input.agent_id_override),
           {
             context_path: input.context_path,
             force_new: input.force_new
@@ -89,7 +89,7 @@ export function createMcpServer(
     async (input, extra) =>
       toolJson(() =>
         commands.waitForTurn(
-          resolveConnectionIdentity(extra.sessionId, connectionOverrides),
+          resolveConnectionIdentity(extra.sessionId),
           input
         )
       )
@@ -105,7 +105,7 @@ export function createMcpServer(
     async (input, extra) =>
       toolJson(() =>
         commands.heartbeat(
-          resolveConnectionIdentity(extra.sessionId, connectionOverrides),
+          resolveConnectionIdentity(extra.sessionId),
           input
         )
       )
@@ -124,7 +124,7 @@ export function createMcpServer(
     async (input, extra) =>
       toolJson(() =>
         commands.releaseStick(
-          resolveConnectionIdentity(extra.sessionId, connectionOverrides),
+          resolveConnectionIdentity(extra.sessionId),
           input
         )
       )
@@ -144,7 +144,7 @@ export function createMcpServer(
     async (input, extra) =>
       toolJson(() =>
         commands.passStick(
-          resolveConnectionIdentity(extra.sessionId, connectionOverrides),
+          resolveConnectionIdentity(extra.sessionId),
           input
         )
       )
@@ -165,7 +165,7 @@ export function createMcpServer(
     async (input, extra) =>
       toolJson(() =>
         commands.takeoverStick(
-          resolveConnectionIdentity(extra.sessionId, connectionOverrides),
+          resolveConnectionIdentity(extra.sessionId),
           input
         )
       )
@@ -200,6 +200,36 @@ export function createMcpServer(
   return server;
 }
 
+export function createConnectionIdentityResolver(options: {
+  inspector?: ProcessInspector;
+} = {}): (sessionId: string | undefined, override?: string) => DerivedIdentity {
+  const inspector =
+    options.inspector ?? createSystemProcessInspector({ cacheTtlMs: 60_000 });
+  const connectionOverrides = new Map<string, string>();
+  const connectionIdentities = new Map<string, DerivedIdentity>();
+
+  return (sessionId, override) => {
+    const key = sessionId ?? "__stdio__";
+    if (override) {
+      connectionOverrides.set(key, override);
+      connectionIdentities.delete(key);
+    }
+
+    const cached = connectionIdentities.get(key);
+    if (cached) {
+      return cached;
+    }
+
+    const identity = deriveMcpHarnessIdentity({
+      sessionId,
+      agentId: connectionOverrides.get(key),
+      inspector
+    });
+    connectionIdentities.set(key, identity);
+    return identity;
+  };
+}
+
 export async function runStdioServer(): Promise<void> {
   const service = new TalkingStickService();
   const server = createMcpServer(service);
@@ -214,22 +244,6 @@ function ownerMutationSchema() {
     lease_id: z.string().min(1),
     expected_turn_id: z.number().int().nonnegative()
   };
-}
-
-function resolveConnectionIdentity(
-  sessionId: string | undefined,
-  connectionOverrides: Map<string, string>,
-  override?: string
-): DerivedIdentity {
-  const key = sessionId ?? "__stdio__";
-  if (override) {
-    connectionOverrides.set(key, override);
-  }
-
-  return deriveMcpHarnessIdentity({
-    sessionId,
-    agentId: connectionOverrides.get(key)
-  });
 }
 
 async function toolJson(fn: () => unknown | Promise<unknown>) {

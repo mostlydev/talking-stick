@@ -146,13 +146,13 @@ export class TalkingStickService {
     const now = this.now();
 
     if (!input.context_path) {
+      const rows = this.db
+        .prepare<[], PathRoomRow>(
+          "SELECT * FROM path_rooms ORDER BY canonical_path"
+        )
+        .all();
       return {
-        rooms: this.db
-          .prepare<[], PathRoomRow>(
-            "SELECT * FROM path_rooms ORDER BY canonical_path"
-          )
-          .all()
-          .map((row) => this.mapRoom(this.inspectRoom(row, now), now))
+        rooms: rows.map((row) => this.mapRoomForList(row, now))
       };
     }
 
@@ -164,7 +164,7 @@ export class TalkingStickService {
 
     return {
       rooms: this.findRoomsByCanonicalPaths(ancestors).map((row) =>
-        this.mapRoom(this.inspectRoom(row, now), now)
+        this.mapRoomForList(row, now)
       )
     };
   }
@@ -201,6 +201,7 @@ export class TalkingStickService {
         workspace_root: resolved.workspace_root,
         joined_existing_room: roomSelection.joinedExistingRoom,
         warning: roomSelection.warning,
+        policy: { ...this.policy },
         room_state: this.mapRoom(this.inspectRoom(freshRoom, now), now),
         handoff_template: handoffTemplate()
       };
@@ -1286,6 +1287,29 @@ export class TalkingStickService {
       members,
       ownerMember,
       reservedMember,
+      state
+    };
+  }
+
+  private mapRoomForList(room: PathRoomRow, now: Date): PathRoom {
+    let state: RoomState;
+    if (room.state === "closed") {
+      state = "closed";
+    } else if (room.owner) {
+      state = this.hasExpired(room.lease_expires_at, now)
+        ? "stale_owner"
+        : "owned";
+    } else if (room.reserved_for) {
+      state = "reserved";
+    } else {
+      const members = this.getMembers(room.room_id);
+      state = members.some((member) => this.hasRecentPresence(member, now))
+        ? "idle"
+        : "dormant";
+    }
+
+    return {
+      ...room,
       state
     };
   }

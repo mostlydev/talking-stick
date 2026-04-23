@@ -4,6 +4,7 @@ import type { Policy } from "./types.js";
 
 export const defaultPolicy: Policy = {
   ownerLeaseTtlMs: 45 * 60 * 1000,
+  heartbeatIntervalMs: 5 * 60 * 1000,
   claimTtlMs: 20 * 60 * 1000,
   waitForTurnMaxWaitMs: 30 * 1000,
   waitForTurnPollMs: 250,

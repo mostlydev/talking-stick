@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 import {
   clearCliSessionLease,
   createSystemProcessInspector,
-  defaultPolicy,
   deriveHumanCliIdentity,
   findCliSessionForContextPath,
   isProtocolError,
@@ -349,7 +348,7 @@ async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
   const runtime = createRuntime();
 
   try {
-    runtime.commands.joinPath(identity, {
+    const joined = runtime.commands.joinPath(identity, {
       context_path: requireStringOption(parsed, "context-path")
     });
 
@@ -359,7 +358,7 @@ async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
       expected_turn_id: parseRequiredInteger(parsed, "turn-id")
     };
 
-    const intervalMs = heartbeatIntervalMs();
+    const intervalMs = joined.policy.heartbeatIntervalMs;
 
     process.stdout.write(`${GUARD_READY}\n`);
     const timer = setInterval(() => {
@@ -576,10 +575,6 @@ function pickDeepestRoom(rooms: PathRoom[]): PathRoom | null {
   return rooms
     .slice()
     .sort((left, right) => right.canonical_path.length - left.canonical_path.length)[0];
-}
-
-function heartbeatIntervalMs(): number {
-  return Math.max(60_000, Math.min(5 * 60 * 1000, defaultPolicy.ownerLeaseTtlMs / 3));
 }
 
 async function spawnGuardian(input: {
