@@ -1,6 +1,6 @@
 ---
 name: talking-stick
-description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker or when the MCP tools `list_rooms`, `join_path`, `wait_for_turn`, `heartbeat`, `release_stick`, `pass_stick`, `takeover_stick`, `get_room_state`, or `get_room_events` are available.
+description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker or when the MCP tools `list_rooms`, `join_path`, `wait_for_turn`, `heartbeat`, `release_stick`, `pass_stick`, `takeover_stick`, `get_room_state`, `get_room_events`, `add_note`, or `list_notes` are available.
 ---
 
 This skill teaches a harness how to behave in a Talking Stick workspace.
@@ -65,6 +65,10 @@ If you do not have the stick:
 - do not silently race another harness
 - it is fine to read, plan, review, or help the user think — or any other work that does not mutate shared state
 - tell the user who currently holds or is reserved the turn when that is useful
+
+If you notice something the current owner should know — a subtle invariant near code they are about to touch, a related bug you spotted while reading, a pointer to a doc — leave a note with `add_note` instead of sitting on it until your next turn. Notes do not grant permission to edit shared files; they are observations and pointers, not coordination bypasses.
+
+When you do take the stick, run `list_notes` once at the start of your turn so you see what other members left for you. The owner's turn is the right place to act on a note, not to debate it with its author mid-turn.
 
 ### 5. While holding the stick
 

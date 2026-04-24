@@ -70,6 +70,8 @@ pass_stick         — explicit handoff to a named agent
 takeover_stick     — deliberate claim when the prior holder is gone/stuck
 get_room_state     — authoritative state projection
 get_room_events    — audit log of turn transitions
+add_note           — leave an async observation for the current owner
+list_notes         — read notes left for the room
 ```
 
 A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically.
@@ -78,6 +80,14 @@ The skill complements the MCP tools:
 
 - MCP gives the harness the coordination surface
 - the global skill tells the model when to join, wait, heartbeat, take over, and hand off
+
+## Non-owner notes
+
+While you wait your turn you may still need to flag something to the current owner: a subtle invariant, a related bug, a pointer to a doc. Non-owner notes give you a durable channel without interrupting the turn.
+
+- Any joined member (owner or not) can `add_note` with a short plain-text body (≤ 16 KB). An optional `turn_id` scopes the note to a specific turn; omitted, the note is room-scoped and survives turn transitions.
+- `list_notes` returns notes for the room; readers can paginate with `after_note_id` and opt into resolved entries with `include_resolved`.
+- Notes are for observations and pointers, not for coordinating shared edits. Shared workspace changes still require holding the stick.
 
 ## How installation works per harness
 
@@ -120,6 +130,8 @@ tt events [path] [--after N] [--limit N]                  # room event log
 tt release [path] --status TEXT --next-action TEXT        # normal handoff
 tt pass [target] [path] --status TEXT --next-action TEXT  # explicit handoff
 tt takeover [path] --reason TEXT                          # deliberate takeover
+tt notes add <body> [--turn N] [--path DIR] [--stdin]     # leave an async note
+tt notes list [--all] [--after ID] [--limit N] [--path DIR] # read notes
 tt mcp                                                    # run the MCP stdio server
 tt install <harness...> | --all [--print]                 # register MCP server
 tt uninstall <harness...> | --all [--print]               # remove MCP server
