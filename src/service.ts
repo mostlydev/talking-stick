@@ -14,7 +14,10 @@ import {
   type SqliteDatabase
 } from "./db.js";
 import { ProtocolError } from "./errors.js";
-import { createSystemProcessInspector } from "./process-utils.js";
+import {
+  createSystemProcessInspector,
+  type ProcessInspector
+} from "./process-utils.js";
 import type {
   AgentId,
   GetRoomEventsInput,
@@ -483,7 +486,9 @@ export class TalkingStickService {
 
   getRoomState(input: GetRoomStateInput): GetRoomStateResult {
     const now = this.now();
+    const timestamp = now.toISOString();
     const room = this.requireRoom(input.room_id);
+    this.touchKnownMember(input.room_id, input.agent_id, timestamp);
     const inspection = this.inspectRoom(room, now);
 
     return {
@@ -495,6 +500,11 @@ export class TalkingStickService {
   }
 
   getRoomEvents(input: GetRoomEventsInput): RoomEvent[] {
+    this.touchKnownMember(
+      input.room_id,
+      input.agent_id,
+      this.now().toISOString()
+    );
     const afterEventSeq = input.after_event_seq ?? 0;
     const limit = Math.min(input.limit ?? 100, 500);
 
@@ -847,6 +857,10 @@ export class TalkingStickService {
       return false;
     }
 
+    if (this.getMemberProcessLiveness(existing) === "gone") {
+      return false;
+    }
+
     if (!hasExactProcessIdentity(incoming)) {
       return true;
     }
@@ -875,6 +889,22 @@ export class TalkingStickService {
         { to_agent_id: agentId }
       );
     }
+  }
+
+  private touchKnownMember(
+    roomId: string,
+    agentId: AgentId | undefined,
+    timestamp: string
+  ): void {
+    if (!agentId) {
+      return;
+    }
+
+    if (!this.getMember(roomId, agentId)) {
+      return;
+    }
+
+    this.touchMember(roomId, agentId, timestamp);
   }
 
   private assertOwnerMutation(
@@ -1221,7 +1251,7 @@ export class TalkingStickService {
       const ownerLiveness = ownerMember
         ? this.getMemberProcessLiveness(ownerMember)
         : "gone";
-      if (ownerLiveness === "gone") {
+      if (this.isGonePersistent(ownerMember, ownerLiveness, now)) {
         state = "owner_gone";
       } else if (this.hasExpired(room.lease_expires_at, now)) {
         state = "stale_owner";
@@ -1232,7 +1262,11 @@ export class TalkingStickService {
       const reservedLiveness = reservedMember
         ? this.getMemberProcessLiveness(reservedMember)
         : "gone";
-      state = reservedLiveness === "gone" ? "recipient_gone" : "reserved";
+      state =
+        this.hasExpired(room.claim_expires_at, now) &&
+        reservedLiveness === "gone"
+          ? "recipient_gone"
+          : "reserved";
     } else if (!members.some((member) => this.isMemberActive(member, now))) {
       state = "dormant";
     } else {
@@ -1264,7 +1298,7 @@ export class TalkingStickService {
       const ownerLiveness = ownerMember
         ? this.getMemberProcessLiveness(ownerMember)
         : "gone";
-      if (ownerLiveness === "gone") {
+      if (this.isGonePersistent(ownerMember, ownerLiveness, now)) {
         state = "owner_gone";
       } else if (this.hasExpired(room.lease_expires_at, now)) {
         state = "stale_owner";
@@ -1275,7 +1309,11 @@ export class TalkingStickService {
       const reservedLiveness = reservedMember
         ? this.getMemberProcessLiveness(reservedMember)
         : "gone";
-      state = reservedLiveness === "gone" ? "recipient_gone" : "reserved";
+      state =
+        this.hasExpired(room.claim_expires_at, now) &&
+        reservedLiveness === "gone"
+          ? "recipient_gone"
+          : "reserved";
     } else if (!members.some((member) => this.hasRecentPresence(member, now))) {
       state = "dormant";
     } else {
@@ -1349,6 +1387,26 @@ export class TalkingStickService {
     });
   }
 
+  private goneGraceMs(): number {
+    return this.policy.heartbeatIntervalMs * 2;
+  }
+
+  private isGonePersistent(
+    member: RoomMemberRow | null,
+    liveness: ProcessLiveness,
+    now: Date
+  ): boolean {
+    if (liveness !== "gone") {
+      return false;
+    }
+
+    if (!member) {
+      return true;
+    }
+
+    return now.getTime() - Date.parse(member.last_seen_at) > this.goneGraceMs();
+  }
+
   private deriveRoomState(room: PathRoomRow, now: Date): RoomState {
     return this.inspectRoom(room, now).state;
   }
@@ -1398,13 +1456,15 @@ function normalizeProcessMetadata(
   };
 }
 
-function createDefaultProcessLivenessChecker(
-  currentHostId: string
+export function createDefaultProcessLivenessChecker(
+  currentHostId: string,
+  injectedInspector?: ProcessInspector
 ): ProcessLivenessChecker {
   // This cache keeps normal polling from forking `ps` on every room inspection.
   // A deeper move to out-of-transaction liveness refresh is possible later, but
   // for the MVP we keep the lock boundary simple and the probe shared/cached.
-  const inspector = createSystemProcessInspector({ cacheTtlMs: 1_000 });
+  const inspector =
+    injectedInspector ?? createSystemProcessInspector({ cacheTtlMs: 1_000 });
 
   return (metadata) => {
     if (
@@ -1432,9 +1492,14 @@ function createDefaultProcessLivenessChecker(
       return "gone";
     }
 
-    return inspection.startTime === metadata.process_started_at
-      ? "alive"
-      : "gone";
+    // Conservative default: a live pid whose startTime string drifts is far
+    // more likely to be the original process with a format-drift bug than a
+    // distinct re-used pid. Only return "gone" when we *know* the pid is dead
+    // (handled above via inspection === null). Mismatches here become
+    // "unknown", deferring the decision to the silence-grace layer.
+    const storedStart = metadata.process_started_at.trim();
+    const observedStart = inspection.startTime.trim();
+    return storedStart === observedStart ? "alive" : "unknown";
   };
 }
 

@@ -59,6 +59,8 @@ Ambient presence needs two distinct operating modes:
 
 This distinction matters because `tt` is currently the human CLI. A shell process launched from inside a harness should not silently become `human:<username>` and pollute room membership. If we can cheaply export the harness identity into child shells, great; if not, observer mode is still useful and should ship first.
 
+Current contract: CLI participant mode is explicit. A harness must set `TT_HARNESS_EXPORT=1` to let `tt` derive a harness-style identity from signals and ancestry, or `TT_HARNESS_AGENT_ID=<agent-id>` to export the exact agent id directly. Without that opt-in, `tt` remains on the human CLI path.
+
 That same rule applies to invoked shell helpers: if identity can be inferred or inherited, they may render participant-local state; if not, they should limit themselves to room-level observer status rather than pretending to be a participant.
 
 ### 4. Instruction — how the agent behaves

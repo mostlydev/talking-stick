@@ -95,13 +95,14 @@ describe("identity derivation", () => {
 
 describe("deriveHarnessCliIdentity", () => {
   const inspector = fakeInspector({
-    9000: { startTime: "Thu Apr 23 14:00:00 2026", command: "claude" }
+    9000: { startTime: "Thu Apr 23 14:00:00 2026", command: "bash", ppid: 8000 },
+    8000: { startTime: "Thu Apr 23 13:50:00 2026", command: "claude", ppid: 1 }
   });
 
-  test("returns null when no harness env markers are set", () => {
+  test("requires explicit opt-in before using harness identity in the CLI", () => {
     expect(
       deriveHarnessCliIdentity({
-        env: {},
+        env: { CLAUDECODE: "1", CLAUDE_CODE_EXECPATH: "/opt/claude/2.1.118" },
         username: "wojtek",
         parentPid: 9000,
         hostId: "test-host",
@@ -110,9 +111,43 @@ describe("deriveHarnessCliIdentity", () => {
     ).toBeNull();
   });
 
-  test("detects Claude Code via CLAUDECODE=1", () => {
+  test("returns null when no harness env markers are set and no harness in ancestry", () => {
+    const neutralInspector = fakeInspector({
+      9000: { startTime: "Thu Apr 23 14:00:00 2026", command: "bash", ppid: 8000 },
+      8000: { startTime: "Thu Apr 23 13:50:00 2026", command: "bash", ppid: 1 }
+    });
+    expect(
+      deriveHarnessCliIdentity({
+        env: {},
+        username: "wojtek",
+        parentPid: 9000,
+        hostId: "test-host",
+        inspector: neutralInspector
+      })
+    ).toBeNull();
+  });
+
+  test("detects Claude Code via ancestry walk when harness export is enabled", () => {
     const identity = deriveHarnessCliIdentity({
-      env: { CLAUDECODE: "1", CLAUDE_CODE_EXECPATH: "/opt/claude/2.1.118" },
+      env: { TT_HARNESS_EXPORT: "1" },
+      username: "wojtek",
+      parentPid: 9000,
+      hostId: "test-host",
+      inspector
+    });
+
+    expect(identity).not.toBeNull();
+    expect(identity?.process_metadata.display_name).toBe("claude");
+    expect(identity?.agent_id).toMatch(/^claude:[0-9a-f]{8}$/);
+  });
+
+  test("detects Claude Code via CLAUDECODE=1 when harness export is enabled", () => {
+    const identity = deriveHarnessCliIdentity({
+      env: {
+        TT_HARNESS_EXPORT: "1",
+        CLAUDECODE: "1",
+        CLAUDE_CODE_EXECPATH: "/opt/claude/2.1.118"
+      },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
@@ -131,14 +166,22 @@ describe("deriveHarnessCliIdentity", () => {
 
   test("detects Codex and prefers CODEX_THREAD_ID for stable identity across invocations", () => {
     const first = deriveHarnessCliIdentity({
-      env: { CODEX_MANAGED_BY_NPM: "1", CODEX_THREAD_ID: "019dbc04-0695-77c0-8e59-2220fadcb7fb" },
+      env: {
+        TT_HARNESS_EXPORT: "1",
+        CODEX_MANAGED_BY_NPM: "1",
+        CODEX_THREAD_ID: "019dbc04-0695-77c0-8e59-2220fadcb7fb"
+      },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
       inspector
     });
     const second = deriveHarnessCliIdentity({
-      env: { CODEX_MANAGED_BY_NPM: "1", CODEX_THREAD_ID: "019dbc04-0695-77c0-8e59-2220fadcb7fb" },
+      env: {
+        TT_HARNESS_EXPORT: "1",
+        CODEX_MANAGED_BY_NPM: "1",
+        CODEX_THREAD_ID: "019dbc04-0695-77c0-8e59-2220fadcb7fb"
+      },
       username: "wojtek",
       parentPid: 9001,
       hostId: "test-host",
@@ -150,7 +193,7 @@ describe("deriveHarnessCliIdentity", () => {
 
   test("detects Codex via CODEX_THREAD_ID even without CODEX_MANAGED_BY_NPM", () => {
     const identity = deriveHarnessCliIdentity({
-      env: { CODEX_THREAD_ID: "abc" },
+      env: { TT_HARNESS_EXPORT: "1", CODEX_THREAD_ID: "abc" },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
@@ -161,7 +204,7 @@ describe("deriveHarnessCliIdentity", () => {
 
   test("detects Gemini via GEMINI_CLI=1 and falls back to PID-based identity", () => {
     const identity = deriveHarnessCliIdentity({
-      env: { GEMINI_CLI: "1" },
+      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1" },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
@@ -174,14 +217,24 @@ describe("deriveHarnessCliIdentity", () => {
 
   test("detects OpenCode and prefers OPENCODE_RUN_ID for stable identity", () => {
     const first = deriveHarnessCliIdentity({
-      env: { OPENCODE: "1", OPENCODE_RUN_ID: "run-abc", OPENCODE_PID: "12345" },
+      env: {
+        TT_HARNESS_EXPORT: "1",
+        OPENCODE: "1",
+        OPENCODE_RUN_ID: "run-abc",
+        OPENCODE_PID: "12345"
+      },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
       inspector
     });
     const second = deriveHarnessCliIdentity({
-      env: { OPENCODE: "1", OPENCODE_RUN_ID: "run-abc", OPENCODE_PID: "99999" },
+      env: {
+        TT_HARNESS_EXPORT: "1",
+        OPENCODE: "1",
+        OPENCODE_RUN_ID: "run-abc",
+        OPENCODE_PID: "99999"
+      },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
@@ -193,14 +246,14 @@ describe("deriveHarnessCliIdentity", () => {
 
   test("does not collide identities across harnesses with the same sessionId", () => {
     const codexIdentity = deriveHarnessCliIdentity({
-      env: { CODEX_THREAD_ID: "shared" },
+      env: { TT_HARNESS_EXPORT: "1", CODEX_THREAD_ID: "shared" },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
       inspector
     });
     const opencodeIdentity = deriveHarnessCliIdentity({
-      env: { OPENCODE: "1", OPENCODE_RUN_ID: "shared" },
+      env: { TT_HARNESS_EXPORT: "1", OPENCODE: "1", OPENCODE_RUN_ID: "shared" },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
@@ -214,15 +267,31 @@ describe("deriveHarnessCliIdentity", () => {
   test("respects an explicit agentId override", () => {
     const identity = deriveHarnessCliIdentity({
       agentId: "claude:forced-id",
-      env: { CLAUDECODE: "1" },
+      env: { TT_HARNESS_EXPORT: "1", CLAUDECODE: "1" },
       inspector
     });
     expect(identity!.agent_id).toBe("claude:forced-id");
   });
 
+  test("uses an explicitly exported harness agent id when provided", () => {
+    const identity = deriveHarnessCliIdentity({
+      env: { TT_HARNESS_AGENT_ID: "claude:4d685f30" },
+      parentPid: 9000,
+      hostId: "test-host",
+      inspector
+    });
+    expect(identity).not.toBeNull();
+    expect(identity!.agent_id).toBe("claude:4d685f30");
+    expect(identity!.process_metadata.display_name).toBe("claude");
+  });
+
   test("uses a terminal-emulator session id as sessionId fallback for Gemini", () => {
     const identity = deriveHarnessCliIdentity({
-      env: { GEMINI_CLI: "1", ITERM_SESSION_ID: "w0t0p0:ABCDEF" },
+      env: {
+        TT_HARNESS_EXPORT: "1",
+        GEMINI_CLI: "1",
+        ITERM_SESSION_ID: "w0t0p0:ABCDEF"
+      },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
@@ -233,14 +302,14 @@ describe("deriveHarnessCliIdentity", () => {
 
   test("terminal-emulator fallback keeps identity stable across invocations in the same tab", () => {
     const a = deriveHarnessCliIdentity({
-      env: { GEMINI_CLI: "1", CMUX_TAB_ID: "tab-abc" },
+      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1", CMUX_TAB_ID: "tab-abc" },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
       inspector
     });
     const b = deriveHarnessCliIdentity({
-      env: { GEMINI_CLI: "1", CMUX_TAB_ID: "tab-abc" },
+      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1", CMUX_TAB_ID: "tab-abc" },
       username: "wojtek",
       parentPid: 9001,
       hostId: "test-host",
@@ -251,14 +320,14 @@ describe("deriveHarnessCliIdentity", () => {
 
   test("different terminal tabs produce different identities within the same harness", () => {
     const a = deriveHarnessCliIdentity({
-      env: { GEMINI_CLI: "1", CMUX_TAB_ID: "tab-one" },
+      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1", CMUX_TAB_ID: "tab-one" },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
       inspector
     });
     const b = deriveHarnessCliIdentity({
-      env: { GEMINI_CLI: "1", CMUX_TAB_ID: "tab-two" },
+      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1", CMUX_TAB_ID: "tab-two" },
       username: "wojtek",
       parentPid: 9000,
       hostId: "test-host",
@@ -275,6 +344,7 @@ describe("CLI and MCP identity unification", () => {
       9000: { startTime: "Thu Apr 23 14:00:00 2026", command: "claude" }
     });
     const env = {
+      TT_HARNESS_EXPORT: "1",
       CLAUDECODE: "1",
       CLAUDE_CODE_EXECPATH: "/opt/claude/2.1.118"
     };
@@ -317,7 +387,10 @@ describe("CLI and MCP identity unification", () => {
 });
 
 function fakeInspector(
-  processes: Record<number, { startTime: string | null; command: string | null }>
+  processes: Record<
+    number,
+    { startTime: string | null; command: string | null; ppid?: number | null }
+  >
 ): ProcessInspector {
   return {
     inspect(pid) {
@@ -328,6 +401,7 @@ function fakeInspector(
 
       return {
         pid,
+        ppid: process.ppid ?? null,
         startTime: process.startTime,
         command: process.command
       };

@@ -46,6 +46,16 @@ interface Runtime {
   close: () => void;
 }
 
+interface CliIdentityResolution {
+  identity: DerivedIdentity;
+  source:
+    | "agent_override"
+    | "harness_cli_exported_agent_id"
+    | "harness_cli_exported_detection"
+    | "human_cli_default";
+  detail: string;
+}
+
 const GUARD_READY = "READY";
 const STALE_GUARD_ERRORS = new Set(["stale_lease", "turn_mismatch", "room_not_found"]);
 
@@ -84,6 +94,11 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
 
   if (parsed.name === "uninstall-skill") {
     await runUninstallSkillCommand(parsed);
+    return;
+  }
+
+  if (parsed.name === "whoami") {
+    handleWhoAmICommand(parsed);
     return;
   }
 
@@ -170,7 +185,10 @@ function handleJoinCommand(runtime: Runtime, parsed: ParsedCommand): void {
 function handleStateCommand(runtime: Runtime, parsed: ParsedCommand): void {
   const identity = deriveCliIdentity(parsed);
   const session = resolveSessionForReads(runtime, parsed, identity);
-  const state = runtime.commands.getRoomState({ room_id: session.room_id });
+  const state = runtime.commands.getRoomState({
+    room_id: session.room_id,
+    agent_id: identity.agent_id
+  });
 
   printResult(parsed, { room: state.room, members: state.members }, () => {
     const owner = state.room.owner ? ` owner=${state.room.owner}` : "";
@@ -186,6 +204,7 @@ function handleEventsCommand(runtime: Runtime, parsed: ParsedCommand): void {
   const session = resolveSessionForReads(runtime, parsed, identity);
   const events = runtime.commands.getRoomEvents({
     room_id: session.room_id,
+    agent_id: identity.agent_id,
     after_event_seq: parseOptionalInteger(parsed, "after"),
     limit: parseOptionalInteger(parsed, "limit")
   });
@@ -372,6 +391,29 @@ function handlePassCommand(runtime: Runtime, parsed: ParsedCommand): void {
   printResult(parsed, result, () => `Passed to ${result.reserved_for}.`);
 }
 
+function handleWhoAmICommand(parsed: ParsedCommand): void {
+  const resolved = resolveCliIdentity(parsed);
+  const result = {
+    agent_id: resolved.identity.agent_id,
+    process_metadata: resolved.identity.process_metadata,
+    source: resolved.source,
+    detail: resolved.detail
+  };
+
+  printResult(parsed, result, () => {
+    if (!hasOption(parsed, "explain")) {
+      return resolved.identity.agent_id;
+    }
+
+    return [
+      resolved.identity.agent_id,
+      `source: ${resolved.source}`,
+      `session_kind: ${resolved.identity.process_metadata.session_kind}`,
+      `detail: ${resolved.detail}`
+    ].join("\n");
+  });
+}
+
 async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
   const identity = deriveHumanCliIdentity({
     agentId: requireStringOption(parsed, "agent"),
@@ -419,21 +461,58 @@ async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
 }
 
 function deriveCliIdentity(parsed: ParsedCommand): DerivedIdentity {
+  return resolveCliIdentity(parsed).identity;
+}
+
+function resolveCliIdentity(
+  parsed: ParsedCommand,
+  env: NodeJS.ProcessEnv = process.env
+): CliIdentityResolution {
   const agentIdOption = getStringOption(parsed, "agent");
   if (agentIdOption) {
     const displayName = agentIdOption.replace(/^[^:]+:/, "");
-    return deriveHumanCliIdentity({
-      agentId: agentIdOption,
-      displayName
-    });
+    return {
+      identity: deriveHumanCliIdentity({
+        agentId: agentIdOption,
+        displayName
+      }),
+      source: "agent_override",
+      detail: "Resolved from explicit --agent override."
+    };
   }
 
-  const harnessIdentity = deriveHarnessCliIdentity();
+  const harnessIdentity = deriveHarnessCliIdentity({ env });
   if (harnessIdentity) {
-    return harnessIdentity;
+    if (env.TT_HARNESS_AGENT_ID?.trim()) {
+      return {
+        identity: harnessIdentity,
+        source: "harness_cli_exported_agent_id",
+        detail: "Resolved from explicit TT_HARNESS_AGENT_ID export."
+      };
+    }
+
+    return {
+      identity: harnessIdentity,
+      source: "harness_cli_exported_detection",
+      detail:
+        "Resolved as harness CLI because TT_HARNESS_EXPORT enabled harness-aware detection."
+    };
   }
 
-  return deriveHumanCliIdentity();
+  if (env.TT_HARNESS_EXPORT?.trim()) {
+    return {
+      identity: deriveHumanCliIdentity(),
+      source: "human_cli_default",
+      detail:
+        "TT_HARNESS_EXPORT was set, but no harness signal matched; defaulted to human CLI identity."
+    };
+  }
+
+  return {
+    identity: deriveHumanCliIdentity(),
+    source: "human_cli_default",
+    detail: "Defaulted to stable human CLI identity."
+  };
 }
 
 function resolveSessionForReads(
@@ -905,6 +984,7 @@ function printHelp(): void {
   process.stdout.write(`Usage: tt <command> [options]
 
 Commands:
+  tt whoami [--explain]
   tt list [path]
   tt join [path] [--force-new]
   tt wait [path] [--timeout 30s]
@@ -928,12 +1008,27 @@ Common options:
 `);
 }
 
-await runCli().catch((error) => {
-  const message = isProtocolError(error)
-    ? JSON.stringify(error.toJSON(), null, 2)
-    : error instanceof Error
-      ? error.message
-      : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
-});
+function isDirectExecution(): boolean {
+  const argvPath = process.argv[1];
+  if (!argvPath) {
+    return false;
+  }
+
+  try {
+    return fs.realpathSync(argvPath) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return path.resolve(argvPath) === fileURLToPath(import.meta.url);
+  }
+}
+
+if (isDirectExecution()) {
+  await runCli().catch((error) => {
+    const message = isProtocolError(error)
+      ? JSON.stringify(error.toJSON(), null, 2)
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exit(1);
+  });
+}

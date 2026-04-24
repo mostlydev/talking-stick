@@ -218,6 +218,7 @@ export interface TakeoverStickResult {
 
 export interface GetRoomStateInput {
   room_id: string;
+  agent_id?: AgentId;
 }
 
 export interface GetRoomStateResult {
@@ -227,6 +228,7 @@ export interface GetRoomStateResult {
 
 export interface GetRoomEventsInput {
   room_id: string;
+  agent_id?: AgentId;
   after_event_seq?: number;
   limit?: number;
 }

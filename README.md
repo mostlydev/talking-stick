@@ -110,6 +110,7 @@ By default, `tt install-skill` links the bundled skill into each harness so loca
 The same `tt` binary also works as a human CLI, useful for watching or participating in a room from your terminal:
 
 ```text
+tt whoami [--explain]                                      # show the resolved CLI identity
 tt list [path]                                            # list rooms
 tt join [path] [--force-new]                              # join the room for path
 tt wait [path] [--timeout 30s]                            # block until your turn
@@ -127,6 +128,19 @@ tt uninstall-skill <harness...> | --all [--print]         # remove global talkin
 ```
 
 Human CLI commands use a stable identity like `human:<username>`. When `tt wait` or `tt takeover` wins the turn, a small background guardian keeps the lease alive on your behalf until you release or pass it.
+
+### CLI identity
+
+By default, `tt` behaves like a human CLI and resolves to `human:<username>`, even when you run it from a shell embedded inside Claude Code, Codex, Gemini, or OpenCode.
+
+Harness-aware CLI identity is now explicit:
+
+- Set `TT_HARNESS_EXPORT=1` if you want `tt` to derive a harness-style identity from the current environment and process ancestry.
+- Set `TT_HARNESS_AGENT_ID=<agent-id>` if the harness wants to export the exact agent id directly.
+
+If neither variable is set, `tt` stays on the human CLI path. That keeps ordinary shell usage predictable and avoids silently turning a human terminal into a harness participant.
+
+Use `tt whoami --explain` to see which identity path the CLI chose.
 
 ## Design highlights
 

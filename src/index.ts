@@ -81,6 +81,7 @@ export {
 } from "./session-store.js";
 export {
   TalkingStickService,
+  createDefaultProcessLivenessChecker,
   type ProcessLiveness,
   type ProcessLivenessChecker,
   type TalkingStickServiceOptions

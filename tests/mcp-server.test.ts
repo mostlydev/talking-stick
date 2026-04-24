@@ -10,6 +10,7 @@ describe("createConnectionIdentityResolver", () => {
         inspectCalls += 1;
         return {
           pid,
+          ppid: 1,
           startTime: "Thu Apr 23 12:15:00 2026",
           command: "codex --mcp-worker"
         };

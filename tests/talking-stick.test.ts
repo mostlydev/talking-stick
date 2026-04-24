@@ -541,8 +541,12 @@ describe("talking-stick vertical slice", () => {
     ).toThrowProtocolError("turn_mismatch");
   });
 
-  test("owner_gone yields immediate takeover availability and dead owner cannot heartbeat", async () => {
-    const harness = createHarness();
+  test("owner_gone waits for the silence grace window before opening takeover", async () => {
+    const harness = createHarness({
+      policy: {
+        heartbeatIntervalMs: 1_000
+      }
+    });
     const project = createProject(harness.tempRoot);
     const codexProcess = harness.processRegistry.create("codex");
     const claudeProcess = harness.processRegistry.create("claude");
@@ -567,6 +571,23 @@ describe("talking-stick vertical slice", () => {
     );
 
     harness.processRegistry.markGone(codexProcess);
+
+    const immediateState = harness.service.getRoomState({
+      room_id: codexJoin.room_id
+    });
+    expect(immediateState.room.state).toBe("owned");
+
+    const claudeBeforeGrace = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(claudeBeforeGrace.status).toBe("not_yet");
+    if (claudeBeforeGrace.status === "not_yet") {
+      expect(claudeBeforeGrace.room_state).toBe("owned");
+    }
+
+    harness.clock.advance(2_001);
 
     const state = harness.service.getRoomState({ room_id: codexJoin.room_id });
     expect(state.room.state).toBe("owner_gone");
@@ -593,6 +614,108 @@ describe("talking-stick vertical slice", () => {
         expected_turn_id: codexTurn.turn_id
       })
     ).toThrowProtocolError("stale_lease");
+  });
+
+  test("room-scoped reads refresh owner presence and defer owner_gone", async () => {
+    const harness = createHarness({
+      policy: {
+        heartbeatIntervalMs: 1_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexProcess = harness.processRegistry.create("codex");
+    const claudeProcess = harness.processRegistry.create("claude");
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project,
+      process_metadata: claudeProcess
+    });
+
+    asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.processRegistry.markGone(codexProcess);
+    harness.clock.advance(1_500);
+
+    const firstReadAt = harness.clock.now().toISOString();
+    const ownerState = harness.service.getRoomState({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test"
+    });
+    expect(ownerState.room.state).toBe("owned");
+    expect(
+      ownerState.members.find((member) => member.agent_id === "codex:test")
+        ?.last_seen_at
+    ).toBe(firstReadAt);
+
+    harness.clock.advance(1_500);
+
+    const secondReadAt = harness.clock.now().toISOString();
+    const ownerEvents = harness.service.getRoomEvents({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test"
+    });
+    expect(ownerEvents).toHaveLength(1);
+
+    const viewerState = harness.service.getRoomState({ room_id: codexJoin.room_id });
+    expect(viewerState.room.state).toBe("owned");
+    expect(
+      viewerState.members.find((member) => member.agent_id === "codex:test")
+        ?.last_seen_at
+    ).toBe(secondReadAt);
+
+    harness.clock.advance(2_001);
+
+    const expiredState = harness.service.getRoomState({
+      room_id: codexJoin.room_id
+    });
+    expect(expiredState.room.state).toBe("owner_gone");
+  });
+
+  test("room-scoped reads with non-member agent_id are harmless no-ops", () => {
+    // Locks down the touchKnownMember defensive path: a read call from an
+    // agent_id that is not a room member must still return the projection but
+    // must NOT create, touch, or otherwise mutate member state. Prevents a
+    // typo or stale identity from silently conjuring ghost members.
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const ownerProcess = harness.processRegistry.create("codex");
+
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: ownerProcess
+    });
+
+    const stateRead = harness.service.getRoomState({
+      room_id: join.room_id,
+      agent_id: "stranger:nobody"
+    });
+    expect(stateRead.room.room_id).toBe(join.room_id);
+
+    const eventsRead = harness.service.getRoomEvents({
+      room_id: join.room_id,
+      agent_id: "stranger:nobody"
+    });
+    expect(Array.isArray(eventsRead)).toBe(true);
+
+    const membershipAfter = harness.service.getRoomState({
+      room_id: join.room_id
+    });
+    const ids = membershipAfter.members.map((m) => m.agent_id);
+    expect(ids).toContain("codex:test");
+    expect(ids).not.toContain("stranger:nobody");
   });
 
   test("one-shot human joins do not displace guardian owner liveness", async () => {
@@ -748,8 +871,12 @@ describe("talking-stick vertical slice", () => {
     expect(livenessChecks).toBe(0);
   });
 
-  test("recipient_gone yields immediate takeover availability", async () => {
-    const harness = createHarness();
+  test("recipient_gone becomes diagnostic only after claim timeout expires", async () => {
+    const harness = createHarness({
+      policy: {
+        claimTtlMs: 1_000
+      }
+    });
     const project = createProject(harness.tempRoot);
     const codexProcess = harness.processRegistry.create("codex");
     const claudeProcess = harness.processRegistry.create("claude");
@@ -788,6 +915,20 @@ describe("talking-stick vertical slice", () => {
     });
 
     harness.processRegistry.markGone(claudeProcess);
+
+    const immediateState = harness.service.getRoomState({
+      room_id: codexJoin.room_id
+    });
+    expect(immediateState.room.state).toBe("reserved");
+
+    const geminiBeforeExpiry = await harness.service.waitForTurn({
+      agent_id: "gemini:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(geminiBeforeExpiry.status).toBe("not_yet");
+
+    harness.clock.advance(1_001);
 
     const state = harness.service.getRoomState({ room_id: codexJoin.room_id });
     expect(state.room.state).toBe("recipient_gone");
@@ -856,6 +997,75 @@ describe("talking-stick vertical slice", () => {
       max_wait_ms: 0
     });
     expect(geminiView.status).toBe("not_yet");
+  });
+
+  test("a returning human CLI can reclaim a reserved turn after a stale guardian exits", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexProcess = harness.processRegistry.create("codex");
+    const guardianProcess = harness.processRegistry.create(
+      "wojtek",
+      "human_guardian"
+    );
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+    harness.service.joinPath({
+      agent_id: "human:wojtek",
+      context_path: project,
+      process_metadata: guardianProcess
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const handoff = validHandoff();
+
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff
+    });
+
+    harness.processRegistry.markGone(guardianProcess);
+
+    const staleState = harness.service.getRoomState({ room_id: codexJoin.room_id });
+    expect(staleState.room.state).toBe("reserved");
+
+    harness.service.joinPath({
+      agent_id: "human:wojtek",
+      context_path: project,
+      process_metadata: {
+        session_kind: "human_cli",
+        display_name: "wojtek"
+      }
+    });
+
+    const recoveredState = harness.service.getRoomState({
+      room_id: codexJoin.room_id
+    });
+    expect(recoveredState.room.state).toBe("reserved");
+
+    const humanTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "human:wojtek",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    expect(humanTurn.reason).toBe("sequence");
+    expect(humanTurn.from_agent_id).toBe("codex:test");
+    expect(humanTurn.handoff).toEqual(handoff);
   });
 
   test("dormant room stays readable and a new live member can resume it", async () => {

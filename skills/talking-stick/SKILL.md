@@ -53,11 +53,17 @@ Possible outcomes:
 
 ### 4. While waiting
 
+**Prefer to run the wait in the background.** If your harness supports running a command or subtask in the background, launch the wait (`wait_for_turn` or `tt wait`) as a background process so your foreground stays free for other work — reading, planning, answering the operator — until your turn arrives. Blocking the whole harness on the wait defeats the point.
+
+Whether the wait runs in the foreground or the background, call it **once** with `max_wait_ms` at or near the room policy's `waitForTurnMaxWaitMs` (typically 30000 ms) and let the server long-poll. When it returns without `your_turn`, call it again. Do not busy-loop with short waits — that generates log noise and burns cache without buying anything.
+
+Coordination is meant to be lightweight. `wait_for_turn` is the only long-running call you should make. Room-inspection RPCs (`get_room_state`, `get_room_events`) exist to answer specific questions ("who holds the stick right now?", "what was in my predecessor's handoff?") — do not call them on a timer or repeatedly just to check on another agent's progress. If you find yourself inspecting the room more than a few times per turn, stop; long-poll on `wait_for_turn` instead and trust the protocol.
+
 If you do not have the stick:
 
 - do not make shared repo changes
 - do not silently race another harness
-- it is fine to read, plan, review, or help the user think
+- it is fine to read, plan, review, or help the user think — or any other work that does not mutate shared state
 - tell the user who currently holds or is reserved the turn when that is useful
 
 ### 5. While holding the stick
@@ -109,6 +115,20 @@ Example:
   ]
 }
 ```
+
+### 8. After passing or releasing, stay in the loop
+
+**The default after `release_stick` or `pass_stick` is to re-enter the wait loop and keep waiting until your next turn arrives.** Do not stop and ask the operator whether they want you back in the loop. Do not treat a handoff as end-of-session. In a multi-agent workspace, the expectation is: work on your turn, hand off, wait for your next turn, repeat.
+
+Stopping to ask questions after every pass defeats the coordination protocol — the operator wired you into a room so that you *would* keep showing up without being asked.
+
+Exit the wait loop only when one of these is true:
+
+- the shared task is explicitly finished (the operator said so, or the final handoff marks the work complete)
+- you are the only active member and there is no one to hand off to
+- the operator gives a direct redirect or stop ("that's enough," "drop out of the room," a new unrelated task, etc.)
+
+In every other case: after `release_stick` or `pass_stick`, go straight back into the wait loop (ideally backgrounded — see §4).
 
 ## Recovery and Inspection
 

@@ -6,6 +6,7 @@ export interface ProcessSignaler {
 
 export interface ProcessInspection {
   pid: number;
+  ppid: number | null;
   startTime: string | null;
   command: string | null;
 }
@@ -122,7 +123,7 @@ function inspectSystemProcess(
   try {
     const output = (options.execFile ?? defaultExecFile)(
       "ps",
-      ["-o", "lstart=", "-o", "command=", "-p", String(pid)],
+      ["-o", "ppid=", "-o", "lstart=", "-o", "command=", "-p", String(pid)],
       {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"]
@@ -133,11 +134,19 @@ function inspectSystemProcess(
       return null;
     }
 
-    const startTime = output.slice(0, 24);
-    const command = output.slice(24).trimStart();
+    const match = output.trimStart().match(/^(\d+)\s+(.{24})\s+(.*)$/);
+    if (!match) {
+      // Fallback for cases where output might differ
+      return null;
+    }
+
+    const ppid = parseInt(match[1], 10);
+    const startTime = match[2].trim();
+    const command = match[3].trim();
 
     return {
       pid,
+      ppid: isNaN(ppid) ? null : ppid,
       startTime: startTime || null,
       command: command || null
     };

@@ -12,6 +12,7 @@ describe("terminateKnownProcess", () => {
     const inspector = fakeInspector({
       4242: {
         pid: 4242,
+        ppid: 1,
         startTime: "Thu Apr 23 12:00:00 2026",
         command: "node guardian"
       }
@@ -41,6 +42,7 @@ describe("terminateKnownProcess", () => {
     const inspector = fakeInspector({
       4242: {
         pid: 4242,
+        ppid: 1,
         startTime: "Thu Apr 23 12:30:00 2026",
         command: "node unrelated"
       }
@@ -69,6 +71,7 @@ describe("terminateKnownProcess", () => {
     const inspector = fakeInspector({
       4242: {
         pid: 4242,
+        ppid: 1,
         startTime: "Thu Apr 23 12:00:00 2026",
         command: "node guardian"
       }
@@ -113,13 +116,15 @@ describe("createSystemProcessInspector", () => {
         calls += 1;
         expect(args).toEqual([
           "-o",
+          "ppid=",
+          "-o",
           "lstart=",
           "-o",
           "command=",
           "-p",
           "4242"
         ]);
-        return "Thu Apr 23 12:00:00 2026 node guardian\n";
+        return "  56919 Thu Apr 23 12:00:00 2026 node guardian\n";
       }
     });
 
@@ -128,6 +133,7 @@ describe("createSystemProcessInspector", () => {
 
     expect(first).toEqual({
       pid: 4242,
+      ppid: 56919,
       startTime: "Thu Apr 23 12:00:00 2026",
       command: "node guardian"
     });

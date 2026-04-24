@@ -180,7 +180,13 @@ export function createMcpServer(
         room_id: z.string().min(1)
       }
     },
-    async (input) => toolJson(() => service.getRoomState(input))
+    async (input, extra) =>
+      toolJson(() =>
+        commands.getRoomState({
+          ...input,
+          agent_id: resolveConnectionIdentity(extra.sessionId).agent_id
+        })
+      )
   );
 
   server.registerTool(
@@ -194,7 +200,13 @@ export function createMcpServer(
         limit: z.number().int().positive().optional()
       }
     },
-    async (input) => toolJson(() => service.getRoomEvents(input))
+    async (input, extra) =>
+      toolJson(() =>
+        commands.getRoomEvents({
+          ...input,
+          agent_id: resolveConnectionIdentity(extra.sessionId).agent_id
+        })
+      )
   );
 
   return server;
