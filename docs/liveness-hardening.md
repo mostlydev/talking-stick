@@ -206,23 +206,47 @@ linked consumers pick up the fix (see CLAUDE.md "Runtime & Dogfooding Notes").
 
 ## Related Follow-up: Make `wait_for_turn` the single recovery entrypoint
 
-This is adjacent to the liveness fix, not blocked on it, but the audit turned
-up a UX gap that contributes to over-calling the toolset:
+Status: landed. Ships on top of the P1-P4 liveness drop as a separate slice so
+the protocol-behavior change stays reviewable on its own.
 
-- If the caller already owns the live lease, `wait_for_turn` currently falls
-  through to `not_yet` instead of returning the current turn/lease.
-- `not_yet` only returns `cursor` + `room_state`, so harnesses often need an
+Audit gap that drove this: harnesses were over-calling `get_room_state` because
+`wait_for_turn` did not tell them enough. Two specific holes:
+
+- If the caller already owned the live lease, `wait_for_turn` fell through to
+  `not_yet` instead of returning the current turn/lease.
+- `not_yet` only returned `cursor` + `room_state`, so harnesses needed an
   immediate `get_room_state` call to explain who owns the room.
 
-Follow-up recommendation:
+What shipped:
 
-1. Make `wait_for_turn` idempotent for the current owner by returning
-   `your_turn` with the current `turn_id` / `lease_id` when the caller already
-   owns the stick.
-2. Consider enriching `not_yet` with lightweight ownership context (`turn_id`,
-   `current_owner`, `reserved_for`) so harnesses can explain the state without a
-   second round-trip.
+1. **Owner-idempotent `your_turn`.** When `room.owner === caller.agent_id` and
+   the caller's lease is still valid (`lease_expires_at` in the future),
+   `wait_for_turn` returns `your_turn` immediately with the existing `turn_id`
+   and `lease_id`, new reason `already_owner`, and `handoff: null` (the initial
+   handoff was already consumed on the first claim). No new claim event is
+   appended. If the owner's lease has already expired, the call does not
+   short-circuit — the caller falls through to the normal takeover / not_yet
+   logic so they cannot accidentally keep mutating with a stale lease.
 
-That change can ship after P1-P4, but it is worth recording now because it
-directly addresses the operator complaint that recovery takes too many calls and
-is not self-healing enough.
+2. **Enriched `not_yet` payload.** Returns `turn_id` unconditionally, plus
+   optional `current_owner`, `reserved_for`, `lease_expires_at`, and
+   `claim_expires_at` when they exist on the room. Harnesses and the CLI can
+   now explain state without a follow-up `get_room_state`.
+
+3. **CLI consequences.** `tt wait` no longer double-spawns a guardian when the
+   same human runs `tt wait` twice: if `wait_for_turn` returns `already_owner`,
+   the CLI reuses the existing session (and its guardian pid) and prints
+   "Already holding the stick (turn N). Guardian <pid> is still active." The
+   text formatter also surfaces the enriched `not_yet` payload, e.g.
+   "Not your turn yet. codex:abc holds turn 3 (lease expires ...)."
+
+4. **Type changes.**
+   - `WaitForTurnResult.your_turn.reason` union gains `"already_owner"`.
+   - `WaitForTurnResult.not_yet` gains required `turn_id` and optional
+     `current_owner`, `reserved_for`, `lease_expires_at`, `claim_expires_at`.
+
+5. **Tests.** Four new cases in `tests/talking-stick.test.ts`:
+   - `wait_for_turn is idempotent for the current owner and returns the same lease`
+   - `wait_for_turn not_yet payload carries ownership context`
+   - `wait_for_turn not_yet payload exposes claim_expires_at while a handoff is reserved`
+   - `wait_for_turn does not short-circuit to already_owner when the owner lease has expired`

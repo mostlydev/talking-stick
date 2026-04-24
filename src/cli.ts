@@ -8,6 +8,7 @@ import {
   createSystemProcessInspector,
   deriveHarnessCliIdentity,
   deriveHumanCliIdentity,
+  findCliSessionByRoom,
   findCliSessionForContextPath,
   isProtocolError,
   resolveCliSessionPath,
@@ -241,6 +242,24 @@ async function handleWaitCommand(
   });
 
   if (waitResult.status === "your_turn") {
+    if (waitResult.reason === "already_owner") {
+      const existing = findCliSessionByRoom(
+        resolveCliSessionPath(),
+        identity.agent_id,
+        joined.room_id
+      );
+      const guardianPid = existing?.guardian_pid;
+      printResult(
+        parsed,
+        { ...waitResult, guardian_pid: guardianPid ?? null },
+        () =>
+          guardianPid
+            ? `Already holding the stick (turn ${waitResult.turn_id}). Guardian ${guardianPid} is still active.`
+            : `Already holding the stick (turn ${waitResult.turn_id}).`
+      );
+      return;
+    }
+
     const guardianPid = await spawnGuardian({
       agentId: identity.agent_id,
       canonicalPath: joined.canonical_path,
@@ -816,16 +835,40 @@ function stopGuardian(
 function formatWaitResult(result: {
   status: string;
   reason?: string;
+  current_owner?: string;
+  reserved_for?: string;
+  turn_id?: number;
+  lease_expires_at?: string;
+  claim_expires_at?: string;
 }): string {
   switch (result.status) {
-    case "not_yet":
-      return "Not your turn yet.";
+    case "not_yet": {
+      const parts: string[] = ["Not your turn yet."];
+      if (result.current_owner) {
+        const deadline = result.lease_expires_at
+          ? ` (lease expires ${result.lease_expires_at})`
+          : "";
+        parts.push(
+          `${result.current_owner} holds turn ${result.turn_id ?? "?"}${deadline}.`
+        );
+      } else if (result.reserved_for) {
+        const deadline = result.claim_expires_at
+          ? ` (claim expires ${result.claim_expires_at})`
+          : "";
+        parts.push(
+          `Turn ${result.turn_id ?? "?"} is reserved for ${result.reserved_for}${deadline}.`
+        );
+      }
+      return parts.join(" ");
+    }
     case "closed":
       return "The room is closed.";
     case "takeover_available":
       return `Takeover available: ${result.reason ?? "unknown"}.`;
     case "your_turn":
-      return "Your turn.";
+      return result.reason === "already_owner"
+        ? "Already holding the stick."
+        : "Your turn.";
     default:
       return result.status;
   }

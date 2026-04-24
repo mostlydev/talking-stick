@@ -1149,6 +1149,173 @@ describe("talking-stick vertical slice", () => {
       new Set(results.map((result) => result.status))
     ).toEqual(new Set(["your_turn", "not_yet"]));
   });
+
+  test("wait_for_turn is idempotent for the current owner and returns the same lease", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const firstTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: join.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(firstTurn.reason).toBe("open_claim");
+
+    const secondTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: join.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    expect(secondTurn.reason).toBe("already_owner");
+    expect(secondTurn.lease_id).toBe(firstTurn.lease_id);
+    expect(secondTurn.turn_id).toBe(firstTurn.turn_id);
+    expect(secondTurn.handoff).toBeNull();
+    expect(secondTurn.from_agent_id).toBeNull();
+
+    // Idempotency must not mint a new claim event.
+    const events = harness.service.getRoomEvents({ room_id: join.room_id });
+    const claimCount = events.filter(
+      (event) => event.event_type === "claim"
+    ).length;
+    expect(claimCount).toBe(1);
+  });
+
+  test("wait_for_turn not_yet payload carries ownership context", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    const claudeWait = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+
+    expect(claudeWait.status).toBe("not_yet");
+    if (claudeWait.status !== "not_yet") return;
+
+    expect(claudeWait.turn_id).toBe(codexTurn.turn_id);
+    expect(claudeWait.current_owner).toBe("codex:test");
+    expect(claudeWait.reserved_for).toBeUndefined();
+    expect(claudeWait.lease_expires_at).toBeDefined();
+    expect(claudeWait.claim_expires_at).toBeUndefined();
+    expect(
+      Date.parse(claudeWait.lease_expires_at ?? "")
+    ).toBeGreaterThan(harness.clock.now().getTime());
+    expect(claudeWait.room_state).toBe("owned");
+  });
+
+  test("wait_for_turn not_yet payload exposes claim_expires_at while a handoff is reserved", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "gemini:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    // gemini is not the reserved recipient (claude is), so gemini should see
+    // a not_yet payload that names the reserved recipient and claim expiry.
+    const geminiWait = await harness.service.waitForTurn({
+      agent_id: "gemini:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+
+    expect(geminiWait.status).toBe("not_yet");
+    if (geminiWait.status !== "not_yet") return;
+
+    expect(geminiWait.current_owner).toBeUndefined();
+    expect(geminiWait.reserved_for).toBe("claude:test");
+    expect(geminiWait.claim_expires_at).toBeDefined();
+    expect(geminiWait.lease_expires_at).toBeUndefined();
+    expect(geminiWait.room_state).toBe("reserved");
+  });
+
+  test("wait_for_turn does not short-circuit to already_owner when the owner lease has expired", async () => {
+    const harness = createHarness({
+      policy: {
+        ownerLeaseTtlMs: 1_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(codexTurn.reason).toBe("open_claim");
+
+    harness.clock.advance(1_001);
+
+    // After lease expiry, re-asking as the (nominal) owner must not hand back
+    // a your_turn result that would let the caller keep using a stale lease.
+    const codexAfterExpiry = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+
+    expect(codexAfterExpiry.status).toBe("not_yet");
+  });
 });
 
 function createHarness(

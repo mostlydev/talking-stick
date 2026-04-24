@@ -534,6 +534,23 @@ export class TalkingStickService {
       return { status: "closed", room_id: input.room_id };
     }
 
+    if (
+      room.owner === input.agent_id &&
+      room.lease_id &&
+      room.lease_expires_at &&
+      !this.hasExpired(room.lease_expires_at, now)
+    ) {
+      return {
+        status: "your_turn",
+        room_id: input.room_id,
+        turn_id: room.turn_id,
+        lease_id: room.lease_id,
+        handoff: null,
+        from_agent_id: null,
+        reason: "already_owner"
+      };
+    }
+
     if (!room.owner && !room.reserved_for) {
       return this.grantTurn(room, input.agent_id, now);
     }
@@ -603,7 +620,12 @@ export class TalkingStickService {
     return {
       status: "not_yet",
       cursor: String(this.latestEventSeq(input.room_id)),
-      room_state: inspection.state
+      room_state: inspection.state,
+      turn_id: room.turn_id,
+      current_owner: room.owner ?? undefined,
+      reserved_for: room.reserved_for ?? undefined,
+      lease_expires_at: room.lease_expires_at ?? undefined,
+      claim_expires_at: room.claim_expires_at ?? undefined
     };
   }
 

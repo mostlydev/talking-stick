@@ -132,12 +132,17 @@ export type WaitForTurnResult =
       lease_id: string;
       handoff: Handoff | null;
       from_agent_id: AgentId | null;
-      reason: "direct_pass" | "sequence" | "open_claim";
+      reason: "direct_pass" | "sequence" | "open_claim" | "already_owner";
     }
   | {
       status: "not_yet";
       cursor: string;
       room_state: RoomState;
+      turn_id: number;
+      current_owner?: AgentId;
+      reserved_for?: AgentId;
+      lease_expires_at?: string;
+      claim_expires_at?: string;
     }
   | {
       status: "takeover_available";
