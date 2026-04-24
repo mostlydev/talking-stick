@@ -47,7 +47,9 @@ describe("mcp smoke coverage", () => {
       "pass_stick",
       "takeover_stick",
       "get_room_state",
-      "get_room_events"
+      "get_room_events",
+      "add_note",
+      "list_notes"
     ]);
   });
 
@@ -191,6 +193,64 @@ describe("mcp smoke coverage", () => {
       from_agent_id: "codex:test",
       reason: "sequence",
       handoff
+    });
+  });
+
+  test("add_note and list_notes round-trip through the MCP adapter", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-mcp-"));
+    tempRoots.push(tempRoot);
+
+    const dbPath = path.join(tempRoot, "state", "rooms.sqlite");
+    const project = createProject(tempRoot);
+
+    const codex = await createMcpHarness(dbPath);
+    const claude = await createMcpHarness(dbPath);
+
+    await codex.client.callTool({
+      name: "join_path",
+      arguments: {
+        context_path: project,
+        agent_id_override: "codex:test"
+      }
+    });
+    const claudeJoin = parseToolResult(
+      await claude.client.callTool({
+        name: "join_path",
+        arguments: {
+          context_path: project,
+          agent_id_override: "claude:test"
+        }
+      })
+    );
+
+    const added = parseToolResult(
+      await claude.client.callTool({
+        name: "add_note",
+        arguments: {
+          room_id: claudeJoin.room_id,
+          body: "Heads up: service.ts:1400 invariant."
+        }
+      })
+    );
+
+    expect(added.author_agent_id).toBe("claude:test");
+    expect(added.turn_id).toBeNull();
+
+    const listed = parseToolResult(
+      await codex.client.callTool({
+        name: "list_notes",
+        arguments: {
+          room_id: claudeJoin.room_id
+        }
+      })
+    );
+
+    expect(listed.notes).toHaveLength(1);
+    expect(listed.notes[0]).toMatchObject({
+      note_id: added.note_id,
+      author_agent_id: "claude:test",
+      body: "Heads up: service.ts:1400 invariant.",
+      turn_id: null
     });
   });
 });

@@ -134,6 +134,9 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
       case "pass":
         handlePassCommand(runtime, parsed);
         return;
+      case "notes":
+        await handleNotesCommand(runtime, parsed);
+        return;
       default:
         throw new Error(`Unknown command: ${parsed.name}`);
     }
@@ -454,6 +457,152 @@ function handlePassCommand(runtime: Runtime, parsed: ParsedCommand): void {
   );
 
   printResult(parsed, result, () => `Passed to ${result.reserved_for}.`);
+}
+
+async function handleNotesCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): Promise<void> {
+  const [subcommand, ...rest] = parsed.positionals;
+  if (!subcommand) {
+    throw new Error(
+      "Usage: tt notes <add|list> [...]. See `tt --help` for details."
+    );
+  }
+
+  const subParsed: ParsedCommand = {
+    name: `notes ${subcommand}`,
+    positionals: rest,
+    options: parsed.options
+  };
+
+  switch (subcommand) {
+    case "add":
+      await handleNotesAddCommand(runtime, subParsed);
+      return;
+    case "list":
+      handleNotesListCommand(runtime, subParsed);
+      return;
+    default:
+      throw new Error(`Unknown notes subcommand: ${subcommand}`);
+  }
+}
+
+async function handleNotesAddCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): Promise<void> {
+  const identity = deriveCliIdentity(parsed);
+  const session = resolveSessionForNotes(runtime, parsed, identity);
+
+  const positionalBody = parsed.positionals.join(" ").trim();
+  const body =
+    positionalBody ||
+    (hasOption(parsed, "stdin") ? (await readAllStdin()).trim() : "");
+  if (!body) {
+    throw new Error(
+      "Note body is required (pass as a positional or use --stdin to read from stdin)."
+    );
+  }
+
+  const turnId = parseOptionalInteger(parsed, "turn");
+
+  const result = runtime.commands.addNote(identity, {
+    room_id: session.room_id,
+    body,
+    turn_id: turnId
+  });
+
+  printResult(
+    parsed,
+    result,
+    () =>
+      `Added note ${shortNoteId(result.note_id)} (turn=${
+        result.turn_id ?? "-"
+      }).`
+  );
+}
+
+function handleNotesListCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): void {
+  const identity = deriveCliIdentity(parsed);
+  const session = resolveSessionForNotes(runtime, parsed, identity);
+  const includeResolved = hasOption(parsed, "all");
+
+  const result = runtime.commands.listNotes(identity, {
+    room_id: session.room_id,
+    include_resolved: includeResolved,
+    after_note_id: getStringOption(parsed, "after"),
+    limit: parseOptionalInteger(parsed, "limit")
+  });
+
+  printResult(parsed, result, () => {
+    if (result.notes.length === 0) {
+      return "No notes.";
+    }
+
+    return result.notes
+      .map((note) => {
+        const turn = note.turn_id ?? "-";
+        const firstLine = note.body.split("\n")[0] ?? "";
+        const preview =
+          firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+        return `${shortNoteId(note.note_id)}  ${note.author_agent_id}  ${
+          note.created_at
+        }  turn=${turn}  ${preview}`;
+      })
+      .join("\n");
+  });
+}
+
+function shortNoteId(noteId: string): string {
+  return noteId.slice(0, 8);
+}
+
+function resolveSessionForNotes(
+  runtime: Runtime,
+  parsed: ParsedCommand,
+  identity: DerivedIdentity
+): CliSession {
+  const contextPath = getStringOption(parsed, "path") ?? process.cwd();
+  const resolvedPath = resolveContextPath(contextPath);
+  const sessionPath = resolveCliSessionPath();
+  const existing = findCliSessionForContextPath(
+    sessionPath,
+    identity.agent_id,
+    contextPath
+  );
+  if (existing) {
+    return existing;
+  }
+
+  const rooms = runtime.commands.listRooms({ context_path: contextPath }).rooms;
+  const room = pickDeepestRoom(rooms);
+  if (!room) {
+    throw new Error(
+      "No room found for this path. Run `tt join` first (or pass --path)."
+    );
+  }
+
+  const session = {
+    agent_id: identity.agent_id,
+    room_id: room.room_id,
+    canonical_path: room.canonical_path,
+    workspace_root: resolvedPath.workspace_root,
+    updated_at: new Date().toISOString()
+  };
+  upsertCliSession(sessionPath, session);
+  return session;
+}
+
+async function readAllStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function handleWhoAmICommand(parsed: ParsedCommand): void {
@@ -1116,6 +1265,8 @@ Commands:
   tt release [path] --status TEXT --next-action TEXT
   tt pass [target] [path] --status TEXT --next-action TEXT
   tt takeover [path] --reason TEXT
+  tt notes add <body> [--turn N] [--path DIR] [--stdin]
+  tt notes list [--all] [--after NOTE_ID] [--limit N] [--path DIR]
   tt mcp
   tt install <harness...> | --all [--print]
   tt uninstall <harness...> | --all [--print]

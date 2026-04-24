@@ -208,6 +208,43 @@ export function createMcpServer(
       )
   );
 
+  server.registerTool(
+    "add_note",
+    {
+      title: "Add Note",
+      description:
+        "Leave an async note on a room. Any joined member can author; authoring refreshes presence.",
+      inputSchema: {
+        room_id: z.string().min(1),
+        body: z.string().min(1),
+        turn_id: z.number().int().nonnegative().optional()
+      }
+    },
+    async (input, extra) =>
+      toolJson(() =>
+        commands.addNote(resolveConnectionIdentity(extra.sessionId), input)
+      )
+  );
+
+  server.registerTool(
+    "list_notes",
+    {
+      title: "List Notes",
+      description:
+        "List notes for a room. Default view hides resolved notes; pagination uses after_note_id.",
+      inputSchema: {
+        room_id: z.string().min(1),
+        after_note_id: z.string().min(1).optional(),
+        include_resolved: z.boolean().optional(),
+        limit: z.number().int().positive().max(200).optional()
+      }
+    },
+    async (input, extra) =>
+      toolJson(() =>
+        commands.listNotes(resolveConnectionIdentity(extra.sessionId), input)
+      )
+  );
+
   return server;
 }
 

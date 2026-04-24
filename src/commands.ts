@@ -1,10 +1,12 @@
 import { TalkingStickService } from "./service.js";
 import type {
+  AddNoteResult,
   GetRoomEventsInput,
   GetRoomStateInput,
   GetRoomStateResult,
   HeartbeatResult,
   JoinPathResult,
+  ListNotesResult,
   ListRoomsInput,
   ListRoomsResult,
   PassStickInput,
@@ -48,6 +50,19 @@ export interface TakeoverStickCommandInput {
   room_id: string;
   expected_turn_id: number;
   reason: string;
+}
+
+export interface AddNoteCommandInput {
+  room_id: string;
+  body: string;
+  turn_id?: number;
+}
+
+export interface ListNotesCommandInput {
+  room_id: string;
+  after_note_id?: string;
+  include_resolved?: boolean;
+  limit?: number;
 }
 
 export class TalkingStickCommands {
@@ -141,5 +156,30 @@ export class TalkingStickCommands {
 
   getRoomEvents(input: GetRoomEventsInput): RoomEvent[] {
     return this.service.getRoomEvents(input);
+  }
+
+  addNote(
+    identity: DerivedIdentity,
+    input: AddNoteCommandInput
+  ): AddNoteResult {
+    return this.service.addNote({
+      agent_id: identity.agent_id,
+      room_id: input.room_id,
+      body: input.body,
+      turn_id: input.turn_id
+    });
+  }
+
+  listNotes(
+    identity: DerivedIdentity | null,
+    input: ListNotesCommandInput
+  ): ListNotesResult {
+    return this.service.listNotes({
+      room_id: input.room_id,
+      agent_id: identity?.agent_id,
+      after_note_id: input.after_note_id,
+      include_resolved: input.include_resolved,
+      limit: input.limit
+    });
   }
 }

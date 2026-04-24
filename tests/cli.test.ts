@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { checkGuardianLiveness, runCli } from "../src/cli.js";
 
@@ -5,7 +8,8 @@ const ENV_KEYS = [
   "TT_HARNESS_EXPORT",
   "TT_HARNESS_AGENT_ID",
   "CLAUDECODE",
-  "CLAUDE_CODE_EXECPATH"
+  "CLAUDE_CODE_EXECPATH",
+  "TALKING_STICK_DATA_DIR"
 ] as const;
 
 const originalEnv = new Map<string, string | undefined>(
@@ -202,6 +206,151 @@ describe("checkGuardianLiveness", () => {
     ).toBe("unknown");
   });
 });
+
+describe("tt notes", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("tt notes add + tt notes list round-trip through the CLI", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout([
+      "join",
+      project,
+      "--agent",
+      "human:notes-test"
+    ]);
+
+    const addOut = await captureStdout([
+      "notes",
+      "add",
+      "Heads up about service.ts:1400",
+      "--agent",
+      "human:notes-test",
+      "--path",
+      project,
+      "--json"
+    ]);
+    const added = JSON.parse(addOut);
+    expect(added.author_agent_id).toBe("human:notes-test");
+    expect(added.turn_id).toBeNull();
+    expect(added.note_id).toMatch(/^[0-9a-f-]+$/);
+
+    const listOut = await captureStdout([
+      "notes",
+      "list",
+      "--agent",
+      "human:notes-test",
+      "--path",
+      project,
+      "--json"
+    ]);
+    const listed = JSON.parse(listOut);
+    expect(listed.notes).toHaveLength(1);
+    expect(listed.notes[0]).toMatchObject({
+      note_id: added.note_id,
+      author_agent_id: "human:notes-test",
+      body: "Heads up about service.ts:1400",
+      turn_id: null
+    });
+  });
+
+  test("tt notes list text mode shows the short note id and first line", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout([
+      "join",
+      project,
+      "--agent",
+      "human:notes-text"
+    ]);
+
+    await captureStdout([
+      "notes",
+      "add",
+      "first line only\nsecond line should be hidden in text mode",
+      "--agent",
+      "human:notes-text",
+      "--path",
+      project,
+      "--json"
+    ]);
+
+    const listOut = await captureStdout([
+      "notes",
+      "list",
+      "--agent",
+      "human:notes-text",
+      "--path",
+      project
+    ]);
+
+    expect(listOut).toContain("human:notes-text");
+    expect(listOut).toContain("first line only");
+    expect(listOut).not.toContain("second line should be hidden");
+  });
+
+  test("tt notes add rejects empty body", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout([
+      "join",
+      project,
+      "--agent",
+      "human:notes-empty"
+    ]);
+
+    await expect(
+      captureStdout([
+        "notes",
+        "add",
+        "--agent",
+        "human:notes-empty",
+        "--path",
+        project,
+        "   "
+      ])
+    ).rejects.toThrow(/Note body is required/);
+  });
+
+  test("tt notes with unknown subcommand surfaces an error", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await captureStdout([
+      "join",
+      project,
+      "--agent",
+      "human:notes-unknown"
+    ]);
+    await expect(
+      captureStdout([
+        "notes",
+        "resolve",
+        "--agent",
+        "human:notes-unknown",
+        "--path",
+        project
+      ])
+    ).rejects.toThrow(/Unknown notes subcommand: resolve/);
+  });
+});
+
+function setupIsolatedCli(registry: string[]): { dataDir: string; project: string } {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-cli-"));
+  registry.push(dataDir);
+  process.env.TALKING_STICK_DATA_DIR = dataDir;
+
+  const project = path.join(dataDir, "project");
+  fs.mkdirSync(project, { recursive: true });
+  fs.writeFileSync(path.join(project, "package.json"), "{}\n");
+  const resolvedProject = fs.realpathSync.native(project);
+
+  return { dataDir, project: resolvedProject };
+}
 
 async function captureStdout(argv: string[]): Promise<string> {
   let stdout = "";
