@@ -41,7 +41,6 @@ export interface PassStickCommandInput extends HeartbeatCommandInput {
 
 export interface WaitForTurnCommandInput {
   room_id: string;
-  cursor?: string;
   max_wait_ms?: number;
 }
 
@@ -81,7 +80,6 @@ export class TalkingStickCommands {
     return this.service.waitForTurn({
       agent_id: identity.agent_id,
       room_id: input.room_id,
-      cursor: input.cursor,
       max_wait_ms: input.max_wait_ms
     });
   }

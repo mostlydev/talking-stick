@@ -120,7 +120,6 @@ export interface JoinPathResult {
 export interface WaitForTurnInput {
   agent_id: AgentId;
   room_id: string;
-  cursor?: string;
   max_wait_ms?: number;
 }
 
@@ -136,7 +135,6 @@ export type WaitForTurnResult =
     }
   | {
       status: "not_yet";
-      cursor: string;
       room_state: RoomState;
       turn_id: number;
       current_owner?: AgentId;

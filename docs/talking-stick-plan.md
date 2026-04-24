@@ -330,7 +330,6 @@ Effects:
 ```ts
 wait_for_turn({
   room_id,
-  cursor?,
   max_wait_ms?
 })
 ```
@@ -344,14 +343,18 @@ type WaitForTurnResult =
       room_id: string;
       turn_id: number;
       lease_id: string;
-      handoff: Handoff | null;       // null only for the first open claim in a fresh room
+      handoff: Handoff | null;       // null for open claim or already_owner
       from_agent_id: AgentId | null;
-      reason: "direct_pass" | "sequence" | "open_claim";
+      reason: "direct_pass" | "sequence" | "open_claim" | "already_owner";
     }
   | {
       status: "not_yet";
-      cursor: string;
       room_state: RoomState;
+      turn_id: number;
+      current_owner?: AgentId;
+      reserved_for?: AgentId;
+      lease_expires_at?: string;
+      claim_expires_at?: string;
     }
   | {
       status: "takeover_available";
@@ -710,7 +713,7 @@ Every mutation re-reads the relevant room row inside its transaction and verifie
 
 `wait_for_turn` is implemented as bounded polling. Each server process polls `path_rooms` and `room_events` for the requested room at a short interval (250 ms recommended) up to `max_wait_ms`. Changes made by any other process become visible on the next poll.
 
-A cursor on the most recent monotonic `event_seq` lets the server return immediately when new events appear, so long polls do not consume CPU redundantly across consecutive calls.
+Earlier design sketches included a cursor over the most recent monotonic `event_seq`, but the implementation did not consume it. The MVP keeps `wait_for_turn` cursor-free; resumable event replay belongs to `get_room_events` / future `tt events --follow`.
 
 ### Limitations
 
@@ -1048,7 +1051,7 @@ Current implementation note: no timeout-bypass or admin override exists today. H
 5. Implement canonical path resolution, workspace root detection, and deepest-ancestor room lookup.
 6. Implement `list_rooms`, `join_path` (with `force_new`), `get_room_state`, and member sequencing.
 7. Implement the `Handoff` type with server-side validation of required fields.
-8. Implement `wait_for_turn` as bounded polling with monotonic cursor support and atomic claiming; attach the prior handoff to `your_turn` responses.
+8. Implement `wait_for_turn` as bounded polling with atomic claiming; attach the prior handoff to `your_turn` responses.
 9. Implement `takeover_available` responses without auto-taking the stick.
 10. Implement lease issuing, heartbeat, release (with handoff), explicit pass (with handoff), and takeover.
 11. Implement `get_room_events` for both audit and takeover recovery.

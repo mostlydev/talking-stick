@@ -89,6 +89,28 @@ describe("mcp smoke coverage", () => {
     expect(Array.isArray(linesSchema?.items)).toBe(false);
   });
 
+  test("wait_for_turn schema stays cursor-free", async () => {
+    const harness = await createMcpHarness();
+
+    const tools = await harness.client.listTools();
+    const waitForTurn = tools.tools.find((tool) => tool.name === "wait_for_turn");
+    expect(waitForTurn).toBeDefined();
+
+    const properties = (
+      waitForTurn as {
+        inputSchema: {
+          properties?: Record<string, unknown>;
+        };
+      }
+    ).inputSchema.properties;
+
+    expect(properties).toMatchObject({
+      room_id: expect.any(Object),
+      max_wait_ms: expect.any(Object)
+    });
+    expect(properties).not.toHaveProperty("cursor");
+  });
+
   test("two MCP clients can hand off through join_path, wait_for_turn, and release_stick", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-mcp-"));
     tempRoots.push(tempRoot);

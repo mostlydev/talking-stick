@@ -214,8 +214,8 @@ Audit gap that drove this: harnesses were over-calling `get_room_state` because
 
 - If the caller already owned the live lease, `wait_for_turn` fell through to
   `not_yet` instead of returning the current turn/lease.
-- `not_yet` only returned `cursor` + `room_state`, so harnesses needed an
-  immediate `get_room_state` call to explain who owns the room.
+- `not_yet` only returned `room_state` plus an unused cursor, so harnesses
+  needed an immediate `get_room_state` call to explain who owns the room.
 
 What shipped:
 

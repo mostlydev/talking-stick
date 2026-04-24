@@ -82,7 +82,6 @@ export function createMcpServer(
         "Poll until the caller can claim the stick or takeover is available.",
       inputSchema: {
         room_id: z.string().min(1),
-        cursor: z.string().optional(),
         max_wait_ms: z.number().int().nonnegative().optional()
       }
     },

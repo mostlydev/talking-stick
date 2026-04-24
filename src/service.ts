@@ -619,7 +619,6 @@ export class TalkingStickService {
 
     return {
       status: "not_yet",
-      cursor: String(this.latestEventSeq(input.room_id)),
       room_state: inspection.state,
       turn_id: room.turn_id,
       current_owner: room.owner ?? undefined,
@@ -1221,16 +1220,6 @@ export class TalkingStickService {
           "SELECT * FROM room_events WHERE event_seq = ?"
         )
         .get(eventSeq) ?? null
-    );
-  }
-
-  private latestEventSeq(roomId: string): number {
-    return (
-      this.db
-        .prepare<[string], { event_seq: number | null }>(
-          "SELECT MAX(event_seq) AS event_seq FROM room_events WHERE room_id = ?"
-        )
-        .get(roomId)?.event_seq ?? 0
     );
   }
 
