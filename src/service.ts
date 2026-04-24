@@ -19,6 +19,8 @@ import {
   type ProcessInspector
 } from "./process-utils.js";
 import type {
+  AddNoteInput,
+  AddNoteResult,
   AgentId,
   GetRoomEventsInput,
   GetRoomStateInput,
@@ -27,8 +29,11 @@ import type {
   HeartbeatResult,
   JoinPathInput,
   JoinPathResult,
+  ListNotesInput,
+  ListNotesResult,
   ListRoomsInput,
   ListRoomsResult,
+  Note,
   OwnerMutationInput,
   PassStickInput,
   PassStickResult,
@@ -89,6 +94,19 @@ interface RoomEventRow {
   reason: string | null;
   created_at: string;
 }
+
+interface NoteRow {
+  note_id: string;
+  room_id: string;
+  turn_id: number | null;
+  author_agent_id: string;
+  body: string;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by_agent_id: string | null;
+}
+
+const MAX_NOTE_BODY_BYTES = 16 * 1024;
 
 interface RoomInspection {
   room: PathRoomRow;
@@ -520,6 +538,143 @@ export class TalkingStickService {
       )
       .all(input.room_id, afterEventSeq, limit)
       .map((row) => this.mapEvent(row));
+  }
+
+  addNote(input: AddNoteInput): AddNoteResult {
+    assertNonEmpty(input.agent_id, "agent_id");
+    assertNonEmpty(input.room_id, "room_id");
+
+    const trimmedBody = input.body?.trim() ?? "";
+    if (trimmedBody.length === 0) {
+      throw new ProtocolError("invalid_body", "Note body must not be empty.");
+    }
+    if (Buffer.byteLength(trimmedBody, "utf8") > MAX_NOTE_BODY_BYTES) {
+      throw new ProtocolError(
+        "body_too_large",
+        `Note body exceeds ${MAX_NOTE_BODY_BYTES} bytes.`
+      );
+    }
+
+    const now = this.now();
+    const timestamp = now.toISOString();
+
+    return withImmediateTransaction(this.db, () => {
+      const room = this.requireRoom(input.room_id);
+
+      if (room.state === "closed") {
+        throw new ProtocolError(
+          "room_closed",
+          "Notes cannot be added to a closed room.",
+          { room_id: input.room_id }
+        );
+      }
+
+      if (input.turn_id !== undefined && input.turn_id > room.turn_id) {
+        throw new ProtocolError(
+          "invalid_turn_id",
+          "turn_id cannot be greater than the current room turn_id.",
+          { supplied: input.turn_id, current_turn_id: room.turn_id }
+        );
+      }
+
+      this.touchMember(input.room_id, input.agent_id, timestamp);
+
+      const noteId = randomUUID();
+      const turnId = input.turn_id ?? null;
+
+      this.db
+        .prepare(
+          `
+          INSERT INTO notes (
+            note_id, room_id, turn_id, author_agent_id, body, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?)
+        `
+        )
+        .run(noteId, input.room_id, turnId, input.agent_id, trimmedBody, timestamp);
+
+      return {
+        note_id: noteId,
+        room_id: input.room_id,
+        turn_id: turnId,
+        author_agent_id: input.agent_id,
+        created_at: timestamp
+      };
+    });
+  }
+
+  listNotes(input: ListNotesInput): ListNotesResult {
+    assertNonEmpty(input.room_id, "room_id");
+    this.requireRoom(input.room_id);
+    this.touchKnownMember(
+      input.room_id,
+      input.agent_id,
+      this.now().toISOString()
+    );
+
+    const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+    const includeResolved = input.include_resolved === true;
+
+    let anchorCreatedAt: string | null = null;
+    let anchorNoteId: string | null = null;
+    if (input.after_note_id) {
+      const anchor = this.db
+        .prepare<[string, string], { note_id: string; created_at: string }>(
+          "SELECT note_id, created_at FROM notes WHERE room_id = ? AND note_id = ?"
+        )
+        .get(input.room_id, input.after_note_id);
+      if (!anchor) {
+        throw new ProtocolError(
+          "invalid_cursor",
+          "after_note_id does not identify a note in this room.",
+          { after_note_id: input.after_note_id }
+        );
+      }
+      anchorCreatedAt = anchor.created_at;
+      anchorNoteId = anchor.note_id;
+    }
+
+    const rows = (() => {
+      if (anchorCreatedAt !== null && anchorNoteId !== null) {
+        return this.db
+          .prepare<
+            [string, string, string, string, number],
+            NoteRow
+          >(
+            `
+            SELECT *
+            FROM notes
+            WHERE room_id = ?
+              AND (created_at > ? OR (created_at = ? AND note_id > ?))
+            ORDER BY created_at ASC, note_id ASC
+            LIMIT ?
+          `
+          )
+          .all(
+            input.room_id,
+            anchorCreatedAt,
+            anchorCreatedAt,
+            anchorNoteId,
+            limit
+          );
+      }
+      return this.db
+        .prepare<[string, number], NoteRow>(
+          `
+          SELECT *
+          FROM notes
+          WHERE room_id = ?
+          ORDER BY created_at ASC, note_id ASC
+          LIMIT ?
+        `
+        )
+        .all(input.room_id, limit);
+    })();
+
+    const notes = rows
+      .filter((row) => includeResolved || row.resolved_at === null)
+      .map((row) => mapNoteRow(row));
+
+    return { notes };
   }
 
   private waitForTurnOnce(input: WaitForTurnInput): WaitForTurnResult {
@@ -1453,6 +1608,19 @@ export class TalkingStickService {
       created_at: row.created_at
     };
   }
+}
+
+function mapNoteRow(row: NoteRow): Note {
+  return {
+    note_id: row.note_id,
+    room_id: row.room_id,
+    turn_id: row.turn_id,
+    author_agent_id: row.author_agent_id,
+    body: row.body,
+    created_at: row.created_at,
+    resolved_at: row.resolved_at,
+    resolved_by_agent_id: row.resolved_by_agent_id
+  };
 }
 
 function normalizeProcessMetadata(

@@ -99,6 +99,26 @@ const migrations: Migration[] = [
       ALTER TABLE room_members ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'mcp_harness';
       ALTER TABLE room_members ADD COLUMN display_name TEXT;
     `
+  },
+  {
+    id: 3,
+    name: "non_owner_notes",
+    up: `
+      CREATE TABLE notes (
+        note_id TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        turn_id INTEGER,
+        author_agent_id TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolved_by_agent_id TEXT,
+        FOREIGN KEY (room_id) REFERENCES path_rooms(room_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX notes_by_room_created
+        ON notes (room_id, created_at, note_id);
+    `
   }
 ];
 

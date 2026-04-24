@@ -243,3 +243,41 @@ export interface ListRoomsInput {
 export interface ListRoomsResult {
   rooms: PathRoom[];
 }
+
+export interface Note {
+  note_id: string;
+  room_id: string;
+  turn_id: number | null;
+  author_agent_id: AgentId;
+  body: string;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by_agent_id: AgentId | null;
+}
+
+export interface AddNoteInput {
+  agent_id: AgentId;
+  room_id: string;
+  body: string;
+  turn_id?: number;
+}
+
+export interface AddNoteResult {
+  note_id: string;
+  room_id: string;
+  turn_id: number | null;
+  author_agent_id: AgentId;
+  created_at: string;
+}
+
+export interface ListNotesInput {
+  room_id: string;
+  agent_id?: AgentId;
+  after_note_id?: string;
+  include_resolved?: boolean;
+  limit?: number;
+}
+
+export interface ListNotesResult {
+  notes: Note[];
+}

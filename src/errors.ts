@@ -8,7 +8,12 @@ export type ProtocolErrorCode =
   | "turn_mismatch"
   | "takeover_not_available"
   | "takeover_ineligible"
-  | "invalid_input";
+  | "invalid_input"
+  | "invalid_body"
+  | "body_too_large"
+  | "room_closed"
+  | "invalid_turn_id"
+  | "invalid_cursor";
 
 export interface ProtocolErrorDetails {
   field?: string;
@@ -18,6 +23,9 @@ export interface ProtocolErrorDetails {
   to_agent_id?: string;
   reserved_for?: string | null;
   reason?: string;
+  room_id?: string;
+  supplied?: number;
+  after_note_id?: string;
 }
 
 export class ProtocolError extends Error {
