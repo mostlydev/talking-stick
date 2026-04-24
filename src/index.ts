@@ -1,8 +1,10 @@
 export { resolveDataDir, defaultPolicy } from "./config.js";
 export {
   TalkingStickCommands,
+  type AddNoteCommandInput,
   type HeartbeatCommandInput,
   type JoinPathCommandInput,
+  type ListNotesCommandInput,
   type PassStickCommandInput,
   type ReleaseStickCommandInput,
   type TakeoverStickCommandInput,
