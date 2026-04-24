@@ -20,7 +20,8 @@ import {
   type DerivedIdentity,
   type Handoff,
   type PathRoom,
-  upsertCliSession
+  upsertCliSession,
+  upsertJoinedCliSession
 } from "./index.js";
 import {
   SUPPORTED_HARNESSES,
@@ -632,7 +633,7 @@ function upsertSessionFromJoin(identity: DerivedIdentity, joined: {
   canonical_path: string;
   workspace_root: string;
 }): void {
-  upsertCliSession(resolveCliSessionPath(), {
+  upsertJoinedCliSession(resolveCliSessionPath(), {
     agent_id: identity.agent_id,
     room_id: joined.room_id,
     canonical_path: joined.canonical_path,

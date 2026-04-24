@@ -6,7 +6,8 @@ import {
   findCliSessionForContextPath,
   readCliSessions,
   resolveCliSessionPath,
-  upsertCliSession
+  upsertCliSession,
+  upsertJoinedCliSession
 } from "../src/session-store.js";
 
 const tempRoots: string[] = [];
@@ -85,6 +86,49 @@ describe("CLI session store", () => {
       findCliSessionForContextPath(sessionPath, "human:alex", repoSrc)?.room_id
     ).toBe("room-2");
     expect(readCliSessions(sessionPath)).toHaveLength(2);
+  });
+
+  test("join refresh preserves an existing lease and guardian for the same room", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-cli-"));
+    tempRoots.push(tempRoot);
+
+    const dataDir = path.join(tempRoot, "state");
+    const sessionPath = resolveCliSessionPath({ dataDir });
+    const repo = createWorkspace(tempRoot, "repo");
+
+    upsertCliSession(sessionPath, {
+      agent_id: "human:wojtek",
+      room_id: "room-1",
+      canonical_path: repo,
+      workspace_root: repo,
+      lease_id: "lease-1",
+      turn_id: 7,
+      guardian_pid: 4242,
+      guardian_process_started_at: "Thu Apr 23 19:22:02 2026",
+      updated_at: "2026-04-23T12:00:00.000Z"
+    });
+
+    upsertJoinedCliSession(sessionPath, {
+      agent_id: "human:wojtek",
+      room_id: "room-1",
+      canonical_path: repo,
+      workspace_root: repo,
+      updated_at: "2026-04-23T12:05:00.000Z"
+    });
+
+    expect(readCliSessions(sessionPath)).toEqual([
+      {
+        agent_id: "human:wojtek",
+        room_id: "room-1",
+        canonical_path: repo,
+        workspace_root: repo,
+        lease_id: "lease-1",
+        turn_id: 7,
+        guardian_pid: 4242,
+        guardian_process_started_at: "Thu Apr 23 19:22:02 2026",
+        updated_at: "2026-04-23T12:05:00.000Z"
+      }
+    ]);
   });
 });
 

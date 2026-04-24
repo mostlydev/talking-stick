@@ -76,6 +76,7 @@ export {
   readCliSessions,
   resolveCliSessionPath,
   upsertCliSession,
+  upsertJoinedCliSession,
   writeCliSessions,
   type CliSession
 } from "./session-store.js";

@@ -69,6 +69,24 @@ export function upsertCliSession(
   writeCliSessions(sessionPath, sessions);
 }
 
+export function upsertJoinedCliSession(
+  sessionPath: string,
+  session: Pick<
+    CliSession,
+    "agent_id" | "room_id" | "canonical_path" | "workspace_root" | "updated_at"
+  >
+): void {
+  const existing = findCliSessionByRoom(
+    sessionPath,
+    session.agent_id,
+    session.room_id
+  );
+  upsertCliSession(sessionPath, {
+    ...existing,
+    ...session
+  });
+}
+
 export function findCliSessionByRoom(
   sessionPath: string,
   agentId: string,
