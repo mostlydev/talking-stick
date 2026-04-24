@@ -59,6 +59,16 @@ export interface ExecResult {
   stderr: string;
 }
 
+interface ExecInvocation {
+  command: string;
+  args: string[];
+  options?: SpawnOptions;
+}
+
+interface ExecInvocationError {
+  error: string;
+}
+
 interface ResolvedOptions {
   env: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
@@ -69,10 +79,14 @@ interface ResolvedOptions {
 }
 
 function resolveOptions(options: InstallOptions = {}): ResolvedOptions {
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const homeDir = options.homeDir ?? os.homedir();
+
   return {
-    env: options.env ?? process.env,
-    platform: options.platform ?? process.platform,
-    homeDir: options.homeDir ?? os.homedir(),
+    env,
+    platform,
+    homeDir,
     serverName: options.serverName ?? DEFAULT_SERVER_NAME,
     serverCommand: options.serverCommand ?? DEFAULT_SERVER_COMMAND,
     hooks: {
@@ -80,7 +94,7 @@ function resolveOptions(options: InstallOptions = {}): ResolvedOptions {
       readFile: options.readFile ?? defaultReadFile,
       writeFile: options.writeFile ?? defaultWriteFile,
       ensureDir: options.ensureDir ?? defaultEnsureDir,
-      which: options.which ?? defaultWhich
+      which: options.which ?? ((binary) => defaultWhich(binary, { env, platform }))
     }
   };
 }
@@ -120,10 +134,16 @@ function defaultEnsureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
-function defaultWhich(binary: string): string | null {
-  const pathEnv = process.env.PATH ?? "";
-  const separator = process.platform === "win32" ? ";" : ":";
-  const extensions = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
+function defaultWhich(
+  binary: string,
+  options: Pick<InstallEnv, "env" | "platform">
+): string | null {
+  const pathEnv = options.env.PATH ?? options.env.Path ?? "";
+  const separator = options.platform === "win32" ? ";" : ":";
+  const extensions =
+    options.platform === "win32"
+      ? (options.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";")
+      : [""];
   for (const dir of pathEnv.split(separator)) {
     if (!dir) continue;
     for (const ext of extensions) {
@@ -301,7 +321,41 @@ export function detectHarness(harness: HarnessId, options: InstallOptions = {}):
 export async function runAction(action: InstallAction, options: InstallOptions = {}): Promise<InstallResult> {
   const resolved = resolveOptions(options);
   if (action.kind === "exec") {
-    const result = await resolved.hooks.run(action.command, action.args);
+    const invocation = resolveExecInvocation(action, resolved);
+    if (!invocation) {
+      return {
+        harness: action.harness,
+        ok: false,
+        action,
+        message: `${action.command} not on PATH`
+      };
+    }
+
+    if ("error" in invocation) {
+      return {
+        harness: action.harness,
+        ok: false,
+        action,
+        message: invocation.error
+      };
+    }
+
+    let result: ExecResult;
+    try {
+      result = await resolved.hooks.run(
+        invocation.command,
+        invocation.args,
+        invocation.options
+      );
+    } catch (error) {
+      return {
+        harness: action.harness,
+        ok: false,
+        action,
+        message: formatExecError(error)
+      };
+    }
+
     if (result.exitCode === 0) {
       return {
         harness: action.harness,
@@ -345,4 +399,55 @@ export function parseHarnessList(values: string[]): HarnessId[] {
     if (!result.includes(value as HarnessId)) result.push(value as HarnessId);
   }
   return result;
+}
+
+function resolveExecInvocation(
+  action: ExecAction,
+  resolved: ResolvedOptions
+): ExecInvocation | ExecInvocationError | null {
+  const executable = resolved.hooks.which(action.command);
+  if (!executable) {
+    return null;
+  }
+
+  if (resolved.platform === "win32" && /\.(cmd|bat)$/i.test(executable)) {
+    const unsafeArg = action.args.find(containsWindowsCmdMetacharacter);
+    if (unsafeArg !== undefined) {
+      return {
+        error:
+          `Cannot safely launch ${action.command} through cmd.exe because ` +
+          `an argument contains Windows command metacharacters (& | < > ^ % ").`
+      };
+    }
+
+    const cmdExe =
+      resolved.env.ComSpec?.trim() ||
+      resolved.env.COMSPEC?.trim() ||
+      "cmd.exe";
+
+    return {
+      command: cmdExe,
+      args: ["/d", "/s", "/c", executable, ...action.args],
+      options: { windowsHide: true }
+    };
+  }
+
+  return {
+    command: executable,
+    args: action.args,
+    options: resolved.platform === "win32" ? { windowsHide: true } : undefined
+  };
+}
+
+function formatExecError(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message.trim();
+  }
+
+  return "Failed to launch installer command.";
+}
+
+function containsWindowsCmdMetacharacter(value: string): boolean {
+  // Node argv quoting does not protect cmd.exe metacharacters for .cmd/.bat.
+  return /[&|<>^%"]/.test(value);
 }

@@ -179,6 +179,7 @@ describe("runAction", () => {
   test("forwards exit code 0 as ok=true and captures stdout", async () => {
     const action = planInstall("claude-code");
     const result = await runAction(action, {
+      which: () => "/usr/local/bin/claude",
       run: async () => ({ exitCode: 0, stdout: "Added talking-stick", stderr: "" })
     });
     expect(result.ok).toBe(true);
@@ -188,10 +189,121 @@ describe("runAction", () => {
   test("marks ok=false on non-zero exit and prefers stderr", async () => {
     const action = planInstall("claude-code");
     const result = await runAction(action, {
+      which: () => "/usr/local/bin/claude",
       run: async () => ({ exitCode: 2, stdout: "", stderr: "claude: command not found" })
     });
     expect(result.ok).toBe(false);
     expect(result.message).toBe("claude: command not found");
+  });
+
+  test("fails cleanly before spawn when the executable is not on PATH", async () => {
+    const action = planInstall("codex");
+    let invoked = false;
+    const result = await runAction(action, {
+      which: () => null,
+      run: async () => {
+        invoked = true;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    expect(invoked).toBe(false);
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("codex not on PATH");
+  });
+
+  test("uses the resolved executable path for direct binaries", async () => {
+    const action = planInstall("codex");
+    let command = "";
+    let args: string[] = [];
+    let windowsHide: boolean | undefined;
+
+    const result = await runAction(action, {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      which: (binary) => (binary === "codex" ? "C:\\Tools\\codex.exe" : null),
+      run: async (resolvedCommand, resolvedArgs, options) => {
+        command = resolvedCommand;
+        args = resolvedArgs;
+        windowsHide = options?.windowsHide;
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(command).toBe("C:\\Tools\\codex.exe");
+    expect(args).toEqual(["mcp", "add", "talking-stick", "--", "tt", "mcp"]);
+    expect(windowsHide).toBe(true);
+  });
+
+  test("uses cmd.exe to launch .cmd wrappers on Windows", async () => {
+    const action = planInstall("codex");
+    let command = "";
+    let args: string[] = [];
+    let windowsHide: boolean | undefined;
+
+    const result = await runAction(action, {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      which: (binary) => (binary === "codex" ? "C:\\Tools\\codex.cmd" : null),
+      run: async (resolvedCommand, resolvedArgs, options) => {
+        command = resolvedCommand;
+        args = resolvedArgs;
+        windowsHide = options?.windowsHide;
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(command).toBe("C:\\Windows\\System32\\cmd.exe");
+    expect(args).toEqual([
+      "/d",
+      "/s",
+      "/c",
+      "C:\\Tools\\codex.cmd",
+      "mcp",
+      "add",
+      "talking-stick",
+      "--",
+      "tt",
+      "mcp"
+    ]);
+    expect(windowsHide).toBe(true);
+  });
+
+  test("rejects cmd.exe wrapper args with Windows command metacharacters", async () => {
+    const action = planInstall("codex", { serverName: "talking&stick" });
+    let invoked = false;
+
+    const result = await runAction(action, {
+      platform: "win32",
+      env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
+      which: (binary) => (binary === "codex" ? "C:\\Tools\\codex.cmd" : null),
+      run: async () => {
+        invoked = true;
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      }
+    });
+
+    expect(invoked).toBe(false);
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe(
+      "Cannot safely launch codex through cmd.exe because " +
+        "an argument contains Windows command metacharacters (& | < > ^ % \")."
+    );
+  });
+
+  test("converts thrown spawn errors into a normal install failure", async () => {
+    const action = planInstall("claude-code");
+    const result = await runAction(action, {
+      which: () => "/usr/local/bin/claude",
+      run: async () => {
+        throw new Error("spawn /usr/local/bin/claude EACCES");
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("spawn /usr/local/bin/claude EACCES");
   });
 });
 
