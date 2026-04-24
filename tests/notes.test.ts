@@ -155,6 +155,33 @@ describe("addNote", () => {
     ).toThrowProtocolError("invalid_turn_id");
   });
 
+  test("turn_id must be a non-negative integer", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    expect(() =>
+      harness.service.addNote({
+        agent_id: "codex:test",
+        room_id: join.room_id,
+        body: "negative",
+        turn_id: -1
+      })
+    ).toThrowProtocolError("invalid_turn_id");
+
+    expect(() =>
+      harness.service.addNote({
+        agent_id: "codex:test",
+        room_id: join.room_id,
+        body: "fractional",
+        turn_id: 0.5
+      })
+    ).toThrowProtocolError("invalid_turn_id");
+  });
+
   test("turn_id null persists as null and round-trips through listNotes", () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
@@ -331,6 +358,41 @@ describe("listNotes", () => {
     expect(fullView.notes.map((note) => note.note_id).sort()).toEqual(
       [unresolved.note_id, resolved.note_id].sort()
     );
+  });
+
+  test("resolved filtering happens before limit is applied", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const resolved = harness.service.addNote({
+      agent_id: "codex:test",
+      room_id: join.room_id,
+      body: "already handled"
+    });
+    harness.clock.advance(1_000);
+    const unresolved = harness.service.addNote({
+      agent_id: "codex:test",
+      room_id: join.room_id,
+      body: "still open"
+    });
+
+    harness.service.db
+      .prepare(
+        "UPDATE notes SET resolved_at = ?, resolved_by_agent_id = ? WHERE note_id = ?"
+      )
+      .run(new Date().toISOString(), "codex:test", resolved.note_id);
+
+    const defaultView = harness.service.listNotes({
+      room_id: join.room_id,
+      limit: 1
+    });
+    expect(defaultView.notes.map((note) => note.note_id)).toEqual([
+      unresolved.note_id
+    ]);
   });
 
   test("listNotes rejects an after_note_id that doesn't belong to the room", () => {

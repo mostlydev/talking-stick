@@ -569,10 +569,15 @@ export class TalkingStickService {
         );
       }
 
-      if (input.turn_id !== undefined && input.turn_id > room.turn_id) {
+      if (
+        input.turn_id !== undefined &&
+        (!Number.isInteger(input.turn_id) ||
+          input.turn_id < 0 ||
+          input.turn_id > room.turn_id)
+      ) {
         throw new ProtocolError(
           "invalid_turn_id",
-          "turn_id cannot be greater than the current room turn_id.",
+          "turn_id must be an integer between 0 and the current room turn_id.",
           { supplied: input.turn_id, current_turn_id: room.turn_id }
         );
       }
@@ -633,6 +638,7 @@ export class TalkingStickService {
       anchorNoteId = anchor.note_id;
     }
 
+    const resolvedFilter = includeResolved ? "" : "AND resolved_at IS NULL";
     const rows = (() => {
       if (anchorCreatedAt !== null && anchorNoteId !== null) {
         return this.db
@@ -644,6 +650,7 @@ export class TalkingStickService {
             SELECT *
             FROM notes
             WHERE room_id = ?
+              ${resolvedFilter}
               AND (created_at > ? OR (created_at = ? AND note_id > ?))
             ORDER BY created_at ASC, note_id ASC
             LIMIT ?
@@ -663,6 +670,7 @@ export class TalkingStickService {
           SELECT *
           FROM notes
           WHERE room_id = ?
+            ${resolvedFilter}
           ORDER BY created_at ASC, note_id ASC
           LIMIT ?
         `
@@ -670,9 +678,7 @@ export class TalkingStickService {
         .all(input.room_id, limit);
     })();
 
-    const notes = rows
-      .filter((row) => includeResolved || row.resolved_at === null)
-      .map((row) => mapNoteRow(row));
+    const notes = rows.map((row) => mapNoteRow(row));
 
     return { notes };
   }
