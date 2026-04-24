@@ -243,19 +243,64 @@ async function handleWaitCommand(
 
   if (waitResult.status === "your_turn") {
     if (waitResult.reason === "already_owner") {
+      const sessionPath = resolveCliSessionPath();
       const existing = findCliSessionByRoom(
-        resolveCliSessionPath(),
+        sessionPath,
         identity.agent_id,
         joined.room_id
       );
+
+      const liveness = existing
+        ? checkGuardianLiveness(
+            {
+              pid: existing.guardian_pid,
+              process_started_at: existing.guardian_process_started_at
+            },
+            createSystemProcessInspector()
+          )
+        : "unknown";
+
+      if (liveness === "gone") {
+        const replacement = await spawnGuardian({
+          agentId: identity.agent_id,
+          canonicalPath: joined.canonical_path,
+          roomId: joined.room_id,
+          leaseId: waitResult.lease_id,
+          turnId: waitResult.turn_id
+        });
+
+        upsertCliSession(sessionPath, {
+          agent_id: identity.agent_id,
+          room_id: joined.room_id,
+          canonical_path: joined.canonical_path,
+          workspace_root: joined.workspace_root,
+          lease_id: waitResult.lease_id,
+          turn_id: waitResult.turn_id,
+          guardian_pid: replacement.pid,
+          guardian_process_started_at: replacement.process_started_at,
+          updated_at: new Date().toISOString()
+        });
+
+        printResult(
+          parsed,
+          { ...waitResult, guardian_pid: replacement.pid },
+          () =>
+            `Already holding the stick (turn ${waitResult.turn_id}). Prior guardian was gone; spawned replacement ${replacement.pid}.`
+        );
+        return;
+      }
+
       const guardianPid = existing?.guardian_pid;
       printResult(
         parsed,
         { ...waitResult, guardian_pid: guardianPid ?? null },
-        () =>
-          guardianPid
-            ? `Already holding the stick (turn ${waitResult.turn_id}). Guardian ${guardianPid} is still active.`
-            : `Already holding the stick (turn ${waitResult.turn_id}).`
+        () => {
+          if (!guardianPid) {
+            return `Already holding the stick (turn ${waitResult.turn_id}).`;
+          }
+          const descriptor = liveness === "alive" ? "still active" : "liveness unknown";
+          return `Already holding the stick (turn ${waitResult.turn_id}). Guardian ${guardianPid} (${descriptor}).`;
+        }
       );
       return;
     }
@@ -830,6 +875,39 @@ function stopGuardian(
       inspector: createSystemProcessInspector()
     }
   );
+}
+
+export function checkGuardianLiveness(
+  ref: { pid?: number | null; process_started_at?: string | null },
+  inspector: { inspect: (pid: number) => { startTime: string | null } | null | undefined },
+  platform: NodeJS.Platform = process.platform
+): "alive" | "gone" | "unknown" {
+  if (
+    ref.pid === null ||
+    ref.pid === undefined ||
+    !ref.process_started_at ||
+    ref.process_started_at.trim() === ""
+  ) {
+    return "unknown";
+  }
+
+  if (platform === "win32") {
+    return "unknown";
+  }
+
+  const inspection = inspector.inspect(ref.pid);
+  if (inspection === undefined) {
+    return "unknown";
+  }
+  if (inspection === null || !inspection.startTime) {
+    return "gone";
+  }
+
+  // Trim-normalized match mirrors the service-layer liveness checker: a live
+  // pid with startTime drift is more likely the original process than a reuse.
+  return inspection.startTime.trim() === ref.process_started_at.trim()
+    ? "alive"
+    : "unknown";
 }
 
 function formatWaitResult(result: {

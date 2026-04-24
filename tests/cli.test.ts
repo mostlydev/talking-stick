@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { runCli } from "../src/cli.js";
+import { checkGuardianLiveness, runCli } from "../src/cli.js";
 
 const ENV_KEYS = [
   "TT_HARNESS_EXPORT",
@@ -89,6 +89,117 @@ describe("tt whoami", () => {
 
     expect(result.agent_id).toBe("human:alex");
     expect(result.source).toBe("agent_override");
+  });
+});
+
+describe("checkGuardianLiveness", () => {
+  test("returns unknown when pid or start time is missing", () => {
+    const inspector = {
+      inspect: () => {
+        throw new Error("inspector must not be consulted");
+      }
+    };
+    expect(
+      checkGuardianLiveness(
+        { pid: null, process_started_at: "Thu Apr 23 19:22:02 2026" },
+        inspector,
+        "linux"
+      )
+    ).toBe("unknown");
+    expect(
+      checkGuardianLiveness(
+        { pid: 1234, process_started_at: null },
+        inspector,
+        "linux"
+      )
+    ).toBe("unknown");
+    expect(
+      checkGuardianLiveness(
+        { pid: 1234, process_started_at: "   " },
+        inspector,
+        "linux"
+      )
+    ).toBe("unknown");
+  });
+
+  test("returns unknown on win32 without consulting the inspector", () => {
+    const inspector = {
+      inspect: () => {
+        throw new Error("inspector must not be consulted");
+      }
+    };
+    expect(
+      checkGuardianLiveness(
+        { pid: 1234, process_started_at: "whatever" },
+        inspector,
+        "win32"
+      )
+    ).toBe("unknown");
+  });
+
+  test("returns alive when pid exists and start times match (with whitespace drift)", () => {
+    const inspector = {
+      inspect: () => ({ startTime: "  Thu Apr 23 19:22:02 2026 " })
+    };
+    expect(
+      checkGuardianLiveness(
+        { pid: 1234, process_started_at: "Thu Apr 23 19:22:02 2026" },
+        inspector,
+        "linux"
+      )
+    ).toBe("alive");
+  });
+
+  test("returns gone when the process is absent (inspect returns null)", () => {
+    const inspector = {
+      inspect: () => null
+    };
+    expect(
+      checkGuardianLiveness(
+        { pid: 1234, process_started_at: "Thu Apr 23 19:22:02 2026" },
+        inspector,
+        "linux"
+      )
+    ).toBe("gone");
+  });
+
+  test("returns gone when inspect returns a record without a start time", () => {
+    const inspector = {
+      inspect: () => ({ startTime: null })
+    };
+    expect(
+      checkGuardianLiveness(
+        { pid: 1234, process_started_at: "Thu Apr 23 19:22:02 2026" },
+        inspector,
+        "linux"
+      )
+    ).toBe("gone");
+  });
+
+  test("returns unknown when inspector signals cache miss (undefined)", () => {
+    const inspector = {
+      inspect: () => undefined
+    };
+    expect(
+      checkGuardianLiveness(
+        { pid: 1234, process_started_at: "Thu Apr 23 19:22:02 2026" },
+        inspector,
+        "linux"
+      )
+    ).toBe("unknown");
+  });
+
+  test("returns unknown when start times differ (pid may be reused, do not kill)", () => {
+    const inspector = {
+      inspect: () => ({ startTime: "Fri Apr 24 08:00:00 2026" })
+    };
+    expect(
+      checkGuardianLiveness(
+        { pid: 1234, process_started_at: "Thu Apr 23 19:22:02 2026" },
+        inspector,
+        "linux"
+      )
+    ).toBe("unknown");
   });
 });
 
