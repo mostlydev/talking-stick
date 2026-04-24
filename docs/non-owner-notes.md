@@ -51,7 +51,7 @@ CREATE TABLE notes (
   resolved_by_agent_id TEXT,
   FOREIGN KEY (room_id) REFERENCES path_rooms(room_id) ON DELETE CASCADE
 );
-CREATE INDEX notes_by_room ON notes (room_id, created_at);
+CREATE INDEX notes_by_room ON notes (room_id, created_at, note_id);
 ```
 
 - `turn_id` is **nullable**. If set, the note is advisory for that specific
@@ -70,7 +70,7 @@ Two new service methods:
 
 ```ts
 interface AddNoteInput {
-  agent_id: AgentId;         // must be an active room member
+  agent_id: AgentId;         // must be a joined room member
   room_id: string;
   body: string;              // non-empty, trimmed, max 16 KB
   turn_id?: number;          // optional; if set, must equal current turn_id
@@ -87,8 +87,8 @@ interface AddNoteResult {
 ```
 
 Authorization:
-- `agent_id` must be an active member of the room. Enforced via the same
-  membership table already used for `wait_for_turn` / `heartbeat`.
+- `agent_id` must be a joined member of the room. The call refreshes that
+  member's presence to active, matching the `wait_for_turn` write pattern.
 - The owner CAN author notes (self-notes are useful for "remember for next
   turn") — no role check beyond membership.
 - Closed rooms reject new notes with a `room_closed` protocol error.
@@ -105,8 +105,8 @@ Validation:
 interface ListNotesInput {
   agent_id?: AgentId;        // optional; refreshes last_seen_at if a member
   room_id: string;
-  after_note_id?: string;    // pagination cursor — return notes with
-                             // created_at strictly greater than the cursor's
+  after_note_id?: string;    // pagination cursor — return notes after this
+                             // note in (created_at, note_id) order
   include_resolved?: boolean; // default false
   limit?: number;            // default 50, max 200
 }
@@ -129,6 +129,9 @@ interface Note {
 
 - Returns notes ordered by `created_at` ascending, then `note_id` as a
   tiebreaker.
+- `after_note_id` first resolves the anchor note in the same room, then returns
+  rows where `(created_at, note_id)` is strictly greater than the anchor pair.
+  This avoids skipping notes that share the same timestamp.
 - Non-member callers are allowed to read (matches the existing permissive read
   model for `get_room_state` / `get_room_events`) but do not get a presence
   refresh.
@@ -190,7 +193,7 @@ on `wait_for_turn` responses. My read: skip for v1. Rationale:
 
 ## Security / boundaries
 
-- Only active members can author notes.
+- Only joined members can author notes; authoring refreshes presence.
 - Anyone can read (matches the existing permissive read model for room state).
 - Closed rooms accept no new notes; existing notes remain readable.
 - Room deletion (via future admin path, not yet implemented) cascades to
@@ -211,7 +214,8 @@ Service-level (in `tests/talking-stick.test.ts` or a new `tests/notes.test.ts`):
 7. `turn_id` null persists as null and is returned as null on read.
 8. `listNotes` returns notes in `created_at` ascending order across multiple
    authors.
-9. `listNotes` honors `after_note_id` for pagination.
+9. `listNotes` honors `after_note_id` for pagination, including notes with the
+   same `created_at` and greater `note_id`.
 10. `listNotes` with `include_resolved: false` skips resolved notes (even
     before the resolve RPC exists, test by direct DB fixture or a manually
     inserted row with `resolved_at` set).
