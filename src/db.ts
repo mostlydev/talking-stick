@@ -119,6 +119,13 @@ const migrations: Migration[] = [
       CREATE INDEX notes_by_room_created
         ON notes (room_id, created_at, note_id);
     `
+  },
+  {
+    id: 4,
+    name: "room_member_wait_presence",
+    up: `
+      ALTER TABLE room_members ADD COLUMN last_wait_at TEXT;
+    `
   }
 ];
 

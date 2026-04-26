@@ -89,6 +89,177 @@ describe("talking-stick vertical slice", () => {
     expect(claudeTurn.turn_id).toBe(codexTurn.turn_id + 1);
   });
 
+  test("release_stick prefers a new waiter over the next join-order member", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const agentOne = harness.service.joinPath({
+      agent_id: "agent:one",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "agent:three",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "agent:two",
+      context_path: project
+    });
+
+    const firstTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "agent:one",
+        room_id: agentOne.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.service.passStick({
+      room_id: agentOne.room_id,
+      agent_id: "agent:one",
+      lease_id: firstTurn.lease_id,
+      expected_turn_id: firstTurn.turn_id,
+      to_agent_id: "agent:two",
+      handoff: validHandoff()
+    });
+
+    const secondTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "agent:two",
+        room_id: agentOne.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    const release = harness.service.releaseStick({
+      room_id: agentOne.room_id,
+      agent_id: "agent:two",
+      lease_id: secondTurn.lease_id,
+      expected_turn_id: secondTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    expect(release.reserved_for).toBe("agent:three");
+  });
+
+  test("idle handoff briefly defers a less-fair claimant for a stale best candidate", async () => {
+    const harness = createHarness({
+      policy: {
+        waiterGraceMs: 10_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+
+    const agentOne = harness.service.joinPath({
+      agent_id: "agent:one",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "agent:three",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "agent:two",
+      context_path: project
+    });
+
+    const firstTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "agent:one",
+        room_id: agentOne.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.service.passStick({
+      room_id: agentOne.room_id,
+      agent_id: "agent:one",
+      lease_id: firstTurn.lease_id,
+      expected_turn_id: firstTurn.turn_id,
+      to_agent_id: "agent:two",
+      handoff: validHandoff()
+    });
+
+    const secondTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "agent:two",
+        room_id: agentOne.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.clock.advance(10_001);
+
+    const release = harness.service.releaseStick({
+      room_id: agentOne.room_id,
+      agent_id: "agent:two",
+      lease_id: secondTurn.lease_id,
+      expected_turn_id: secondTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    expect(release.reserved_for).toBeNull();
+
+    const earlyClaim = await harness.service.waitForTurn({
+      agent_id: "agent:one",
+      room_id: agentOne.room_id,
+      max_wait_ms: 0
+    });
+    expect(earlyClaim.status).toBe("not_yet");
+
+    const fairClaim = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "agent:three",
+        room_id: agentOne.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(fairClaim.reason).toBe("sequence");
+  });
+
+  test("operator override can take a live owned turn explicitly", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const join = harness.service.joinPath({
+      agent_id: "agent:owner",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "human:operator",
+      context_path: project,
+      process_metadata: { session_kind: "human_cli", display_name: "operator" }
+    });
+
+    const ownerTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "agent:owner",
+        room_id: join.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    expect(() =>
+      harness.service.takeoverStick({
+        agent_id: "human:operator",
+        room_id: join.room_id,
+        expected_turn_id: ownerTurn.turn_id,
+        reason: "operator wants control"
+      })
+    ).toThrowProtocolError("takeover_not_available");
+
+    const operatorTurn = harness.service.takeoverStick({
+      agent_id: "human:operator",
+      room_id: join.room_id,
+      expected_turn_id: ownerTurn.turn_id,
+      reason: "operator wants control",
+      operator_override: true
+    });
+
+    expect(operatorTurn.reason).toBe("operator_override");
+    expect(operatorTurn.revoked_agent_id).toBe("agent:owner");
+  });
+
   test("release_stick rejects an empty handoff", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);

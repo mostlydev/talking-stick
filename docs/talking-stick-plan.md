@@ -134,7 +134,7 @@ C joins
 Default sequence: A -> B -> C -> A
 ```
 
-An owner can follow this sequence by releasing the stick. An owner can skip the sequence by explicitly passing to a chosen agent.
+An owner can follow the normal flow by releasing the stick. The server then chooses the fairest eligible waiter rather than blindly following join order. An owner can skip that flow by explicitly passing to a chosen agent.
 
 ### Ownership
 
@@ -167,9 +167,9 @@ Every owner action carries:
 
 ### Default Turn Order
 
-The room maintains an ordered member list and a `sequence_index`. Normal release reserves the stick for the next active member after the current owner.
+The room maintains an ordered member list, `sequence_index`, and waiter timestamps. Normal release reserves the stick for the fairest recent waiter: prefer members that have never held the stick, then the member whose last ownership is oldest, with sequence order as a deterministic tie-breaker.
 
-This gives the common case a predictable round-robin shape:
+This gives the common case a round-robin shape without pinning the room to exact join order:
 
 ```text
 A releases -> B gets first right of refusal
@@ -177,13 +177,14 @@ B releases -> C gets first right of refusal
 C releases -> A gets first right of refusal
 ```
 
-The sequence is not a hard fairness lock in the MVP:
+The sequence is not a hard fairness lock:
 
 - An owner may explicitly pass to any active member.
+- If the fairest known candidate is between wait polls, release may leave the room idle with a pending handoff for a short grace window instead of reserving a less-fair recent waiter.
 - If a reserved recipient misses `claim_ttl`, another active member may take over, but the immediately prior owner should not be the takeover winner while any other active member can take it.
 - If an owner misses `owner_lease_ttl`, another active member may take over.
 
-This is intentionally simpler than strict round fairness. The protocol should prevent accidental parallel ownership first; social fairness can be added as a configurable policy once real usage shows which workflows need it.
+This is intentionally lightweight fairness. The protocol still prioritizes preventing accidental parallel ownership; the fairness policy only decides who gets first claim opportunity in the normal release path.
 
 ### Handoff Artifact
 
@@ -253,6 +254,7 @@ interface RoomMember {
   ordinal: number;
   joined_at: string;
   last_seen_at: string;
+  last_wait_at: string | null;
   status: "active" | "inactive";              // derived from last_seen_at and presence_ttl
 }
 ```
@@ -382,10 +384,10 @@ type WaitForTurnResult =
 
 `wait_for_turn` may claim the stick when the caller is directly eligible:
 
-- If the room is `idle`, any active member may claim.
+- If the room is `idle`, any active member may claim unless a just-released handoff is inside the short waiter grace window and a fairer known candidate has not had a chance to poll yet.
 - If the room is `reserved`, `reserved_for` may claim as long as no takeover has committed, even after `claim_expires_at`.
 
-Each `wait_for_turn` call updates the caller's `last_seen_at`, so polling agents remain active.
+Each `wait_for_turn` call updates the caller's `last_seen_at` and `last_wait_at`, so polling agents remain active and visible to fair release selection.
 
 As part of each read/write operation, the server may also refresh derived liveness for the current owner and reserved recipient. If the exact spawning process for either is proven absent, the room moves to `owner_gone` or `recipient_gone` as a derived condition and `takeover_available` is returned immediately to other eligible members.
 
@@ -442,10 +444,10 @@ Effects on success:
 - Stores that event's `event_seq` as `pending_handoff_event_seq`.
 - Updates the releasing owner's `last_seen_at`.
 - Clears current owner and invalidates the current lease.
-- Advances `sequence_index` to the next active member after the releasing owner.
-- Sets `reserved_for` to the member found above, if one exists.
+- Advances `sequence_index` to the reserved member when one is selected.
+- Sets `reserved_for` to the fairest recent waiter, if one exists.
 - Sets `claim_expires_at` when a recipient is reserved, otherwise clears it.
-- Changes state to `reserved`, or `idle` if no other active member exists.
+- Changes state to `reserved`, or `idle` if no fair recent waiter exists. The pending handoff remains available to the next successful claimant.
 
 ### Explicit Pass
 
@@ -743,6 +745,7 @@ claim_ttl_ms               = 20 * 60 * 1000;       // 20 minutes
 wait_for_turn_max_wait_ms  = 30 * 1000;            // 30 seconds
 wait_for_turn_poll_ms      = 250;                  // transport polling cadence
 presence_ttl_ms            =  4 * 60 * 60 * 1000;  // 4 hours
+waiter_grace_ms            = 10 * 1000;            // 10 seconds
 ```
 
 Timeout meanings:
@@ -752,6 +755,7 @@ Timeout meanings:
 - `claim_ttl` is how long a reserved recipient has exclusive first right of refusal before others may take over.
 - `owner_lease_ttl` is how long an owner may remain silent before takeover becomes possible.
 - `presence_ttl` determines whether a member is active for sequence selection and takeover eligibility.
+- `waiter_grace_ms` is the short window used to identify recent waiters and to avoid immediately recycling the turn while a fairer known member is between wait polls.
 
 Rationale for these defaults: a real agent turn often runs 20-30 minutes (plan-and-edit, build-and-verify, review-and-respond), and a human collaborator walking through a few rooms may easily be idle for an hour without being "gone." Earlier drafts inherited chat-scale defaults (5-minute lease, 10-minute presence) which would silently open takeover windows mid-turn. The selected values accept a slower takeover response in exchange for not interrupting legitimate long work; operators who want faster response can shorten them via per-room policy once that ships.
 
@@ -806,6 +810,7 @@ CREATE TABLE room_members (
   ordinal INTEGER NOT NULL,
   joined_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
+  last_wait_at TEXT,
   status TEXT NOT NULL,
   host_id TEXT,
   pid INTEGER,
@@ -1007,11 +1012,11 @@ Instead, the event log is the recovery context. `get_room_events` returns recent
 
 Incrementing on grant keeps fencing math trivial: the current `(lease_id, turn_id)` pair always matches exactly one epoch, and release merely ends that epoch without starting a new one. A pending reservation is not a new epoch; it is a waiting room. Incrementing on release would create a window where a slow releaser and a fast new claimant disagree about the current epoch.
 
-### Why strict round fairness is deferred
+### Why fairness is lightweight
 
 Strict round fairness sounds attractive, but it adds state and policy complexity to the part of the system that must stay easiest to trust. It also creates awkward edge cases: a missed recipient, a single active member, a stale owner, or a deliberate explicit pass can all look like fairness violations even when continuing is the useful behavior.
 
-The MVP uses ordered release for the normal path and explicit takeover for failure recovery. It also includes a narrow prior-owner guard for claim-timeout takeover, preventing the agent that just released or passed the stick from immediately grabbing it back when another active participant is available. That covers the most important anti-monopoly case without tracking full rounds. If agents later need stronger turn fairness, it can be added as a per-room policy using additional member state.
+The implementation uses a lightweight release policy instead: recent waiters are ranked by "never held the stick" first, then oldest prior ownership, then sequence order. If the fairest known member is not currently inside a wait poll, a short grace window gives them a chance to reappear before a less-fair member can claim. This covers the important anti-monopoly case without turning explicit pass, recovery, or single-member rooms into fairness violations.
 
 ### Why takeover is explicit rather than automatic
 
@@ -1038,9 +1043,7 @@ Centralizing all rooms in a single SQLite file (rather than one file per room) m
 The following questions are worth revisiting once the MVP has seen real use:
 
 - Should non-owners be able to append notes, or would that encourage side-channel work that bypasses the handoff discipline?
-- Should a human operator override use the same `takeover_stick` tool as peer agents, or a separate admin tool that bypasses timeout gating?
-
-Current implementation note: no timeout-bypass or admin override exists today. Human operators use the same explicit `takeover_stick` flow as peer agents, and any bypass semantics remain intentionally undecided.
+- Should human/operator override remain a CLI-only escape hatch, or should MCP expose a separate admin tool with distinct audit semantics?
 
 ## Implementation Plan
 

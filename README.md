@@ -67,7 +67,7 @@ list_rooms         — which rooms exist under a path
 join_path          — join the room for this workspace
 wait_for_turn      — block until the stick is available, with takeover signals
 heartbeat          — prove liveness while holding the stick
-release_stick      — normal handoff to the next member, with structured Handoff
+release_stick      — normal handoff to the next fair waiter, with structured Handoff
 pass_stick         — explicit handoff to a named agent
 takeover_stick     — deliberate claim when the prior holder is gone/stuck
 get_room_state     — authoritative state projection
@@ -130,8 +130,10 @@ tt try [path]                                             # non-blocking claim a
 tt state [path]                                           # full room state
 tt events [path] [--after N] [--limit N]                  # room event log
 tt release [path] --status TEXT --next-action TEXT        # normal handoff
-tt pass [target] [path] --status TEXT --next-action TEXT  # explicit handoff
-tt takeover [path] --reason TEXT                          # deliberate takeover
+tt pass [path] --status TEXT --next-action TEXT           # pass/end your turn
+tt assign <target|next> [path] --status TEXT --next-action TEXT  # explicit handoff
+tt take [path] [--reason TEXT]                            # human-friendly take/override
+tt takeover [path] [--reason TEXT]                        # alias for take
 tt notes add <body> [--turn N] [--path DIR] [--stdin]     # leave an async note
 tt notes list [--all] [--after ID] [--limit N] [--path DIR] # read notes
 tt mcp                                                    # run the MCP stdio server
@@ -141,7 +143,7 @@ tt install-skill <harness...> | --all [--print] [--copy] [--link]  # install glo
 tt uninstall-skill <harness...> | --all [--print]         # remove global talking-stick skill
 ```
 
-Human CLI commands use a stable identity like `human:<username>`. When `tt wait` or `tt takeover` wins the turn, a small background guardian keeps the lease alive on your behalf until you release or pass it.
+Human CLI commands use a stable identity like `human:<username>`. When `tt wait`, `tt take`, or `tt takeover` wins the turn, a small background guardian keeps the lease alive on your behalf until you release, pass, or assign it. Human CLI `take` intentionally works without a required reason so an operator can step into a stuck room quickly; harness-aware CLI takeovers still require `--reason` unless the command includes `--operator-requested`.
 
 ### CLI identity
 
@@ -160,6 +162,7 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 
 - **Workspace-root room resolution.** An agent at any depth under `/repo/` joins the `/repo/` room automatically. Nested rooms require explicit `force_new`.
 - **Structured handoffs.** `release_stick` and `pass_stick` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
+- **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest without holding the stick; if the best-known candidate is between wait polls, a short grace window prevents immediate recycling to a less-fair claimant.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.
 - **Multi-process safe.** Shared SQLite with WAL mode, `BEGIN IMMEDIATE` writes, 250 ms polling for `wait_for_turn`. No daemon required.

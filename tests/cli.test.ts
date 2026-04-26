@@ -9,6 +9,12 @@ import {
   runCli,
   shouldUseJson
 } from "../src/cli.js";
+import {
+  deriveHumanCliIdentity,
+  resolveCliSessionPath,
+  TalkingStickService,
+  upsertCliSession
+} from "../src/index.js";
 
 const ENV_KEYS = [
   "TT_HARNESS_EXPORT",
@@ -359,6 +365,124 @@ describe("checkGuardianLiveness", () => {
   });
 });
 
+describe("tt turn commands", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("tt pass treats its first positional as the path", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await seedCliLease(project, "human:owner", ["human:next"]);
+
+    const passOut = await captureStdout([
+      "pass",
+      project,
+      "--agent",
+      "human:owner",
+      "--status",
+      "Owner is passing.",
+      "--next-action",
+      "Next agent should continue.",
+      "--json"
+    ]);
+    const passed = JSON.parse(passOut) as {
+      status: string;
+      reserved_for: string | null;
+    };
+
+    expect(passed.status).toBe("released");
+    expect(passed.reserved_for).toBe("human:next");
+  });
+
+  test("tt assign next resolves the fair active recipient", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await seedCliLease(project, "human:owner", ["human:next"]);
+
+    const assignOut = await captureStdout([
+      "assign",
+      "next",
+      project,
+      "--agent",
+      "human:owner",
+      "--status",
+      "Assigning explicitly.",
+      "--next-action",
+      "Take the assigned turn.",
+      "--json"
+    ]);
+    const assigned = JSON.parse(assignOut) as {
+      status: string;
+      reserved_for: string;
+    };
+
+    expect(assigned.status).toBe("passed");
+    expect(assigned.reserved_for).toBe("human:next");
+  });
+
+  test("human tt take can override a reserved turn without a reason", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout(["join", project, "--agent", "human:owner"]);
+    await captureStdout(["join", project, "--agent", "human:reserved"]);
+    await captureStdout(["take", project, "--agent", "human:owner", "--json"]);
+    await captureStdout([
+      "release",
+      project,
+      "--agent",
+      "human:owner",
+      "--status",
+      "Reserved for another user.",
+      "--next-action",
+      "Operator will override.",
+      "--json"
+    ]);
+
+    const takeOut = await captureStdout([
+      "take",
+      project,
+      "--agent",
+      "human:operator",
+      "--json"
+    ]);
+    const taken = JSON.parse(takeOut) as {
+      status: string;
+      reason: string;
+      revoked_agent_id: string | null;
+    };
+
+    expect(taken.status).toBe("your_turn");
+    expect(taken.reason).toBe("operator_override");
+    expect(taken.revoked_agent_id).toBe("human:reserved");
+
+    await captureStdout([
+      "release",
+      project,
+      "--agent",
+      "human:operator",
+      "--status",
+      "Operator is done.",
+      "--next-action",
+      "Continue normally.",
+      "--json"
+    ]);
+  });
+
+  test("harness tt take still requires a reason unless operator-requested", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    process.env.TT_HARNESS_AGENT_ID = "codex:harness";
+
+    await expect(captureStdout(["take", project])).rejects.toThrow(
+      /Missing required option --reason/
+    );
+  });
+});
+
 describe("tt notes", () => {
   const tempDirs: string[] = [];
 
@@ -612,6 +736,61 @@ function setupIsolatedCli(registry: string[]): { dataDir: string; project: strin
   const resolvedProject = fs.realpathSync.native(project);
 
   return { dataDir, project: resolvedProject };
+}
+
+async function seedCliLease(
+  project: string,
+  ownerAgentId: string,
+  otherAgentIds: string[] = []
+): Promise<void> {
+  const service = new TalkingStickService();
+  try {
+    const ownerIdentity = deriveHumanCliIdentity({
+      agentId: ownerAgentId,
+      displayName: ownerAgentId.replace(/^[^:]+:/, "")
+    });
+    const joined = service.joinPath({
+      agent_id: ownerIdentity.agent_id,
+      context_path: project,
+      process_metadata: ownerIdentity.process_metadata
+    });
+
+    for (const agentId of otherAgentIds) {
+      const identity = deriveHumanCliIdentity({
+        agentId,
+        displayName: agentId.replace(/^[^:]+:/, "")
+      });
+      service.joinPath({
+        agent_id: identity.agent_id,
+        context_path: project,
+        process_metadata: identity.process_metadata
+      });
+    }
+
+    const turn = await service.waitForTurn({
+      agent_id: ownerIdentity.agent_id,
+      room_id: joined.room_id,
+      max_wait_ms: 0
+    });
+    expect(turn.status).toBe("your_turn");
+    if (turn.status !== "your_turn") {
+      throw new Error(`Expected seeded owner turn, got ${turn.status}`);
+    }
+
+    upsertCliSession(resolveCliSessionPath(), {
+      agent_id: ownerIdentity.agent_id,
+      room_id: joined.room_id,
+      canonical_path: joined.canonical_path,
+      workspace_root: joined.workspace_root,
+      lease_id: turn.lease_id,
+      turn_id: turn.turn_id,
+      guardian_pid: null,
+      guardian_process_started_at: null,
+      updated_at: new Date().toISOString()
+    });
+  } finally {
+    service.close();
+  }
 }
 
 async function captureStdout(argv: string[]): Promise<string> {

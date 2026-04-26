@@ -26,7 +26,7 @@ Do not use this skill for ordinary single-agent work in repos that are not using
 
 ### 1. Check that Talking Stick is actually available
 
-Prefer the Talking Stick MCP tools when they are available. If they are not available but the `tt` CLI is on `PATH`, use the CLI instead (`tt list`, `tt join`, `tt wait`, `tt state`, `tt release`, `tt pass`, `tt takeover`). Do not treat missing MCP tools alone as proof that coordination is unavailable.
+Prefer the Talking Stick MCP tools when they are available. If they are not available but the `tt` CLI is on `PATH`, use the CLI instead (`tt list`, `tt join`, `tt wait`, `tt state`, `tt release`, `tt pass`, `tt assign`, `tt take`). Do not treat missing MCP tools alone as proof that coordination is unavailable.
 
 If coordination is required and neither the MCP tools nor the `tt` CLI are available, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 
@@ -110,12 +110,21 @@ If `wait_for_turn` reports `takeover_available`:
 - if takeover is chosen, call `takeover_stick`
 - after takeover, call `get_room_events` so you can reconstruct the last handoff before touching code
 
+If the operator explicitly tells you to take over despite a reservation or live owner, use the CLI path when available: `tt take --operator-requested --reason "<operator requested takeover>"`. Do not invent this override yourself; it is for direct operator intervention.
+
 ### 7. Finish with a real handoff
 
-When you are done with your turn:
+When you are done with your turn, default to `release_stick`.
 
-- use `release_stick` for normal sequence continuation
-- use `pass_stick` only when a specific member should go next
+**Default to `release_stick`.** Releasing lets the server pick the next fair waiter: a recent waiter that is new or has gone longest without holding the stick. If the best-known candidate is between wait polls, the room can briefly stay claimable instead of pinning a stale reservation. This keeps the room open instead of silently turning agent-to-agent handoffs into a duopoly.
+
+Use `pass_stick` only when you have a concrete reason a specific named member must go next:
+
+- they have unique context the next step requires
+- they hold a credential or capability others lack
+- the operator explicitly addressed the work to them
+
+Otherwise release. Ping-ponging `pass_stick` between two agents is an antipattern because it can lock humans out of their own room.
 
 Always include a non-empty handoff.
 
@@ -147,13 +156,15 @@ Example:
 }
 ```
 
-**`pass_stick` requires the target to be an active room member.** If the intended recipient's harness session has ended and they show as `inactive` in `get_room_state.members`, `pass_stick` can return `unknown_member`. Use `release_stick` instead; the next active sequence member becomes the reserved recipient automatically, and a re-joining target can claim through the normal sequence path.
+**`pass_stick` requires the target to be an active room member.** If the intended recipient's harness session has ended and they show as `inactive` in `get_room_state.members`, `pass_stick` can return `unknown_member`. Use `release_stick` instead; the next fair waiter can claim through the normal sequence path.
+
+Remember that the operator can join their own room as `human:<user>`. Default behavior should leave room for them to claim turns naturally; releasing rather than passing keeps that door open.
 
 ### 8. After passing or releasing, stay in the loop
 
 **The default after `release_stick` or `pass_stick` is to re-enter the wait loop and keep waiting until your next turn arrives.** Do not stop and ask the operator whether they want you back in the loop. Do not treat a handoff as end-of-session. In a multi-agent workspace, the expectation is: work on your turn, hand off, wait for your next turn, repeat.
 
-Stopping to ask questions after every pass defeats the coordination protocol — the operator wired you into a room so that you *would* keep showing up without being asked.
+Stopping to ask questions after every handoff defeats the coordination protocol — the operator wired you into a room so that you *would* keep showing up without being asked.
 
 Exit the wait loop only when one of these is true:
 

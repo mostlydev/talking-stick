@@ -20,6 +20,8 @@ import {
   type DerivedIdentity,
   type Handoff,
   type PathRoom,
+  type RoomEvent,
+  type RoomMember,
   upsertCliSession,
   upsertJoinedCliSession
 } from "./index.js";
@@ -59,6 +61,7 @@ interface CliIdentityResolution {
 }
 
 const GUARD_READY = "READY";
+const GUARD_READY_TIMEOUT_MS = 10_000;
 const STALE_GUARD_ERRORS = new Set(["stale_lease", "turn_mismatch", "room_not_found"]);
 
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
@@ -125,6 +128,9 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
       case "try":
         await handleWaitCommand(runtime, parsed, true);
         return;
+      case "take":
+        await handleTakeCommand(runtime, parsed);
+        return;
       case "takeover":
         await handleTakeoverCommand(runtime, parsed);
         return;
@@ -133,6 +139,9 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
         return;
       case "pass":
         await handlePassCommand(runtime, parsed);
+        return;
+      case "assign":
+        await handleAssignCommand(runtime, parsed);
         return;
       case "notes":
         await handleNotesCommand(runtime, parsed);
@@ -390,8 +399,17 @@ async function handleTakeoverCommand(
   runtime: Runtime,
   parsed: ParsedCommand
 ): Promise<void> {
+  await handleTakeCommand(runtime, parsed);
+}
+
+async function handleTakeCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): Promise<void> {
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const identity = deriveCliIdentity(parsed);
+  const reason = resolveTakeoverReason(parsed);
+  const operatorOverride = shouldUseOperatorOverride(parsed);
   const joined = runtime.commands.joinPath(identity, { context_path: contextPath });
   upsertSessionFromJoin(identity, joined);
 
@@ -400,14 +418,48 @@ async function handleTakeoverCommand(
     max_wait_ms: 0
   });
 
-  if (availability.status !== "takeover_available") {
+  if (availability.status === "your_turn") {
+    const guardianPid = await spawnGuardian({
+      agentId: identity.agent_id,
+      canonicalPath: joined.canonical_path,
+      roomId: joined.room_id,
+      leaseId: availability.lease_id,
+      turnId: availability.turn_id
+    });
+
+    upsertCliSession(resolveCliSessionPath(), {
+      agent_id: identity.agent_id,
+      room_id: joined.room_id,
+      canonical_path: joined.canonical_path,
+      workspace_root: joined.workspace_root,
+      lease_id: availability.lease_id,
+      turn_id: availability.turn_id,
+      guardian_pid: guardianPid.pid,
+      guardian_process_started_at: guardianPid.process_started_at,
+      updated_at: new Date().toISOString()
+    });
+
+    printResult(
+      parsed,
+      { ...availability, guardian_pid: guardianPid.pid },
+      () => `Took the stick. Guardian ${guardianPid.pid} is holding the lease.`
+    );
+    return;
+  }
+
+  if (availability.status === "closed") {
+    throw new Error("Takeover is not available: room is closed.");
+  }
+
+  if (availability.status !== "takeover_available" && !operatorOverride) {
     throw new Error(`Takeover is not available: ${formatWaitResult(availability)}`);
   }
 
   const result = runtime.commands.takeoverStick(identity, {
     room_id: joined.room_id,
     expected_turn_id: availability.turn_id,
-    reason: requireStringOption(parsed, "reason")
+    reason,
+    operator_override: operatorOverride
   });
 
   const guardianPid = await spawnGuardian({
@@ -433,7 +485,7 @@ async function handleTakeoverCommand(
   printResult(
     parsed,
     { ...result, guardian_pid: guardianPid.pid },
-    () => `Takeover succeeded. Guardian ${guardianPid.pid} is holding the lease.`
+    () => `Took the stick. Guardian ${guardianPid.pid} is holding the lease.`
   );
 }
 
@@ -468,32 +520,52 @@ async function handlePassCommand(
   runtime: Runtime,
   parsed: ParsedCommand
 ): Promise<void> {
+  if (parsed.positionals[0]?.includes(":")) {
+    await handleAssignCommand(runtime, parsed);
+    return;
+  }
+
+  const identity = deriveCliIdentity(parsed);
+  const contextPath = parsed.positionals[0] ?? process.cwd();
+  const session = requireLeaseSession(identity, contextPath);
+  const handoff = await resolveHandoff(parsed);
+  const result = runtime.commands.releaseStick(identity, {
+    room_id: session.room_id,
+    lease_id: session.lease_id as string,
+    expected_turn_id: session.turn_id as number,
+    handoff
+  });
+
+  clearCliSessionLease(resolveCliSessionPath(), identity.agent_id, session.room_id);
+  stopGuardian(
+    session.guardian_pid,
+    session.guardian_process_started_at ?? null
+  );
+  printResult(parsed, result, () => {
+    const reserved = result.reserved_for ? ` Next: ${result.reserved_for}.` : "";
+    return `Passed turn.${reserved}`;
+  });
+}
+
+async function handleAssignCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): Promise<void> {
+  const targetSelector = parsed.positionals[0];
+  if (!targetSelector) {
+    throw new Error("Usage: tt assign <target|next> [path] (--status TEXT --next-action TEXT | --stdin)");
+  }
+
   const identity = deriveCliIdentity(parsed);
   const contextPath = parsed.positionals[1] ?? process.cwd();
   const session = requireLeaseSession(identity, contextPath);
   const handoff = await resolveHandoff(parsed);
-  const target = parsed.positionals[0];
-
-  if (!target) {
-    const result = runtime.commands.releaseStick(identity, {
-      room_id: session.room_id,
-      lease_id: session.lease_id as string,
-      expected_turn_id: session.turn_id as number,
-      handoff
-    });
-
-    clearCliSessionLease(resolveCliSessionPath(), identity.agent_id, session.room_id);
-    stopGuardian(
-      session.guardian_pid,
-      session.guardian_process_started_at ?? null
-    );
-    printResult(parsed, result, () => {
-      const reserved = result.reserved_for ? ` to ${result.reserved_for}` : "";
-      return `Passed${reserved}.`;
-    });
-    return;
-  }
-
+  const target = resolveAssignmentTarget(
+    runtime,
+    identity,
+    session,
+    targetSelector
+  );
   const result = runtime.commands.passStick(identity, {
     room_id: session.room_id,
     lease_id: session.lease_id as string,
@@ -827,6 +899,83 @@ function requireLeaseSession(identity: DerivedIdentity, contextPath: string): Cl
   return session;
 }
 
+function resolveAssignmentTarget(
+  runtime: Runtime,
+  identity: DerivedIdentity,
+  session: CliSession,
+  selector: string
+): string {
+  if (selector.includes(":")) {
+    return selector;
+  }
+
+  const state = runtime.commands.getRoomState({
+    room_id: session.room_id,
+    agent_id: identity.agent_id
+  });
+  const normalizedSelector = selector.toLowerCase();
+  const candidates = state.members.filter((member) => {
+    if (member.agent_id === identity.agent_id || member.status !== "active") {
+      return false;
+    }
+
+    if (normalizedSelector === "next") {
+      return true;
+    }
+
+    return (
+      member.agent_id.toLowerCase() === normalizedSelector ||
+      member.agent_id.toLowerCase().startsWith(`${normalizedSelector}:`) ||
+      member.display_name?.toLowerCase() === normalizedSelector
+    );
+  });
+
+  if (candidates.length === 0) {
+    throw new Error(`No active room member matched assignment target: ${selector}`);
+  }
+
+  const events = runtime.commands.getRoomEvents({
+    room_id: session.room_id,
+    agent_id: identity.agent_id,
+    limit: 500
+  });
+  return pickFairAssignmentCandidate(candidates, events).agent_id;
+}
+
+function pickFairAssignmentCandidate(
+  candidates: RoomMember[],
+  events: RoomEvent[]
+): RoomMember {
+  const lastOwnership = new Map<string, string>();
+  for (const event of events) {
+    if (
+      (event.event_type === "claim" || event.event_type === "takeover") &&
+      event.to_agent_id
+    ) {
+      lastOwnership.set(event.to_agent_id, event.created_at);
+    }
+  }
+
+  return candidates
+    .slice()
+    .sort((left, right) => {
+      const leftLastOwned = lastOwnership.get(left.agent_id);
+      const rightLastOwned = lastOwnership.get(right.agent_id);
+
+      if (!leftLastOwned && rightLastOwned) {
+        return -1;
+      }
+      if (leftLastOwned && !rightLastOwned) {
+        return 1;
+      }
+      if (leftLastOwned && rightLastOwned && leftLastOwned !== rightLastOwned) {
+        return Date.parse(leftLastOwned) - Date.parse(rightLastOwned);
+      }
+
+      return left.ordinal - right.ordinal;
+    })[0];
+}
+
 function upsertSessionFromJoin(identity: DerivedIdentity, joined: {
   room_id: string;
   canonical_path: string;
@@ -885,6 +1034,47 @@ function requireStringOption(parsed: ParsedCommand, key: string): string {
     throw new Error(`Missing required option --${key}`);
   }
   return value;
+}
+
+function resolveTakeoverReason(
+  parsed: ParsedCommand,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const explicitReason = getStringOption(parsed, "reason");
+  if (explicitReason) {
+    return explicitReason;
+  }
+
+  if (hasOption(parsed, "operator-requested")) {
+    return "operator requested takeover";
+  }
+
+  if (isKnownHarnessCliEnv(env)) {
+    throw new Error(
+      "Missing required option --reason. Harness CLI takeovers must explain why, unless --operator-requested is set."
+    );
+  }
+
+  return "operator takeover";
+}
+
+function shouldUseOperatorOverride(
+  parsed: ParsedCommand,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return (
+    !isKnownHarnessCliEnv(env) ||
+    hasOption(parsed, "operator-requested") ||
+    hasOption(parsed, "force")
+  );
+}
+
+function isKnownHarnessCliEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.TT_HARNESS_AGENT_ID?.trim()) {
+    return true;
+  }
+
+  return deriveHarnessCliIdentity({ env }) !== null;
 }
 
 function parseOptionalInteger(
@@ -1038,7 +1228,7 @@ async function spawnGuardian(input: {
       let stderr = "";
       const timeout = setTimeout(() => {
         reject(new Error("Guardian did not signal readiness in time."));
-      }, 3_000);
+      }, GUARD_READY_TIMEOUT_MS);
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
@@ -1431,8 +1621,10 @@ Commands:
   tt state [path]
   tt events [path] [--after N] [--limit N]
   tt release [path] (--status TEXT --next-action TEXT | --stdin)
-  tt pass [target] [path] (--status TEXT --next-action TEXT | --stdin)
-  tt takeover [path] --reason TEXT
+  tt pass [path] (--status TEXT --next-action TEXT | --stdin)
+  tt assign <target|next> [path] (--status TEXT --next-action TEXT | --stdin)
+  tt take [path] [--reason TEXT] [--operator-requested]
+  tt takeover [path] [--reason TEXT] [--operator-requested]
   tt notes add <body> [--turn N] [--path DIR] [--stdin]
   tt notes list [--all] [--after NOTE_ID] [--limit N] [--path DIR]
   tt mcp

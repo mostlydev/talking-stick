@@ -74,6 +74,7 @@ interface RoomMemberRow {
   ordinal: number;
   joined_at: string;
   last_seen_at: string;
+  last_wait_at: string | null;
   host_id: string | null;
   pid: number | null;
   process_started_at: string | null;
@@ -115,6 +116,13 @@ interface RoomInspection {
   reservedMember: RoomMemberRow | null;
   state: RoomState;
 }
+
+type TakeoverKind =
+  | "claim_timeout"
+  | "owner_timeout"
+  | "owner_gone"
+  | "recipient_gone"
+  | "operator_override";
 
 export type ProcessLiveness = "alive" | "gone" | "unknown";
 
@@ -304,7 +312,7 @@ export class TalkingStickService {
         created_at: timestamp
       });
 
-      const nextMember = this.findNextActiveMember(
+      const nextMember = this.findNextWaitingMember(
         input.room_id,
         input.agent_id,
         now
@@ -442,18 +450,21 @@ export class TalkingStickService {
 
       this.touchMember(input.room_id, input.agent_id, timestamp);
 
-      const takeoverKind = this.assertTakeoverEligible(
+      const takeoverKind = this.resolveTakeoverKind(
         room,
         input.agent_id,
         now,
-        inspection
+        inspection,
+        input.operator_override === true
       );
       const nextTurnId = room.turn_id + 1;
       const leaseId = randomUUID();
       const revokedAgentId =
         takeoverKind === "claim_timeout" || takeoverKind === "recipient_gone"
           ? room.reserved_for
-          : room.owner;
+          : takeoverKind === "operator_override"
+            ? room.reserved_for ?? room.owner
+            : room.owner;
 
       this.db
         .prepare(
@@ -688,7 +699,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     const room = this.requireRoom(input.room_id);
 
-    this.touchMember(input.room_id, input.agent_id, timestamp);
+    this.touchWaitingMember(input.room_id, input.agent_id, timestamp);
     const inspection = this.inspectRoomForMutation(room, now);
 
     if (room.state === "closed") {
@@ -713,6 +724,17 @@ export class TalkingStickService {
     }
 
     if (!room.owner && !room.reserved_for) {
+      if (this.shouldDeferIdleClaim(room, input.agent_id, now)) {
+        return {
+          status: "not_yet",
+          room_state: inspection.state,
+          turn_id: room.turn_id,
+          current_owner: room.owner ?? undefined,
+          reserved_for: room.reserved_for ?? undefined,
+          lease_expires_at: room.lease_expires_at ?? undefined,
+          claim_expires_at: room.claim_expires_at ?? undefined
+        };
+      }
       return this.grantTurn(room, input.agent_id, now);
     }
 
@@ -801,12 +823,14 @@ export class TalkingStickService {
       ? this.getEventBySeq(room.pending_handoff_event_seq)
       : null;
     const reason = claimReasonForEvent(pendingEvent);
+    const member = this.getMember(room.room_id, agentId);
 
     this.db
       .prepare(
         `
         UPDATE path_rooms
-        SET owner = ?,
+        SET sequence_index = ?,
+            owner = ?,
             reserved_for = NULL,
             pending_handoff_event_seq = NULL,
             turn_id = ?,
@@ -819,6 +843,7 @@ export class TalkingStickService {
       `
       )
       .run(
+        member?.ordinal ?? room.sequence_index,
         agentId,
         nextTurnId,
         leaseId,
@@ -941,6 +966,7 @@ export class TalkingStickService {
           `
           UPDATE room_members
           SET last_seen_at = ?,
+              last_wait_at = ?,
               status = 'active',
               host_id = ?,
               pid = ?,
@@ -951,6 +977,7 @@ export class TalkingStickService {
         `
         )
         .run(
+          timestamp,
           timestamp,
           mergedMetadata.host_id,
           mergedMetadata.pid,
@@ -979,6 +1006,7 @@ export class TalkingStickService {
           ordinal,
           joined_at,
           last_seen_at,
+          last_wait_at,
           status,
           host_id,
           pid,
@@ -986,13 +1014,14 @@ export class TalkingStickService {
           session_kind,
           display_name
         )
-        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
       `
       )
       .run(
         roomId,
         agentId,
         nextOrdinal,
+        timestamp,
         timestamp,
         timestamp,
         normalizedMetadata.host_id,
@@ -1073,6 +1102,30 @@ export class TalkingStickService {
     }
   }
 
+  private touchWaitingMember(
+    roomId: string,
+    agentId: AgentId,
+    timestamp: string
+  ): void {
+    const result = this.db
+      .prepare(
+        `
+        UPDATE room_members
+        SET last_seen_at = ?, last_wait_at = ?, status = 'active'
+        WHERE room_id = ? AND agent_id = ?
+      `
+      )
+      .run(timestamp, timestamp, roomId, agentId);
+
+    if (result.changes === 0) {
+      throw new ProtocolError(
+        "unknown_member",
+        "Agent must join the room before using this tool.",
+        { to_agent_id: agentId }
+      );
+    }
+  }
+
   private touchKnownMember(
     roomId: string,
     agentId: AgentId | undefined,
@@ -1126,12 +1179,45 @@ export class TalkingStickService {
     }
   }
 
+  private resolveTakeoverKind(
+    room: PathRoomRow,
+    agentId: AgentId,
+    now: Date,
+    inspection: RoomInspection,
+    operatorOverride: boolean
+  ): TakeoverKind {
+    try {
+      return this.assertTakeoverEligible(room, agentId, now, inspection);
+    } catch (error) {
+      if (operatorOverride && this.canOperatorOverride(room, agentId)) {
+        return "operator_override";
+      }
+      throw error;
+    }
+  }
+
+  private canOperatorOverride(room: PathRoomRow, agentId: AgentId): boolean {
+    if (room.state === "closed") {
+      return false;
+    }
+
+    if (room.owner) {
+      return room.owner !== agentId;
+    }
+
+    if (room.reserved_for) {
+      return room.reserved_for !== agentId;
+    }
+
+    return false;
+  }
+
   private assertTakeoverEligible(
     room: PathRoomRow,
     agentId: AgentId,
     now: Date,
     inspection: RoomInspection
-  ): "claim_timeout" | "owner_timeout" | "owner_gone" | "recipient_gone" {
+  ): TakeoverKind {
     if (inspection.state === "recipient_gone") {
       if (!this.isClaimTakeoverEligible(room, agentId, now, inspection)) {
         throw new ProtocolError(
@@ -1236,31 +1322,74 @@ export class TalkingStickService {
     );
   }
 
-  private findNextActiveMember(
+  private findNextWaitingMember(
     roomId: string,
     afterAgentId: AgentId,
     now: Date
   ): RoomMemberRow | null {
-    const members = this.getMembers(roomId);
-    if (members.length <= 1) {
-      return null;
-    }
-
-    const ownerIndex = members.findIndex(
-      (member) => member.agent_id === afterAgentId
+    const bestKnownMember = this.findBestFairKnownMember(
+      roomId,
+      afterAgentId,
+      now
     );
-    if (ownerIndex === -1) {
+    if (!bestKnownMember || !this.isRecentWaiter(bestKnownMember, now)) {
       return null;
     }
 
-    for (let offset = 1; offset < members.length; offset += 1) {
-      const candidate = members[(ownerIndex + offset) % members.length];
-      if (this.hasRecentPresence(candidate, now)) {
-        return candidate;
+    return bestKnownMember;
+  }
+
+  private findBestFairKnownMember(
+    roomId: string,
+    afterAgentId: AgentId | null,
+    now: Date
+  ): RoomMemberRow | null {
+    const members = this.getMembers(roomId);
+    const candidates = members.filter((member) => {
+      if (member.agent_id === afterAgentId) {
+        return false;
       }
+      return this.isPlausibleFairCandidate(member, now);
+    });
+
+    if (candidates.length === 0) {
+      return null;
     }
 
-    return null;
+    const lastOwnership = this.getLastOwnershipByAgent(roomId);
+    const referenceOrdinal =
+      members.find((member) => member.agent_id === afterAgentId)?.ordinal ?? -1;
+
+    return candidates
+      .slice()
+      .sort((left, right) =>
+        compareFairCandidates(
+          left,
+          right,
+          lastOwnership,
+          referenceOrdinal,
+          members.length
+        )
+      )[0];
+  }
+
+  private getLastOwnershipByAgent(roomId: string): Map<AgentId, string> {
+    const rows = this.db
+      .prepare<[string], { agent_id: string; last_owned_at: string }>(
+        `
+        SELECT to_agent_id AS agent_id, MAX(created_at) AS last_owned_at
+        FROM room_events
+        WHERE room_id = ?
+          AND event_type IN ('claim', 'takeover')
+          AND to_agent_id IS NOT NULL
+        GROUP BY to_agent_id
+      `
+      )
+      .all(roomId);
+
+    return new Map(
+      rows.map((row) => [row.agent_id, row.last_owned_at])
+    );
   }
 
   private appendEvent(input: {
@@ -1405,6 +1534,52 @@ export class TalkingStickService {
       now.getTime() - Date.parse(member.last_seen_at) <=
       this.policy.presenceTtlMs
     );
+  }
+
+  private isRecentWaiter(member: RoomMemberRow, now: Date): boolean {
+    if (!member.last_wait_at) {
+      return false;
+    }
+
+    if (!this.hasRecentPresence(member, now)) {
+      return false;
+    }
+
+    return (
+      now.getTime() - Date.parse(member.last_wait_at) <=
+      this.policy.waiterGraceMs
+    );
+  }
+
+  private isPlausibleFairCandidate(
+    member: RoomMemberRow,
+    now: Date
+  ): boolean {
+    return this.hasRecentPresence(member, now);
+  }
+
+  private shouldDeferIdleClaim(
+    room: PathRoomRow,
+    agentId: AgentId,
+    now: Date
+  ): boolean {
+    if (!room.pending_handoff_event_seq) {
+      return false;
+    }
+
+    if (now.getTime() - Date.parse(room.updated_at) >= this.policy.waiterGraceMs) {
+      return false;
+    }
+
+    const pendingEvent = this.getEventBySeq(room.pending_handoff_event_seq);
+    const priorOwner = pendingEvent?.from_agent_id ?? null;
+    const bestKnownMember = this.findBestFairKnownMember(
+      room.room_id,
+      priorOwner,
+      now
+    );
+
+    return bestKnownMember !== null && bestKnownMember.agent_id !== agentId;
   }
 
   private inspectRoom(room: PathRoomRow, now: Date): RoomInspection {
@@ -1627,6 +1802,56 @@ function mapNoteRow(row: NoteRow): Note {
     resolved_at: row.resolved_at,
     resolved_by_agent_id: row.resolved_by_agent_id
   };
+}
+
+function compareFairCandidates(
+  left: RoomMemberRow,
+  right: RoomMemberRow,
+  lastOwnership: Map<AgentId, string>,
+  referenceOrdinal: number,
+  memberCount: number
+): number {
+  const leftLastOwned = lastOwnership.get(left.agent_id);
+  const rightLastOwned = lastOwnership.get(right.agent_id);
+
+  if (!leftLastOwned && rightLastOwned) {
+    return -1;
+  }
+  if (leftLastOwned && !rightLastOwned) {
+    return 1;
+  }
+  if (leftLastOwned && rightLastOwned && leftLastOwned !== rightLastOwned) {
+    return Date.parse(leftLastOwned) - Date.parse(rightLastOwned);
+  }
+
+  const leftDistance = sequenceDistance(
+    left.ordinal,
+    referenceOrdinal,
+    memberCount
+  );
+  const rightDistance = sequenceDistance(
+    right.ordinal,
+    referenceOrdinal,
+    memberCount
+  );
+  if (leftDistance !== rightDistance) {
+    return leftDistance - rightDistance;
+  }
+
+  return left.ordinal - right.ordinal;
+}
+
+function sequenceDistance(
+  ordinal: number,
+  referenceOrdinal: number,
+  memberCount: number
+): number {
+  if (memberCount <= 0 || referenceOrdinal < 0) {
+    return ordinal;
+  }
+
+  const distance = (ordinal - referenceOrdinal + memberCount) % memberCount;
+  return distance === 0 ? memberCount : distance;
 }
 
 function normalizeProcessMetadata(

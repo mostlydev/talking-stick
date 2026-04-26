@@ -53,6 +53,7 @@ export interface Policy {
   waitForTurnMaxWaitMs: number;
   waitForTurnPollMs: number;
   presenceTtlMs: number;
+  waiterGraceMs: number;
 }
 
 export interface PathRoom {
@@ -76,6 +77,7 @@ export interface RoomMember {
   ordinal: number;
   joined_at: string;
   last_seen_at: string;
+  last_wait_at: string | null;
   host_id: string | null;
   pid: number | null;
   process_started_at: string | null;
@@ -208,6 +210,7 @@ export interface TakeoverStickInput {
   room_id: string;
   expected_turn_id: number;
   reason: string;
+  operator_override?: boolean;
 }
 
 export interface TakeoverStickResult {
@@ -216,7 +219,12 @@ export interface TakeoverStickResult {
   turn_id: number;
   lease_id: string;
   revoked_agent_id: AgentId | null;
-  reason: "claim_timeout" | "owner_timeout" | "owner_gone" | "recipient_gone";
+  reason:
+    | "claim_timeout"
+    | "owner_timeout"
+    | "owner_gone"
+    | "recipient_gone"
+    | "operator_override";
 }
 
 export interface GetRoomStateInput {

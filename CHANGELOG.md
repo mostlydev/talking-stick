@@ -9,6 +9,16 @@ while it remains in alpha. Versioning is [SemVer](https://semver.org/) with the
 caveat that protocol-level breaking changes are still possible across alpha bumps;
 they will be called out under **Breaking changes**.
 
+## [Unreleased]
+
+### Added
+- **Operator-friendly CLI takeover.** Added `tt take` and made human CLI `tt takeover` reason-optional so an operator can step into a stuck reserved/owned room quickly. Harness-aware CLI takeovers still require `--reason` unless invoked with `--operator-requested`.
+- **Explicit assignment command.** Added `tt assign <target|next>` for named handoffs; `tt pass [path]` now means "pass/end my turn" instead of treating the first positional as a target.
+
+### Changed
+- **Fair release selection.** Normal release now tracks `last_wait_at` and prefers recent waiters that are new or have gone longest without holding the stick. If the best-known member is between wait polls, a short grace window avoids immediately recycling the turn to a less-fair claimant.
+- **Skill handoff guidance.** Default to `release_stick`; reserve `pass_stick` for cases where a specific named member must go next. This keeps the room open for active humans and other agents instead of turning agent-to-agent handoffs into a pinned duopoly.
+
 ## [0.1.0-alpha.2] — 2026-04-26
 
 Full notes: [`docs/releases/0.1.0-alpha.2.md`](docs/releases/0.1.0-alpha.2.md).
@@ -52,4 +62,5 @@ contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
 [0.1.0-alpha.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.2
+[Unreleased]: https://github.com/mostlydev/talking-stick/compare/v0.1.0-alpha.2...HEAD
 [0.1.0-alpha]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha

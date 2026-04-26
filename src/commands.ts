@@ -50,6 +50,7 @@ export interface TakeoverStickCommandInput {
   room_id: string;
   expected_turn_id: number;
   reason: string;
+  operator_override?: boolean;
 }
 
 export interface AddNoteCommandInput {
@@ -146,7 +147,8 @@ export class TalkingStickCommands {
       agent_id: identity.agent_id,
       room_id: input.room_id,
       expected_turn_id: input.expected_turn_id,
-      reason: input.reason
+      reason: input.reason,
+      operator_override: input.operator_override
     });
   }
 
