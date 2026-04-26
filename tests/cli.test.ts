@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { checkGuardianLiveness, runCli } from "../src/cli.js";
+import {
+  checkGuardianLiveness,
+  formatRelativeTime,
+  runCli,
+  shouldUseJson
+} from "../src/cli.js";
 
 const ENV_KEYS = [
   "TT_HARNESS_EXPORT",
@@ -93,6 +98,89 @@ describe("tt whoami", () => {
 
     expect(result.agent_id).toBe("human:alex");
     expect(result.source).toBe("agent_override");
+  });
+});
+
+describe("shouldUseJson", () => {
+  const emptyParsed = {
+    name: "wait",
+    positionals: [],
+    options: new Map<string, string | true>()
+  };
+
+  test("returns false by default for human invocation", () => {
+    expect(shouldUseJson(emptyParsed, {})).toBe(false);
+  });
+
+  test("returns true when --json is set", () => {
+    const parsed = {
+      ...emptyParsed,
+      options: new Map<string, string | true>([["json", true]])
+    };
+    expect(shouldUseJson(parsed, {})).toBe(true);
+  });
+
+  test("returns true when invoked from a harness via TT_HARNESS_EXPORT", () => {
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "1" })).toBe(true);
+  });
+
+  test("returns true when TT_HARNESS_AGENT_ID is set", () => {
+    expect(
+      shouldUseJson(emptyParsed, { TT_HARNESS_AGENT_ID: "claude:abc" })
+    ).toBe(true);
+  });
+
+  test("--text overrides harness auto-JSON", () => {
+    const parsed = {
+      ...emptyParsed,
+      options: new Map<string, string | true>([["text", true]])
+    };
+    expect(shouldUseJson(parsed, { TT_HARNESS_EXPORT: "1" })).toBe(false);
+  });
+
+  test("--json wins over --text when both are set", () => {
+    const parsed = {
+      ...emptyParsed,
+      options: new Map<string, string | true>([
+        ["json", true],
+        ["text", true]
+      ])
+    };
+    expect(shouldUseJson(parsed, {})).toBe(true);
+  });
+
+  test("blank harness env values are ignored", () => {
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "  " })).toBe(false);
+  });
+});
+
+describe("formatRelativeTime", () => {
+  const now = new Date("2026-04-26T12:00:00.000Z");
+
+  test("renders sub-minute deltas in seconds", () => {
+    expect(formatRelativeTime("2026-04-26T11:59:30.000Z", now)).toBe("30s ago");
+  });
+
+  test("renders past minutes", () => {
+    expect(formatRelativeTime("2026-04-26T11:47:00.000Z", now)).toBe("13m ago");
+  });
+
+  test("renders future deadlines", () => {
+    expect(formatRelativeTime("2026-04-26T12:14:00.000Z", now)).toBe("in 14m");
+  });
+
+  test("renders hours and days", () => {
+    expect(formatRelativeTime("2026-04-26T09:00:00.000Z", now)).toBe("3h ago");
+    expect(formatRelativeTime("2026-04-23T12:00:00.000Z", now)).toBe("3d ago");
+  });
+
+  test("returns em dash for null/undefined", () => {
+    expect(formatRelativeTime(null)).toBe("—");
+    expect(formatRelativeTime(undefined)).toBe("—");
+  });
+
+  test("returns the original string when unparseable", () => {
+    expect(formatRelativeTime("not-a-timestamp", now)).toBe("not-a-timestamp");
   });
 });
 
@@ -316,6 +404,116 @@ describe("tt notes", () => {
         "   "
       ])
     ).rejects.toThrow(/Note body is required/);
+  });
+
+  test("tt notes list text mode renders bulleted entries with relative time and scope", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout(["join", project, "--agent", "human:notes-fmt"]);
+
+    await captureStdout([
+      "notes",
+      "add",
+      "room note body that is short enough to fit on one line",
+      "--agent",
+      "human:notes-fmt",
+      "--path",
+      project,
+      "--json"
+    ]);
+
+    const listOut = await captureStdout([
+      "notes",
+      "list",
+      "--agent",
+      "human:notes-fmt",
+      "--path",
+      project
+    ]);
+
+    expect(listOut).toMatch(/^1 note in this room:/);
+    expect(listOut).toContain("- ");
+    expect(listOut).toContain("human:notes-fmt");
+    expect(listOut).toContain("room-scoped");
+    expect(listOut).toMatch(/(ago|in \d)/);
+  });
+
+  test("tt state text mode shows owner, members, and 'you' marker", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout(["join", project, "--agent", "human:state-test"]);
+
+    const stateOut = await captureStdout([
+      "state",
+      project,
+      "--agent",
+      "human:state-test"
+    ]);
+
+    expect(stateOut).toContain(`Room: ${project}`);
+    expect(stateOut).toContain("Members:");
+    expect(stateOut).toContain("human:state-test");
+    expect(stateOut).toContain("← you");
+  });
+
+  test("tt events text mode groups events by turn", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout(["join", project, "--agent", "human:events-test"]);
+    // No events yet — empty case rendering.
+    const empty = await captureStdout([
+      "events",
+      project,
+      "--agent",
+      "human:events-test"
+    ]);
+    expect(empty.trim()).toBe("No events.");
+  });
+
+  test("--json forces JSON for tt state regardless of mode", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await captureStdout(["join", project, "--agent", "human:json-test"]);
+
+    const out = await captureStdout([
+      "state",
+      project,
+      "--agent",
+      "human:json-test",
+      "--json"
+    ]);
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty("room");
+    expect(parsed).toHaveProperty("members");
+  });
+
+  test("TT_HARNESS_EXPORT auto-switches state to JSON; --text overrides", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await captureStdout(["join", project, "--agent", "human:auto-test"]);
+
+    process.env.TT_HARNESS_EXPORT = "1";
+    try {
+      const auto = await captureStdout([
+        "state",
+        project,
+        "--agent",
+        "human:auto-test"
+      ]);
+      // Should parse as JSON.
+      const parsed = JSON.parse(auto);
+      expect(parsed).toHaveProperty("room");
+
+      const forcedText = await captureStdout([
+        "state",
+        project,
+        "--agent",
+        "human:auto-test",
+        "--text"
+      ]);
+      expect(forcedText).toContain("Room:");
+      expect(() => JSON.parse(forcedText)).toThrow();
+    } finally {
+      delete process.env.TT_HARNESS_EXPORT;
+    }
   });
 
   test("tt notes with unknown subcommand surfaces an error", async () => {

@@ -196,11 +196,42 @@ function handleStateCommand(runtime: Runtime, parsed: ParsedCommand): void {
   });
 
   printResult(parsed, { room: state.room, members: state.members }, () => {
-    const owner = state.room.owner ? ` owner=${state.room.owner}` : "";
-    const reserved = state.room.reserved_for
-      ? ` reserved_for=${state.room.reserved_for}`
-      : "";
-    return `${state.room.state} ${session.canonical_path}${owner}${reserved}`;
+    const lines: string[] = [
+      `Room: ${session.canonical_path} (${state.room.state})`
+    ];
+
+    if (state.room.owner) {
+      const lease = state.room.lease_expires_at
+        ? `, lease expires ${formatRelativeTime(state.room.lease_expires_at)}`
+        : "";
+      lines.push(
+        `  Owner:    ${state.room.owner} (turn ${state.room.turn_id}${lease})`
+      );
+    } else if (state.room.reserved_for) {
+      const claim = state.room.claim_expires_at
+        ? `, claim expires ${formatRelativeTime(state.room.claim_expires_at)}`
+        : "";
+      lines.push(
+        `  Reserved: ${state.room.reserved_for} (turn ${state.room.turn_id}${claim})`
+      );
+    } else {
+      lines.push(`  Owner:    — (turn ${state.room.turn_id})`);
+    }
+
+    const active = state.members.filter((m) => m.status === "active");
+    const inactive = state.members.filter((m) => m.status !== "active");
+    lines.push(
+      `  Members:  ${active.length} active${inactive.length > 0 ? `, ${inactive.length} inactive` : ""}`
+    );
+    for (const member of state.members) {
+      const marker = member.agent_id === identity.agent_id ? "  ← you" : "";
+      const seen = `last seen ${formatRelativeTime(member.last_seen_at)}`;
+      lines.push(
+        `            • ${member.agent_id.padEnd(24)} ${member.status.padEnd(8)} ${seen}${marker}`
+      );
+    }
+
+    return lines.join("\n");
   });
 }
 
@@ -219,14 +250,26 @@ function handleEventsCommand(runtime: Runtime, parsed: ParsedCommand): void {
       return "No events.";
     }
 
-    return events
-      .map(
-        (event) =>
-          `${event.event_seq} ${event.event_type} ${event.from_agent_id ?? "-"} -> ${
-            event.to_agent_id ?? "-"
-          }`
-      )
-      .join("\n");
+    const lines: string[] = [];
+    let lastTurn: number | null = null;
+    for (const event of events) {
+      if (event.turn_id !== lastTurn) {
+        if (lines.length > 0) lines.push("");
+        lines.push(
+          `Turn ${event.turn_id} (${formatRelativeTime(event.created_at)})`
+        );
+        lastTurn = event.turn_id;
+      }
+      const reason = event.reason ? ` (${event.reason})` : "";
+      const arrow =
+        event.from_agent_id && event.to_agent_id
+          ? `${event.from_agent_id} → ${event.to_agent_id}`
+          : event.to_agent_id
+            ? `→ ${event.to_agent_id}`
+            : event.from_agent_id ?? "—";
+      lines.push(`  ${event.event_type.padEnd(8)} ${arrow}${reason}`);
+    }
+    return lines.join("\n");
   });
 }
 
@@ -332,7 +375,10 @@ async function handleWaitCommand(
     printResult(
       parsed,
       { ...waitResult, guardian_pid: guardianPid.pid },
-      () => `Your turn. Guardian ${guardianPid.pid} is holding the lease.`
+      () => {
+        const body = formatWaitResult(waitResult);
+        return `${body}\n\nGuardian ${guardianPid.pid} is holding the lease.`;
+      }
     );
     return;
   }
@@ -543,17 +589,15 @@ function handleNotesListCommand(
       return "No notes.";
     }
 
-    return result.notes
-      .map((note) => {
-        const turn = note.turn_id ?? "-";
-        const firstLine = note.body.split("\n")[0] ?? "";
-        const preview =
-          firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
-        return `${shortNoteId(note.note_id)}  ${note.author_agent_id}  ${
-          note.created_at
-        }  turn=${turn}  ${preview}`;
-      })
-      .join("\n");
+    const header = `${result.notes.length} note${result.notes.length === 1 ? "" : "s"} in this room:`;
+    const lines = result.notes.map((note) => {
+      const scope = note.turn_id !== null ? `turn ${note.turn_id}` : "room-scoped";
+      const firstLine = note.body.split("\n")[0] ?? "";
+      const preview =
+        firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+      return `- ${shortNoteId(note.note_id)} ${note.author_agent_id} · ${formatRelativeTime(note.created_at)} · ${scope}\n  ${preview}`;
+    });
+    return [header, ...lines].join("\n");
   });
 }
 
@@ -1068,38 +1112,85 @@ function formatWaitResult(result: {
   turn_id?: number;
   lease_expires_at?: string;
   claim_expires_at?: string;
+  handoff?: Handoff | null;
+  from_agent_id?: string | null;
 }): string {
   switch (result.status) {
     case "not_yet": {
-      const parts: string[] = ["Not your turn yet."];
       if (result.current_owner) {
         const deadline = result.lease_expires_at
-          ? ` (lease expires ${result.lease_expires_at})`
+          ? ` (lease expires ${formatRelativeTime(result.lease_expires_at)})`
           : "";
-        parts.push(
-          `${result.current_owner} holds turn ${result.turn_id ?? "?"}${deadline}.`
-        );
-      } else if (result.reserved_for) {
-        const deadline = result.claim_expires_at
-          ? ` (claim expires ${result.claim_expires_at})`
-          : "";
-        parts.push(
-          `Turn ${result.turn_id ?? "?"} is reserved for ${result.reserved_for}${deadline}.`
-        );
+        return `Not your turn — ${result.current_owner} holds turn ${result.turn_id ?? "?"}${deadline}.`;
       }
-      return parts.join(" ");
+      if (result.reserved_for) {
+        const deadline = result.claim_expires_at
+          ? ` (claim expires ${formatRelativeTime(result.claim_expires_at)})`
+          : "";
+        return `Not your turn — turn ${result.turn_id ?? "?"} is reserved for ${result.reserved_for}${deadline}.`;
+      }
+      return "Not your turn yet.";
     }
     case "closed":
       return "The room is closed.";
     case "takeover_available":
       return `Takeover available: ${result.reason ?? "unknown"}.`;
-    case "your_turn":
-      return result.reason === "already_owner"
-        ? "Already holding the stick."
-        : "Your turn.";
+    case "your_turn": {
+      if (result.reason === "already_owner") {
+        return "Already holding the stick.";
+      }
+      const header =
+        result.from_agent_id != null
+          ? `Your turn (turn ${result.turn_id ?? "?"}, ${result.reason ?? "claim"} from ${result.from_agent_id}).`
+          : `Your turn (turn ${result.turn_id ?? "?"}, ${result.reason ?? "claim"}).`;
+      const handoffBlock = result.handoff ? formatHandoff(result.handoff) : "";
+      return handoffBlock ? `${header}\n\n${handoffBlock}` : header;
+    }
     default:
       return result.status;
   }
+}
+
+function formatHandoff(handoff: Handoff): string {
+  const sections: string[] = [];
+
+  if (handoff.status?.trim()) {
+    sections.push(`Status:\n${indent(handoff.status.trim())}`);
+  }
+
+  if (handoff.next_action?.trim()) {
+    sections.push(`Next action:\n${indent(handoff.next_action.trim())}`);
+  }
+
+  if (handoff.artifacts && handoff.artifacts.length > 0) {
+    const lines = handoff.artifacts.map((artifact) => {
+      const range = artifact.lines
+        ? `:${artifact.lines[0]}-${artifact.lines[1]}`
+        : "";
+      const note = artifact.note ? ` — ${artifact.note}` : "";
+      return `- ${artifact.path}${range} (${artifact.role})${note}`;
+    });
+    sections.push(`Artifacts:\n${lines.join("\n")}`);
+  }
+
+  if (handoff.open_questions && handoff.open_questions.length > 0) {
+    const lines = handoff.open_questions.map((q) => `- ${q}`);
+    sections.push(`Open questions:\n${lines.join("\n")}`);
+  }
+
+  if (handoff.do_not && handoff.do_not.length > 0) {
+    const lines = handoff.do_not.map((q) => `- ${q}`);
+    sections.push(`Do not:\n${lines.join("\n")}`);
+  }
+
+  return sections.join("\n\n");
+}
+
+function indent(text: string, prefix = "  "): string {
+  return text
+    .split("\n")
+    .map((line) => (line.length > 0 ? `${prefix}${line}` : line))
+    .join("\n");
 }
 
 function printResult(
@@ -1107,12 +1198,46 @@ function printResult(
   result: unknown,
   renderText: () => string
 ): void {
-  if (hasOption(parsed, "json")) {
+  if (shouldUseJson(parsed)) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
 
   process.stdout.write(`${renderText()}\n`);
+}
+
+export function shouldUseJson(
+  parsed: ParsedCommand,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (hasOption(parsed, "json")) return true;
+  if (hasOption(parsed, "text")) return false;
+  // Auto-JSON when invoked from a harness — same opt-in gate the identity
+  // resolver uses (TT_HARNESS_EXPORT / TT_HARNESS_AGENT_ID). Humans get text
+  // by default; bots that want machine output set the env var or pass --json.
+  if (env.TT_HARNESS_EXPORT?.trim()) return true;
+  if (env.TT_HARNESS_AGENT_ID?.trim()) return true;
+  return false;
+}
+
+export function formatRelativeTime(
+  iso: string | null | undefined,
+  now: Date = new Date()
+): string {
+  if (!iso) return "—";
+  const target = Date.parse(iso);
+  if (Number.isNaN(target)) return iso;
+  const deltaMs = target - now.getTime();
+  const absMs = Math.abs(deltaMs);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  let value: string;
+  if (absMs < minute) value = `${Math.max(1, Math.round(absMs / 1000))}s`;
+  else if (absMs < hour) value = `${Math.round(absMs / minute)}m`;
+  else if (absMs < day) value = `${Math.round(absMs / hour)}h`;
+  else value = `${Math.round(absMs / day)}d`;
+  return deltaMs >= 0 ? `in ${value}` : `${value} ago`;
 }
 
 async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
@@ -1280,7 +1405,8 @@ Harnesses: ${SUPPORTED_HARNESSES.join(", ")}
 
 Common options:
   --agent ID   Override the default human identity
-  --json       Print JSON instead of text
+  --json       Force JSON output (also default when invoked from a harness)
+  --text       Force human-readable text even when invoked from a harness
 `);
 }
 
