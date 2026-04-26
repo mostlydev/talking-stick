@@ -1251,9 +1251,11 @@ export function shouldUseJson(
   if (hasOption(parsed, "json")) return true;
   if (hasOption(parsed, "text")) return false;
   // Auto-JSON when invoked from a harness — same opt-in gate the identity
-  // resolver uses (TT_HARNESS_EXPORT / TT_HARNESS_AGENT_ID). Humans get text
-  // by default; bots that want machine output set the env var or pass --json.
-  if (env.TT_HARNESS_EXPORT?.trim()) return true;
+  // resolver uses. TT_HARNESS_EXPORT only enables on "1" or "true" (case-
+  // insensitive); TT_HARNESS_AGENT_ID enables when non-empty since it is
+  // already a positive intent signal (the harness is naming an agent id).
+  const exportFlag = env.TT_HARNESS_EXPORT;
+  if (exportFlag === "1" || exportFlag?.toLowerCase() === "true") return true;
   if (env.TT_HARNESS_AGENT_ID?.trim()) return true;
   return false;
 }

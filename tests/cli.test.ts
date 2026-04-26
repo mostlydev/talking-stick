@@ -153,6 +153,19 @@ describe("shouldUseJson", () => {
   test("blank harness env values are ignored", () => {
     expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "  " })).toBe(false);
   });
+
+  test("TT_HARNESS_EXPORT only triggers on '1' or 'true' (matches identity)", () => {
+    // Identity-disabled values stay in human/text mode.
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "0" })).toBe(false);
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "false" })).toBe(false);
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "no" })).toBe(false);
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "off" })).toBe(false);
+    // Identity-enabled values trigger auto-JSON.
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "1" })).toBe(true);
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "true" })).toBe(true);
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "TRUE" })).toBe(true);
+    expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "True" })).toBe(true);
+  });
 });
 
 describe("formatRelativeTime", () => {
