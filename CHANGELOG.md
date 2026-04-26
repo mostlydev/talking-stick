@@ -9,12 +9,15 @@ while it remains in alpha. Versioning is [SemVer](https://semver.org/) with the
 caveat that protocol-level breaking changes are still possible across alpha bumps;
 they will be called out under **Breaking changes**.
 
-## [Unreleased]
+## [0.1.0-alpha.3] — 2026-04-26
+
+Full notes: [`docs/releases/0.1.0-alpha.3.md`](docs/releases/0.1.0-alpha.3.md).
 
 ### Added
 - **Operator-friendly CLI takeover.** Added `tt take` and made human CLI `tt takeover` reason-optional so an operator can step into a stuck reserved/owned room quickly. Harness-aware CLI takeovers still require `--reason` unless invoked with `--operator-requested`.
 - **Explicit assignment command.** Added `tt assign <target|next>` for named handoffs; `tt pass [path]` now means "pass/end my turn" instead of treating the first positional as a target.
 - **Automatic skill sync for human CLI.** Ordinary human `tt` invocations silently refresh already-installed Claude Code, Codex, and OpenCode skill copies/symlinks from the bundled skill so copied installs do not drift after a Talking Stick update. Missing harnesses and missing skill installs are skipped; Gemini remains explicitly managed by `tt install-skill gemini`.
+- **`tt self-update`.** Detects how `tt` was installed (npm / pnpm / yarn / bun, including npm-via-Homebrew/mise/asdf/nvm) and runs the right global-update command. `--print` shows the inferred command without running it; `--manager` overrides detection. Refuses politely from a development checkout.
 
 ### Changed
 - **Fair release selection.** Normal release now tracks `last_wait_at` and prefers recent waiters that are new or have gone longest without holding the stick. If the best-known member is between wait polls, a short grace window avoids immediately recycling the turn to a less-fair claimant.
@@ -62,6 +65,6 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.1.0-alpha.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.2
-[Unreleased]: https://github.com/mostlydev/talking-stick/compare/v0.1.0-alpha.2...HEAD
 [0.1.0-alpha]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha
