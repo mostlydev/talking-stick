@@ -129,10 +129,10 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
         await handleTakeoverCommand(runtime, parsed);
         return;
       case "release":
-        handleReleaseCommand(runtime, parsed);
+        await handleReleaseCommand(runtime, parsed);
         return;
       case "pass":
-        handlePassCommand(runtime, parsed);
+        await handlePassCommand(runtime, parsed);
         return;
       case "notes":
         await handleNotesCommand(runtime, parsed);
@@ -437,11 +437,14 @@ async function handleTakeoverCommand(
   );
 }
 
-function handleReleaseCommand(runtime: Runtime, parsed: ParsedCommand): void {
+async function handleReleaseCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): Promise<void> {
   const identity = deriveCliIdentity(parsed);
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const session = requireLeaseSession(identity, contextPath);
-  const handoff = requireHandoff(parsed);
+  const handoff = await resolveHandoff(parsed);
   const result = runtime.commands.releaseStick(identity, {
     room_id: session.room_id,
     lease_id: session.lease_id as string,
@@ -461,11 +464,14 @@ function handleReleaseCommand(runtime: Runtime, parsed: ParsedCommand): void {
   });
 }
 
-function handlePassCommand(runtime: Runtime, parsed: ParsedCommand): void {
+async function handlePassCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): Promise<void> {
   const identity = deriveCliIdentity(parsed);
   const contextPath = parsed.positionals[1] ?? process.cwd();
   const session = requireLeaseSession(identity, contextPath);
-  const handoff = requireHandoff(parsed);
+  const handoff = await resolveHandoff(parsed);
   const target = parsed.positionals[0];
 
   if (!target) {
@@ -918,12 +924,44 @@ const DEFAULT_CLI_HANDOFF_STATUS =
 const DEFAULT_CLI_HANDOFF_NEXT_ACTION =
   "(no explicit guidance — proceed as previously established)";
 
-function requireHandoff(parsed: ParsedCommand): Handoff {
+async function resolveHandoff(parsed: ParsedCommand): Promise<Handoff> {
+  if (hasOption(parsed, "stdin")) {
+    const raw = (await readAllStdin()).trim();
+    if (!raw) {
+      throw new Error(
+        "--stdin specified but no input received. Pipe a JSON Handoff or omit --stdin."
+      );
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`Invalid JSON on stdin: ${(error as Error).message}`);
+    }
+    return parseHandoffJson(value);
+  }
+
   return {
     status: getStringOption(parsed, "status") ?? DEFAULT_CLI_HANDOFF_STATUS,
     next_action:
       getStringOption(parsed, "next-action") ?? DEFAULT_CLI_HANDOFF_NEXT_ACTION
   };
+}
+
+export function parseHandoffJson(value: unknown): Handoff {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Handoff JSON must be an object.");
+  }
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.status !== "string" || obj.status.trim() === "") {
+    throw new Error("Handoff JSON requires a non-empty `status` string.");
+  }
+  if (typeof obj.next_action !== "string" || obj.next_action.trim() === "") {
+    throw new Error("Handoff JSON requires a non-empty `next_action` string.");
+  }
+  // Pass optional fields through; the service layer's validateHandoff does
+  // final structural validation on artifacts/open_questions/do_not.
+  return obj as unknown as Handoff;
 }
 
 function parseDurationMs(value: string): number {
@@ -1390,8 +1428,8 @@ Commands:
   tt try [path]
   tt state [path]
   tt events [path] [--after N] [--limit N]
-  tt release [path] --status TEXT --next-action TEXT
-  tt pass [target] [path] --status TEXT --next-action TEXT
+  tt release [path] (--status TEXT --next-action TEXT | --stdin)
+  tt pass [target] [path] (--status TEXT --next-action TEXT | --stdin)
   tt takeover [path] --reason TEXT
   tt notes add <body> [--turn N] [--path DIR] [--stdin]
   tt notes list [--all] [--after NOTE_ID] [--limit N] [--path DIR]

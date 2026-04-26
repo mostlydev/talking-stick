@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   checkGuardianLiveness,
   formatRelativeTime,
+  parseHandoffJson,
   runCli,
   shouldUseJson
 } from "../src/cli.js";
@@ -181,6 +182,56 @@ describe("formatRelativeTime", () => {
 
   test("returns the original string when unparseable", () => {
     expect(formatRelativeTime("not-a-timestamp", now)).toBe("not-a-timestamp");
+  });
+});
+
+describe("parseHandoffJson", () => {
+  test("accepts a minimal valid handoff", () => {
+    const result = parseHandoffJson({
+      status: "Did the thing.",
+      next_action: "Do the next thing."
+    });
+    expect(result.status).toBe("Did the thing.");
+    expect(result.next_action).toBe("Do the next thing.");
+  });
+
+  test("preserves optional artifacts/open_questions/do_not fields", () => {
+    const input = {
+      status: "Status text",
+      next_action: "Next action text",
+      artifacts: [{ path: "src/cli.ts", role: "review", note: "Check this" }],
+      open_questions: ["Should we ship?"],
+      do_not: ["Do not push without review"]
+    };
+    const result = parseHandoffJson(input);
+    expect(result.artifacts).toEqual(input.artifacts);
+    expect(result.open_questions).toEqual(input.open_questions);
+    expect(result.do_not).toEqual(input.do_not);
+  });
+
+  test("rejects non-object input", () => {
+    expect(() => parseHandoffJson(null)).toThrow(/object/);
+    expect(() => parseHandoffJson("a string")).toThrow(/object/);
+    expect(() => parseHandoffJson(42)).toThrow(/object/);
+    expect(() => parseHandoffJson([])).toThrow(/object/);
+  });
+
+  test("rejects missing or empty status", () => {
+    expect(() =>
+      parseHandoffJson({ next_action: "do it" })
+    ).toThrow(/non-empty `status`/);
+    expect(() =>
+      parseHandoffJson({ status: "  ", next_action: "do it" })
+    ).toThrow(/non-empty `status`/);
+  });
+
+  test("rejects missing or empty next_action", () => {
+    expect(() =>
+      parseHandoffJson({ status: "did it" })
+    ).toThrow(/non-empty `next_action`/);
+    expect(() =>
+      parseHandoffJson({ status: "did it", next_action: "" })
+    ).toThrow(/non-empty `next_action`/);
   });
 });
 
