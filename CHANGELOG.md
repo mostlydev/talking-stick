@@ -9,6 +9,13 @@ while it remains in alpha. Versioning is [SemVer](https://semver.org/) with the
 caveat that protocol-level breaking changes are still possible across alpha bumps;
 they will be called out under **Breaking changes**.
 
+## [0.1.0-alpha.4] — 2026-04-26
+
+Full notes: [`docs/releases/0.1.0-alpha.4.md`](docs/releases/0.1.0-alpha.4.md).
+
+### Changed
+- **CLI internals split into focused modules.** `src/cli.ts` is now a thin entrypoint backed by `src/cli/` modules for parsing, command routing, output, identity/session handling, guardian lifecycle, install/self-update flows, notes, room reads, startup maintenance, and turn commands. This is intended to preserve CLI behavior while making follow-up CLI ergonomics work smaller and safer.
+
 ## [0.1.0-alpha.3] — 2026-04-26
 
 Full notes: [`docs/releases/0.1.0-alpha.3.md`](docs/releases/0.1.0-alpha.3.md).
@@ -65,6 +72,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.1.0-alpha.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.2
 [0.1.0-alpha]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha

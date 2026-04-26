@@ -2,7 +2,7 @@
 
 An MCP coordination server that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.1.0-alpha.3. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box.
+**Version:** 0.1.0-alpha.4. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box.
 
 ## Quickstart
 
@@ -27,7 +27,7 @@ That's it. The next time two agents `cd` into the same repo, they see each other
 
 | Method | Command | Notes |
 |---|---|---|
-| **From npm** | `npm i -g talking-stick` | Published as `0.1.0-alpha.3`. Requires Node ≥ 22. |
+| **From npm** | `npm i -g talking-stick` | Published as `0.1.0-alpha.4`. Requires Node ≥ 22. |
 | **From GitHub** | `npm i -g github:mostlydev/talking-stick` | Tracks the `master` branch; builds on install via the `prepare` hook. |
 | **From source** | `git clone … && npm install && npm link` | For contributors. |
 
