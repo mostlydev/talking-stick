@@ -7,7 +7,8 @@ import {
   planSkillInstall,
   planSkillUninstall,
   resolveBundledSkillPath,
-  resolveSkillTargetPath
+  resolveSkillTargetPath,
+  runAction
 } from "../src/index.js";
 
 const tempRoots: string[] = [];
@@ -84,6 +85,42 @@ describe("talking-stick skill install", () => {
     const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     expect(fs.readlinkSync(target)).toBe(resolveBundledSkillPath());
+  });
+
+  test("skips skill install when the harness config directory is missing", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+
+    const action = planSkillInstall("codex", {
+      homeDir: tempRoot,
+      skipMissing: true
+    });
+    expect(action.kind).toBe("skip");
+
+    const result = await runAction(action, { skipMissing: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(fs.existsSync(path.join(tempRoot, ".codex"))).toBe(false);
+  });
+
+  test("skill install proceeds when skipMissing is set and the harness config directory exists", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    fs.mkdirSync(path.join(tempRoot, ".codex"));
+
+    const action = planSkillInstall("codex", {
+      homeDir: tempRoot,
+      skipMissing: true
+    });
+    expect(action.kind).toBe("file-patch");
+
+    const result = await runAction(action, { skipMissing: true });
+
+    const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBeUndefined();
+    expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
   });
 
   test("copy install remains available for claude global skill directory", () => {

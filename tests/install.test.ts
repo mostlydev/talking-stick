@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   detectHarness,
   parseHarnessList,
+  resolveHarnessConfigDir,
   planInstall,
   planUninstall,
   resolveOpencodeConfigPath,
@@ -81,6 +82,15 @@ describe("planInstall", () => {
     expect(configPath).toBe("/custom/config/opencode/opencode.json");
   });
 
+  test("resolves expected harness config directories", () => {
+    expect(resolveHarnessConfigDir("claude-code", { homeDir: "/home/u" })).toBe("/home/u/.claude");
+    expect(resolveHarnessConfigDir("codex", { homeDir: "/home/u" })).toBe("/home/u/.codex");
+    expect(resolveHarnessConfigDir("gemini", { homeDir: "/home/u" })).toBe("/home/u/.gemini");
+    expect(resolveHarnessConfigDir("opencode", { env: {}, homeDir: "/home/u" })).toBe(
+      "/home/u/.config/opencode"
+    );
+  });
+
   test("serverName and serverCommand overrides are respected", () => {
     const action = planInstall("claude-code", {
       serverName: "ts-alpha",
@@ -156,6 +166,19 @@ describe("detectHarness", () => {
     expect(result.evidence).toBe("/home/u/.config/opencode/opencode.json");
   });
 
+  test("falls back to existing config directory when binary missing", () => {
+    const memory = memoryFs({}, ["/home/u/.codex"]);
+    const result = detectHarness("codex", {
+      env: {},
+      platform: "linux",
+      homeDir: "/home/u",
+      ...memory.hooks,
+      which: () => null
+    });
+    expect(result.detected).toBe(true);
+    expect(result.evidence).toBe("/home/u/.codex");
+  });
+
   test("returns detected=false when nothing points at the harness", () => {
     const result = detectHarness("codex", {
       ...memoryFs().hooks,
@@ -210,6 +233,64 @@ describe("runAction", () => {
     expect(invoked).toBe(false);
     expect(result.ok).toBe(false);
     expect(result.message).toBe("codex not on PATH");
+  });
+
+  test("skips missing exec harnesses when requested", async () => {
+    const action = planInstall("codex");
+    let invoked = false;
+    const result = await runAction(action, {
+      skipMissing: true,
+      which: () => null,
+      run: async () => {
+        invoked = true;
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+    });
+
+    expect(invoked).toBe(false);
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(result.message).toBe("codex not on PATH");
+  });
+
+  test("skips opencode install when its config directory is missing", async () => {
+    const memory = memoryFs();
+    const action = planInstall("opencode", {
+      env: {},
+      platform: "linux",
+      homeDir: "/home/u",
+      skipMissing: true,
+      ...memory.hooks
+    });
+
+    const result = await runAction(action, {
+      skipMissing: true,
+      ...memory.hooks
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBe(true);
+    expect(memory.files.has("/home/u/.config/opencode/opencode.json")).toBe(false);
+  });
+
+  test("installs opencode config when skipMissing is set and config directory exists", async () => {
+    const memory = memoryFs({}, ["/home/u/.config/opencode"]);
+    const action = planInstall("opencode", {
+      env: {},
+      platform: "linux",
+      homeDir: "/home/u",
+      skipMissing: true,
+      ...memory.hooks
+    });
+
+    const result = await runAction(action, {
+      skipMissing: true,
+      ...memory.hooks
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBeUndefined();
+    expect(memory.files.has("/home/u/.config/opencode/opencode.json")).toBe(true);
   });
 
   test("uses the resolved executable path for direct binaries", async () => {
@@ -313,19 +394,25 @@ test("SUPPORTED_HARNESSES is the full expected set", () => {
 
 interface MemoryFs {
   files: Map<string, string>;
-  hooks: Pick<InstallOptions, "readFile" | "writeFile" | "ensureDir" | "which">;
+  dirs: Set<string>;
+  hooks: Pick<InstallOptions, "readFile" | "writeFile" | "ensureDir" | "pathExists" | "which">;
 }
 
-function memoryFs(seed: Record<string, string> = {}): MemoryFs {
+function memoryFs(seed: Record<string, string> = {}, dirs: string[] = []): MemoryFs {
   const files = new Map<string, string>(Object.entries(seed));
+  const dirSet = new Set(dirs);
   return {
     files,
+    dirs: dirSet,
     hooks: {
       readFile: (filePath) => files.get(filePath) ?? null,
       writeFile: (filePath, data) => {
         files.set(filePath, data);
       },
-      ensureDir: () => {},
+      ensureDir: (dirPath) => {
+        dirSet.add(dirPath);
+      },
+      pathExists: (filePath) => files.has(filePath) || dirSet.has(filePath),
       which: () => null
     }
   };

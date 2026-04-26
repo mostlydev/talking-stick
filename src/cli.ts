@@ -1119,7 +1119,8 @@ async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
   normalizeBooleanFlag(parsed, "print");
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
-  const actions = harnesses.map((harness) => planInstall(harness));
+  const installOptions = { skipMissing: true };
+  const actions = harnesses.map((harness) => planInstall(harness, installOptions));
 
   if (dryRun) {
     for (const action of actions) {
@@ -1128,7 +1129,7 @@ async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
     return;
   }
 
-  const results = await Promise.all(actions.map((action) => runAction(action)));
+  const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
   reportInstallResults(results, "install");
 }
 
@@ -1136,7 +1137,8 @@ async function runUninstallCommand(parsed: ParsedCommand): Promise<void> {
   normalizeBooleanFlag(parsed, "print");
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
-  const actions = harnesses.map((harness) => planUninstall(harness));
+  const installOptions = { skipMissing: true };
+  const actions = harnesses.map((harness) => planUninstall(harness, installOptions));
 
   if (dryRun) {
     for (const action of actions) {
@@ -1145,7 +1147,7 @@ async function runUninstallCommand(parsed: ParsedCommand): Promise<void> {
     return;
   }
 
-  const results = await Promise.all(actions.map((action) => runAction(action)));
+  const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
   reportInstallResults(results, "uninstall");
 }
 
@@ -1156,8 +1158,9 @@ async function runInstallSkillCommand(parsed: ParsedCommand): Promise<void> {
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
   const link = resolveSkillInstallLinkMode(parsed);
+  const installOptions = { link, skipMissing: true };
   const actions = harnesses.map((harness) =>
-    planSkillInstall(harness, { link })
+    planSkillInstall(harness, installOptions)
   );
 
   if (dryRun) {
@@ -1167,7 +1170,7 @@ async function runInstallSkillCommand(parsed: ParsedCommand): Promise<void> {
     return;
   }
 
-  const results = await Promise.all(actions.map((action) => runAction(action)));
+  const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
   reportInstallResults(results, "install");
 }
 
@@ -1175,7 +1178,8 @@ async function runUninstallSkillCommand(parsed: ParsedCommand): Promise<void> {
   normalizeBooleanFlag(parsed, "print");
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
-  const actions = harnesses.map((harness) => planSkillUninstall(harness));
+  const installOptions = { skipMissing: true };
+  const actions = harnesses.map((harness) => planSkillUninstall(harness, installOptions));
 
   if (dryRun) {
     for (const action of actions) {
@@ -1184,7 +1188,7 @@ async function runUninstallSkillCommand(parsed: ParsedCommand): Promise<void> {
     return;
   }
 
-  const results = await Promise.all(actions.map((action) => runAction(action)));
+  const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
   reportInstallResults(results, "uninstall");
 }
 
@@ -1214,11 +1218,6 @@ function resolveSkillInstallLinkMode(parsed: ParsedCommand): boolean {
 function selectHarnesses(parsed: ParsedCommand): HarnessId[] {
   if (hasOption(parsed, "all")) {
     const detected = SUPPORTED_HARNESSES.filter((harness) => detectHarness(harness).detected);
-    if (detected.length === 0) {
-      throw new Error(
-        `No supported harnesses detected. Install one of: ${SUPPORTED_HARNESSES.join(", ")}, or pass harnesses explicitly.`
-      );
-    }
     return [...detected];
   }
 
@@ -1232,6 +1231,9 @@ function selectHarnesses(parsed: ParsedCommand): HarnessId[] {
 }
 
 function printActionPlan(action: InstallAction): void {
+  if (action.kind === "skip") {
+    return;
+  }
   if (action.kind === "exec") {
     process.stdout.write(`[${action.harness}] ${action.description}\n`);
     return;
@@ -1242,6 +1244,7 @@ function printActionPlan(action: InstallAction): void {
 function reportInstallResults(results: InstallResult[], mode: "install" | "uninstall"): void {
   let anyFailed = false;
   for (const result of results) {
+    if (result.skipped) continue;
     const status = result.ok ? "ok" : "FAIL";
     process.stdout.write(`[${result.harness}] ${status}: ${result.message}\n`);
     if (!result.ok) anyFailed = true;

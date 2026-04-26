@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  HarnessId,
-  InstallAction,
-  InstallOptions
+import {
+  MissingHarnessError,
+  resolveHarnessConfigDir,
+  skipAction,
+  type HarnessId,
+  type InstallAction,
+  type InstallOptions
 } from "./install.js";
 
 export const DEFAULT_SKILL_NAME = "talking-stick";
@@ -66,6 +69,12 @@ export function planSkillInstall(
   }
 
   const targetPath = resolveSkillTargetPath(harness, options);
+  const harnessRootPath = resolveHarnessConfigDir(harness, options);
+  const pathExists = options.pathExists ?? fs.existsSync;
+  if (options.skipMissing && !pathExists(harnessRootPath)) {
+    return skipAction(harness, `harness config directory not found: ${harnessRootPath}`);
+  }
+
   return {
     kind: "file-patch",
     harness,
@@ -74,7 +83,8 @@ export function planSkillInstall(
       shouldLink
         ? `link ${sourcePath} -> ${targetPath}`
         : `copy ${sourcePath} -> ${targetPath}`,
-    apply: () => installSkillDirectory(sourcePath, targetPath, shouldLink)
+    apply: () =>
+      installSkillDirectory(sourcePath, targetPath, harnessRootPath, shouldLink, options)
   };
 }
 
@@ -95,12 +105,18 @@ export function planSkillUninstall(
   }
 
   const targetPath = resolveSkillTargetPath(harness, options);
+  const harnessRootPath = resolveHarnessConfigDir(harness, options);
+  const pathExists = options.pathExists ?? fs.existsSync;
+  if (options.skipMissing && !pathExists(harnessRootPath)) {
+    return skipAction(harness, `harness config directory not found: ${harnessRootPath}`);
+  }
+
   return {
     kind: "file-patch",
     harness,
     filePath: targetPath,
     description: `remove ${targetPath}`,
-    apply: () => removeInstalledSkill(targetPath)
+    apply: () => removeInstalledSkill(targetPath, harnessRootPath, options)
   };
 }
 
@@ -118,8 +134,15 @@ function ensureSkillSourceExists(sourcePath: string): void {
 function installSkillDirectory(
   sourcePath: string,
   targetPath: string,
-  link: boolean
+  harnessRootPath: string,
+  link: boolean,
+  options: SkillInstallOptions
 ): void {
+  const pathExists = options.pathExists ?? fs.existsSync;
+  if (options.skipMissing && !pathExists(harnessRootPath)) {
+    throw new MissingHarnessError(`harness config directory not found: ${harnessRootPath}`);
+  }
+
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   removeInstalledSkill(targetPath);
 
@@ -135,7 +158,16 @@ function installSkillDirectory(
   fs.cpSync(sourcePath, targetPath, { recursive: true });
 }
 
-function removeInstalledSkill(targetPath: string): void {
+function removeInstalledSkill(
+  targetPath: string,
+  harnessRootPath?: string,
+  options: SkillInstallOptions = {}
+): void {
+  const pathExists = options.pathExists ?? fs.existsSync;
+  if (options.skipMissing && harnessRootPath && !pathExists(harnessRootPath)) {
+    throw new MissingHarnessError(`harness config directory not found: ${harnessRootPath}`);
+  }
+
   try {
     const stat = fs.lstatSync(targetPath);
     if (stat.isSymbolicLink()) {

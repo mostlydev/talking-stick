@@ -49,6 +49,8 @@ tt install claude-code codex
 tt install-skill gemini
 ```
 
+During normal execution, install commands skip harnesses that are not present instead of failing or creating new harness config roots. For example, `tt install-skill codex` only creates `~/.codex/skills/` if `~/.codex/` already exists.
+
 ### Remove
 
 ```bash

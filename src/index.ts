@@ -39,12 +39,16 @@ export {
 export { createMcpServer, runStdioServer } from "./mcp-server.js";
 export {
   SUPPORTED_HARNESSES,
+  MissingHarnessError,
   detectHarness,
   parseHarnessList,
   planInstall,
   planUninstall,
+  resolveHarnessConfigDir,
+  resolveOpencodeConfigDir,
   resolveOpencodeConfigPath,
   runAction,
+  skipAction,
   type ExecAction,
   type ExecResult,
   type FilePatchAction,
@@ -53,7 +57,8 @@ export {
   type InstallAction,
   type InstallOptions,
   type InstallResult,
-  type InstallerHooks
+  type InstallerHooks,
+  type SkipAction
 } from "./install.js";
 export {
   DEFAULT_SKILL_NAME,

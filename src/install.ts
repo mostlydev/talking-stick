@@ -20,12 +20,14 @@ export interface InstallerHooks {
   readFile?: (filePath: string) => string | null;
   writeFile?: (filePath: string, data: string) => void;
   ensureDir?: (dirPath: string) => void;
+  pathExists?: (filePath: string) => boolean;
   which?: (binary: string) => string | null;
 }
 
 export interface InstallOptions extends Partial<InstallEnv>, InstallerHooks {
   serverName?: string;
   serverCommand?: readonly string[];
+  skipMissing?: boolean;
 }
 
 export interface ExecAction {
@@ -44,13 +46,21 @@ export interface FilePatchAction {
   apply: () => void;
 }
 
-export type InstallAction = ExecAction | FilePatchAction;
+export interface SkipAction {
+  kind: "skip";
+  harness: HarnessId;
+  description: string;
+  message: string;
+}
+
+export type InstallAction = ExecAction | FilePatchAction | SkipAction;
 
 export interface InstallResult {
   harness: HarnessId;
   ok: boolean;
   action: InstallAction;
   message: string;
+  skipped?: boolean;
 }
 
 export interface ExecResult {
@@ -75,7 +85,15 @@ interface ResolvedOptions {
   homeDir: string;
   serverName: string;
   serverCommand: readonly string[];
+  skipMissing: boolean;
   hooks: Required<InstallerHooks>;
+}
+
+export class MissingHarnessError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MissingHarnessError";
+  }
 }
 
 function resolveOptions(options: InstallOptions = {}): ResolvedOptions {
@@ -89,11 +107,13 @@ function resolveOptions(options: InstallOptions = {}): ResolvedOptions {
     homeDir,
     serverName: options.serverName ?? DEFAULT_SERVER_NAME,
     serverCommand: options.serverCommand ?? DEFAULT_SERVER_COMMAND,
+    skipMissing: options.skipMissing ?? false,
     hooks: {
       run: options.run ?? defaultRun,
       readFile: options.readFile ?? defaultReadFile,
       writeFile: options.writeFile ?? defaultWriteFile,
       ensureDir: options.ensureDir ?? defaultEnsureDir,
+      pathExists: options.pathExists ?? defaultPathExists,
       which: options.which ?? ((binary) => defaultWhich(binary, { env, platform }))
     }
   };
@@ -134,6 +154,10 @@ function defaultEnsureDir(dirPath: string): void {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
+function defaultPathExists(filePath: string): boolean {
+  return fs.existsSync(filePath);
+}
+
 function defaultWhich(
   binary: string,
   options: Pick<InstallEnv, "env" | "platform">
@@ -155,10 +179,44 @@ function defaultWhich(
 }
 
 export function resolveOpencodeConfigPath(options: InstallOptions = {}): string {
+  return path.join(resolveOpencodeConfigDir(options), "opencode.json");
+}
+
+export function resolveOpencodeConfigDir(options: InstallOptions = {}): string {
   const resolved = resolveOptions(options);
+  return resolveOpencodeConfigDirFromResolved(resolved);
+}
+
+export function resolveHarnessConfigDir(
+  harness: HarnessId,
+  options: InstallOptions = {}
+): string {
+  const resolved = resolveOptions(options);
+  return resolveHarnessConfigDirFromResolved(harness, resolved);
+}
+
+function resolveOpencodeConfigDirFromResolved(resolved: ResolvedOptions): string {
   const xdg = resolved.env.XDG_CONFIG_HOME?.trim();
   const base = xdg && xdg.length > 0 ? xdg : path.join(resolved.homeDir, ".config");
-  return path.join(base, "opencode", "opencode.json");
+  return path.join(base, "opencode");
+}
+
+function resolveHarnessConfigDirFromResolved(
+  harness: HarnessId,
+  resolved: ResolvedOptions
+): string {
+  switch (harness) {
+    case "claude-code":
+      return path.join(resolved.homeDir, ".claude");
+    case "codex":
+      return path.join(resolved.homeDir, ".codex");
+    case "gemini":
+      return path.join(resolved.homeDir, ".gemini");
+    case "opencode":
+      return resolveOpencodeConfigDirFromResolved(resolved);
+    default:
+      throw new Error(`Unknown harness: ${harness satisfies never}`);
+  }
 }
 
 export function planInstall(harness: HarnessId, options: InstallOptions = {}): InstallAction {
@@ -168,6 +226,9 @@ export function planInstall(harness: HarnessId, options: InstallOptions = {}): I
 
   switch (harness) {
     case "claude-code":
+      if (resolved.skipMissing && !resolved.hooks.which("claude")) {
+        return skipAction(harness, "claude not on PATH");
+      }
       return {
         kind: "exec",
         harness,
@@ -176,6 +237,9 @@ export function planInstall(harness: HarnessId, options: InstallOptions = {}): I
         description: `claude mcp add -s user ${resolved.serverName} -- ${resolved.serverCommand.join(" ")}`
       };
     case "codex":
+      if (resolved.skipMissing && !resolved.hooks.which("codex")) {
+        return skipAction(harness, "codex not on PATH");
+      }
       return {
         kind: "exec",
         harness,
@@ -184,6 +248,9 @@ export function planInstall(harness: HarnessId, options: InstallOptions = {}): I
         description: `codex mcp add ${resolved.serverName} -- ${resolved.serverCommand.join(" ")}`
       };
     case "gemini":
+      if (resolved.skipMissing && !resolved.hooks.which("gemini")) {
+        return skipAction(harness, "gemini not on PATH");
+      }
       return {
         kind: "exec",
         harness,
@@ -193,6 +260,10 @@ export function planInstall(harness: HarnessId, options: InstallOptions = {}): I
       };
     case "opencode": {
       const filePath = resolveOpencodeConfigPath(options);
+      const configDir = path.dirname(filePath);
+      if (resolved.skipMissing && !resolved.hooks.pathExists(configDir)) {
+        return skipAction(harness, `opencode config directory not found: ${configDir}`);
+      }
       return {
         kind: "file-patch",
         harness,
@@ -210,6 +281,9 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
   const resolved = resolveOptions(options);
   switch (harness) {
     case "claude-code":
+      if (resolved.skipMissing && !resolved.hooks.which("claude")) {
+        return skipAction(harness, "claude not on PATH");
+      }
       return {
         kind: "exec",
         harness,
@@ -218,6 +292,9 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         description: `claude mcp remove -s user ${resolved.serverName}`
       };
     case "codex":
+      if (resolved.skipMissing && !resolved.hooks.which("codex")) {
+        return skipAction(harness, "codex not on PATH");
+      }
       return {
         kind: "exec",
         harness,
@@ -226,6 +303,9 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         description: `codex mcp remove ${resolved.serverName}`
       };
     case "gemini":
+      if (resolved.skipMissing && !resolved.hooks.which("gemini")) {
+        return skipAction(harness, "gemini not on PATH");
+      }
       return {
         kind: "exec",
         harness,
@@ -235,6 +315,13 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
       };
     case "opencode": {
       const filePath = resolveOpencodeConfigPath(options);
+      const configDir = path.dirname(filePath);
+      if (resolved.skipMissing && !resolved.hooks.pathExists(configDir)) {
+        return skipAction(harness, `opencode config directory not found: ${configDir}`);
+      }
+      if (resolved.skipMissing && resolved.hooks.readFile(filePath) === null) {
+        return skipAction(harness, `opencode config not found: ${filePath}`);
+      }
       return {
         kind: "file-patch",
         harness,
@@ -248,8 +335,27 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
   }
 }
 
+export function skipAction(harness: HarnessId, message: string): SkipAction {
+  return {
+    kind: "skip",
+    harness,
+    description: message,
+    message
+  };
+}
+
 function patchOpencodeConfig(filePath: string, resolved: ResolvedOptions, mode: "install" | "uninstall"): void {
   const existing = resolved.hooks.readFile(filePath);
+  if (resolved.skipMissing) {
+    const configDir = path.dirname(filePath);
+    if (!resolved.hooks.pathExists(configDir)) {
+      throw new MissingHarnessError(`opencode config directory not found: ${configDir}`);
+    }
+    if (mode === "uninstall" && existing === null) {
+      throw new MissingHarnessError(`opencode config not found: ${filePath}`);
+    }
+  }
+
   const config: Record<string, unknown> = existing ? parseJsonOrThrow(existing, filePath) : {};
   const mcp = isPlainObject(config.mcp) ? { ...config.mcp } : {};
 
@@ -295,15 +401,24 @@ export function detectHarness(harness: HarnessId, options: InstallOptions = {}):
   switch (harness) {
     case "claude-code": {
       const bin = resolved.hooks.which("claude");
-      return { harness, detected: bin !== null, evidence: bin ?? "claude not on PATH" };
+      if (bin) return { harness, detected: true, evidence: bin };
+      const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
+      if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
+      return { harness, detected: false, evidence: "claude not on PATH and no config directory" };
     }
     case "codex": {
       const bin = resolved.hooks.which("codex");
-      return { harness, detected: bin !== null, evidence: bin ?? "codex not on PATH" };
+      if (bin) return { harness, detected: true, evidence: bin };
+      const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
+      if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
+      return { harness, detected: false, evidence: "codex not on PATH and no config directory" };
     }
     case "gemini": {
       const bin = resolved.hooks.which("gemini");
-      return { harness, detected: bin !== null, evidence: bin ?? "gemini not on PATH" };
+      if (bin) return { harness, detected: true, evidence: bin };
+      const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
+      if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
+      return { harness, detected: false, evidence: "gemini not on PATH and no config directory" };
     }
     case "opencode": {
       const bin = resolved.hooks.which("opencode");
@@ -311,7 +426,9 @@ export function detectHarness(harness: HarnessId, options: InstallOptions = {}):
       const configPath = resolveOpencodeConfigPath(options);
       const existing = resolved.hooks.readFile(configPath);
       if (existing !== null) return { harness, detected: true, evidence: configPath };
-      return { harness, detected: false, evidence: "opencode not on PATH and no config file" };
+      const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
+      if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
+      return { harness, detected: false, evidence: "opencode not on PATH and no config directory" };
     }
     default:
       throw new Error(`Unknown harness: ${harness satisfies never}`);
@@ -320,14 +437,25 @@ export function detectHarness(harness: HarnessId, options: InstallOptions = {}):
 
 export async function runAction(action: InstallAction, options: InstallOptions = {}): Promise<InstallResult> {
   const resolved = resolveOptions(options);
+  if (action.kind === "skip") {
+    return {
+      harness: action.harness,
+      ok: true,
+      action,
+      message: action.message,
+      skipped: true
+    };
+  }
+
   if (action.kind === "exec") {
     const invocation = resolveExecInvocation(action, resolved);
     if (!invocation) {
       return {
         harness: action.harness,
-        ok: false,
+        ok: resolved.skipMissing,
         action,
-        message: `${action.command} not on PATH`
+        message: `${action.command} not on PATH`,
+        skipped: resolved.skipMissing
       };
     }
 
@@ -381,6 +509,16 @@ export async function runAction(action: InstallAction, options: InstallOptions =
       message: `Updated ${action.filePath}`
     };
   } catch (error) {
+    if (resolved.skipMissing && error instanceof MissingHarnessError) {
+      return {
+        harness: action.harness,
+        ok: true,
+        action,
+        message: error.message,
+        skipped: true
+      };
+    }
+
     return {
       harness: action.harness,
       ok: false,
