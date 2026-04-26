@@ -183,10 +183,15 @@ npm run typecheck
 npm run build
 ```
 
+## Changelog
+
+See [`CHANGELOG.md`](CHANGELOG.md) for a per-version summary; full release notes live in [`docs/releases/`](docs/releases/).
+
 ## Read next
 
 - [`docs/talking-stick-plan.md`](docs/talking-stick-plan.md) — full protocol, state transitions, persistence model, design rationale, and open questions.
 - [`docs/ambient-presence.md`](docs/ambient-presence.md) — design sketch for shell-prompt awareness, event streaming, and agent skills that make room state ambient rather than appointment-only.
+- [`docs/non-owner-notes.md`](docs/non-owner-notes.md) — design backing the v1 notes feature; documents what shipped, what was deferred (`resolve_note`, wait_for_turn unread hints), and the rationale.
 - [`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md) — the portable skill installed into global harness skill directories.
 
 ## License
