@@ -42,6 +42,13 @@ import {
   syncInstalledSkills
 } from "./skill-install.js";
 import { resolveContextPath } from "./path-resolution.js";
+import {
+  detectInstallSource,
+  isPackageManager,
+  planSelfUpdate,
+  resolveCurrentBinaryPath,
+  type InstallSource
+} from "./self-update.js";
 
 interface ParsedCommand {
   name: string;
@@ -105,6 +112,11 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
 
   if (parsed.name === "uninstall-skill") {
     await runUninstallSkillCommand(parsed);
+    return;
+  }
+
+  if (parsed.name === "self-update") {
+    await runSelfUpdateCommand(parsed);
     return;
   }
 
@@ -1640,6 +1652,60 @@ function printActionPlan(action: InstallAction): void {
   process.stdout.write(`[${action.harness}] ${action.description}\n`);
 }
 
+async function runSelfUpdateCommand(parsed: ParsedCommand): Promise<void> {
+  normalizeBooleanFlag(parsed, "print");
+  const dryRun = hasOption(parsed, "print");
+  const managerOverride = getStringOption(parsed, "manager");
+
+  let source: InstallSource;
+  if (managerOverride) {
+    if (!isPackageManager(managerOverride)) {
+      throw new Error(
+        `--manager must be one of npm | pnpm | yarn | bun (got ${managerOverride}).`
+      );
+    }
+    source = managerOverride;
+  } else {
+    const binaryPath = resolveCurrentBinaryPath(import.meta.url);
+    source = detectInstallSource({ binaryPath });
+  }
+
+  const plan = planSelfUpdate(source);
+  if (!plan) {
+    if (source === "dev") {
+      throw new Error(
+        "tt is running from a development checkout. Use `git pull && npm install && npm run build` instead of `tt self-update`, or pass `--manager npm|pnpm|yarn|bun` if this is wrong."
+      );
+    }
+    throw new Error(
+      `Could not determine how tt was installed. Pass --manager npm|pnpm|yarn|bun to override.`
+    );
+  }
+
+  if (dryRun) {
+    process.stdout.write(`${plan.description}\n`);
+    return;
+  }
+
+  process.stdout.write(`Updating via: ${plan.description}\n`);
+  await runInheritIo(plan.command, plan.args);
+  process.stdout.write("Done. Restart your harness MCP subprocess to pick up the new dist.\n");
+}
+
+function runInheritIo(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: "inherit", shell: false });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} exited with code ${code}.`));
+    });
+  });
+}
+
 function reportInstallResults(results: InstallResult[], mode: "install" | "uninstall"): void {
   let anyFailed = false;
   for (const result of results) {
@@ -1676,6 +1742,7 @@ Commands:
   tt uninstall <harness...> | --all [--print]
   tt install-skill <harness...> | --all [--print] [--copy] [--link]
   tt uninstall-skill <harness...> | --all [--print]
+  tt self-update [--print] [--manager npm|pnpm|yarn|bun]
 
 Harnesses: ${SUPPORTED_HARNESSES.join(", ")}
 

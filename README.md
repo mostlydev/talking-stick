@@ -143,7 +143,10 @@ tt install <harness...> | --all [--print]                 # register MCP server
 tt uninstall <harness...> | --all [--print]               # remove MCP server
 tt install-skill <harness...> | --all [--print] [--copy] [--link]  # install global talking-stick skill
 tt uninstall-skill <harness...> | --all [--print]         # remove global talking-stick skill
+tt self-update [--print] [--manager npm|pnpm|yarn|bun]    # update to the latest published tt
 ```
+
+`tt self-update` detects how `tt` was installed (npm / pnpm / yarn / bun, including npm-via-Homebrew/mise/asdf/nvm) and runs the right global-update command. Pass `--print` to see the inferred command without running it; pass `--manager` to override detection. Running `tt self-update` from a development checkout (where `tt` resolves outside `node_modules/talking-stick`) refuses and tells you to `git pull && npm install && npm run build` instead.
 
 Human CLI commands use a stable identity like `human:<username>`. When `tt wait`, `tt take`, or `tt takeover` wins the turn, a small background guardian keeps the lease alive on your behalf until you release, pass, or assign it. Human CLI `take` intentionally works without a required reason so an operator can step into a stuck room quickly; harness-aware CLI takeovers still require `--reason` unless the command includes `--operator-requested`.
 

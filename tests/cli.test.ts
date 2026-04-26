@@ -740,6 +740,22 @@ describe("tt notes", () => {
     }
   });
 
+  test("tt self-update --print emits the inferred command without running it", async () => {
+    const out = await captureStdout([
+      "self-update",
+      "--print",
+      "--manager",
+      "pnpm"
+    ]);
+    expect(out.trim()).toBe("pnpm install -g talking-stick@latest");
+  });
+
+  test("tt self-update --manager rejects unknown values", async () => {
+    await expect(
+      captureStdout(["self-update", "--print", "--manager", "winget"])
+    ).rejects.toThrow(/--manager must be one of/);
+  });
+
   test("tt notes with unknown subcommand surfaces an error", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     await captureStdout([
