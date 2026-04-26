@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,11 +12,27 @@ import {
 } from "./install.js";
 
 export const DEFAULT_SKILL_NAME = "talking-stick";
+const FILE_SKILL_HARNESSES = ["claude-code", "codex", "opencode"] as const;
 
 export interface SkillInstallOptions extends InstallOptions {
   skillName?: string;
   sourcePath?: string;
   link?: boolean;
+}
+
+export type FileSkillHarness = (typeof FILE_SKILL_HARNESSES)[number];
+
+export interface SkillSyncTargetResult {
+  harness: FileSkillHarness;
+  targetPath: string;
+  status: "missing" | "current" | "updated" | "failed";
+  message: string;
+}
+
+export interface SkillSyncResult {
+  sourcePath: string;
+  sourceDigest: string;
+  targets: SkillSyncTargetResult[];
 }
 
 export function resolveBundledSkillPath(options: SkillInstallOptions = {}): string {
@@ -120,6 +137,22 @@ export function planSkillUninstall(
   };
 }
 
+export function syncInstalledSkills(
+  options: SkillInstallOptions = {}
+): SkillSyncResult {
+  const sourcePath = resolveBundledSkillPath(options);
+  ensureSkillSourceExists(sourcePath);
+  const sourceDigest = digestDirectory(sourcePath);
+
+  return {
+    sourcePath,
+    sourceDigest,
+    targets: FILE_SKILL_HARNESSES.map((harness) =>
+      syncInstalledFileSkill(harness, sourcePath, sourceDigest, options)
+    )
+  };
+}
+
 function currentPackageDir(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
@@ -158,6 +191,82 @@ function installSkillDirectory(
   fs.cpSync(sourcePath, targetPath, { recursive: true });
 }
 
+function syncInstalledFileSkill(
+  harness: FileSkillHarness,
+  sourcePath: string,
+  sourceDigest: string,
+  options: SkillInstallOptions
+): SkillSyncTargetResult {
+  const targetPath = resolveSkillTargetPath(harness, options);
+  const harnessRootPath = resolveHarnessConfigDir(harness, options);
+
+  try {
+    if (!fs.existsSync(harnessRootPath) || !fs.existsSync(targetPath)) {
+      return {
+        harness,
+        targetPath,
+        status: "missing",
+        message: "skill is not installed"
+      };
+    }
+
+    const targetStat = fs.lstatSync(targetPath);
+    if (targetStat.isSymbolicLink()) {
+      const currentTarget = fs.readlinkSync(targetPath);
+      const resolvedCurrentTarget = path.resolve(
+        path.dirname(targetPath),
+        currentTarget
+      );
+      if (sameRealPath(resolvedCurrentTarget, sourcePath)) {
+        return {
+          harness,
+          targetPath,
+          status: "current",
+          message: "symlink already points at bundled skill"
+        };
+      }
+
+      fs.unlinkSync(targetPath);
+      fs.symlinkSync(
+        sourcePath,
+        targetPath,
+        process.platform === "win32" ? "junction" : "dir"
+      );
+      return {
+        harness,
+        targetPath,
+        status: "updated",
+        message: "relinked stale skill symlink"
+      };
+    }
+
+    if (targetStat.isDirectory() && digestDirectory(targetPath) === sourceDigest) {
+      return {
+        harness,
+        targetPath,
+        status: "current",
+        message: "copied skill is current"
+      };
+    }
+
+    removeInstalledSkill(targetPath);
+    fs.cpSync(sourcePath, targetPath, { recursive: true });
+    return {
+      harness,
+      targetPath,
+      status: "updated",
+      message: "updated copied skill"
+    };
+  } catch (error) {
+    return {
+      harness,
+      targetPath,
+      status: "failed",
+      message: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 function removeInstalledSkill(
   targetPath: string,
   harnessRootPath?: string,
@@ -181,4 +290,42 @@ function removeInstalledSkill(
     }
     throw error;
   }
+}
+
+function sameRealPath(left: string, right: string): boolean {
+  try {
+    return fs.realpathSync(left) === fs.realpathSync(right);
+  } catch {
+    return path.resolve(left) === path.resolve(right);
+  }
+}
+
+function digestDirectory(dirPath: string): string {
+  const hash = crypto.createHash("sha256");
+  for (const filePath of listFiles(dirPath)) {
+    const relativePath = path.relative(dirPath, filePath).split(path.sep).join("/");
+    hash.update(relativePath);
+    hash.update("\0");
+    hash.update(fs.readFileSync(filePath));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function listFiles(dirPath: string): string[] {
+  const entries = fs
+    .readdirSync(dirPath, { withFileTypes: true })
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const files: string[] = [];
+
+  for (const entry of entries) {
+    const entryPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listFiles(entryPath));
+    } else if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
 }

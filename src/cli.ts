@@ -36,7 +36,11 @@ import {
   type InstallAction,
   type InstallResult
 } from "./install.js";
-import { planSkillInstall, planSkillUninstall } from "./skill-install.js";
+import {
+  planSkillInstall,
+  planSkillUninstall,
+  syncInstalledSkills
+} from "./skill-install.js";
 import { resolveContextPath } from "./path-resolution.js";
 
 interface ParsedCommand {
@@ -66,6 +70,8 @@ const STALE_GUARD_ERRORS = new Set(["stale_lease", "turn_mismatch", "room_not_fo
 
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const parsed = parseCommand(argv);
+
+  maybeSyncInstalledSkills(parsed);
 
   if (!parsed.name || parsed.name === "help" || parsed.name === "--help") {
     printHelp();
@@ -1075,6 +1081,44 @@ function isKnownHarnessCliEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   }
 
   return deriveHarnessCliIdentity({ env }) !== null;
+}
+
+function maybeSyncInstalledSkills(
+  parsed: ParsedCommand,
+  env: NodeJS.ProcessEnv = process.env
+): void {
+  if (!shouldAutoSyncInstalledSkills(parsed, env)) {
+    return;
+  }
+
+  try {
+    syncInstalledSkills({ skipMissing: true });
+  } catch {
+    // Skill sync is a best-effort human CLI convenience. It must not make an
+    // unrelated tt command fail.
+  }
+}
+
+export function shouldAutoSyncInstalledSkills(
+  parsed: ParsedCommand,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (env.TALKING_STICK_DISABLE_SKILL_SYNC?.trim()) {
+    return false;
+  }
+
+  if (isKnownHarnessCliEnv(env)) {
+    return false;
+  }
+
+  return !new Set([
+    "mcp",
+    "guard",
+    "install-skill",
+    "uninstall-skill",
+    "install",
+    "uninstall"
+  ]).has(parsed.name);
 }
 
 function parseOptionalInteger(

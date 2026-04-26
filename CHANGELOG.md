@@ -14,6 +14,7 @@ they will be called out under **Breaking changes**.
 ### Added
 - **Operator-friendly CLI takeover.** Added `tt take` and made human CLI `tt takeover` reason-optional so an operator can step into a stuck reserved/owned room quickly. Harness-aware CLI takeovers still require `--reason` unless invoked with `--operator-requested`.
 - **Explicit assignment command.** Added `tt assign <target|next>` for named handoffs; `tt pass [path]` now means "pass/end my turn" instead of treating the first positional as a target.
+- **Automatic skill sync for human CLI.** Ordinary human `tt` invocations silently refresh already-installed Claude Code, Codex, and OpenCode skill copies/symlinks from the bundled skill so copied installs do not drift after a Talking Stick update. Missing harnesses and missing skill installs are skipped; Gemini remains explicitly managed by `tt install-skill gemini`.
 
 ### Changed
 - **Fair release selection.** Normal release now tracks `last_wait_at` and prefers recent waiters that are new or have gone longest without holding the stick. If the best-known member is between wait polls, a short grace window avoids immediately recycling the turn to a less-fair claimant.

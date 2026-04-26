@@ -66,6 +66,10 @@ export {
   planSkillUninstall,
   resolveBundledSkillPath,
   resolveSkillTargetPath,
+  syncInstalledSkills,
+  type FileSkillHarness,
+  type SkillSyncResult,
+  type SkillSyncTargetResult,
   type SkillInstallOptions
 } from "./skill-install.js";
 export {

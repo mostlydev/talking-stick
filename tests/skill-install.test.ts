@@ -8,7 +8,8 @@ import {
   planSkillUninstall,
   resolveBundledSkillPath,
   resolveSkillTargetPath,
-  runAction
+  runAction,
+  syncInstalledSkills
 } from "../src/index.js";
 
 const tempRoots: string[] = [];
@@ -142,6 +143,63 @@ describe("talking-stick skill install", () => {
     expect(fs.existsSync(path.join(target, "SKILL.md"))).toBe(true);
     expect(fs.existsSync(path.join(target, "agents", "openai.yaml"))).toBe(true);
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
+  });
+
+  test("syncInstalledSkills updates an existing copied skill without installing missing harnesses", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const sourcePath = path.join(tempRoot, "source-skill");
+    fs.mkdirSync(sourcePath, { recursive: true });
+    fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "new skill\n");
+
+    const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, "SKILL.md"), "old skill\n");
+
+    const result = syncInstalledSkills({
+      homeDir: tempRoot,
+      sourcePath
+    });
+
+    expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toBe(
+      "new skill\n"
+    );
+    expect(result.targets.find((targetResult) => targetResult.harness === "codex")).toMatchObject({
+      status: "updated"
+    });
+    expect(fs.existsSync(path.join(tempRoot, ".claude"))).toBe(false);
+  });
+
+  test("syncInstalledSkills leaves current symlinks alone and relinks stale ones", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const sourcePath = path.join(tempRoot, "source-skill");
+    const staleSourcePath = path.join(tempRoot, "stale-skill");
+    fs.mkdirSync(sourcePath, { recursive: true });
+    fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "current\n");
+    fs.mkdirSync(staleSourcePath, { recursive: true });
+    fs.writeFileSync(path.join(staleSourcePath, "SKILL.md"), "stale\n");
+
+    const codexTarget = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    fs.mkdirSync(path.dirname(codexTarget), { recursive: true });
+    fs.symlinkSync(sourcePath, codexTarget, "dir");
+    const claudeTarget = path.join(tempRoot, ".claude", "skills", "talking-stick");
+    fs.mkdirSync(path.dirname(claudeTarget), { recursive: true });
+    fs.symlinkSync(staleSourcePath, claudeTarget, "dir");
+
+    const result = syncInstalledSkills({
+      homeDir: tempRoot,
+      sourcePath
+    });
+
+    expect(fs.readlinkSync(codexTarget)).toBe(sourcePath);
+    expect(fs.readlinkSync(claudeTarget)).toBe(sourcePath);
+    expect(result.targets.find((target) => target.harness === "codex")).toMatchObject({
+      status: "current"
+    });
+    expect(result.targets.find((target) => target.harness === "claude-code")).toMatchObject({
+      status: "updated"
+    });
   });
 
   test("uninstall removes an installed opencode skill directory", () => {

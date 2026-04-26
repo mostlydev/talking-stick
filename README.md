@@ -117,6 +117,8 @@ Talking Stick also ships with a portable `talking-stick` skill:
 
 By default, `tt install-skill` links the bundled skill into each harness so local updates are picked up immediately. Pass `--copy` if you want a standalone snapshot instead.
 
+Human CLI invocations also perform a silent best-effort sync for already-installed file-based skills in Claude Code, Codex, and OpenCode. If the installed skill is a copy, it is refreshed from the bundled skill; if it is a stale symlink, it is relinked. Missing harness config directories and missing skill installs are skipped. Gemini skills are managed by Gemini's own registry, so use `tt install-skill gemini` after updating when needed.
+
 ## Human CLI
 
 The same `tt` binary also works as a human CLI, useful for watching or participating in a room from your terminal:

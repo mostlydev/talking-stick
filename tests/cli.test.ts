@@ -7,6 +7,7 @@ import {
   formatRelativeTime,
   parseHandoffJson,
   runCli,
+  shouldAutoSyncInstalledSkills,
   shouldUseJson
 } from "../src/cli.js";
 import {
@@ -21,7 +22,8 @@ const ENV_KEYS = [
   "TT_HARNESS_AGENT_ID",
   "CLAUDECODE",
   "CLAUDE_CODE_EXECPATH",
-  "TALKING_STICK_DATA_DIR"
+  "TALKING_STICK_DATA_DIR",
+  "TALKING_STICK_DISABLE_SKILL_SYNC"
 ] as const;
 
 const originalEnv = new Map<string, string | undefined>(
@@ -171,6 +173,40 @@ describe("shouldUseJson", () => {
     expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "true" })).toBe(true);
     expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "TRUE" })).toBe(true);
     expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "True" })).toBe(true);
+  });
+});
+
+describe("shouldAutoSyncInstalledSkills", () => {
+  const parsed = {
+    name: "state",
+    positionals: [],
+    options: new Map<string, string | true>()
+  };
+
+  test("runs for ordinary human CLI commands", () => {
+    expect(shouldAutoSyncInstalledSkills(parsed, {})).toBe(true);
+  });
+
+  test("skips harness-aware CLI invocations", () => {
+    expect(
+      shouldAutoSyncInstalledSkills(parsed, {
+        TT_HARNESS_AGENT_ID: "codex:harness"
+      })
+    ).toBe(false);
+  });
+
+  test("can be disabled by env and skips installer commands", () => {
+    expect(
+      shouldAutoSyncInstalledSkills(parsed, {
+        TALKING_STICK_DISABLE_SKILL_SYNC: "1"
+      })
+    ).toBe(false);
+    expect(
+      shouldAutoSyncInstalledSkills({
+        ...parsed,
+        name: "install-skill"
+      }, {})
+    ).toBe(false);
   });
 });
 
@@ -795,6 +831,8 @@ async function seedCliLease(
 
 async function captureStdout(argv: string[]): Promise<string> {
   let stdout = "";
+  const previousSkillSync = process.env.TALKING_STICK_DISABLE_SKILL_SYNC;
+  process.env.TALKING_STICK_DISABLE_SKILL_SYNC = "1";
   const stdoutSpy = vi
     .spyOn(process.stdout, "write")
     .mockImplementation(((chunk: string | Uint8Array) => {
@@ -808,6 +846,11 @@ async function captureStdout(argv: string[]): Promise<string> {
   try {
     await runCli(argv);
   } finally {
+    if (previousSkillSync === undefined) {
+      delete process.env.TALKING_STICK_DISABLE_SKILL_SYNC;
+    } else {
+      process.env.TALKING_STICK_DISABLE_SKILL_SYNC = previousSkillSync;
+    }
     stdoutSpy.mockRestore();
     stderrSpy.mockRestore();
   }
