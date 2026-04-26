@@ -14,6 +14,7 @@ export interface CliIdentityResolution {
   source:
     | "agent_override"
     | "harness_cli_exported_agent_id"
+    | "harness_cli_env_detection"
     | "harness_cli_exported_detection"
     | "human_cli_default";
   detail: string;
@@ -50,11 +51,20 @@ export function resolveCliIdentity(
       };
     }
 
+    if (env.TT_HARNESS_EXPORT === "1" || env.TT_HARNESS_EXPORT?.toLowerCase() === "true") {
+      return {
+        identity: harnessIdentity,
+        source: "harness_cli_exported_detection",
+        detail:
+          "Resolved as harness CLI because TT_HARNESS_EXPORT enabled harness-aware detection."
+      };
+    }
+
     return {
       identity: harnessIdentity,
-      source: "harness_cli_exported_detection",
+      source: "harness_cli_env_detection",
       detail:
-        "Resolved as harness CLI because TT_HARNESS_EXPORT enabled harness-aware detection."
+        "Resolved as harness CLI from known harness environment variables."
     };
   }
 

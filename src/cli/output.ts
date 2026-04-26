@@ -1,5 +1,6 @@
 import { SUPPORTED_HARNESSES } from "../install.js";
 import type { Handoff } from "../index.js";
+import { isKnownHarnessCliEnv } from "./identity.js";
 import { hasOption, type ParsedCommand } from "./parser.js";
 
 export function printResult(
@@ -21,11 +22,12 @@ export function shouldUseJson(
 ): boolean {
   if (hasOption(parsed, "json")) return true;
   if (hasOption(parsed, "text")) return false;
-  // Auto-JSON when invoked from a harness, using the same opt-in gate as
-  // identity resolution.
+  // Auto-JSON when invoked from a harness, using the same detection as
+  // identity resolution. TT_HARNESS_EXPORT remains an explicit opt-in for
+  // ancestry-only detection where no harness env marker is present.
   const exportFlag = env.TT_HARNESS_EXPORT;
   if (exportFlag === "1" || exportFlag?.toLowerCase() === "true") return true;
-  if (env.TT_HARNESS_AGENT_ID?.trim()) return true;
+  if (isKnownHarnessCliEnv(env)) return true;
   return false;
 }
 
@@ -145,6 +147,7 @@ Commands:
   tt whoami [--explain]
   tt list [path]
   tt join [path] [--force-new]
+  tt leave [path]
   tt wait [path] [--timeout 30s]
   tt try [path]
   tt state [path]

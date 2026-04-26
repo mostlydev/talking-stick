@@ -75,6 +75,22 @@ export function createMcpServer(
   );
 
   server.registerTool(
+    "leave_room",
+    {
+      title: "Leave Room",
+      description:
+        "Explicitly leave a room. The room is deleted when no active members remain.",
+      inputSchema: {
+        room_id: z.string().min(1)
+      }
+    },
+    async (input, extra) =>
+      toolJson(() =>
+        commands.leaveRoom(resolveConnectionIdentity(extra.sessionId), input)
+      )
+  );
+
+  server.registerTool(
     "wait_for_turn",
     {
       title: "Wait For Turn",

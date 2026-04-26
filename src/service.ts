@@ -29,6 +29,8 @@ import type {
   HeartbeatResult,
   JoinPathInput,
   JoinPathResult,
+  LeaveRoomInput,
+  LeaveRoomResult,
   ListNotesInput,
   ListNotesResult,
   ListRoomsInput,
@@ -173,6 +175,7 @@ export class TalkingStickService {
 
   listRooms(input: ListRoomsInput = {}): ListRoomsResult {
     const now = this.now();
+    this.purgeExpiredIdleRooms(now);
 
     if (!input.context_path) {
       const rows = this.db
@@ -205,6 +208,7 @@ export class TalkingStickService {
     const resolved = resolveContextPath(input.context_path);
     const now = this.now();
     const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
 
     return withImmediateTransaction(this.db, () => {
       const roomSelection = this.findOrCreateRoomForJoin(
@@ -237,9 +241,95 @@ export class TalkingStickService {
     });
   }
 
+  leaveRoom(input: LeaveRoomInput): LeaveRoomResult {
+    assertNonEmpty(input.agent_id, "agent_id");
+    assertNonEmpty(input.room_id, "room_id");
+
+    const now = this.now();
+    const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
+
+    return withImmediateTransaction(this.db, () => {
+      const room = this.requireRoom(input.room_id);
+      const member = this.getMember(input.room_id, input.agent_id);
+      if (!member) {
+        throw new ProtocolError(
+          "unknown_member",
+          "Agent is not a member of this room.",
+          { to_agent_id: input.agent_id }
+        );
+      }
+
+      this.db
+        .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
+        .run(input.room_id, input.agent_id);
+
+      const remainingMembers = this.getMembers(input.room_id);
+      if (
+        remainingMembers.length === 0 ||
+        !remainingMembers.some((remaining) => this.isMemberActive(remaining, now))
+      ) {
+        this.deleteRoom(input.room_id);
+        return {
+          status: "room_deleted",
+          room_id: input.room_id,
+          canonical_path: room.canonical_path,
+          remaining_members: 0
+        };
+      }
+
+      const nextOwner = room.owner === input.agent_id ? null : room.owner;
+      const nextReservedFor =
+        room.reserved_for === input.agent_id ? null : room.reserved_for;
+      const nextState =
+        room.state === "closed"
+          ? "closed"
+          : nextOwner
+            ? "owned"
+            : nextReservedFor
+              ? "reserved"
+              : "idle";
+
+      this.db
+        .prepare(
+          `
+          UPDATE path_rooms
+          SET owner = ?,
+              reserved_for = ?,
+              pending_handoff_event_seq = ?,
+              lease_id = ?,
+              lease_expires_at = ?,
+              claim_expires_at = ?,
+              state = ?,
+              updated_at = ?
+          WHERE room_id = ?
+        `
+        )
+        .run(
+          nextOwner,
+          nextReservedFor,
+          room.owner === input.agent_id ? null : room.pending_handoff_event_seq,
+          room.owner === input.agent_id ? null : room.lease_id,
+          room.owner === input.agent_id ? null : room.lease_expires_at,
+          room.reserved_for === input.agent_id ? null : room.claim_expires_at,
+          nextState,
+          timestamp,
+          input.room_id
+        );
+
+      return {
+        status: "left",
+        room_id: input.room_id,
+        canonical_path: room.canonical_path,
+        remaining_members: remainingMembers.length
+      };
+    });
+  }
+
   async waitForTurn(input: WaitForTurnInput): Promise<WaitForTurnResult> {
     assertNonEmpty(input.agent_id, "agent_id");
     assertNonEmpty(input.room_id, "room_id");
+    this.purgeExpiredIdleRooms(this.now());
 
     const maxWaitMs = input.max_wait_ms ?? this.policy.waitForTurnMaxWaitMs;
     const deadline = Date.now() + Math.max(0, maxWaitMs);
@@ -263,6 +353,7 @@ export class TalkingStickService {
     const now = this.now();
     const timestamp = now.toISOString();
     const nextLeaseExpiresAt = this.expiresAt(now, this.policy.ownerLeaseTtlMs);
+    this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
     return withImmediateTransaction(this.db, () => {
@@ -294,6 +385,7 @@ export class TalkingStickService {
     validateHandoff(input.handoff);
     const now = this.now();
     const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
     return withImmediateTransaction(this.db, () => {
@@ -363,6 +455,7 @@ export class TalkingStickService {
 
     const now = this.now();
     const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
     return withImmediateTransaction(this.db, () => {
@@ -431,6 +524,7 @@ export class TalkingStickService {
 
     const now = this.now();
     const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
     return withImmediateTransaction(this.db, () => {
@@ -516,6 +610,7 @@ export class TalkingStickService {
   getRoomState(input: GetRoomStateInput): GetRoomStateResult {
     const now = this.now();
     const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
     const room = this.requireRoom(input.room_id);
     this.touchKnownMember(input.room_id, input.agent_id, timestamp);
     const inspection = this.inspectRoom(room, now);
@@ -529,6 +624,7 @@ export class TalkingStickService {
   }
 
   getRoomEvents(input: GetRoomEventsInput): RoomEvent[] {
+    this.purgeExpiredIdleRooms(this.now());
     this.touchKnownMember(
       input.room_id,
       input.agent_id,
@@ -568,6 +664,7 @@ export class TalkingStickService {
 
     const now = this.now();
     const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
 
     return withImmediateTransaction(this.db, () => {
       const room = this.requireRoom(input.room_id);
@@ -620,6 +717,7 @@ export class TalkingStickService {
 
   listNotes(input: ListNotesInput): ListNotesResult {
     assertNonEmpty(input.room_id, "room_id");
+    this.purgeExpiredIdleRooms(this.now());
     this.requireRoom(input.room_id);
     this.touchKnownMember(
       input.room_id,
@@ -1513,6 +1611,58 @@ export class TalkingStickService {
     );
   }
 
+  private purgeExpiredIdleRooms(now: Date): void {
+    if (this.policy.idleRoomTtlMs <= 0) {
+      return;
+    }
+
+    const cutoffMs = now.getTime() - this.policy.idleRoomTtlMs;
+
+    withImmediateTransaction(this.db, () => {
+      const rooms = this.db
+        .prepare<[], PathRoomRow>("SELECT * FROM path_rooms")
+        .all();
+
+      for (const room of rooms) {
+        const members = this.getMembers(room.room_id);
+        if (this.latestRoomActivityMs(room, members) > cutoffMs) {
+          continue;
+        }
+
+        if (members.some((member) => this.isMemberActive(member, now))) {
+          continue;
+        }
+
+        this.deleteRoom(room.room_id);
+      }
+    });
+  }
+
+  private latestRoomActivityMs(
+    room: PathRoomRow,
+    members: RoomMemberRow[]
+  ): number {
+    let latest = parseTimestampMs(room.updated_at);
+
+    for (const member of members) {
+      latest = Math.max(
+        latest,
+        parseTimestampMs(member.joined_at),
+        parseTimestampMs(member.last_seen_at),
+        parseTimestampMs(member.last_wait_at)
+      );
+    }
+
+    return latest;
+  }
+
+  private deleteRoom(roomId: string): void {
+    this.db.prepare("DELETE FROM notes WHERE room_id = ?").run(roomId);
+    this.db.prepare("DELETE FROM room_events WHERE room_id = ?").run(roomId);
+    this.db.prepare("DELETE FROM room_members WHERE room_id = ?").run(roomId);
+    this.db.prepare("DELETE FROM path_rooms WHERE room_id = ?").run(roomId);
+  }
+
   private expiresAt(now: Date, ttlMs: number): string {
     return new Date(now.getTime() + ttlMs).toISOString();
   }
@@ -1573,6 +1723,14 @@ export class TalkingStickService {
 
     const pendingEvent = this.getEventBySeq(room.pending_handoff_event_seq);
     const priorOwner = pendingEvent?.from_agent_id ?? null;
+
+    if (
+      priorOwner === agentId &&
+      this.hasOtherRoomMember(room.room_id, agentId)
+    ) {
+      return true;
+    }
+
     const bestKnownMember = this.findBestFairKnownMember(
       room.room_id,
       priorOwner,
@@ -1580,6 +1738,10 @@ export class TalkingStickService {
     );
 
     return bestKnownMember !== null && bestKnownMember.agent_id !== agentId;
+  }
+
+  private hasOtherRoomMember(roomId: string, agentId: AgentId): boolean {
+    return this.getMembers(roomId).some((member) => member.agent_id !== agentId);
   }
 
   private inspectRoom(room: PathRoomRow, now: Date): RoomInspection {
@@ -1852,6 +2014,15 @@ function sequenceDistance(
 
   const distance = (ordinal - referenceOrdinal + memberCount) % memberCount;
   return distance === 0 ? memberCount : distance;
+}
+
+function parseTimestampMs(timestamp: string | null): number {
+  if (!timestamp) {
+    return 0;
+  }
+
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function normalizeProcessMetadata(

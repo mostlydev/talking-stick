@@ -217,6 +217,107 @@ describe("talking-stick vertical slice", () => {
     expect(fairClaim.reason).toBe("sequence");
   });
 
+  test("idle handoff briefly defers the prior owner while another member exists", async () => {
+    const harness = createHarness({
+      policy: {
+        waiterGraceMs: 10_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.clock.advance(10_001);
+
+    const release = harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    expect(release.reserved_for).toBeNull();
+
+    const immediateTakeBack = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(immediateTakeBack.status).toBe("not_yet");
+
+    const claudeTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "claude:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(claudeTurn.reason).toBe("sequence");
+  });
+
+  test("idle handoff allows the prior owner after grace if no other member claims", async () => {
+    const harness = createHarness({
+      policy: {
+        waiterGraceMs: 10_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.clock.advance(10_001);
+
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    harness.clock.advance(10_001);
+
+    const codexAgain = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(codexAgain.reason).toBe("sequence");
+  });
+
   test("operator override can take a live owned turn explicitly", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
@@ -369,6 +470,148 @@ describe("talking-stick vertical slice", () => {
     });
 
     expect(join.canonical_path).toBe(project);
+  });
+
+  test("leave_room removes a member and deletes the room when it was last", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: join.room_id,
+      max_wait_ms: 0
+    });
+
+    const result = harness.service.leaveRoom({
+      agent_id: "codex:test",
+      room_id: join.room_id
+    });
+
+    expect(result).toEqual({
+      status: "room_deleted",
+      room_id: join.room_id,
+      canonical_path: project,
+      remaining_members: 0
+    });
+    expect(harness.service.listRooms({ context_path: project }).rooms).toEqual([]);
+    expect(() =>
+      harness.service.getRoomState({ room_id: join.room_id })
+    ).toThrowProtocolError("room_not_found");
+    expect(countRows(harness.service, "path_rooms")).toBe(0);
+    expect(countRows(harness.service, "room_members")).toBe(0);
+    expect(countRows(harness.service, "room_events")).toBe(0);
+  });
+
+  test("leave_room clears a departed reserved recipient without dropping the handoff", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const handoff = validHandoff();
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff
+    });
+
+    const result = harness.service.leaveRoom({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id
+    });
+    expect(result.status).toBe("left");
+    expect(result.remaining_members).toBe(1);
+
+    const state = harness.service.getRoomState({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test"
+    });
+    expect(state.room.state).toBe("idle");
+    expect(state.room.reserved_for).toBeNull();
+    expect(state.members.map((member) => member.agent_id)).toEqual([
+      "codex:test"
+    ]);
+
+    const nextTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(nextTurn.handoff).toEqual(handoff);
+  });
+
+  test("leave_room deletes the room when only inactive members remain", () => {
+    const harness = createHarness({
+      policy: {
+        presenceTtlMs: 500
+      }
+    });
+    const project = createProject(harness.tempRoot);
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:stale",
+      context_path: project
+    });
+
+    harness.clock.advance(501);
+
+    const result = harness.service.leaveRoom({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id
+    });
+
+    expect(result.status).toBe("room_deleted");
+    expect(harness.service.listRooms({ context_path: project }).rooms).toEqual([]);
+  });
+
+  test("long-idle rooms are purged opportunistically when the service is invoked", () => {
+    const harness = createHarness({
+      policy: {
+        idleRoomTtlMs: 1_000,
+        presenceTtlMs: 500
+      }
+    });
+    const project = createProject(harness.tempRoot);
+
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    harness.clock.advance(1_001);
+
+    expect(harness.service.listRooms({ context_path: project }).rooms).toEqual([]);
+    expect(countRows(harness.service, "path_rooms")).toBe(0);
+    expect(countRows(harness.service, "room_members")).toBe(0);
+    expect(() =>
+      harness.service.getRoomState({ room_id: join.room_id })
+    ).toThrowProtocolError("room_not_found");
   });
 
   test("join_path returns the effective policy including heartbeat cadence", () => {
@@ -893,30 +1136,30 @@ describe("talking-stick vertical slice", () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
     const guardianProcess = harness.processRegistry.create(
-      "wojtek",
+      "alice",
       "human_guardian"
     );
     const transientCliProcess = harness.processRegistry.create(
-      "wojtek",
+      "alice",
       "human_cli"
     );
 
     const humanJoin = harness.service.joinPath({
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       context_path: project,
       process_metadata: guardianProcess
     });
 
     const humanTurn = asYourTurn(
       await harness.service.waitForTurn({
-        agent_id: "human:wojtek",
+        agent_id: "human:alice",
         room_id: humanJoin.room_id,
         max_wait_ms: 0
       })
     );
 
     harness.service.joinPath({
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       context_path: project,
       process_metadata: transientCliProcess
     });
@@ -927,7 +1170,7 @@ describe("talking-stick vertical slice", () => {
 
     const heartbeat = harness.service.heartbeat({
       room_id: humanJoin.room_id,
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       lease_id: humanTurn.lease_id,
       expected_turn_id: humanTurn.turn_id
     });
@@ -1130,11 +1373,11 @@ describe("talking-stick vertical slice", () => {
       process_metadata: codexProcess
     });
     harness.service.joinPath({
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       context_path: project,
       process_metadata: {
         session_kind: "human_cli",
-        display_name: "wojtek"
+        display_name: "alice"
       }
     });
     harness.service.joinPath({
@@ -1160,7 +1403,7 @@ describe("talking-stick vertical slice", () => {
 
     const state = harness.service.getRoomState({ room_id: codexJoin.room_id });
     expect(state.room.state).toBe("reserved");
-    expect(state.room.reserved_for).toBe("human:wojtek");
+    expect(state.room.reserved_for).toBe("human:alice");
 
     const geminiView = await harness.service.waitForTurn({
       agent_id: "gemini:test",
@@ -1175,7 +1418,7 @@ describe("talking-stick vertical slice", () => {
     const project = createProject(harness.tempRoot);
     const codexProcess = harness.processRegistry.create("codex");
     const guardianProcess = harness.processRegistry.create(
-      "wojtek",
+      "alice",
       "human_guardian"
     );
 
@@ -1185,7 +1428,7 @@ describe("talking-stick vertical slice", () => {
       process_metadata: codexProcess
     });
     harness.service.joinPath({
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       context_path: project,
       process_metadata: guardianProcess
     });
@@ -1213,11 +1456,11 @@ describe("talking-stick vertical slice", () => {
     expect(staleState.room.state).toBe("reserved");
 
     harness.service.joinPath({
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       context_path: project,
       process_metadata: {
         session_kind: "human_cli",
-        display_name: "wojtek"
+        display_name: "alice"
       }
     });
 
@@ -1228,7 +1471,7 @@ describe("talking-stick vertical slice", () => {
 
     const humanTurn = asYourTurn(
       await harness.service.waitForTurn({
-        agent_id: "human:wojtek",
+        agent_id: "human:alice",
         room_id: codexJoin.room_id,
         max_wait_ms: 0
       })
@@ -1582,6 +1825,15 @@ function validHandoff(): Handoff {
     status: "Finished the current step.",
     next_action: "Continue with the next step."
   };
+}
+
+function countRows(
+  service: TalkingStickService,
+  tableName: "path_rooms" | "room_members" | "room_events"
+): number {
+  return service.db
+    .prepare<[], { count: number }>(`SELECT COUNT(*) AS count FROM ${tableName}`)
+    .get()?.count ?? 0;
 }
 
 function asYourTurn(result: WaitForTurnResult) {

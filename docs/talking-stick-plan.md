@@ -80,7 +80,7 @@ Derivation signals, in order of preference:
 
 1. `clientInfo.name` and `clientInfo.version` from the MCP `initialize` handshake. Every MCP client sends these; Claude Code, Codex, and Gemini CLI all set distinctive values.
 2. The MCP server's own parent process identity: `(parent_pid, parent_start_time)`. Together these uniquely identify the harness instance on a host. `parent_pid` alone is unsafe because PIDs are reused after exit.
-3. Environment variables the harness exports, such as `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `TERM_PROGRAM`, `ITERM_SESSION_ID`, `TMUX`, `SSH_TTY`.
+3. Environment variables the harness exports, such as `CLAUDECODE`, `CODEX_THREAD_ID`, `GEMINI_CLI`, `OPENCODE`, `TERM_PROGRAM`, `ITERM_SESSION_ID`, `TMUX`, `SSH_TTY`.
 
 Composed identity, stable for the life of one harness instance:
 
@@ -98,7 +98,7 @@ The hash is a short digest over the signals above, so reconnects from the same h
 For the Human CLI (see deferred extension), the same idea applies with different signals: `$USER`, parent shell `(pid, start_time)`, and tty yield identities like:
 
 ```text
-human:wojtek:s003
+human:alice:s003
 ```
 
 The derived string is the protocol-facing identity, but the server must also persist the source liveness facts behind it:

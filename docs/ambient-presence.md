@@ -57,9 +57,9 @@ Ambient presence needs two distinct operating modes:
 - **Participant mode** — the runtime can reliably infer or receive the harness identity that the MCP layer would use. In this mode, a spawned shell helper may join, wait, or claim on behalf of that participant.
 - **Observer mode** — the runtime cannot reliably infer the harness identity. In this mode, ambient surfaces may read room state and tail room events, but they must not join the room or represent themselves as a protocol participant.
 
-This distinction matters because `tt` is currently the human CLI. A shell process launched from inside a harness should not silently become `human:<username>` and pollute room membership. If we can cheaply export the harness identity into child shells, great; if not, observer mode is still useful and should ship first.
+This distinction matters because `tt` also serves ordinary human terminals. A shell process launched from inside a harness must not silently become `human:<username>` and pollute room membership.
 
-Current contract: CLI participant mode is explicit. A harness must set `TT_HARNESS_EXPORT=1` to let `tt` derive a harness-style identity from signals and ancestry, or `TT_HARNESS_AGENT_ID=<agent-id>` to export the exact agent id directly. Without that opt-in, `tt` remains on the human CLI path.
+Current contract: known harness environment markers such as `CLAUDECODE=1`, `CODEX_THREAD_ID`, `GEMINI_CLI=1`, or `OPENCODE=1` make `tt` derive a harness-style identity before the human fallback. `TT_HARNESS_AGENT_ID=<agent-id>` exports the exact agent id directly. `TT_HARNESS_EXPORT=1` remains available for ancestry-based detection when no known harness environment marker is present.
 
 That same rule applies to invoked shell helpers: if identity can be inferred or inherited, they may render participant-local state; if not, they should limit themselves to room-level observer status rather than pretending to be a participant.
 

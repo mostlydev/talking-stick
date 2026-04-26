@@ -49,6 +49,7 @@ export type HarnessCliHarness = "claude" | "codex" | "gemini" | "opencode";
 interface HarnessSignal {
   harness: HarnessCliHarness;
   sessionId: string | null;
+  pidHint: number | null;
 }
 
 const HARNESS_CLI_EXPORT_ENV = "TT_HARNESS_EXPORT";
@@ -93,18 +94,24 @@ export function deriveMcpHarnessIdentity(
 ): DerivedIdentity {
   const env = options.env ?? process.env;
   const inspector = options.inspector ?? createSystemProcessInspector();
-  const pid = options.parentPid ?? process.ppid;
+  const parentPid = options.parentPid ?? process.ppid;
   const hostId = options.hostId ?? os.hostname();
   const username = options.username ?? safeUsername();
-  const inspection = inspector.inspect(pid);
+  const parentInspection = inspector.inspect(parentPid);
 
   const signal = detectHarnessSignal(env);
   if (signal) {
+    const processRef = resolveSignalProcessRef(
+      signal,
+      parentPid,
+      parentInspection,
+      inspector
+    );
     const sessionId = resolveHarnessSessionId(
       signal,
       env,
-      pid,
-      inspection,
+      processRef.pid,
+      processRef.inspection,
       username,
       hostId
     );
@@ -114,8 +121,8 @@ export function deriveMcpHarnessIdentity(
       agent_id: agentId,
       process_metadata: {
         host_id: hostId,
-        pid,
-        process_started_at: inspection?.startTime ?? null,
+        pid: processRef.pid,
+        process_started_at: processRef.inspection?.startTime ?? null,
         session_kind: "mcp_harness",
         display_name: signal.harness
       }
@@ -123,13 +130,13 @@ export function deriveMcpHarnessIdentity(
   }
 
   const displayName =
-    options.displayName ?? deriveCommandLabel(inspection?.command ?? null);
+    options.displayName ?? deriveCommandLabel(parentInspection?.command ?? null);
   const agentId =
     options.agentId ??
     `${sanitizeIdentityComponent(displayName)}:${hashIdentityParts([
       hostId,
-      String(pid),
-      inspection?.startTime ?? "",
+      String(parentPid),
+      parentInspection?.startTime ?? "",
       options.sessionId ?? ""
     ])}`;
 
@@ -137,8 +144,8 @@ export function deriveMcpHarnessIdentity(
     agent_id: agentId,
     process_metadata: {
       host_id: hostId,
-      pid,
-      process_started_at: inspection?.startTime ?? null,
+      pid: parentPid,
+      process_started_at: parentInspection?.startTime ?? null,
       session_kind: "mcp_harness",
       display_name: displayName
     }
@@ -169,11 +176,11 @@ export function deriveHarnessCliIdentity(
     };
   }
 
-  if (!isHarnessCliExportEnabled(env)) {
+  let signal = detectHarnessSignal(env);
+
+  if (!signal && !isHarnessCliExportEnabled(env)) {
     return null;
   }
-
-  let signal = detectHarnessSignal(env);
 
   if (!signal) {
     signal = detectHarnessViaAncestry(parentPid, inspector);
@@ -181,12 +188,18 @@ export function deriveHarnessCliIdentity(
 
   if (!signal) return null;
 
+  const processRef = resolveSignalProcessRef(
+    signal,
+    parentPid,
+    parentInspection,
+    inspector
+  );
   const username = options.username ?? safeUsername();
   const sessionId = resolveHarnessSessionId(
     signal,
     env,
-    parentPid,
-    parentInspection,
+    processRef.pid,
+    processRef.inspection,
     username,
     hostId
   );
@@ -198,8 +211,8 @@ export function deriveHarnessCliIdentity(
     agent_id: agentId,
     process_metadata: {
       host_id: hostId,
-      pid: parentPid,
-      process_started_at: parentInspection?.startTime ?? null,
+      pid: processRef.pid,
+      process_started_at: processRef.inspection?.startTime ?? null,
       session_kind: "harness_cli",
       display_name: options.displayName ?? signal.harness
     }
@@ -291,7 +304,8 @@ function detectHarnessViaAncestry(
     if (HARNESS_COMMAND_MAPPING[label]) {
       return {
         harness: HARNESS_COMMAND_MAPPING[label],
-        sessionId: `pid:${inspection.pid}@${inspection.startTime}`
+        sessionId: `pid:${inspection.pid}@${inspection.startTime}`,
+        pidHint: null
       };
     }
 
@@ -302,21 +316,64 @@ function detectHarnessViaAncestry(
 
 function detectHarnessSignal(env: NodeJS.ProcessEnv): HarnessSignal | null {
   if (env.CLAUDECODE === "1") {
-    return { harness: "claude", sessionId: nonEmpty(env.CLAUDE_CODE_EXECPATH) };
+    return {
+      harness: "claude",
+      sessionId: null,
+      pidHint: parsePositiveInteger(env.CMUX_CLAUDE_PID)
+    };
   }
   if (env.CODEX_MANAGED_BY_NPM === "1" || nonEmpty(env.CODEX_THREAD_ID)) {
-    return { harness: "codex", sessionId: nonEmpty(env.CODEX_THREAD_ID) };
+    return {
+      harness: "codex",
+      sessionId: nonEmpty(env.CODEX_THREAD_ID),
+      pidHint: null
+    };
   }
   if (env.GEMINI_CLI === "1") {
-    return { harness: "gemini", sessionId: null };
+    return { harness: "gemini", sessionId: null, pidHint: null };
   }
   if (env.OPENCODE === "1") {
     return {
       harness: "opencode",
-      sessionId: nonEmpty(env.OPENCODE_RUN_ID) ?? nonEmpty(env.OPENCODE_PID)
+      sessionId: nonEmpty(env.OPENCODE_RUN_ID) ?? nonEmpty(env.OPENCODE_PID),
+      pidHint: null
     };
   }
   return null;
+}
+
+function resolveSignalProcessRef(
+  signal: HarnessSignal,
+  fallbackPid: number,
+  fallbackInspection: ProcessInspection | null | undefined,
+  inspector: ProcessInspector
+): {
+  pid: number;
+  inspection: ProcessInspection | null | undefined;
+} {
+  if (signal.pidHint && signal.pidHint !== fallbackPid) {
+    const hintedInspection = inspector.inspect(signal.pidHint);
+    if (hintedInspection?.startTime) {
+      return {
+        pid: signal.pidHint,
+        inspection: hintedInspection
+      };
+    }
+  }
+
+  return {
+    pid: fallbackPid,
+    inspection: fallbackInspection
+  };
+}
+
+function parsePositiveInteger(value: string | undefined): number | null {
+  if (!value || !/^\d+$/.test(value.trim())) {
+    return null;
+  }
+
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 function nonEmpty(value: string | undefined): string | null {

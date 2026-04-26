@@ -120,6 +120,28 @@ export function clearCliSessionLease(
   });
 }
 
+export function removeCliSession(
+  sessionPath: string,
+  agentId: string,
+  roomId: string
+): void {
+  const sessions = readCliSessions(sessionPath).filter(
+    (session) =>
+      !(session.agent_id === agentId && session.room_id === roomId)
+  );
+  writeCliSessions(sessionPath, sessions);
+}
+
+export function removeCliSessionsForRoom(
+  sessionPath: string,
+  roomId: string
+): void {
+  const sessions = readCliSessions(sessionPath).filter(
+    (session) => session.room_id !== roomId
+  );
+  writeCliSessions(sessionPath, sessions);
+}
+
 export function findCliSessionForContextPath(
   sessionPath: string,
   agentId: string,

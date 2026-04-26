@@ -12,6 +12,7 @@ import type { ParsedCommand } from "./parser.js";
 import {
   handleEventsCommand,
   handleJoinCommand,
+  handleLeaveCommand,
   handleListCommand,
   handleStateCommand,
   handleWhoAmICommand
@@ -132,6 +133,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt join [path] [--force-new]",
     description: "Join the room for a workspace path.",
     handler: ({ runtime, parsed }) => handleJoinCommand(requireRuntime(runtime), parsed)
+  },
+  {
+    name: "leave",
+    needsRuntime: true,
+    startupMaintenance: true,
+    internal: false,
+    usage: "tt leave [path]",
+    description: "Leave this agent's room membership.",
+    handler: ({ runtime, parsed }) => handleLeaveCommand(requireRuntime(runtime), parsed)
   },
   {
     name: "state",

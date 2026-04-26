@@ -9,6 +9,21 @@ while it remains in alpha. Versioning is [SemVer](https://semver.org/) with the
 caveat that protocol-level breaking changes are still possible across alpha bumps;
 they will be called out under **Breaking changes**.
 
+## [0.1.0-alpha.5] — 2026-04-26
+
+Full notes: [`docs/releases/0.1.0-alpha.5.md`](docs/releases/0.1.0-alpha.5.md).
+
+### Added
+- **Explicit room departure.** Added `leave_room` to the MCP server and `tt leave [path]` to the CLI. Leaving removes the caller's membership and clears local CLI session state.
+- **MIT license.** The package metadata, lockfile, README, and repository `LICENSE` now declare MIT licensing.
+
+### Changed
+- **Rooms are ephemeral coordination state.** Rooms are physically deleted when no active members remain, and long-idle rooms are purged opportunistically on later service invocations.
+- **Take-backsies are delayed.** When release leaves a handoff idle because no peer is currently waiting, the prior owner cannot immediately reclaim while another room member exists. The existing waiter grace window gives slower peers a chance to poll first.
+
+### Fixed
+- **Harness-launched `tt` identity.** CLI invocations now check known harness environment markers before falling back to `human:<user>`. A Claude Code shell with `CLAUDECODE=1`, for example, resolves to a `claude:*` harness identity without requiring `TT_HARNESS_EXPORT=1`.
+
 ## [0.1.0-alpha.4] — 2026-04-26
 
 Full notes: [`docs/releases/0.1.0-alpha.4.md`](docs/releases/0.1.0-alpha.4.md).
@@ -72,6 +87,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.1.0-alpha.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.2

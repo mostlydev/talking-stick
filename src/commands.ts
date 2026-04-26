@@ -6,6 +6,7 @@ import type {
   GetRoomStateResult,
   HeartbeatResult,
   JoinPathResult,
+  LeaveRoomResult,
   ListNotesResult,
   ListRoomsInput,
   ListRoomsResult,
@@ -24,6 +25,10 @@ import type { DerivedIdentity } from "./identity.js";
 export interface JoinPathCommandInput {
   context_path: string;
   force_new?: boolean;
+}
+
+export interface LeaveRoomCommandInput {
+  room_id: string;
 }
 
 export interface HeartbeatCommandInput {
@@ -86,6 +91,16 @@ export class TalkingStickCommands {
       context_path: input.context_path,
       force_new: input.force_new,
       process_metadata: identity.process_metadata
+    });
+  }
+
+  leaveRoom(
+    identity: DerivedIdentity,
+    input: LeaveRoomCommandInput
+  ): LeaveRoomResult {
+    return this.service.leaveRoom({
+      agent_id: identity.agent_id,
+      room_id: input.room_id
     });
   }
 

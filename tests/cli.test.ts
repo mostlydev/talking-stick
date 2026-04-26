@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   checkGuardianLiveness,
   formatRelativeTime,
@@ -12,6 +12,7 @@ import {
 } from "../src/cli.js";
 import {
   deriveHumanCliIdentity,
+  readCliSessions,
   resolveCliSessionPath,
   TalkingStickService,
   upsertCliSession
@@ -22,6 +23,13 @@ const ENV_KEYS = [
   "TT_HARNESS_AGENT_ID",
   "CLAUDECODE",
   "CLAUDE_CODE_EXECPATH",
+  "CMUX_CLAUDE_PID",
+  "CODEX_MANAGED_BY_NPM",
+  "CODEX_THREAD_ID",
+  "GEMINI_CLI",
+  "OPENCODE",
+  "OPENCODE_RUN_ID",
+  "OPENCODE_PID",
   "TALKING_STICK_DATA_DIR",
   "TALKING_STICK_DISABLE_SKILL_SYNC"
 ] as const;
@@ -29,6 +37,12 @@ const ENV_KEYS = [
 const originalEnv = new Map<string, string | undefined>(
   ENV_KEYS.map((key) => [key, process.env[key]])
 );
+
+beforeEach(() => {
+  for (const key of ENV_KEYS) {
+    delete process.env[key];
+  }
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -75,10 +89,9 @@ describe("tt whoami", () => {
     expect(result.source).toBe("harness_cli_exported_agent_id");
   });
 
-  test("derives harness identity only when export is explicitly enabled", async () => {
-    process.env.TT_HARNESS_EXPORT = "1";
+  test("derives harness identity from Claude environment before human fallback", async () => {
+    delete process.env.TT_HARNESS_EXPORT;
     process.env.CLAUDECODE = "1";
-    process.env.CLAUDE_CODE_EXECPATH = "/opt/claude/2.1.118";
     delete process.env.TT_HARNESS_AGENT_ID;
 
     const stdout = await captureStdout(["whoami", "--json"]);
@@ -89,7 +102,7 @@ describe("tt whoami", () => {
     };
 
     expect(result.agent_id).toMatch(/^claude:/);
-    expect(result.source).toBe("harness_cli_exported_detection");
+    expect(result.source).toBe("harness_cli_env_detection");
     expect(result.process_metadata.session_kind).toBe("harness_cli");
   });
 
@@ -131,6 +144,10 @@ describe("shouldUseJson", () => {
 
   test("returns true when invoked from a harness via TT_HARNESS_EXPORT", () => {
     expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "1" })).toBe(true);
+  });
+
+  test("returns true when invoked from a detected harness environment", () => {
+    expect(shouldUseJson(emptyParsed, { CLAUDECODE: "1" })).toBe(true);
   });
 
   test("returns true when TT_HARNESS_AGENT_ID is set", () => {
@@ -191,6 +208,11 @@ describe("shouldAutoSyncInstalledSkills", () => {
     expect(
       shouldAutoSyncInstalledSkills(parsed, {
         TT_HARNESS_AGENT_ID: "codex:harness"
+      })
+    ).toBe(false);
+    expect(
+      shouldAutoSyncInstalledSkills(parsed, {
+        CLAUDECODE: "1"
       })
     ).toBe(false);
   });
@@ -516,6 +538,40 @@ describe("tt turn commands", () => {
     await expect(captureStdout(["take", project])).rejects.toThrow(
       /Missing required option --reason/
     );
+  });
+});
+
+describe("tt room commands", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("tt leave removes this identity and deletes the last-member room", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout(["join", project, "--agent", "human:leaver"]);
+    const leaveOut = await captureStdout([
+      "leave",
+      project,
+      "--agent",
+      "human:leaver",
+      "--json"
+    ]);
+    const left = JSON.parse(leaveOut) as {
+      status: string;
+      remaining_members: number;
+    };
+
+    expect(left.status).toBe("room_deleted");
+    expect(left.remaining_members).toBe(0);
+    expect(readCliSessions(resolveCliSessionPath())).toEqual([]);
+
+    const listOut = await captureStdout(["list", project]);
+    expect(listOut.trim()).toBe("No rooms found.");
   });
 });
 

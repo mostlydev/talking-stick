@@ -1,5 +1,11 @@
 import { deriveCliIdentity, resolveCliIdentity } from "./identity.js";
 import {
+  removeCliSession,
+  removeCliSessionsForRoom,
+  resolveCliSessionPath
+} from "../index.js";
+import { stopGuardian } from "./guardian.js";
+import {
   parseOptionalInteger,
   type ParsedCommand
 } from "./parser.js";
@@ -50,6 +56,39 @@ export function handleJoinCommand(
 
   printResult(parsed, joined, () => {
     return `Joined ${joined.canonical_path} as ${joined.agent_id}`;
+  });
+}
+
+export function handleLeaveCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): void {
+  const identity = deriveCliIdentity(parsed);
+  const session = resolveSessionForReads(runtime, parsed, identity);
+  const result = runtime.commands.leaveRoom(identity, {
+    room_id: session.room_id
+  });
+  const sessionPath = resolveCliSessionPath();
+
+  if (result.status === "room_deleted") {
+    removeCliSessionsForRoom(sessionPath, session.room_id);
+  } else {
+    removeCliSession(sessionPath, identity.agent_id, session.room_id);
+  }
+
+  stopGuardian(
+    session.guardian_pid ?? null,
+    session.guardian_process_started_at ?? null
+  );
+
+  printResult(parsed, result, () => {
+    if (result.status === "room_deleted") {
+      return `Left ${session.canonical_path}; room deleted.`;
+    }
+
+    const memberLabel =
+      result.remaining_members === 1 ? "member remains" : "members remain";
+    return `Left ${session.canonical_path}; ${result.remaining_members} ${memberLabel}.`;
   });
 }
 

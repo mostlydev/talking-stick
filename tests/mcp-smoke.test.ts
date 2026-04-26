@@ -41,6 +41,7 @@ describe("mcp smoke coverage", () => {
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "list_rooms",
       "join_path",
+      "leave_room",
       "wait_for_turn",
       "heartbeat",
       "release_stick",
@@ -194,6 +195,45 @@ describe("mcp smoke coverage", () => {
       reason: "sequence",
       handoff
     });
+  });
+
+  test("leave_room deletes the room after the last MCP member leaves", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-mcp-"));
+    tempRoots.push(tempRoot);
+
+    const dbPath = path.join(tempRoot, "state", "rooms.sqlite");
+    const project = createProject(tempRoot);
+
+    const codex = await createMcpHarness(dbPath);
+    const codexJoin = parseToolResult(
+      await codex.client.callTool({
+        name: "join_path",
+        arguments: {
+          context_path: project,
+          agent_id_override: "codex:test"
+        }
+      })
+    );
+
+    const left = parseToolResult(
+      await codex.client.callTool({
+        name: "leave_room",
+        arguments: {
+          room_id: codexJoin.room_id
+        }
+      })
+    );
+    expect(left.status).toBe("room_deleted");
+
+    const listed = parseToolResult(
+      await codex.client.callTool({
+        name: "list_rooms",
+        arguments: {
+          context_path: project
+        }
+      })
+    );
+    expect(listed.rooms).toEqual([]);
   });
 
   test("add_note and list_notes round-trip through the MCP adapter", async () => {

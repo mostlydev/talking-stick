@@ -31,14 +31,14 @@ describe("CLI session store", () => {
     fs.mkdirSync(apiSrc, { recursive: true });
 
     upsertCliSession(sessionPath, {
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       room_id: "room-root",
       canonical_path: repo,
       workspace_root: repo,
       updated_at: "2026-04-23T12:00:00.000Z"
     });
     upsertCliSession(sessionPath, {
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       room_id: "room-api",
       canonical_path: api,
       workspace_root: repo,
@@ -47,7 +47,7 @@ describe("CLI session store", () => {
 
     const session = findCliSessionForContextPath(
       sessionPath,
-      "human:wojtek",
+      "human:alice",
       apiSrc
     );
 
@@ -65,7 +65,7 @@ describe("CLI session store", () => {
     fs.mkdirSync(repoSrc, { recursive: true });
 
     upsertCliSession(sessionPath, {
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       room_id: "room-1",
       canonical_path: repo,
       workspace_root: repo,
@@ -80,7 +80,7 @@ describe("CLI session store", () => {
     });
 
     expect(
-      findCliSessionForContextPath(sessionPath, "human:wojtek", repoSrc)?.room_id
+      findCliSessionForContextPath(sessionPath, "human:alice", repoSrc)?.room_id
     ).toBe("room-1");
     expect(
       findCliSessionForContextPath(sessionPath, "human:alex", repoSrc)?.room_id
@@ -97,7 +97,7 @@ describe("CLI session store", () => {
     const repo = createWorkspace(tempRoot, "repo");
 
     upsertCliSession(sessionPath, {
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       room_id: "room-1",
       canonical_path: repo,
       workspace_root: repo,
@@ -109,7 +109,7 @@ describe("CLI session store", () => {
     });
 
     upsertJoinedCliSession(sessionPath, {
-      agent_id: "human:wojtek",
+      agent_id: "human:alice",
       room_id: "room-1",
       canonical_path: repo,
       workspace_root: repo,
@@ -118,7 +118,7 @@ describe("CLI session store", () => {
 
     expect(readCliSessions(sessionPath)).toEqual([
       {
-        agent_id: "human:wojtek",
+        agent_id: "human:alice",
         room_id: "room-1",
         canonical_path: repo,
         workspace_root: repo,

@@ -10,7 +10,7 @@ describe("detectInstallSource", () => {
     expect(
       detectInstallSource({
         binaryPath:
-          "/Users/wojtek/.local/share/mise/installs/node/lts/lib/node_modules/talking-stick/dist/cli.js"
+          "/Users/alice/.local/share/mise/installs/node/lts/lib/node_modules/talking-stick/dist/cli.js"
       })
     ).toBe("npm");
   });
@@ -28,7 +28,7 @@ describe("detectInstallSource", () => {
     expect(
       detectInstallSource({
         binaryPath:
-          "/home/wojtek/.local/share/pnpm/global/5/node_modules/talking-stick/dist/cli.js"
+          "/home/alice/.local/share/pnpm/global/5/node_modules/talking-stick/dist/cli.js"
       })
     ).toBe("pnpm");
   });
@@ -46,7 +46,7 @@ describe("detectInstallSource", () => {
     expect(
       detectInstallSource({
         binaryPath:
-          "/Users/wojtek/.config/yarn/global/node_modules/talking-stick/dist/cli.js"
+          "/Users/alice/.config/yarn/global/node_modules/talking-stick/dist/cli.js"
       })
     ).toBe("yarn");
   });
@@ -55,7 +55,7 @@ describe("detectInstallSource", () => {
     expect(
       detectInstallSource({
         binaryPath:
-          "/Users/wojtek/.bun/install/global/node_modules/talking-stick/dist/cli.js"
+          "/Users/alice/.bun/install/global/node_modules/talking-stick/dist/cli.js"
       })
     ).toBe("bun");
   });
@@ -63,7 +63,7 @@ describe("detectInstallSource", () => {
   test("treats a checked-out source tree as dev", () => {
     expect(
       detectInstallSource({
-        binaryPath: "/Users/wojtek/dev/ai/talking-stick/dist/cli.js"
+        binaryPath: "/Users/alice/dev/ai/talking-stick/dist/cli.js"
       })
     ).toBe("dev");
   });
@@ -72,7 +72,7 @@ describe("detectInstallSource", () => {
     expect(
       detectInstallSource({
         binaryPath:
-          "C:\\Users\\wojtek\\AppData\\Roaming\\npm\\node_modules\\talking-stick\\dist\\cli.js"
+          "C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\talking-stick\\dist\\cli.js"
       })
     ).toBe("npm");
   });

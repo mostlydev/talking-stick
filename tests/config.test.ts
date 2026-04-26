@@ -8,10 +8,10 @@ describe("resolveDataDir", () => {
         env: {
           TALKING_STICK_DATA_DIR: "../custom-state",
           XDG_DATA_HOME: "/tmp/xdg",
-          APPDATA: "C:\\Users\\wojtek\\AppData\\Roaming"
+          APPDATA: "C:\\Users\\alice\\AppData\\Roaming"
         },
         platform: "darwin",
-        homeDir: "/Users/wojtek"
+        homeDir: "/Users/alice"
       })
     ).toBe(requireResolved("../custom-state"));
   });
@@ -20,22 +20,22 @@ describe("resolveDataDir", () => {
     expect(
       resolveDataDir({
         env: {
-          XDG_DATA_HOME: "/Users/wojtek/.xdg"
+          XDG_DATA_HOME: "/Users/alice/.xdg"
         },
         platform: "linux",
-        homeDir: "/Users/wojtek"
+        homeDir: "/Users/alice"
       })
-    ).toBe("/Users/wojtek/.xdg/talking-stick");
+    ).toBe("/Users/alice/.xdg/talking-stick");
 
     expect(
       resolveDataDir({
         env: {
-          XDG_DATA_HOME: "/Users/wojtek/.xdg"
+          XDG_DATA_HOME: "/Users/alice/.xdg"
         },
         platform: "darwin",
-        homeDir: "/Users/wojtek"
+        homeDir: "/Users/alice"
       })
-    ).toBe("/Users/wojtek/.xdg/talking-stick");
+    ).toBe("/Users/alice/.xdg/talking-stick");
   });
 
   test("falls back to ~/.local/share on macOS and Linux", () => {
@@ -43,37 +43,37 @@ describe("resolveDataDir", () => {
       resolveDataDir({
         env: {},
         platform: "linux",
-        homeDir: "/home/wojtek"
+        homeDir: "/home/alice"
       })
-    ).toBe("/home/wojtek/.local/share/talking-stick");
+    ).toBe("/home/alice/.local/share/talking-stick");
 
     expect(
       resolveDataDir({
         env: {},
         platform: "darwin",
-        homeDir: "/Users/wojtek"
+        homeDir: "/Users/alice"
       })
-    ).toBe("/Users/wojtek/.local/share/talking-stick");
+    ).toBe("/Users/alice/.local/share/talking-stick");
   });
 
   test("uses APPDATA on Windows and falls back to AppData/Roaming", () => {
     expect(
       resolveDataDir({
         env: {
-          APPDATA: "C:\\Users\\wojtek\\AppData\\Roaming"
+          APPDATA: "C:\\Users\\alice\\AppData\\Roaming"
         },
         platform: "win32",
-        homeDir: "C:\\Users\\wojtek"
+        homeDir: "C:\\Users\\alice"
       })
-    ).toBe("C:\\Users\\wojtek\\AppData\\Roaming\\talking-stick");
+    ).toBe("C:\\Users\\alice\\AppData\\Roaming\\talking-stick");
 
     expect(
       resolveDataDir({
         env: {},
         platform: "win32",
-        homeDir: "C:\\Users\\wojtek"
+        homeDir: "C:\\Users\\alice"
       })
-    ).toBe("C:\\Users\\wojtek\\AppData\\Roaming\\talking-stick");
+    ).toBe("C:\\Users\\alice\\AppData\\Roaming\\talking-stick");
   });
 });
 

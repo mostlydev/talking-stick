@@ -2,7 +2,7 @@
 
 An MCP coordination server that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.1.0-alpha.4. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box.
+**Version:** 0.1.0-alpha.5. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box.
 
 ## Quickstart
 
@@ -27,7 +27,7 @@ That's it. The next time two agents `cd` into the same repo, they see each other
 
 | Method | Command | Notes |
 |---|---|---|
-| **From npm** | `npm i -g talking-stick` | Published as `0.1.0-alpha.4`. Requires Node ≥ 22. |
+| **From npm** | `npm i -g talking-stick` | Published as `0.1.0-alpha.5`. Requires Node ≥ 22. |
 | **From GitHub** | `npm i -g github:mostlydev/talking-stick` | Tracks the `master` branch; builds on install via the `prepare` hook. |
 | **From source** | `git clone … && npm install && npm link` | For contributors. |
 
@@ -65,6 +65,7 @@ Once installed, each agent harness sees these tools:
 ```
 list_rooms         — which rooms exist under a path
 join_path          — join the room for this workspace
+leave_room         — explicitly leave a room; deletes it when no active members remain
 wait_for_turn      — block until the stick is available, with takeover signals
 heartbeat          — prove liveness while holding the stick
 release_stick      — normal handoff to the next fair waiter, with structured Handoff
@@ -127,6 +128,7 @@ The same `tt` binary also works as a human CLI, useful for watching or participa
 tt whoami [--explain]                                      # show the resolved CLI identity
 tt list [path]                                            # list rooms
 tt join [path] [--force-new]                              # join the room for path
+tt leave [path]                                           # leave the room for path
 tt wait [path] [--timeout 30s]                            # block until your turn
 tt try [path]                                             # non-blocking claim attempt
 tt state [path]                                           # full room state
@@ -152,14 +154,15 @@ Human CLI commands use a stable identity like `human:<username>`. When `tt wait`
 
 ### CLI identity
 
-By default, `tt` behaves like a human CLI and resolves to `human:<username>`, even when you run it from a shell embedded inside Claude Code, Codex, Gemini, or OpenCode.
+By default, `tt` behaves like a human CLI and resolves to `human:<username>` only when no harness environment is detected.
 
-Harness-aware CLI identity is now explicit:
+Harness-aware CLI identity is resolved before the human fallback:
 
-- Set `TT_HARNESS_EXPORT=1` if you want `tt` to derive a harness-style identity from the current environment and process ancestry.
+- Known harness environment markers such as `CLAUDECODE=1`, `CODEX_THREAD_ID`, `GEMINI_CLI=1`, or `OPENCODE=1` make `tt` derive a harness-style identity automatically.
 - Set `TT_HARNESS_AGENT_ID=<agent-id>` if the harness wants to export the exact agent id directly.
+- Set `TT_HARNESS_EXPORT=1` only when you need ancestry-based harness detection without a known harness environment marker.
 
-If neither variable is set, `tt` stays on the human CLI path. That keeps ordinary shell usage predictable and avoids silently turning a human terminal into a harness participant.
+If no harness signal is present, `tt` stays on the human CLI path. That keeps ordinary shell usage predictable while preventing harness-launched shells from silently joining rooms as `human:<username>`.
 
 Use `tt whoami --explain` to see which identity path the CLI chose.
 
@@ -168,6 +171,8 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 - **Workspace-root room resolution.** An agent at any depth under `/repo/` joins the `/repo/` room automatically. Nested rooms require explicit `force_new`.
 - **Structured handoffs.** `release_stick` and `pass_stick` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
 - **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest without holding the stick; if the best-known candidate is between wait polls, a short grace window prevents immediate recycling to a less-fair claimant.
+- **No immediate take-backs.** If release leaves a handoff idle, the prior owner waits through the short grace window before reclaiming while another member exists.
+- **Ephemeral rooms.** `leave_room`/`tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms are purged opportunistically on later invocations.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.
 - **Multi-process safe.** Shared SQLite with WAL mode, `BEGIN IMMEDIATE` writes, 250 ms polling for `wait_for_turn`. No daemon required.
@@ -204,4 +209,4 @@ See [`CHANGELOG.md`](CHANGELOG.md) for a per-version summary; full release notes
 
 ## License
 
-Unlicensed WIP. To be decided before the first release.
+MIT. See [LICENSE](LICENSE).

@@ -9,7 +9,8 @@ export const defaultPolicy: Policy = {
   waitForTurnMaxWaitMs: 30 * 1000,
   waitForTurnPollMs: 250,
   presenceTtlMs: 4 * 60 * 60 * 1000,
-  waiterGraceMs: 10 * 1000
+  waiterGraceMs: 10 * 1000,
+  idleRoomTtlMs: 7 * 24 * 60 * 60 * 1000
 };
 
 export interface ResolveDataDirOptions {

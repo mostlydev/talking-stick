@@ -54,6 +54,7 @@ export interface Policy {
   waitForTurnPollMs: number;
   presenceTtlMs: number;
   waiterGraceMs: number;
+  idleRoomTtlMs: number;
 }
 
 export interface PathRoom {
@@ -117,6 +118,18 @@ export interface JoinPathResult {
   policy: Policy;
   room_state: PathRoom;
   handoff_template: Handoff;
+}
+
+export interface LeaveRoomInput {
+  agent_id: AgentId;
+  room_id: string;
+}
+
+export interface LeaveRoomResult {
+  status: "left" | "room_deleted";
+  room_id: string;
+  canonical_path: string;
+  remaining_members: number;
 }
 
 export interface WaitForTurnInput {
