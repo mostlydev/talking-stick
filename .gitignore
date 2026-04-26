@@ -6,3 +6,4 @@ coverage/
 *.sqlite-shm
 *.sqlite-wal
 .claude/settings.local.json
+.claude/scheduled_tasks.lock

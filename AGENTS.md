@@ -30,4 +30,8 @@ Recent commits use short, imperative subjects such as `Add MCP smoke coverage` a
 - `tt` executes `dist/cli.js`, not `src/` — run `npm run build` after source changes, and restart the harness's MCP subprocess to pick up the new dist (running servers cache code in memory).
 - `~/.claude/skills/talking-stick` may be symlinked back to `skills/talking-stick` via `npm link` + `tt install-skill --link`; edits via either path propagate. Be intentional about which file you're opening.
 - CLI identity defaults to `human:<user>`. Harness-aware CLI identity is opt-in via `TT_HARNESS_EXPORT=1` or an explicit `TT_HARNESS_AGENT_ID=<id>`. MCP path always derives harness identity from env/ancestry. Use `tt whoami --explain` to see the decision.
-- `getMemberProcessLiveness` does exact-string comparison on `process_started_at`; format drift and code-version skew across MCP server processes can produce spurious `owner_gone`/`recipient_gone` states — don't treat those signals as authoritative without cross-checking (e.g. `ps -p <pid>`).
+- Liveness uses trim-normalized `process_started_at` and a `2 * heartbeatIntervalMs` silence grace; a momentary `gone` reading no longer voids an active lease. `recipient_gone` is a diagnostic label only — actual takeover is gated on `claim_expires_at`.
+- `parseCommand` (CLI arg parser) consumes the next non-`--` token as a flag's value, so `--json` followed by a positional eats it. Place boolean flags last when a positional follows.
+- Write-RPCs use `touchMember` (throws `unknown_member` if caller isn't joined); read-RPCs use `touchKnownMember` (silent no-op) so non-members can still read room state, events, and notes.
+- Apply `WHERE` filters (e.g. `include_resolved`) in SQL before `LIMIT`, not in a JS `.filter()` after the query — post-filter pagination under-returns.
+- CLI tests isolate state via `TALKING_STICK_DATA_DIR` pointed at a temp dir; that env var drives both the SQLite DB and `cli-sessions.json`.

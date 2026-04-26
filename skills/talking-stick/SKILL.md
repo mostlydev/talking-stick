@@ -26,9 +26,9 @@ Do not use this skill for ordinary single-agent work in repos that are not using
 
 ### 1. Check that Talking Stick is actually available
 
-If the Talking Stick MCP tools are not available, say so briefly. Do not pretend coordination is active.
+Prefer the Talking Stick MCP tools when they are available. If they are not available but the `tt` CLI is on `PATH`, use the CLI instead (`tt list`, `tt join`, `tt wait`, `tt state`, `tt release`, `tt pass`, `tt takeover`). Do not treat missing MCP tools alone as proof that coordination is unavailable.
 
-If coordination is required and the tools are missing, ask the user whether they want to install or enable Talking Stick first.
+If coordination is required and neither the MCP tools nor the `tt` CLI are available, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 
 ### 2. Join the workspace room once
 
@@ -44,6 +44,19 @@ If the workspace is nested, accept the resolved canonical path the server return
 
 Before making shared edits or running owner-style actions, call `wait_for_turn`.
 
+Use the `room_id` returned by `join_path`. Do not pass the original filesystem path to `wait_for_turn`; path resolution belongs to `join_path`, and waiting must target the exact resolved room. This avoids ambiguity when a nested workspace resolves to an ancestor room or when multiple rooms could exist under the same tree.
+
+Keep the wait input minimal:
+
+```json
+{
+  "room_id": "<room_id from join_path>",
+  "max_wait_ms": 60000
+}
+```
+
+`max_wait_ms` is optional. Use the longest client-safe wait you can support: 60000 ms is a good MCP default when the harness can tolerate it; 120000 ms is fine only when the tool/client timeout is known to exceed that. If the call times out at the harness layer, fall back to a shorter value and call again. Do not send `cursor`, even if an old tool schema still exposes it; `wait_for_turn` is cursor-free, and resumable event replay belongs to `get_room_events`.
+
 Possible outcomes:
 
 - `your_turn`: you may proceed
@@ -55,7 +68,17 @@ Possible outcomes:
 
 **Prefer to run the wait in the background.** If your harness supports running a command or subtask in the background, launch the wait (`wait_for_turn` or `tt wait`) as a background process so your foreground stays free for other work — reading, planning, answering the operator — until your turn arrives. Blocking the whole harness on the wait defeats the point.
 
-Whether the wait runs in the foreground or the background, call it **once** with `max_wait_ms` at or near the room policy's `waitForTurnMaxWaitMs` (typically 30000 ms) and let the server long-poll. When it returns without `your_turn`, call it again. Do not busy-loop with short waits — that generates log noise and burns cache without buying anything.
+**Even better: use a wakeup if your harness supports one.** Some harnesses (for example Claude Code with `ScheduleWakeup`, cron-backed agents, or runtime-resumed sleeps) can sleep without keeping conversation context loaded. Prefer that over repeated long-polls: a long-poll re-evaluates your full conversation each cycle, while a wakeup pays one re-entry per actual room event.
+
+Wakeup pattern:
+
+1. Probe `wait_for_turn` with `max_wait_ms: 0`.
+2. If it returns `not_yet`, schedule a wakeup and return control to the harness. Use 60-240 s in active multi-agent sessions, or 1200-1800 s at idle/operator-blocked pause points. Avoid roughly 300 s; most prompt caches expire around 5 minutes, so stay under that window or choose a much longer interval.
+3. On wakeup, repeat from step 1.
+
+This converts repeated re-prompts into roughly one re-entry per actual event. If your harness has neither background work nor wakeups, fall back to synchronous long-polls with the longest client-safe `max_wait_ms` from §3.
+
+Whether the wait runs in the foreground or the background, call it **once** with the client-safe `max_wait_ms` budget from above and let the server long-poll. When it returns without `your_turn`, call it again. Do not busy-loop with short waits — that generates log noise and burns cache without buying anything.
 
 Coordination is meant to be lightweight. `wait_for_turn` is the only long-running call you should make. Room-inspection RPCs (`get_room_state`, `get_room_events`) exist to answer specific questions ("who holds the stick right now?", "what was in my predecessor's handoff?") — do not call them on a timer or repeatedly just to check on another agent's progress. If you find yourself inspecting the room more than a few times per turn, stop; long-poll on `wait_for_turn` instead and trust the protocol.
 
@@ -68,13 +91,15 @@ If you do not have the stick:
 
 If you notice something the current owner should know — a subtle invariant near code they are about to touch, a related bug you spotted while reading, a pointer to a doc — leave a note with `add_note` instead of sitting on it until your next turn. Notes do not grant permission to edit shared files; they are observations and pointers, not coordination bypasses.
 
-When you do take the stick, run `list_notes` once at the start of your turn so you see what other members left for you. The owner's turn is the right place to act on a note, not to debate it with its author mid-turn.
+When you do take the stick, first read the attached handoff and load any useful `artifacts[]`, then run `list_notes` once so you see what other members left for you. The owner's turn is the right place to act on a note, not to debate it with its author mid-turn.
 
 ### 5. While holding the stick
 
 If the task may run longer than a few minutes, heartbeat periodically.
 
 Use the cadence from `join_path.policy.heartbeatIntervalMs` when available. Do not invent your own cadence if the server already told you one.
+
+**Holding the stick is for active work.** The moment you stop actively editing, reasoning through edits, or asking the operator a blocking question, release or pass. Do not idle-hold the room while waiting on long verification, non-blocking operator input, CI, or any other pause where another harness could make progress.
 
 ### 6. Takeover is explicit
 
@@ -93,6 +118,8 @@ When you are done with your turn:
 - use `pass_stick` only when a specific member should go next
 
 Always include a non-empty handoff.
+
+**Keep handoffs tight.** Handoffs are persisted in the event log and re-read on claims. Aim for roughly 150-300 words of `status`; reference commits by SHA instead of restating diffs, and use `artifacts[]` with path, line range, and role instead of pasting code. The handoff is the headline; long-form context belongs in `docs/` or a note.
 
 Minimum handoff quality:
 
@@ -119,6 +146,8 @@ Example:
   ]
 }
 ```
+
+**`pass_stick` requires the target to be an active room member.** If the intended recipient's harness session has ended and they show as `inactive` in `get_room_state.members`, `pass_stick` can return `unknown_member`. Use `release_stick` instead; the next active sequence member becomes the reserved recipient automatically, and a re-joining target can claim through the normal sequence path.
 
 ### 8. After passing or releasing, stay in the loop
 
