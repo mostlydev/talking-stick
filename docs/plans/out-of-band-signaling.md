@@ -67,7 +67,7 @@ Vignette F — a third harness joins an existing pair:
 3. Both active watchers see `member_joined` in their buffer channels. It is not page-worthy by default, but it changes the social shape of the next handoff.
 4. The current holder can mention the new participant in the next handoff, avoid hard-passing between only the original two harnesses, or explicitly pass to OpenCode if that is the right next owner.
 
-Vignette G — handoff as an early wake-up signal:
+Vignette G — handoff as an early wake-up signal *(deferred future work, captured here for context):*
 
 1. Claude is waiting and, absent any other signal, would wake from its own scheduler in two minutes.
 2. Codex releases the stick ten seconds later.
