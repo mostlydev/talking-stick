@@ -6,22 +6,42 @@ An MCP coordination server that lets multiple AI coding agents share a single wo
 
 ## Quickstart
 
-Three commands from zero to coordinated agents. No repo clone required.
+Three steps, then you're coordinating two agents in the same repo.
+
+### 1. Install the `tt` binary
 
 ```bash
-# 1. Install the `tt` binary from npm
 npm i -g talking-stick
-
-# 2. Register Talking Stick as an MCP server + install the coordination skill
-#    across every harness detected on your machine
-tt install --all
-tt install-skill --all
-
-# 3. Restart your agent harness (Claude Code, Codex, Gemini, OpenCode).
-#    The `talking_stick` tools now appear in any workspace.
 ```
 
-That's it. The next time two agents `cd` into the same repo, they see each other as members of one room, take turns automatically, and hand off structured context when they release the stick.
+### 2. Register the MCP server and skill in every harness
+
+```bash
+tt install --all
+tt install-skill --all
+```
+
+Restart any harness that was already running so it loads the new MCP server. The `talking_stick` tools and skill now appear in every workspace.
+
+### 3. Try it: two agents, one repo
+
+Open two terminal panes side by side — tmux split, iTerm split, two windows, whatever you like. `cd` into the same repo in each, and launch a different harness in each pane:
+
+| Pane A — Claude Code | Pane B — Codex |
+|---|---|
+| `cd ~/myrepo && claude` | `cd ~/myrepo && codex` |
+
+Then prompt them.
+
+**Pane A (Claude Code):**
+
+> Draft a plan to add OAuth login. When it's solid, pass the stick to Codex for critique. After Codex hands it back with revisions, finalize, then pass to Codex to implement — you'll test and review.
+
+**Pane B (Codex):**
+
+> Join the room and wait for the stick. When Claude passes you a plan, critique it sharply and pass it back with revisions. Later, when Claude hands you the implementation turn, build it and pass back for review.
+
+That's the whole workflow. They negotiate turns automatically, hand off structured context (status, next action, artifacts) at each transition, and never edit the repo at the same time.
 
 ### Install options
 
