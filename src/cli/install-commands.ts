@@ -8,7 +8,8 @@ import {
   runAction,
   type HarnessId,
   type InstallAction,
-  type InstallResult
+  type InstallResult,
+  type InstallStatus
 } from "../install.js";
 import {
   planSkillInstall,
@@ -215,12 +216,15 @@ function reportInstallResults(
 ): void {
   let anyFailed = false;
   for (const result of results) {
-    if (result.skipped) continue;
-    const status = result.ok ? "ok" : "FAIL";
+    const status = formatInstallStatus(result.status);
     process.stdout.write(`[${result.harness}] ${status}: ${result.message}\n`);
     if (!result.ok) anyFailed = true;
   }
   if (anyFailed) {
     throw new Error(`${mode} completed with failures.`);
   }
+}
+
+function formatInstallStatus(status: InstallStatus): string {
+  return status.replaceAll("_", "-");
 }

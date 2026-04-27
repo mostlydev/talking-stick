@@ -9,6 +9,17 @@ while it remains in alpha. Versioning is [SemVer](https://semver.org/) with the
 caveat that protocol-level breaking changes are still possible across alpha bumps;
 they will be called out under **Breaking changes**.
 
+## [0.1.0-alpha.6] — 2026-04-27
+
+Full notes: [`docs/releases/0.1.0-alpha.6.md`](docs/releases/0.1.0-alpha.6.md).
+
+### Changed
+- **Installer results are precise and idempotent.** `tt install` now preflights known MCP registrations and reports whether each harness was `added`, `already-present`, `updated`, `removed`, `already-absent`, `skipped`, or `failed` instead of forwarding each harness's inconsistent native wording.
+
+### Fixed
+- **Existing Claude Code MCP registrations are no longer failures.** Claude's native "already exists" response is treated as `already-present`, so `tt install --all` can be safely rerun.
+- **Codex MCP install no longer looks like a duplicate add.** When Codex already has the `talking-stick` server, `tt install` reports `already-present` and does not invoke another `codex mcp add`.
+
 ## [0.1.0-alpha.5] — 2026-04-26
 
 Full notes: [`docs/releases/0.1.0-alpha.5.md`](docs/releases/0.1.0-alpha.5.md).
@@ -87,6 +98,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.1.0-alpha.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.3

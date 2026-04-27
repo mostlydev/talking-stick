@@ -36,6 +36,9 @@ export interface ExecAction {
   command: string;
   args: string[];
   description: string;
+  operation?: InstallOperation;
+  serverName?: string;
+  serverCommand?: readonly string[];
 }
 
 export interface FilePatchAction {
@@ -43,6 +46,9 @@ export interface FilePatchAction {
   harness: HarnessId;
   filePath: string;
   description: string;
+  operation?: InstallOperation;
+  serverName?: string;
+  inspect?: () => InstallTargetState;
   apply: () => void;
 }
 
@@ -51,14 +57,28 @@ export interface SkipAction {
   harness: HarnessId;
   description: string;
   message: string;
+  operation?: undefined;
+  serverName?: undefined;
 }
 
 export type InstallAction = ExecAction | FilePatchAction | SkipAction;
+
+export type InstallOperation = "install" | "uninstall";
+export type InstallStatus =
+  | "added"
+  | "already_present"
+  | "updated"
+  | "removed"
+  | "already_absent"
+  | "skipped"
+  | "ok"
+  | "failed";
 
 export interface InstallResult {
   harness: HarnessId;
   ok: boolean;
   action: InstallAction;
+  status: InstallStatus;
   message: string;
   skipped?: boolean;
 }
@@ -78,6 +98,8 @@ interface ExecInvocation {
 interface ExecInvocationError {
   error: string;
 }
+
+type InstallTargetState = "absent" | "present" | "different" | "unknown";
 
 interface ResolvedOptions {
   env: NodeJS.ProcessEnv;
@@ -234,7 +256,10 @@ export function planInstall(harness: HarnessId, options: InstallOptions = {}): I
         harness,
         command: "claude",
         args: ["mcp", "add", "-s", "user", resolved.serverName, "--", serverBin, ...serverArgs],
-        description: `claude mcp add -s user ${resolved.serverName} -- ${resolved.serverCommand.join(" ")}`
+        description: `claude mcp add -s user ${resolved.serverName} -- ${resolved.serverCommand.join(" ")}`,
+        operation: "install",
+        serverName: resolved.serverName,
+        serverCommand: resolved.serverCommand
       };
     case "codex":
       if (resolved.skipMissing && !resolved.hooks.which("codex")) {
@@ -245,7 +270,10 @@ export function planInstall(harness: HarnessId, options: InstallOptions = {}): I
         harness,
         command: "codex",
         args: ["mcp", "add", resolved.serverName, "--", serverBin, ...serverArgs],
-        description: `codex mcp add ${resolved.serverName} -- ${resolved.serverCommand.join(" ")}`
+        description: `codex mcp add ${resolved.serverName} -- ${resolved.serverCommand.join(" ")}`,
+        operation: "install",
+        serverName: resolved.serverName,
+        serverCommand: resolved.serverCommand
       };
     case "gemini":
       if (resolved.skipMissing && !resolved.hooks.which("gemini")) {
@@ -256,7 +284,10 @@ export function planInstall(harness: HarnessId, options: InstallOptions = {}): I
         harness,
         command: "gemini",
         args: ["mcp", "add", "-s", "user", "-t", "stdio", resolved.serverName, serverBin, ...serverArgs],
-        description: `gemini mcp add -s user -t stdio ${resolved.serverName} ${resolved.serverCommand.join(" ")}`
+        description: `gemini mcp add -s user -t stdio ${resolved.serverName} ${resolved.serverCommand.join(" ")}`,
+        operation: "install",
+        serverName: resolved.serverName,
+        serverCommand: resolved.serverCommand
       };
     case "opencode": {
       const filePath = resolveOpencodeConfigPath(options);
@@ -269,6 +300,9 @@ export function planInstall(harness: HarnessId, options: InstallOptions = {}): I
         harness,
         filePath,
         description: `merge mcp.${resolved.serverName} into ${filePath}`,
+        operation: "install",
+        serverName: resolved.serverName,
+        inspect: () => inspectOpencodeConfig(filePath, resolved),
         apply: () => patchOpencodeConfig(filePath, resolved, "install")
       };
     }
@@ -289,7 +323,9 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         harness,
         command: "claude",
         args: ["mcp", "remove", "-s", "user", resolved.serverName],
-        description: `claude mcp remove -s user ${resolved.serverName}`
+        description: `claude mcp remove -s user ${resolved.serverName}`,
+        operation: "uninstall",
+        serverName: resolved.serverName
       };
     case "codex":
       if (resolved.skipMissing && !resolved.hooks.which("codex")) {
@@ -300,7 +336,9 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         harness,
         command: "codex",
         args: ["mcp", "remove", resolved.serverName],
-        description: `codex mcp remove ${resolved.serverName}`
+        description: `codex mcp remove ${resolved.serverName}`,
+        operation: "uninstall",
+        serverName: resolved.serverName
       };
     case "gemini":
       if (resolved.skipMissing && !resolved.hooks.which("gemini")) {
@@ -311,7 +349,9 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         harness,
         command: "gemini",
         args: ["mcp", "remove", "-s", "user", resolved.serverName],
-        description: `gemini mcp remove -s user ${resolved.serverName}`
+        description: `gemini mcp remove -s user ${resolved.serverName}`,
+        operation: "uninstall",
+        serverName: resolved.serverName
       };
     case "opencode": {
       const filePath = resolveOpencodeConfigPath(options);
@@ -327,6 +367,9 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         harness,
         filePath,
         description: `remove mcp.${resolved.serverName} from ${filePath}`,
+        operation: "uninstall",
+        serverName: resolved.serverName,
+        inspect: () => inspectOpencodeConfig(filePath, resolved),
         apply: () => patchOpencodeConfig(filePath, resolved, "uninstall")
       };
     }
@@ -374,6 +417,52 @@ function patchOpencodeConfig(filePath: string, resolved: ResolvedOptions, mode: 
   resolved.hooks.writeFile(filePath, JSON.stringify(config, null, 2) + "\n");
 }
 
+function inspectOpencodeConfig(filePath: string, resolved: ResolvedOptions): InstallTargetState {
+  const existing = resolved.hooks.readFile(filePath);
+  if (existing === null) return "absent";
+
+  let config: Record<string, unknown>;
+  try {
+    config = parseJsonOrThrow(existing, filePath);
+  } catch {
+    return "unknown";
+  }
+
+  const mcp = isPlainObject(config.mcp) ? config.mcp : {};
+  if (!(resolved.serverName in mcp)) return "absent";
+
+  const expected = {
+    type: "local",
+    command: [...resolved.serverCommand],
+    enabled: true
+  };
+  return valuesEqual(mcp[resolved.serverName], expected) ? "present" : "different";
+}
+
+function inspectGeminiSettings(action: ExecAction, resolved: ResolvedOptions): InstallTargetState {
+  const filePath = path.join(
+    resolveHarnessConfigDirFromResolved("gemini", resolved),
+    "settings.json"
+  );
+  const existing = resolved.hooks.readFile(filePath);
+  if (existing === null) return "absent";
+
+  let config: Record<string, unknown>;
+  try {
+    config = parseJsonOrThrow(existing, filePath);
+  } catch {
+    return "unknown";
+  }
+
+  const servers = isPlainObject(config.mcpServers) ? config.mcpServers : {};
+  const serverName = action.serverName ?? resolved.serverName;
+  if (!(serverName in servers)) return "absent";
+
+  const [command, ...args] = action.serverCommand ?? resolved.serverCommand;
+  const expected = { command, args };
+  return valuesEqual(servers[serverName], expected) ? "present" : "different";
+}
+
 function parseJsonOrThrow(raw: string, filePath: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw);
@@ -388,6 +477,10 @@ function parseJsonOrThrow(raw: string, filePath: string): Record<string, unknown
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export interface HarnessDetection {
@@ -442,6 +535,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
       harness: action.harness,
       ok: true,
       action,
+      status: "skipped",
       message: action.message,
       skipped: true
     };
@@ -454,6 +548,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
         harness: action.harness,
         ok: resolved.skipMissing,
         action,
+        status: resolved.skipMissing ? "skipped" : "failed",
         message: `${action.command} not on PATH`,
         skipped: resolved.skipMissing
       };
@@ -464,7 +559,28 @@ export async function runAction(action: InstallAction, options: InstallOptions =
         harness: action.harness,
         ok: false,
         action,
+        status: "failed",
         message: invocation.error
+      };
+    }
+
+    const beforeState = await inspectExecAction(action, resolved);
+    if (action.operation === "install" && beforeState === "present") {
+      return {
+        harness: action.harness,
+        ok: true,
+        action,
+        status: "already_present",
+        message: formatMcpActionMessage(action, "already_present")
+      };
+    }
+    if (action.operation === "uninstall" && beforeState === "absent") {
+      return {
+        harness: action.harness,
+        ok: true,
+        action,
+        status: "already_absent",
+        message: formatMcpActionMessage(action, "already_absent")
       };
     }
 
@@ -480,33 +596,80 @@ export async function runAction(action: InstallAction, options: InstallOptions =
         harness: action.harness,
         ok: false,
         action,
+        status: "failed",
         message: formatExecError(error)
       };
     }
 
     if (result.exitCode === 0) {
+      const status = successStatusForOperation(action.operation, beforeState);
       return {
         harness: action.harness,
         ok: true,
         action,
-        message: result.stdout.trim() || `${action.command} succeeded`
+        status,
+        message: formatMcpActionMessage(action, status, result.stdout.trim() || undefined)
       };
     }
+
+    const errorMessage = result.stderr.trim() || result.stdout.trim() || `${action.command} exited with code ${result.exitCode}`;
+    if (action.operation === "install" && isAlreadyPresentMessage(errorMessage)) {
+      return {
+        harness: action.harness,
+        ok: true,
+        action,
+        status: "already_present",
+        message: formatMcpActionMessage(action, "already_present")
+      };
+    }
+    if (action.operation === "uninstall" && isAlreadyAbsentMessage(errorMessage)) {
+      return {
+        harness: action.harness,
+        ok: true,
+        action,
+        status: "already_absent",
+        message: formatMcpActionMessage(action, "already_absent")
+      };
+    }
+
     return {
       harness: action.harness,
       ok: false,
       action,
-      message: (result.stderr.trim() || result.stdout.trim() || `${action.command} exited with code ${result.exitCode}`)
+      status: "failed",
+      message: errorMessage
+    };
+  }
+
+  const beforeState = action.inspect?.() ?? "unknown";
+  if (action.operation === "install" && beforeState === "present") {
+    return {
+      harness: action.harness,
+      ok: true,
+      action,
+      status: "already_present",
+      message: formatMcpActionMessage(action, "already_present")
+    };
+  }
+  if (action.operation === "uninstall" && beforeState === "absent") {
+    return {
+      harness: action.harness,
+      ok: true,
+      action,
+      status: "already_absent",
+      message: formatMcpActionMessage(action, "already_absent")
     };
   }
 
   try {
     action.apply();
+    const status = successStatusForOperation(action.operation, beforeState);
     return {
       harness: action.harness,
       ok: true,
       action,
-      message: `Updated ${action.filePath}`
+      status,
+      message: formatMcpActionMessage(action, status, `Updated ${action.filePath}`)
     };
   } catch (error) {
     if (resolved.skipMissing && error instanceof MissingHarnessError) {
@@ -514,6 +677,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
         harness: action.harness,
         ok: true,
         action,
+        status: "skipped",
         message: error.message,
         skipped: true
       };
@@ -523,9 +687,107 @@ export async function runAction(action: InstallAction, options: InstallOptions =
       harness: action.harness,
       ok: false,
       action,
+      status: "failed",
       message: (error as Error).message
     };
   }
+}
+
+async function inspectExecAction(
+  action: ExecAction,
+  resolved: ResolvedOptions
+): Promise<InstallTargetState> {
+  if (!action.operation || !action.serverName) return "unknown";
+
+  if (action.harness === "gemini") {
+    return inspectGeminiSettings(action, resolved);
+  }
+
+  if (action.harness !== "claude-code" && action.harness !== "codex") {
+    return "unknown";
+  }
+
+  const invocation = resolveCommandInvocation(
+    action.command,
+    ["mcp", "get", action.serverName],
+    resolved
+  );
+  if (!invocation || "error" in invocation) return "unknown";
+
+  try {
+    const result = await resolved.hooks.run(
+      invocation.command,
+      invocation.args,
+      invocation.options
+    );
+    return result.exitCode === 0 ? "present" : "absent";
+  } catch {
+    return "unknown";
+  }
+}
+
+function successStatusForOperation(
+  operation: InstallOperation | undefined,
+  beforeState: InstallTargetState
+): InstallStatus {
+  if (operation === "install") {
+    return beforeState === "different" ? "updated" : "added";
+  }
+  if (operation === "uninstall") {
+    return "removed";
+  }
+  return "ok";
+}
+
+function formatMcpActionMessage(
+  action: InstallAction,
+  status: InstallStatus,
+  fallback?: string
+): string {
+  if (!action.serverName || !action.operation) {
+    return fallback ?? "ok";
+  }
+
+  const target = `MCP server '${action.serverName}'`;
+  const location = mcpConfigLocation(action);
+  switch (status) {
+    case "added":
+      return `${target} registered in ${location}.`;
+    case "updated":
+      return `${target} updated in ${location}.`;
+    case "already_present":
+      return `${target} already registered in ${location}.`;
+    case "removed":
+      return `${target} removed from ${location}.`;
+    case "already_absent":
+      return `${target} is not registered in ${location}.`;
+    default:
+      return fallback ?? "ok";
+  }
+}
+
+function mcpConfigLocation(action: InstallAction): string {
+  if (action.kind === "file-patch") return action.filePath;
+  switch (action.harness) {
+    case "claude-code":
+      return "Claude Code user config";
+    case "codex":
+      return "Codex global config";
+    case "gemini":
+      return "Gemini user config";
+    case "opencode":
+      return "OpenCode config";
+    default:
+      return "harness config";
+  }
+}
+
+function isAlreadyPresentMessage(message: string): boolean {
+  return /\balready\b.*\b(exists|configured|present|registered|installed)\b/i.test(message);
+}
+
+function isAlreadyAbsentMessage(message: string): boolean {
+  return /\b(not found|does not exist|not configured|not registered|no mcp server)\b/i.test(message);
 }
 
 export function parseHarnessList(values: string[]): HarnessId[] {
@@ -543,17 +805,25 @@ function resolveExecInvocation(
   action: ExecAction,
   resolved: ResolvedOptions
 ): ExecInvocation | ExecInvocationError | null {
-  const executable = resolved.hooks.which(action.command);
+  return resolveCommandInvocation(action.command, action.args, resolved);
+}
+
+function resolveCommandInvocation(
+  command: string,
+  args: string[],
+  resolved: ResolvedOptions
+): ExecInvocation | ExecInvocationError | null {
+  const executable = resolved.hooks.which(command);
   if (!executable) {
     return null;
   }
 
   if (resolved.platform === "win32" && /\.(cmd|bat)$/i.test(executable)) {
-    const unsafeArg = action.args.find(containsWindowsCmdMetacharacter);
+    const unsafeArg = args.find(containsWindowsCmdMetacharacter);
     if (unsafeArg !== undefined) {
       return {
         error:
-          `Cannot safely launch ${action.command} through cmd.exe because ` +
+          `Cannot safely launch ${command} through cmd.exe because ` +
           `an argument contains Windows command metacharacters (& | < > ^ % ").`
       };
     }
@@ -565,14 +835,14 @@ function resolveExecInvocation(
 
     return {
       command: cmdExe,
-      args: ["/d", "/s", "/c", executable, ...action.args],
+      args: ["/d", "/s", "/c", executable, ...args],
       options: { windowsHide: true }
     };
   }
 
   return {
     command: executable,
-    args: action.args,
+    args,
     options: resolved.platform === "win32" ? { windowsHide: true } : undefined
   };
 }

@@ -199,24 +199,87 @@ describe("parseHarnessList", () => {
 });
 
 describe("runAction", () => {
-  test("forwards exit code 0 as ok=true and captures stdout", async () => {
+  test("skips native add when a Claude MCP server is already registered", async () => {
     const action = planInstall("claude-code");
+    const calls: string[][] = [];
     const result = await runAction(action, {
       which: () => "/usr/local/bin/claude",
-      run: async () => ({ exitCode: 0, stdout: "Added talking-stick", stderr: "" })
+      run: async (_command, args) => {
+        calls.push(args);
+        return { exitCode: 0, stdout: "talking-stick: tt mcp", stderr: "" };
+      }
     });
+
     expect(result.ok).toBe(true);
-    expect(result.message).toBe("Added talking-stick");
+    expect(result.status).toBe("already_present");
+    expect(result.message).toBe(
+      "MCP server 'talking-stick' already registered in Claude Code user config."
+    );
+    expect(calls).toEqual([["mcp", "get", "talking-stick"]]);
+  });
+
+  test("runs native add and reports added when preflight does not find the server", async () => {
+    const action = planInstall("claude-code");
+    const calls: string[][] = [];
+    const result = await runAction(action, {
+      which: () => "/usr/local/bin/claude",
+      run: async (_command, args) => {
+        calls.push(args);
+        if (args[1] === "get") {
+          return { exitCode: 1, stdout: "", stderr: "not found" };
+        }
+        return { exitCode: 0, stdout: "Added talking-stick", stderr: "" };
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("added");
+    expect(result.message).toBe(
+      "MCP server 'talking-stick' registered in Claude Code user config."
+    );
+    expect(calls).toEqual([
+      ["mcp", "get", "talking-stick"],
+      ["mcp", "add", "-s", "user", "talking-stick", "--", "tt", "mcp"]
+    ]);
   });
 
   test("marks ok=false on non-zero exit and prefers stderr", async () => {
     const action = planInstall("claude-code");
     const result = await runAction(action, {
       which: () => "/usr/local/bin/claude",
-      run: async () => ({ exitCode: 2, stdout: "", stderr: "claude: command not found" })
+      run: async (_command, args) => {
+        if (args[1] === "get") {
+          return { exitCode: 1, stdout: "", stderr: "not found" };
+        }
+        return { exitCode: 2, stdout: "", stderr: "claude: command not found" };
+      }
     });
     expect(result.ok).toBe(false);
+    expect(result.status).toBe("failed");
     expect(result.message).toBe("claude: command not found");
+  });
+
+  test("treats native already-exists errors as already present", async () => {
+    const action = planInstall("claude-code");
+    const result = await runAction(action, {
+      which: () => "/usr/local/bin/claude",
+      run: async (_command, args) => {
+        if (args[1] === "get") {
+          return { exitCode: 1, stdout: "", stderr: "not found" };
+        }
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "MCP server talking-stick already exists in user config"
+        };
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("already_present");
+    expect(result.message).toBe(
+      "MCP server 'talking-stick' already registered in Claude Code user config."
+    );
   });
 
   test("fails cleanly before spawn when the executable is not on PATH", async () => {
@@ -232,6 +295,7 @@ describe("runAction", () => {
 
     expect(invoked).toBe(false);
     expect(result.ok).toBe(false);
+    expect(result.status).toBe("failed");
     expect(result.message).toBe("codex not on PATH");
   });
 
@@ -249,6 +313,7 @@ describe("runAction", () => {
 
     expect(invoked).toBe(false);
     expect(result.ok).toBe(true);
+    expect(result.status).toBe("skipped");
     expect(result.skipped).toBe(true);
     expect(result.message).toBe("codex not on PATH");
   });
@@ -269,6 +334,7 @@ describe("runAction", () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(result.status).toBe("skipped");
     expect(result.skipped).toBe(true);
     expect(memory.files.has("/home/u/.config/opencode/opencode.json")).toBe(false);
   });
@@ -289,67 +355,156 @@ describe("runAction", () => {
     });
 
     expect(result.ok).toBe(true);
+    expect(result.status).toBe("added");
     expect(result.skipped).toBeUndefined();
     expect(memory.files.has("/home/u/.config/opencode/opencode.json")).toBe(true);
   });
 
+  test("skips opencode install when the MCP config is already exact", async () => {
+    const memory = memoryFs({
+      "/home/u/.config/opencode/opencode.json": JSON.stringify({
+        mcp: {
+          "talking-stick": {
+            type: "local",
+            command: ["tt", "mcp"],
+            enabled: true
+          }
+        }
+      })
+    }, ["/home/u/.config/opencode"]);
+    const action = planInstall("opencode", {
+      env: {},
+      platform: "linux",
+      homeDir: "/home/u",
+      skipMissing: true,
+      ...memory.hooks
+    });
+
+    const before = memory.files.get("/home/u/.config/opencode/opencode.json");
+    const result = await runAction(action, {
+      skipMissing: true,
+      ...memory.hooks
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("already_present");
+    expect(memory.files.get("/home/u/.config/opencode/opencode.json")).toBe(before);
+  });
+
+  test("skips gemini add when settings already contain the MCP server", async () => {
+    const memory = memoryFs({
+      "/home/u/.gemini/settings.json": JSON.stringify({
+        mcpServers: {
+          "talking-stick": {
+            command: "tt",
+            args: ["mcp"]
+          }
+        }
+      })
+    });
+    const action = planInstall("gemini", {
+      env: {},
+      platform: "linux",
+      homeDir: "/home/u",
+      ...memory.hooks
+    });
+    let invoked = false;
+
+    const result = await runAction(action, {
+      env: {},
+      platform: "linux",
+      homeDir: "/home/u",
+      ...memory.hooks,
+      which: (binary) => (binary === "gemini" ? "/usr/local/bin/gemini" : null),
+      run: async () => {
+        invoked = true;
+        return { exitCode: 0, stdout: "ok", stderr: "" };
+      }
+    });
+
+    expect(invoked).toBe(false);
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("already_present");
+    expect(result.message).toBe(
+      "MCP server 'talking-stick' already registered in Gemini user config."
+    );
+  });
+
   test("uses the resolved executable path for direct binaries", async () => {
     const action = planInstall("codex");
-    let command = "";
-    let args: string[] = [];
-    let windowsHide: boolean | undefined;
+    const calls: Array<{
+      command: string;
+      args: string[];
+      windowsHide: boolean | undefined;
+    }> = [];
 
     const result = await runAction(action, {
       platform: "win32",
       env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
       which: (binary) => (binary === "codex" ? "C:\\Tools\\codex.exe" : null),
       run: async (resolvedCommand, resolvedArgs, options) => {
-        command = resolvedCommand;
-        args = resolvedArgs;
-        windowsHide = options?.windowsHide;
+        calls.push({
+          command: resolvedCommand,
+          args: resolvedArgs,
+          windowsHide: options?.windowsHide
+        });
+        if (resolvedArgs[1] === "get") {
+          return { exitCode: 1, stdout: "", stderr: "not found" };
+        }
         return { exitCode: 0, stdout: "ok", stderr: "" };
       }
     });
 
     expect(result.ok).toBe(true);
-    expect(command).toBe("C:\\Tools\\codex.exe");
-    expect(args).toEqual(["mcp", "add", "talking-stick", "--", "tt", "mcp"]);
-    expect(windowsHide).toBe(true);
+    expect(calls.at(-1)).toEqual({
+      command: "C:\\Tools\\codex.exe",
+      args: ["mcp", "add", "talking-stick", "--", "tt", "mcp"],
+      windowsHide: true
+    });
   });
 
   test("uses cmd.exe to launch .cmd wrappers on Windows", async () => {
     const action = planInstall("codex");
-    let command = "";
-    let args: string[] = [];
-    let windowsHide: boolean | undefined;
+    const calls: Array<{
+      command: string;
+      args: string[];
+      windowsHide: boolean | undefined;
+    }> = [];
 
     const result = await runAction(action, {
       platform: "win32",
       env: { ComSpec: "C:\\Windows\\System32\\cmd.exe" },
       which: (binary) => (binary === "codex" ? "C:\\Tools\\codex.cmd" : null),
       run: async (resolvedCommand, resolvedArgs, options) => {
-        command = resolvedCommand;
-        args = resolvedArgs;
-        windowsHide = options?.windowsHide;
+        calls.push({
+          command: resolvedCommand,
+          args: resolvedArgs,
+          windowsHide: options?.windowsHide
+        });
+        if (resolvedArgs.at(-2) === "get") {
+          return { exitCode: 1, stdout: "", stderr: "not found" };
+        }
         return { exitCode: 0, stdout: "ok", stderr: "" };
       }
     });
 
     expect(result.ok).toBe(true);
-    expect(command).toBe("C:\\Windows\\System32\\cmd.exe");
-    expect(args).toEqual([
-      "/d",
-      "/s",
-      "/c",
-      "C:\\Tools\\codex.cmd",
-      "mcp",
-      "add",
-      "talking-stick",
-      "--",
-      "tt",
-      "mcp"
-    ]);
-    expect(windowsHide).toBe(true);
+    expect(calls.at(-1)).toEqual({
+      command: "C:\\Windows\\System32\\cmd.exe",
+      args: [
+        "/d",
+        "/s",
+        "/c",
+        "C:\\Tools\\codex.cmd",
+        "mcp",
+        "add",
+        "talking-stick",
+        "--",
+        "tt",
+        "mcp"
+      ],
+      windowsHide: true
+    });
   });
 
   test("rejects cmd.exe wrapper args with Windows command metacharacters", async () => {
@@ -368,6 +523,7 @@ describe("runAction", () => {
 
     expect(invoked).toBe(false);
     expect(result.ok).toBe(false);
+    expect(result.status).toBe("failed");
     expect(result.message).toBe(
       "Cannot safely launch codex through cmd.exe because " +
         "an argument contains Windows command metacharacters (& | < > ^ % \")."
@@ -384,6 +540,7 @@ describe("runAction", () => {
     });
 
     expect(result.ok).toBe(false);
+    expect(result.status).toBe("failed");
     expect(result.message).toBe("spawn /usr/local/bin/claude EACCES");
   });
 });
