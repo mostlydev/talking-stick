@@ -24,7 +24,7 @@ Vignette A — guardian catches a wrong turn:
 
 1. Codex holds the stick, working on `src/auth/session.ts`.
 2. Claude Code runs `tt events --follow` in the background under its Monitor tool. It is observer-only on the room.
-3. A `note_added` event arrives with severity `page` and body *"You're editing session.ts but the bug is in token.ts — see line 84."*
+3. A `note_added` event arrives with severity `page` plus a capped body preview: *"You're editing session.ts but the bug is in token.ts — see line 84."*
 4. Claude Code's harness surfaces the line to the user, who can choose to interrupt Codex or let it self-correct on next read of room notes.
 5. Codex finishes, calls `release_stick`, picks up the note via existing `list_notes`, acknowledges, hands off.
 
@@ -33,14 +33,15 @@ Vignette B — join awareness mid-turn:
 1. Claude Code holds the stick on a long refactor.
 2. A human runs `tt join` from a second terminal to observe.
 3. A `member_joined` event arrives on Claude's background watcher.
-4. Claude's watcher rule says: *member_joined is informational, not an interrupt — buffer until next safe boundary.*
+4. Claude's watcher rule says: *member_joined is informational, not an interrupt — write it to the boundary buffer, not the loud Monitor stream.*
 5. At next handoff prep, Claude reads the buffered events and notes "Wojtek joined two minutes ago" in the handoff body.
 
-Vignette C — takeover-available paged to operator:
+Vignette C — operator pages the active holder:
 
-1. The current holder has gone silent (lease stale).
-2. The watcher sees `takeover_available` synthesized from a stale `claim`.
-3. The watcher's tier-rule says: page the operator's terminal but do not auto-takeover — that remains a deliberate act per [ambient-presence.md](../ambient-presence.md) and the existing protocol.
+1. The current holder is in the middle of a long edit.
+2. The operator posts `tt notes add --severity page --target <holder> "Scope down: stop after the parser test passes."`
+3. The holder's page channel emits one loud JSON line with the note id, author, severity, and capped preview.
+4. The holder may act immediately or acknowledge at handoff. The page does not grant or revoke write authority.
 
 ## Scope
 
@@ -57,6 +58,7 @@ Explicitly out of scope:
 - A second event log, second cursor concept, or second identity model. Everything reuses `event_seq`, `agent_id`, and the existing room-resolution rules.
 - Push transports (websockets, MCP resource subscriptions). Pull-based long-poll over SQLite is sufficient for v1; see *Tradeoffs*.
 - Any harness-specific notification format. Output is JSON lines; each harness maps lines to its own notification system.
+- Event-driven stick claiming. `wait_for_turn` remains the authoritative wait/claim path in v1; using the event stream to wake waiters is deferred until wait intent is modeled explicitly.
 
 ## Architecture
 
@@ -81,7 +83,7 @@ Rationale for putting notes into the event log rather than inventing a parallel 
 - Replay parity. Rebuilding room state from the event log already requires reading every mutation; adding notes to that stream means a fresh observer can reconstruct "what does the holder need to know?" without a second query.
 - Audit shape. The event log is append-only and ordered. Notes already are too. The shapes match.
 
-The `note_added` event carries only the metadata — `note_id`, `severity`, optional `target_agent_id`. The full body still lives in the `notes` table and is fetched via `list_notes`. This keeps event payloads small and lets watchers decide whether the body is worth pulling per-event.
+The persisted `note_added` event carries metadata: `note_id`, `severity`, optional `target_agent_id`, and a capped `body_preview` for page delivery. The full body still lives in the `notes` table and is fetched via `list_notes`. This keeps persisted event payloads bounded while making a page line actionable without a second foreground tool call.
 
 ### Layer 2 — Note severity and targeting
 
@@ -121,25 +123,34 @@ tt events [path] --follow
 
 Stdout: one JSON object per line, one event per line, flushed after each write. Stderr: diagnostics only. Exit on `SIGTERM`/`SIGHUP` with a final flush.
 
-The new `--severity` and `--target` flags filter `note_added` events specifically. A guardian-style watcher might run two streams in parallel:
+The new `--severity` and `--target` flags filter `note_added` events specifically. A guardian-style harness uses two logical channels:
 
 ```
-# Tier 1 — interrupts. One line here means "page the user now."
+# Page channel — loud. One line here means "interrupt the holder now."
 tt events --follow --event note_added --severity page --target self
 
-# Tier 2 — buffer. Surfaced at the next safe boundary.
-tt events --follow --event member_joined,member_left,note_added --severity info
+# Buffer channel — quiet. Write to a local cursor/log and read at the next safe boundary.
+tt events --follow --event member_joined,member_left,note_added --severity info --target any
 ```
 
-Why two streams instead of one with severity in the payload? Because the harness-side glue (Claude Code's Monitor tool, equivalents elsewhere) treats *every line* of a watched stream as a notification. Putting interrupts on their own stream lets the harness route them to a louder channel without parsing every line of the buffer stream first.
+The distinction is not just severity in the JSON payload. Some harness glue, notably Claude Code's Monitor tool, treats *every stdout line* from a watched process as a conversation notification. Page output is suitable for that loud path. Buffer output is not; it should be drained into a local cursor/log and summarized by the foreground agent at handoff or another safe boundary.
+
+### Wait pattern — not changed by this plan
+
+This proposal does **not** replace `wait_for_turn` with event-stream notifications for stick availability.
+
+The current queue mechanics rely on `wait_for_turn` as both the claim authority and the wait-intent heartbeat. In the service today, `wait_for_turn` updates `last_wait_at`, and normal `release_stick` only reserves the stick for a candidate whose wait is recent according to `waiterGraceMs`. A participant that probes once and then sleeps only on event lines for minutes can therefore change the normal reservation behavior.
+
+The v1 skill should continue to teach direct `wait_for_turn` long-polls. A future event-driven wait helper can use the same event stream as an advisory wakeup channel, but it first needs an explicit wait-intent design, for example `waiting_since` / `wait_intent_expires_at` renewed by a helper. That follow-up helper would still run `wait_for_turn` to claim; event lines would be a bell, not the lock.
 
 ### Layer 4 — Harness-side: background process + stdout-line notification
 
 The actual integration in Claude Code:
 
-1. Foreground agent calls `Bash(command="tt events ...", run_in_background=true)`.
-2. Foreground agent calls `Monitor(<bash_id>)`. Monitor surfaces each new stdout line as a notification injected into the conversation.
-3. Foreground agent reads the notification, decides per its instructions whether to act (page → interrupt user) or buffer (info → remember for next handoff).
+1. Foreground agent starts the page channel in the background and attaches Monitor to that process only.
+2. Foreground agent starts the buffer channel separately, without Monitor, writing JSON lines plus the last seen `event_seq` to a local cursor/log.
+3. Page lines are injected into the conversation immediately. Buffer lines are read deliberately at handoff prep or another safe boundary.
+4. The agent still uses `wait_for_turn` for turn ownership; these channels are notification surfaces only.
 
 Equivalents in other harnesses:
 
@@ -155,13 +166,13 @@ Concrete numbers, since this was the explicit question.
 
 **Idle cost: zero.** A backgrounded `tt events --follow` is a child process. It consumes no model tokens while running. The harness keeps a process handle, not a context-window slot.
 
-**Per-event cost: small and proportional.** Each stdout line that Monitor surfaces becomes a notification message in the conversation. A typical event line is on the order of 100–300 tokens depending on whether the body is inlined. With the structure above (event log carries metadata only; bodies fetched on demand), each `note_added` line is closer to 100 tokens, each `member_joined` line under 80.
+**Per-event cost: small and proportional.** Each page line that Monitor surfaces becomes a notification message in the conversation. A typical page line is on the order of 100–300 tokens with a capped body preview; each `member_joined` buffer line is under 80 tokens and should not enter the conversation until the agent chooses to summarize buffered context.
 
 **Annual budget for a busy room:** at, say, 50 events per active hour (very high — typical rooms see far fewer), that is ~5 000 tokens per hour of room activity surfaced into the holder's context. By comparison, a single `get_room_state` call already costs several hundred tokens, and most agents call it on every turn. The watcher is cheap.
 
 **Where it actually gets expensive:**
 
-- If `note_added` events inline full bodies. Don't — keep bodies in `list_notes`.
+- If `note_added` events inline full bodies. Don't — keep full bodies in `list_notes`; page output gets only a capped preview.
 - If watchers don't filter. A holder doesn't need its own `claim` events echoed back. Filter via `--event` and `--target`.
 - If many idle agents all run watchers on the same room. The cost is per-agent-context, not per-room. With N agents, N watchers, N copies of each event in N contexts. Acceptable for small N (≤4 typical), worth revisiting if rooms grow.
 - If the watcher is replaced with a polling loop that calls `get_room_events` every few seconds. That defeats the design — the foreground agent burns tokens making the polling decisions. The watcher's whole point is to push that decision to a child process and only spend tokens on actual events.
@@ -172,7 +183,7 @@ Concrete numbers, since this was the explicit question.
 
 ### Service / DB
 
-1. Add `member_joined`, `member_left`, `note_added`, `note_resolved` to the `event_type` enum in `src/types.ts` and in the SQLite `room_events` schema (column is already a free-text string in SQLite, but the TypeScript discriminated union must be extended; runtime guards in `mapEvent` need updates).
+1. Add `member_joined`, `member_left`, `note_added`, `note_resolved` to the `event_type` enum in `src/types.ts`. The SQLite `room_events.event_type` column is already free text, but migration 5 should add nullable metadata columns for note events: `note_id`, `severity`, `target_agent_id`, and `body_preview`.
 2. `joinPath`, `leaveRoom`, `addNote` all call `appendEvent(...)` in their respective transactions. They already run inside the same transaction as the state mutation, so atomicity is free.
 3. Add optional `severity: "info" | "page"` and `target_agent_id` columns to the `notes` table. Default severity `info`. Existing rows back-fill to `info`, no `target`.
 4. New service method `resolveNote({ agent_id, room_id, note_id })` that flips `resolved_at` / `resolved_by_agent_id` and emits `note_resolved`. Optional for v1 but cheap.
@@ -180,7 +191,7 @@ Concrete numbers, since this was the explicit question.
 ### CLI
 
 1. `tt notes add --severity page --target <agent_id> "body"` — pass-through of new fields.
-2. `tt events --follow [--after N] [--event T,...] [--severity ...] [--target ...]` — per Layer 3.
+2. `tt events --follow [--after N] [--event T,...] [--severity ...] [--target ...]` — per Layer 3. `--target self` requires participant identity; observer-only shells must use `--target any` or an explicit agent id.
 3. `tt notes resolve <note_id>` — wraps `resolveNote`. Optional for v1.
 
 ### MCP
@@ -191,43 +202,39 @@ Concrete numbers, since this was the explicit question.
 
 ### Skill
 
-The shipped `skills/talking-stick/SKILL.md` gets a section: *"While you hold the stick, you may receive `note_added` events with severity `page`. Read them with `list_notes`, decide whether to act now or at the next handoff boundary, and resolve them when addressed."* Include the mirror instruction for non-holders: *"To get the holder's attention without taking the stick, use `add_note` with severity `page`."*
+The shipped `skills/talking-stick/SKILL.md` gets a section: *"While you hold the stick, you may receive `note_added` events with severity `page`. Read the page preview, call `list_notes` if you need the full body, decide whether to act now or at the next handoff boundary, and resolve it when addressed."* Include the mirror instruction for non-holders: *"To get the holder's attention without taking the stick, use `add_note` with severity `page`."*
+
+The skill's wait guidance should remain direct `wait_for_turn` long-polling. Event-stream wakeups for stick availability are future work and require explicit wait-intent state before they can replace the current polling cadence.
 
 ## Tradeoffs and open questions
 
 - **Why notes-with-severity instead of a separate `messages` primitive?** Notes already are durable, addressable, and resolvable. Adding two fields is cheaper than a parallel messaging table, and the harness-side UX is identical. The risk is conceptual creep: notes today are "things the holder should consider before handoff," and pages stretch that toward "things the holder must consider now." Worth naming explicitly so the skill reflects it.
 - **Should `member_joined` be page-able by default?** No. Joins are too frequent (humans `cd` and out, harnesses restart). Default to `info`. A specific guardian setup can choose to elevate joins by spawning a second `tt events --follow --event member_joined` stream and rendering it loudly.
-- **Heartbeat-stale and takeover-available as events.** Tempting — the watcher could fire one line when the current holder goes stale and another when takeover unlocks. But these are derived states, not log entries; if we synthesize them into the event stream we either need a separate "synthetic events" cursor or we mix derived and persisted events on the same `event_seq`. Recommendation for v1: do not synthesize. Watchers that care can long-poll `wait_for_turn` in parallel — it already returns `takeover_available`. A future `tt events --follow --derived` flag could synthesize cleanly.
+- **Heartbeat-stale and takeover-available as events.** Tempting — the watcher could fire one line when the current holder goes stale and another when takeover unlocks. But these are derived states, not log entries; if we synthesize them into the event stream we either need a separate "synthetic events" cursor or we mix derived and persisted events on the same `event_seq`. Recommendation for v1: do not synthesize. Agents that care should continue to long-poll `wait_for_turn`; a future event-driven wait helper can handle derived deadlines after wait intent is modeled explicitly.
 - **Backpressure.** `tt events --follow` writes to stdout. If the harness Monitor stops draining (paused conversation, hit a tool error), the pipe will block. The watcher should use a small bounded write buffer and drop-with-warning rather than blocking forever; design parity with `tail -F`.
 - **Authentication of `target_agent_id`.** Anyone in the room can post a note targeted at anyone else. That matches the existing notes contract (any member can post). If we ever need permissioning, it is a separate concern from this design.
 - **Crash recovery.** Watcher process dies → harness restarts it with `--after <last_seen_event_seq>`. The harness must persist the last-seen seq across restarts; for Claude Code that means the agent writes it to a known location (a memory entry, or a `.talking-stick/` cursor file) before the watcher exits cleanly. Worth specifying in the skill.
-- **Multiple watchers per harness.** Layer 4 suggests two parallel streams (page tier + buffer tier). That is two child processes per agent. Acceptable; combine into one if it ever becomes a constraint.
+- **Multiple watchers per harness.** Layer 4 suggests two logical streams (page channel + buffer channel). That can be two child processes per agent, or one wrapper process that routes output to separate destinations. The important invariant is routing: page can be Monitor-injected; buffer should not be.
 - **Resolution semantics.** Does a `pass`/`release` auto-resolve outstanding pages? Probably not — the next holder may still need them. But we should mark them as "delivered to holder X at turn Y" so the page does not re-page on every turn. Either a `delivered_at` column on notes, or a per-turn dedup at the harness side. v1 recommendation: dedup at the harness side using `note_id`, no schema change.
 
 ## What this plan does NOT yet specify
 
 This document is a design proposal for review, not an implementation specification. The following decisions are deliberately deferred to post-review so that reviewer pushback can shape them. Treat each as a real gap an implementer would hit on day one:
 
-1. **SQLite migration strategy.** The proposal adds new `event_type` values and two new columns on `notes`. The current codebase appears to apply schema directly at startup with no migration framework. Implementation needs to specify: are new columns added via `ALTER TABLE` on existing user databases? What about a user who upgrades, runs the new `tt`, then downgrades — do older binaries tolerate the extra columns? Does the `event_type` enum widening require any guard for older readers?
-2. **JSON wire format for new events.** `RoomEvent` today is a flat fixed shape (`event_seq`, `event_id`, `room_id`, `turn_id`, `event_type`, `from_agent_id`, `to_agent_id`, `handoff`, `reason`, `created_at`). The new events need fields the current shape doesn't carry (`note_id`, `severity`, `target_agent_id`, leave `reason`). Two viable encodings:
-   - Widen `RoomEvent` with optional fields populated only for relevant variants (simpler, looser typing).
-   - Move to a discriminated union with per-variant payloads (stricter, requires a wider TS refactor).
-   The plan does not pick. An example JSON line per new event type should ship with the implementation spec.
-3. **`--target self` resolution.** The watcher process resolves `self` against whatever `tt whoami` returns at process start. But what about observer mode, where there is no harness identity? Possibilities: error at startup, behave as `--target any`, or require an explicit `--as <agent_id>`. Pick one.
-4. **`member_left` trigger sites.** Members can transition `inactive` via at least two paths: heartbeat-timeout sweep, and opportunistic cleanup on later RPC invocations. The plan says "emit on GC" but does not enumerate which code paths qualify, whether reactivation-then-leave should emit twice, and what `reason` strings are valid (`"left"`, `"timeout"`, `"gc"`, …).
-5. **Backward compatibility for older readers.** A `tt` from before this change calling `get_room_events` against a database written by the new server will receive `event_type` values its discriminated union does not know about. Decide: filter unknown types server-side when the client signals an older protocol version, fall through to a `"unknown"` variant client-side, or accept that users on mismatched binaries will see runtime errors and document the upgrade order.
-6. **Skill prose, in full.** The "Skill" subsection above paraphrases the addition in one sentence. The actual shipped skill text is what every harness reads on every relevant turn — it needs to be drafted, reviewed, and pass the same tightness bar as the rest of `skills/talking-stick/SKILL.md`.
-7. **Page dedup persistence.** The plan recommends harness-side dedup of pages by `note_id` plus a cursor file for crash recovery. But the dedup set itself is in-memory; after a watcher restart the dedup set is empty, and a still-unresolved page can re-fire on the next event from the buffered tail. Either the cursor file must persist the dedup set too, or the server must offer a "since last delivery to <agent_id>" filter. Pick one before relying on dedup.
-8. **Test plan.** Not enumerated. At minimum: schema migration on a populated v0.1.x database, event ordering when `addNote` and `release_stick` race, filter correctness on `tt events --follow` for each `--event` / `--severity` / `--target` combination, resume-after-cursor with new event types interleaved with existing ones, and behaviour when a watcher's stdout is blocked.
+1. **Exact migration 5 DDL.** The repo already has a `schema_migrations` runner in `src/db.ts`. Implementation still needs the exact `ALTER TABLE` sequence for `notes` and `room_events`, plus downgrade expectations for older binaries that see unknown event types.
+2. **`member_left` trigger sites.** Explicit `leaveRoom` is straightforward. Inactivity/GC is not: members can become inactive through liveness checks and opportunistic cleanup. Implementation must decide which transitions emit a durable `member_left`, which reason strings are valid (`"left"`, `"inactive"`, `"gc"`), and how to avoid repeated leave/reactivate noise.
+3. **Skill prose, in full.** The "Skill" subsection above paraphrases the addition. The actual shipped skill text is what every harness reads on every relevant turn, so it needs to be drafted, reviewed, and kept as tight as the rest of `skills/talking-stick/SKILL.md`.
+4. **Page dedup persistence.** The plan recommends harness-side dedup of pages by `note_id` plus a cursor file for crash recovery. But the dedup set itself is in-memory; after a watcher restart the dedup set is empty, and a still-unresolved page can re-fire on the next event from the buffered tail. Either the cursor file must persist the dedup set too, or the server must offer a "since last delivery to <agent_id>" filter. Pick one before relying on dedup.
+5. **Test plan.** Not enumerated. At minimum: schema migration on a populated v0.1.x database, event ordering when `addNote` and `release_stick` race, filter correctness on `tt events --follow` for each `--event` / `--severity` / `--target` combination, resume-after-cursor with new event types interleaved with existing ones, and behavior when a watcher's stdout is blocked.
 
-These are not blockers for the design discussion — they are inputs to it. Reviewer opinions on items 1, 2, 3, 5, and 7 in particular will shape the implementation direction more than the higher-level architecture choices already in the plan.
+These are not blockers for the design discussion — they are inputs to the implementation pass. The architectural decision to keep stick waiting on `wait_for_turn` is intentional; event-driven waiting belongs in a separate wait-intent design.
 
 ## Staged rollout
 
 1. **Schema + service:** add new event types, emit on `joinPath`/`leaveRoom`/`addNote`. No CLI/MCP changes yet. Watchers that already follow the event log start seeing the new events immediately.
 2. **`tt events --follow` extended:** add `--severity` and `--target` filters. CLI tests for filter shape and resume-after-cursor.
 3. **`add_note` severity + targeting:** schema change to `notes`, plumbed through service, CLI, MCP. Skill updated.
-4. **Skill rewrite:** holder-side and watcher-side guidance, including the "two-stream" pattern for harnesses with stdout-line notification.
+4. **Skill rewrite:** holder-side and watcher-side guidance, including page-vs-buffer routing and the reminder that `wait_for_turn` remains the ownership path.
 5. **Optional: `resolve_note` + `note_resolved` event.** Lets pages stop re-paging across handoffs without harness-side dedup.
 6. **Optional: derived-event synthesis** (`takeover_available`, `lease_stale`) as a follow-up document if observer demand justifies it.
 
@@ -237,6 +244,7 @@ These are not blockers for the design discussion — they are inputs to it. Revi
 - No write authority changes. Pages are signals, not commands.
 - No automatic takeover on page. Takeover stays a deliberate act gated on `claim_expires_at`.
 - No harness-specific notification format. JSON lines in, harness decides how loud.
+- No event-driven replacement for `wait_for_turn`. Stick availability remains governed by the existing wait/claim path until a separate wait-intent design exists.
 
 ## Summary
 
@@ -245,6 +253,6 @@ The talking stick already has the right primitives for *what* coordinates (rooms
 - Four new event types so the existing log carries presence and notes.
 - Two new fields on notes so non-holders can distinguish a hint from a page.
 - One existing CLI surface (`tt events --follow`) extended with two filter flags.
-- A documented harness pattern (background process + stdout-line notification) that costs zero idle tokens and proportional per-event tokens.
+- A documented harness pattern (page channel + quiet buffer channel) that costs zero idle tokens and proportional per-event tokens.
 
 Everything else — transports, write-authority changes, derived events, push channels — is deferred until the simple version is in use and we know what is actually missing.
