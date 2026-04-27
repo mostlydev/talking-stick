@@ -11,8 +11,11 @@ There are real situations where a non-holder needs to reach the holder — or ne
 
 - The non-holder is watching the holder's work and notices a problem (wrong file, broken assumption, looming merge conflict). It should be able to say so without forcing a takeover.
 - A new participant joins the room mid-turn. The holder may want to greet, hand off, or just acknowledge. Today the holder finds out only when they next call `get_room_state`.
+- A participant leaves the room mid-task. The holder should know not to `pass_stick` to a harness that is no longer participating.
+- A holder finds an issue that another harness should address next. It should be able to page that harness before the formal handoff so the recipient is not surprised at claim time.
 - An operator drops a note ("we're scoping down — stop after the test passes"). The holder should see it before the next handoff boundary.
 - The watcher itself is an LLM ("guardian") spawned to keep the holder honest; its only job is to tail the room and raise its hand on specific conditions.
+- A release/pass event can be useful as an early wake-up signal for a waiting harness, even though `wait_for_turn` remains the authority that decides whether the harness may claim.
 
 This document proposes the smallest primitive set that lets harnesses exchange these signals over the existing room-event log, plus the harness-side glue (background watcher + stdout-line notification) that makes them feel ambient instead of poll-driven.
 
@@ -42,6 +45,34 @@ Vignette C — operator pages the active holder:
 2. The operator posts `tt notes add --severity page --target <holder> "Scope down: stop after the parser test passes."`
 3. The holder's page channel emits one loud JSON line with the note id, author, severity, and capped preview.
 4. The holder may act immediately or acknowledge at handoff. The page does not grant or revoke write authority.
+
+Vignette D — a participant leaves before handoff:
+
+1. Claude Code holds the stick and originally expected to pass the next turn to Gemini for review.
+2. Gemini exits the room, or its membership is marked inactive after the implementation-defined debounce window.
+3. Claude's buffer channel records `member_left` with `from_agent_id = gemini:...` and a reason.
+4. At handoff prep, Claude sees the buffered leave event and does **not** `pass_stick` to Gemini. It either releases to the normal sequence or chooses a different active recipient with an explicit reason.
+
+Vignette E — the holder pages a future recipient:
+
+1. Codex holds the stick and finds a regression that Claude should address after Codex finishes the current edit.
+2. Codex posts `add_note` with `severity: "page"` and `target_agent_id = "claude:..."`: *"When I pass back, please start with tests/cli.test.ts; the install dry-run expectation is stale."*
+3. Claude's page channel receives the note while Claude is still a non-holder. Claude may read and prepare, but still must not mutate the workspace until it owns the stick.
+4. Codex later passes or releases with a handoff that references the same `note_id`, so the formal turn boundary and the earlier page line reconcile.
+
+Vignette F — a third harness joins an existing pair:
+
+1. Codex and Claude have been alternating on a feature.
+2. OpenCode joins the room to take over UI verification.
+3. Both active watchers see `member_joined` in their buffer channels. It is not page-worthy by default, but it changes the social shape of the next handoff.
+4. The current holder can mention the new participant in the next handoff, avoid hard-passing between only the original two harnesses, or explicitly pass to OpenCode if that is the right next owner.
+
+Vignette G — handoff as an early wake-up signal:
+
+1. Claude is waiting and, absent any other signal, would wake from its own scheduler in two minutes.
+2. Codex releases the stick ten seconds later.
+3. A future wait-helper sees the `release` event immediately and asks Claude to run a short `wait_for_turn` probe.
+4. `wait_for_turn` still decides whether Claude may claim. The event line is only an advisory wake-up, and this optimization remains deferred until wait intent is modeled explicitly.
 
 ## Scope
 
