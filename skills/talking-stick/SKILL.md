@@ -53,11 +53,11 @@ Keep the wait input minimal:
 ```json
 {
   "room_id": "<room_id from join_path>",
-  "max_wait_ms": 60000
+  "max_wait_ms": 110000
 }
 ```
 
-`max_wait_ms` is optional. Use the longest client-safe wait you can support: 60000 ms is a good MCP default when the harness can tolerate it; 120000 ms is fine only when the tool/client timeout is known to exceed that. If the call times out at the harness layer, fall back to a shorter value and call again. Do not send `cursor`, even if an old tool schema still exposes it; `wait_for_turn` is cursor-free, and resumable event replay belongs to `get_room_events`.
+`max_wait_ms` is optional. Use the longest client-safe wait you can support: 110000 ms is a good MCP default when the harness can tolerate it; 180000 ms is fine only when the tool/client timeout is known to exceed that. If the call times out at the harness layer, fall back to a shorter value and call again. Do not send `cursor`, even if an old tool schema still exposes it; `wait_for_turn` is cursor-free, and resumable event replay belongs to `get_room_events`.
 
 Possible outcomes:
 

@@ -4,10 +4,18 @@ All notable changes to `talking-stick` are recorded here. Per-version release
 notes (with verification commands and the full motivation for each item) live
 in [`docs/releases/`](docs/releases/).
 
-The project follows a loose [Keep a Changelog](https://keepachangelog.com/) style
-while it remains in alpha. Versioning is [SemVer](https://semver.org/) with the
-caveat that protocol-level breaking changes are still possible across alpha bumps;
-they will be called out under **Breaking changes**.
+The project follows a loose [Keep a Changelog](https://keepachangelog.com/) style.
+Versioning is [SemVer](https://semver.org/). The historical alpha releases could
+make protocol-level breaking changes across alpha bumps; any future breaking
+changes will be called out under **Breaking changes**.
+
+## [0.1.0] — 2026-04-27
+
+Full notes: [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
+
+### Changed
+- **First non-alpha release.** Promoted the current local coordination surface to `0.1.0`: MCP tools, `tt` CLI, SQLite persistence, installer flows, non-owner notes, fair release selection, liveness recovery, and bundled harness skill.
+- **Long-poll skill guidance.** The bundled skill now recommends `110000` ms as the default client-safe `wait_for_turn` long-poll budget.
 
 ## [0.1.0-alpha.6] — 2026-04-27
 
@@ -98,6 +106,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.1.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0
 [0.1.0-alpha.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.5
 [0.1.0-alpha.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.4
