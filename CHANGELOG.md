@@ -9,6 +9,13 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## [0.1.2] — 2026-04-27
+
+Full notes: [`docs/releases/0.1.2.md`](docs/releases/0.1.2.md).
+
+### Changed
+- **Combined harness setup.** `tt install` now installs both the MCP server registration and the bundled Talking Stick skill for each selected harness; `tt uninstall` removes both. The older `install-skill` / `uninstall-skill` commands remain available for targeted skill-only maintenance.
+
 ## [0.1.1] — 2026-04-27
 
 Full notes: [`docs/releases/0.1.1.md`](docs/releases/0.1.1.md).
@@ -114,6 +121,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.1.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.2
 [0.1.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0
 [0.1.0-alpha.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.6

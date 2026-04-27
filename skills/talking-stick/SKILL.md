@@ -30,7 +30,7 @@ Prefer the Talking Stick MCP tools when they are available. If they are not avai
 
 If coordination is required and neither the MCP tools nor the `tt` CLI are available, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 
-Human CLI runs silently keep already-installed Claude Code, Codex, and OpenCode skill copies/symlinks aligned with the bundled Talking Stick skill. This is best effort and only updates existing installs; Gemini skills are registry-managed and should be refreshed with `tt install-skill gemini` when needed.
+Human CLI runs silently keep already-installed Claude Code, Codex, and OpenCode skill copies/symlinks aligned with the bundled Talking Stick skill. This is best effort and only updates existing installs; Gemini skills are registry-managed and should be refreshed with `tt install gemini` when needed.
 
 ### 2. Join the workspace room once
 
@@ -153,7 +153,7 @@ Example:
     }
   ],
   "open_questions": [
-    "Should install-skill default to copy or link for local development?"
+    "Should tt install default to copy or link for local development?"
   ]
 }
 ```

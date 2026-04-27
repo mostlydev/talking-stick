@@ -226,6 +226,12 @@ describe("shouldAutoSyncInstalledSkills", () => {
     expect(
       shouldAutoSyncInstalledSkills({
         ...parsed,
+        name: "install"
+      }, {})
+    ).toBe(false);
+    expect(
+      shouldAutoSyncInstalledSkills({
+        ...parsed,
         name: "install-skill"
       }, {})
     ).toBe(false);
@@ -810,6 +816,40 @@ describe("tt notes", () => {
     await expect(
       captureStdout(["self-update", "--print", "--manager", "winget"])
     ).rejects.toThrow(/--manager must be one of/);
+  });
+
+  test("tt install --print includes MCP and skill actions", async () => {
+    const out = await captureStdout(["install", "codex", "--print"]);
+
+    expect(out).toContain("[codex] codex mcp add talking-stick -- tt mcp");
+    expect(out).toContain("[codex] link ");
+    expect(out).toContain(".codex/skills/talking-stick");
+  });
+
+  test("tt install --copy --print plans a copied skill", async () => {
+    const out = await captureStdout([
+      "install",
+      "codex",
+      "--print",
+      "--copy"
+    ]);
+
+    expect(out).toContain("[codex] codex mcp add talking-stick -- tt mcp");
+    expect(out).toContain("[codex] copy ");
+    expect(out).toContain(".codex/skills/talking-stick");
+  });
+
+  test("tt install rejects conflicting skill link modes", async () => {
+    await expect(
+      captureStdout(["install", "codex", "--print", "--copy", "--link"])
+    ).rejects.toThrow(/Pass only one of --copy or --link/);
+  });
+
+  test("tt uninstall --print includes skill removal", async () => {
+    const out = await captureStdout(["uninstall", "codex", "--print"]);
+
+    expect(out).toContain("[codex] remove ");
+    expect(out).toContain(".codex/skills/talking-stick");
   });
 
   test("tt notes with unknown subcommand surfaces an error", async () => {

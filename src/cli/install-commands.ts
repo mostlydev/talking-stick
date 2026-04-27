@@ -31,19 +31,27 @@ import {
 
 export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
   normalizeBooleanFlag(parsed, "print");
+  normalizeBooleanFlag(parsed, "copy");
+  normalizeBooleanFlag(parsed, "link");
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
-  const installOptions = { skipMissing: true };
-  const actions = harnesses.map((harness) => planInstall(harness, installOptions));
+  const installOptions = {
+    link: resolveSkillInstallLinkMode(parsed),
+    skipMissing: true
+  };
 
   if (dryRun) {
-    for (const action of actions) {
+    for (const action of planCombinedInstallActions(harnesses, installOptions)) {
       printActionPlan(action);
     }
     return;
   }
 
-  const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
+  const results = (
+    await Promise.all(
+      harnesses.map((harness) => runCombinedInstall(harness, installOptions))
+    )
+  ).flat();
   reportInstallResults(results, "install");
 }
 
@@ -54,7 +62,7 @@ export async function runUninstallCommand(
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
   const installOptions = { skipMissing: true };
-  const actions = harnesses.map((harness) => planUninstall(harness, installOptions));
+  const actions = planCombinedUninstallActions(harnesses, installOptions);
 
   if (dryRun) {
     for (const action of actions) {
@@ -63,7 +71,11 @@ export async function runUninstallCommand(
     return;
   }
 
-  const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
+  const results = (
+    await Promise.all(
+      harnesses.map((harness) => runCombinedUninstall(harness, installOptions))
+    )
+  ).flat();
   reportInstallResults(results, "uninstall");
 }
 
@@ -168,6 +180,67 @@ function resolveSkillInstallLinkMode(parsed: ParsedCommand): boolean {
   }
 
   return true;
+}
+
+function planCombinedInstallActions(
+  harnesses: HarnessId[],
+  installOptions: { link: boolean; skipMissing: boolean }
+): InstallAction[] {
+  return harnesses.flatMap((harness) => {
+    const mcpAction = planInstall(harness, installOptions);
+    if (mcpAction.kind === "skip") {
+      return [mcpAction];
+    }
+
+    return [
+      mcpAction,
+      planSkillInstall(harness, {
+        ...installOptions,
+        // In dry-run mode, show the skill action that will follow MCP setup
+        // even when the MCP installer is what creates the harness config root.
+        skipMissing: false
+      })
+    ];
+  });
+}
+
+function planCombinedUninstallActions(
+  harnesses: HarnessId[],
+  installOptions: { skipMissing: boolean }
+): InstallAction[] {
+  return harnesses.flatMap((harness) => [
+    planUninstall(harness, installOptions),
+    planSkillUninstall(harness, {
+      ...installOptions,
+      skipMissing: false
+    })
+  ]);
+}
+
+async function runCombinedInstall(
+  harness: HarnessId,
+  installOptions: { link: boolean; skipMissing: boolean }
+): Promise<InstallResult[]> {
+  const mcpAction = planInstall(harness, installOptions);
+  const mcpResult = await runAction(mcpAction, installOptions);
+  if (!mcpResult.ok || mcpResult.skipped) {
+    return [mcpResult];
+  }
+
+  const skillAction = planSkillInstall(harness, installOptions);
+  const skillResult = await runAction(skillAction, installOptions);
+  return [mcpResult, skillResult];
+}
+
+async function runCombinedUninstall(
+  harness: HarnessId,
+  installOptions: { skipMissing: boolean }
+): Promise<InstallResult[]> {
+  const mcpAction = planUninstall(harness, installOptions);
+  const mcpResult = await runAction(mcpAction, installOptions);
+  const skillAction = planSkillUninstall(harness, installOptions);
+  const skillResult = await runAction(skillAction, installOptions);
+  return [mcpResult, skillResult];
 }
 
 function selectHarnesses(parsed: ParsedCommand): HarnessId[] {

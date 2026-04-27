@@ -67,8 +67,8 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: false,
     startupMaintenance: false,
     internal: false,
-    usage: "tt install <harness...> | --all [--print]",
-    description: "Install Talking Stick into harness MCP configs.",
+    usage: "tt install <harness...> | --all [--print] [--copy] [--link]",
+    description: "Install Talking Stick into harness MCP configs and skills.",
     handler: ({ parsed }) => runInstallCommand(parsed)
   },
   {
@@ -77,7 +77,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: "tt uninstall <harness...> | --all [--print]",
-    description: "Remove Talking Stick from harness MCP configs.",
+    description: "Remove Talking Stick from harness MCP configs and skills.",
     handler: ({ parsed }) => runUninstallCommand(parsed)
   },
   {

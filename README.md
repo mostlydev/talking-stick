@@ -2,7 +2,7 @@
 
 An MCP coordination server that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.1.1. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box.
+**Version:** 0.1.2. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box.
 
 ## Quickstart
 
@@ -18,7 +18,6 @@ npm i -g talking-stick
 
 ```bash
 tt install --all
-tt install-skill --all
 ```
 
 Restart any harness that was already running so it loads the new MCP server. The `talking_stick` tools and skill now appear in every workspace.
@@ -47,7 +46,7 @@ That's the whole workflow. They negotiate turns automatically, hand off structur
 
 | Method | Command | Notes |
 |---|---|---|
-| **From npm** | `npm i -g talking-stick` | Published as `0.1.1`. Requires Node ≥ 22. |
+| **From npm** | `npm i -g talking-stick` | Published as `0.1.2`. Requires Node ≥ 22. |
 | **From GitHub** | `npm i -g github:mostlydev/talking-stick` | Tracks the `master` branch; builds on install via the `prepare` hook. |
 | **From source** | `git clone … && npm install && npm link` | For contributors. |
 
@@ -55,21 +54,19 @@ All three produce a `tt` binary on your `PATH`. Everything else below works iden
 
 ### Verify without installing
 
-Want to see exactly what `tt install`/`tt install-skill` would change before touching anything?
+Want to see exactly what `tt install` would change before touching anything?
 
 ```bash
 tt install --all --print
-tt install-skill --all --print
 ```
 
 ### Install into a subset
 
 ```bash
 tt install claude-code codex
-tt install-skill gemini
 ```
 
-During normal execution, install commands skip harnesses that are not present instead of failing or creating new harness config roots. For example, `tt install-skill codex` only creates `~/.codex/skills/` if `~/.codex/` already exists.
+During normal execution, install commands skip harnesses that are not present instead of failing or creating new harness config roots.
 
 ### Update
 
@@ -85,7 +82,6 @@ Skills are symlinked automatically, so they don't need an update.
 
 ```bash
 tt uninstall --all
-tt uninstall-skill --all
 ```
 
 ## What it gives your agent
@@ -124,7 +120,9 @@ While you wait your turn you may still need to flag something to the current own
 
 ## How installation works per harness
 
-`tt install` prefers each harness's own `mcp add` subcommand when available (so the server ends up in the right user-global config with the right schema), and falls back to direct JSON editing when it isn't.
+`tt install` installs both pieces a harness needs: the MCP server registration and the bundled `talking-stick` skill.
+
+For MCP registration, it prefers each harness's own `mcp add` subcommand when available (so the server ends up in the right user-global config with the right schema), and falls back to direct JSON editing when it isn't.
 
 | Harness       | Scope        | Under the hood                                                              |
 |---------------|--------------|-----------------------------------------------------------------------------|
@@ -135,9 +133,9 @@ While you wait your turn you may still need to flag something to the current own
 
 All four install into **user-global scope**, not project-local. A coordination server is only useful if every workspace your agent enters can see the same rooms — project-scoped MCP would defeat the point.
 
-If you'd rather register it by hand, run `tt install --print <harness>` to see the exact command or JSON edit, then apply it yourself.
+If you'd rather apply setup by hand, run `tt install --print <harness>` to see the exact MCP and skill actions, then apply them yourself.
 
-## How skill installation works per harness
+## Skill paths per harness
 
 Talking Stick also ships with a portable `talking-stick` skill:
 
@@ -146,9 +144,9 @@ Talking Stick also ships with a portable `talking-stick` skill:
 - Gemini: installed with `gemini skills install ... --scope user` or linked with `gemini skills link ... --scope user`
 - OpenCode: copied or linked into `~/.opencode/skills/talking-stick`
 
-By default, `tt install-skill` links the bundled skill into each harness so local updates are picked up immediately. Pass `--copy` if you want a standalone snapshot instead.
+By default, `tt install` links the bundled skill into each harness so local updates are picked up immediately. Pass `--copy` if you want a standalone snapshot instead.
 
-Human CLI invocations also perform a silent best-effort sync for already-installed file-based skills in Claude Code, Codex, and OpenCode. If the installed skill is a copy, it is refreshed from the bundled skill; if it is a stale symlink, it is relinked. Missing harness config directories and missing skill installs are skipped. Gemini skills are managed by Gemini's own registry, so use `tt install-skill gemini` after updating when needed.
+Human CLI invocations also perform a silent best-effort sync for already-installed file-based skills in Claude Code, Codex, and OpenCode. If the installed skill is a copy, it is refreshed from the bundled skill; if it is a stale symlink, it is relinked. Missing harness config directories and missing skill installs are skipped. Gemini skills are managed by Gemini's own registry, so use `tt install gemini` after updating when needed.
 
 ## Human CLI
 
@@ -171,10 +169,8 @@ tt takeover [path] [--reason TEXT]                        # alias for take
 tt notes add <body> [--turn N] [--path DIR] [--stdin]     # leave an async note
 tt notes list [--all] [--after ID] [--limit N] [--path DIR] # read notes
 tt mcp                                                    # run the MCP stdio server
-tt install <harness...> | --all [--print]                 # register MCP server
-tt uninstall <harness...> | --all [--print]               # remove MCP server
-tt install-skill <harness...> | --all [--print] [--copy] [--link]  # install global talking-stick skill
-tt uninstall-skill <harness...> | --all [--print]         # remove global talking-stick skill
+tt install <harness...> | --all [--print] [--copy] [--link]  # install MCP server and skill
+tt uninstall <harness...> | --all [--print]               # remove MCP server and skill
 tt self-update [--print] [--manager npm|pnpm|yarn|bun]    # update to the latest published tt
 ```
 
