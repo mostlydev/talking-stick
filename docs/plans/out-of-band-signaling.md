@@ -88,7 +88,7 @@ Explicitly out of scope:
 - Any new write authority for non-holders. Notes/pages do not grant the stick. Takeover remains the only way to seize write authority and is unchanged.
 - A second event log, second cursor concept, or second identity model. Everything reuses `event_seq`, `agent_id`, and the existing room-resolution rules.
 - Push transports (websockets, MCP resource subscriptions). Pull-based long-poll over SQLite is sufficient for v1; see *Tradeoffs*.
-- Any harness-specific notification format. Output is JSON lines; each harness maps lines to its own notification system.
+- Any harness-specific notification format. Harness-detected runs get machine-readable JSON lines; plain human CLI runs get human-readable text by default. `--json` and `--text` remain explicit overrides.
 - Event-driven stick claiming. `wait_for_turn` remains the authoritative wait/claim path in v1; using the event stream to wake waiters is deferred until wait intent is modeled explicitly.
 
 ## Architecture
@@ -149,19 +149,19 @@ tt events [path] --follow
               [--event <type[,type...]>]
               [--severity info|page]
               [--target self|any|<agent_id>]
-              [--json|--pretty]
+              [--json|--text]
 ```
 
-Stdout: one JSON object per line, one event per line, flushed after each write. Stderr: diagnostics only. Exit on `SIGTERM`/`SIGHUP` with a final flush.
+Stdout is line-oriented and flushed after each event. When the CLI detects one of the supported harness identities (`TT_HARNESS_AGENT_ID`, `CLAUDECODE`, `CODEX_THREAD_ID`, `GEMINI_CLI`, or `OPENCODE`), default stdout is one JSON object per line. When no harness is detected and the CLI falls back to a human identity, default stdout is human-readable text. `--json` forces JSON lines for scripts; `--text` forces human-readable text even from a harness. Stderr is diagnostics only. Exit on `SIGTERM`/`SIGHUP` with a final flush.
 
 The new `--severity` and `--target` flags filter `note_added` events specifically. A guardian-style harness uses two logical channels:
 
 ```
 # Page channel — loud. One line here means "interrupt the holder now."
-tt events --follow --event note_added --severity page --target self
+tt events --follow --event note_added --severity page --target self --json
 
 # Buffer channel — quiet. Write to a local cursor/log and read at the next safe boundary.
-tt events --follow --event member_joined,member_left,note_added --severity info --target any
+tt events --follow --event member_joined,member_left,note_added --severity info --target any --json
 ```
 
 The distinction is not just severity in the JSON payload. Some harness glue, notably Claude Code's Monitor tool, treats *every stdout line* from a watched process as a conversation notification. Page output is suitable for that loud path. Buffer output is not; it should be drained into a local cursor/log and summarized by the foreground agent at handoff or another safe boundary.
@@ -187,7 +187,7 @@ Equivalents in other harnesses:
 
 - **Codex** — spawn `tt events --follow` as a child process; map stdout lines to `attach` events on the active task. Same shape, different transport name.
 - **OpenCode / Gemini** — long-poll via shell subprocess; whatever the harness calls "background output" is the right hook.
-- **Plain shell (human operator)** — `tt events --follow | jq -c .` in a tmux pane.
+- **Plain shell (human operator)** — `tt events --follow` in a tmux pane, with human-readable output by default; add `--json` only when piping to a script.
 
 The protocol does not need to know which harness is on the other end. The contract is: line in, notification out.
 
@@ -222,7 +222,7 @@ Concrete numbers, since this was the explicit question.
 ### CLI
 
 1. `tt notes add --severity page --target <agent_id> "body"` — pass-through of new fields.
-2. `tt events --follow [--after N] [--event T,...] [--severity ...] [--target ...]` — per Layer 3. `--target self` requires participant identity; observer-only shells must use `--target any` or an explicit agent id.
+2. `tt events --follow [--after N] [--event T,...] [--severity ...] [--target ...] [--json|--text]` — per Layer 3. Default output follows detected identity: supported harness envs get JSON lines; human fallback gets readable text. `--target self` requires participant identity; observer-only shells must use `--target any` or an explicit agent id.
 3. `tt notes resolve <note_id>` — wraps `resolveNote`. Optional for v1.
 
 ### MCP
@@ -275,7 +275,7 @@ These are not blockers for the design discussion — they are inputs to the impl
 - No new transport. No websockets, no MCP resource subscriptions in v1 (see [ambient-presence.md](../ambient-presence.md) "Out of scope").
 - No write authority changes. Pages are signals, not commands.
 - No automatic takeover on page. Takeover stays a deliberate act gated on `claim_expires_at`.
-- No harness-specific notification format. JSON lines in, harness decides how loud.
+- No harness-specific notification format. Harnesses consume JSON lines; humans get readable text by default.
 - No event-driven replacement for `wait_for_turn`. Stick availability remains governed by the existing wait/claim path until a separate wait-intent design exists.
 
 ## Summary
