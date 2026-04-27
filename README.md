@@ -29,17 +29,17 @@ Open two terminal panes side by side — tmux split, iTerm split, two windows, w
 
 | Pane A — Claude Code | Pane B — Codex |
 |---|---|
-| `cd ~/myrepo && claude` | `cd ~/myrepo && codex` |
+| `cd ~/myrepo && claude [--dangerously-skip-permissions]` | `cd ~/myrepo && codex` |
 
 Then prompt them.
 
 **Pane A (Claude Code):**
 
-> Draft a plan to add OAuth login. When it's solid, pass the stick to Codex for critique. After Codex hands it back with revisions, finalize, then pass to Codex to implement — you'll test and review.
+> Draft a plan to add OAuth login. When it's solid, pass the stick to Codex for critique. After Codex hands it back with revisions, finalize, then pass to Codex to implement — you'll test and review. `/talking-stick`
 
 **Pane B (Codex):**
 
-> Join the room and wait for the stick. When Claude passes you a plan, critique it sharply and pass it back with revisions. Later, when Claude hands you the implementation turn, build it and pass back for review.
+> Join the room and wait for the stick. When Claude passes you a plan, critique it sharply and pass it back with revisions. Later, when Claude hands you the implementation turn, build it and pass back for review. `$talking-stick`
 
 That's the whole workflow. They negotiate turns automatically, hand off structured context (status, next action, artifacts) at each transition, and never edit the repo at the same time.
 
@@ -70,6 +70,16 @@ tt install-skill gemini
 ```
 
 During normal execution, install commands skip harnesses that are not present instead of failing or creating new harness config roots. For example, `tt install-skill codex` only creates `~/.codex/skills/` if `~/.codex/` already exists.
+
+### Update
+
+Uses the right npm/pnpm/yarn by default:
+
+```bash
+tt self-update
+```
+
+Skills are symlinked automatically, so they don't need an update.
 
 ### Remove
 
