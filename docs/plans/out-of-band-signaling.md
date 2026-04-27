@@ -204,6 +204,24 @@ The shipped `skills/talking-stick/SKILL.md` gets a section: *"While you hold the
 - **Multiple watchers per harness.** Layer 4 suggests two parallel streams (page tier + buffer tier). That is two child processes per agent. Acceptable; combine into one if it ever becomes a constraint.
 - **Resolution semantics.** Does a `pass`/`release` auto-resolve outstanding pages? Probably not — the next holder may still need them. But we should mark them as "delivered to holder X at turn Y" so the page does not re-page on every turn. Either a `delivered_at` column on notes, or a per-turn dedup at the harness side. v1 recommendation: dedup at the harness side using `note_id`, no schema change.
 
+## What this plan does NOT yet specify
+
+This document is a design proposal for review, not an implementation specification. The following decisions are deliberately deferred to post-review so that reviewer pushback can shape them. Treat each as a real gap an implementer would hit on day one:
+
+1. **SQLite migration strategy.** The proposal adds new `event_type` values and two new columns on `notes`. The current codebase appears to apply schema directly at startup with no migration framework. Implementation needs to specify: are new columns added via `ALTER TABLE` on existing user databases? What about a user who upgrades, runs the new `tt`, then downgrades — do older binaries tolerate the extra columns? Does the `event_type` enum widening require any guard for older readers?
+2. **JSON wire format for new events.** `RoomEvent` today is a flat fixed shape (`event_seq`, `event_id`, `room_id`, `turn_id`, `event_type`, `from_agent_id`, `to_agent_id`, `handoff`, `reason`, `created_at`). The new events need fields the current shape doesn't carry (`note_id`, `severity`, `target_agent_id`, leave `reason`). Two viable encodings:
+   - Widen `RoomEvent` with optional fields populated only for relevant variants (simpler, looser typing).
+   - Move to a discriminated union with per-variant payloads (stricter, requires a wider TS refactor).
+   The plan does not pick. An example JSON line per new event type should ship with the implementation spec.
+3. **`--target self` resolution.** The watcher process resolves `self` against whatever `tt whoami` returns at process start. But what about observer mode, where there is no harness identity? Possibilities: error at startup, behave as `--target any`, or require an explicit `--as <agent_id>`. Pick one.
+4. **`member_left` trigger sites.** Members can transition `inactive` via at least two paths: heartbeat-timeout sweep, and opportunistic cleanup on later RPC invocations. The plan says "emit on GC" but does not enumerate which code paths qualify, whether reactivation-then-leave should emit twice, and what `reason` strings are valid (`"left"`, `"timeout"`, `"gc"`, …).
+5. **Backward compatibility for older readers.** A `tt` from before this change calling `get_room_events` against a database written by the new server will receive `event_type` values its discriminated union does not know about. Decide: filter unknown types server-side when the client signals an older protocol version, fall through to a `"unknown"` variant client-side, or accept that users on mismatched binaries will see runtime errors and document the upgrade order.
+6. **Skill prose, in full.** The "Skill" subsection above paraphrases the addition in one sentence. The actual shipped skill text is what every harness reads on every relevant turn — it needs to be drafted, reviewed, and pass the same tightness bar as the rest of `skills/talking-stick/SKILL.md`.
+7. **Page dedup persistence.** The plan recommends harness-side dedup of pages by `note_id` plus a cursor file for crash recovery. But the dedup set itself is in-memory; after a watcher restart the dedup set is empty, and a still-unresolved page can re-fire on the next event from the buffered tail. Either the cursor file must persist the dedup set too, or the server must offer a "since last delivery to <agent_id>" filter. Pick one before relying on dedup.
+8. **Test plan.** Not enumerated. At minimum: schema migration on a populated v0.1.x database, event ordering when `addNote` and `release_stick` race, filter correctness on `tt events --follow` for each `--event` / `--severity` / `--target` combination, resume-after-cursor with new event types interleaved with existing ones, and behaviour when a watcher's stdout is blocked.
+
+These are not blockers for the design discussion — they are inputs to it. Reviewer opinions on items 1, 2, 3, 5, and 7 in particular will shape the implementation direction more than the higher-level architecture choices already in the plan.
+
 ## Staged rollout
 
 1. **Schema + service:** add new event types, emit on `joinPath`/`leaveRoom`/`addNote`. No CLI/MCP changes yet. Watchers that already follow the event log start seeing the new events immediately.
