@@ -36,7 +36,7 @@ export function createMcpServer(
   const resolveConnectionIdentity = createConnectionIdentityResolver();
   const server = new McpServer({
     name: "talking-stick",
-    version: "0.1.0"
+    version: "0.1.1"
   });
 
   server.registerTool(

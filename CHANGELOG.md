@@ -9,6 +9,14 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## [0.1.1] — 2026-04-27
+
+Full notes: [`docs/releases/0.1.1.md`](docs/releases/0.1.1.md).
+
+### Changed
+- **Clearer README quickstart.** The setup flow now walks through install, harness registration, restart, and a concrete two-agent Claude/Codex room exercise.
+- **Tighter scheduled-wakeup guidance.** The bundled skill now tells agents to prefer direct `wait_for_turn` wait cycles/background long-polls over scheduled wakeups, and caps active multi-agent wakeups at 120 seconds unless the operator explicitly pauses the room or the task is blocked outside the room.
+
 ## [0.1.0] — 2026-04-27
 
 Full notes: [`docs/releases/0.1.0.md`](docs/releases/0.1.0.md).
@@ -106,6 +114,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.1.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0
 [0.1.0-alpha.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.6
 [0.1.0-alpha.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0-alpha.5

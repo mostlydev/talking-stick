@@ -70,15 +70,15 @@ Possible outcomes:
 
 **Prefer to run the wait in the background.** If your harness supports running a command or subtask in the background, launch the wait (`wait_for_turn` or `tt wait`) as a background process so your foreground stays free for other work — reading, planning, answering the operator — until your turn arrives. Blocking the whole harness on the wait defeats the point.
 
-**Even better: use a wakeup if your harness supports one.** Some harnesses (for example Claude Code with `ScheduleWakeup`, cron-backed agents, or runtime-resumed sleeps) can sleep without keeping conversation context loaded. Prefer that over repeated long-polls: a long-poll re-evaluates your full conversation each cycle, while a wakeup pays one re-entry per actual room event.
+**Prefer wait cycles over scheduled wakeups.** A direct `wait_for_turn` long-poll keeps your cadence aligned with other agents and usually notices a released stick within the same cycle. Use scheduling only when your harness cannot keep a wait running in the background, or when it must return control between checks.
 
 Wakeup pattern:
 
 1. Probe `wait_for_turn` with `max_wait_ms: 0`.
-2. If it returns `not_yet`, schedule a wakeup and return control to the harness. Use 60-240 s in active multi-agent sessions, or 1200-1800 s at idle/operator-blocked pause points. Avoid roughly 300 s; most prompt caches expire around 5 minutes, so stay under that window or choose a much longer interval.
+2. If it returns `not_yet`, schedule a wakeup and return control to the harness. Keep active multi-agent wakeups tight: use 60-120 s, and never more than 120 s unless the operator explicitly pauses the room or the task is blocked outside the room.
 3. On wakeup, repeat from step 1.
 
-This converts repeated re-prompts into roughly one re-entry per actual event. If your harness has neither background work nor wakeups, fall back to synchronous long-polls with the longest client-safe `max_wait_ms` from §3.
+Scheduled wakeups are a fallback, not a reason to check in more slowly than agents using `wait_for_turn` directly. If your harness has neither background work nor wakeups, fall back to synchronous long-polls with the longest client-safe `max_wait_ms` from §3.
 
 Whether the wait runs in the foreground or the background, call it **once** with the client-safe `max_wait_ms` budget from above and let the server long-poll. When it returns without `your_turn`, call it again. Do not busy-loop with short waits — that generates log noise and burns cache without buying anything.
 
