@@ -44,7 +44,7 @@ Important distinction: the marker directory is an **ambient-presence enablement 
 Two immediate surfaces, both driven by the local SQLite store:
 
 - **Shell prompt fragment** — a `tt status --prompt` subcommand that prints a short PS1-safe string (or nothing). Wired into Bash `PROMPT_COMMAND`, Zsh `precmd`, Fish `fish_prompt`.
-- **Background room event stream** — an extension of `tt events`, most likely `tt events --follow`, that emits one JSON line per room event to stdout and can resume from a stored `event_seq`.
+- **Background room event stream** — an extension of `tt events`, most likely `tt events --follow`, that emits one line per room event to stdout and can resume from a stored `event_seq`. Harness-detected runs default to JSON lines; plain human CLI runs default to readable text.
 
 The existing `tt wait` command keeps its current meaning: claimant-side wait for `your_turn` / `takeover_available`. Ambient presence should not overload `wait` into a second, room-wide event API.
 
@@ -108,10 +108,10 @@ Shell integration snippets ship under `integrations/shell/` with a `tt prompt in
 
 ### `tt events --follow`
 
-Line-oriented room event stream. Stdout is JSON lines, one event per line. Stderr is for diagnostics only.
+Line-oriented room event stream. Stdout is one event per line. Stderr is for diagnostics only.
 
 ```
-tt events [path] --follow [--after <event_seq>] [--event <types>] [--json|--pretty]
+tt events [path] --follow [--after <event_seq>] [--event <types>] [--json|--text]
 ```
 
 Flags:
@@ -119,7 +119,9 @@ Flags:
 - `--follow` — continue polling for new room events instead of returning a bounded page.
 - `--after` — resume after the last seen `event_seq`.
 - `--event` — comma-separated filter over raw room event types.
-- `--json` / `--pretty` — output format.
+- `--json` / `--text` — output format override.
+
+Default output follows identity. If the CLI detects a supported harness identity (`TT_HARNESS_AGENT_ID`, `CLAUDECODE`, `CODEX_THREAD_ID`, `GEMINI_CLI`, or `OPENCODE`), the stream emits JSON lines suitable for background harness glue. If no harness is detected and the CLI falls back to a human identity, the stream emits human-readable text. Humans should not need to pipe through `jq` just to make room activity readable; scripts can still pass `--json`.
 
 The stream should align with the core room event log, not invent a second taxonomy. For the MVP, the on-the-wire event types should be the existing `RoomEvent` types:
 
@@ -165,7 +167,7 @@ The skill body covers:
 - **Identity in spawned shells.** This is the real fork in the road. If a harness can cheaply export its protocol identity into child shells, participant-mode shell helpers are viable. If not, observer mode should ship first and participant mode moves to a later release.
 - **Event granularity.** Coarse events (room-event log only) minimize context pollution; fine events (every lease poke, every presence blip) enable richer UX but flood. Start with raw room events plus caller-centric `tt wait`.
 - **Skill activation reliability.** Skills load on description match or bootstrap, not on `cd`. The repo marker plus an `AGENTS.md` / `CLAUDE.md` line is the most reliable trigger we have without harness-specific hooks.
-- **Cross-harness event format.** The event stream must be plain JSON lines — no dependency on any one harness's notification shape. Harnesses read lines; they map to their own notification system.
+- **Cross-harness event format.** The machine event stream must be plain JSON lines — no dependency on any one harness's notification shape. Harnesses read lines; they map to their own notification system. Human CLI output remains readable by default unless `--json` is requested.
 - **Current task in ambient status.** Showing the owner's current task would be high-signal, but it should come from the handoff that granted the current turn, not from guessed free text. That likely requires the core room projection to retain the granting handoff pointer or a current-task snapshot. Good follow-up; not a v1 requirement for the prompt fragment.
 - **Non-interactive shells.** This is intentionally deferred, not dropped. `PS1` only covers interactive shells; harness command runners need a different hook. A future shell prelude or harness-specific command hook should render ambient state for invoked commands. If it can prove participant identity, it may render participant-local status; otherwise it should emit observer-only conversation status. Treat this as a follow-on stage, not as part of the first shippable surface.
 - **Multiple rooms per repo.** Out of scope for v1; assume one active room per workspace path. The CLI surface should not preclude multi-room later.
