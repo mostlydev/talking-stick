@@ -1,6 +1,6 @@
 {
   "name": "talking-stick",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "MCP coordination server for path-scoped agent handoffs.",
   "type": "module",
   "bin": {

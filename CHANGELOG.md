@@ -9,6 +9,16 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## [0.1.3] — 2026-04-28
+
+Full notes: [`docs/releases/0.1.3.md`](docs/releases/0.1.3.md).
+
+### Added
+- **`tt kick` / `kick_member`.** New CLI command and MCP tool that evict a member from a room. Default behavior only succeeds when the target's process is detected gone past the silence-grace window; `--force` / `force: true` bypasses the check. The eviction is recorded as a `kick` room event so other members see the cleanup.
+
+### Fixed
+- **Stable codex agent ids across MCP and shelled-out CLI.** When a harness env signal is detected without an explicit session id (codex without `CODEX_THREAD_ID`), session-id resolution now walks process ancestry to anchor on the harness's root `pid+startTime` instead of the immediate parent. Previously every shell-out from a codex session entered the room as a fresh `codex:<hash>` member, producing duplicate ghost members.
+
 ## [0.1.2] — 2026-04-27
 
 Full notes: [`docs/releases/0.1.2.md`](docs/releases/0.1.2.md).
@@ -121,6 +131,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.1.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.3
 [0.1.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.2
 [0.1.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.0
