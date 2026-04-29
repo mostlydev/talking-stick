@@ -113,7 +113,8 @@ export function deriveMcpHarnessIdentity(
       processRef.pid,
       processRef.inspection,
       username,
-      hostId
+      hostId,
+      inspector
     );
     const agentId =
       options.agentId ?? harnessAgentId(signal.harness, sessionId, hostId, username);
@@ -201,7 +202,8 @@ export function deriveHarnessCliIdentity(
     processRef.pid,
     processRef.inspection,
     username,
-    hostId
+    hostId,
+    inspector
   );
 
   const agentId =
@@ -239,15 +241,60 @@ function resolveHarnessSessionId(
   parentPid: number,
   parentInspection: ProcessInspection | null | undefined,
   username: string,
-  hostId: string
+  hostId: string,
+  inspector: ProcessInspector
 ): string {
   if (signal.sessionId) return `harness:${signal.sessionId}`;
   const terminalId = resolveTerminalSessionId(env);
   if (terminalId) return terminalId;
+
+  const harnessRoot = findHarnessRootInAncestry(
+    signal.harness,
+    parentPid,
+    parentInspection,
+    inspector
+  );
+  if (harnessRoot) {
+    return `pid:${harnessRoot.pid}@${harnessRoot.startTime}`;
+  }
+
   if (parentInspection?.startTime) {
     return `pid:${parentPid}@${parentInspection.startTime}`;
   }
   return `userhost:${sanitizeIdentityComponent(username)}@${hostId}`;
+}
+
+// Walks the process ancestry (inclusive of startPid) looking for the deepest
+// process whose command matches the named harness. Anchoring session id to
+// that root keeps `tt` invocations stable whether they're spawned directly
+// by the harness (MCP subprocess) or through intermediate shells (CLI shell-out).
+function findHarnessRootInAncestry(
+  harness: HarnessCliHarness,
+  startPid: number,
+  startInspection: ProcessInspection | null | undefined,
+  inspector: ProcessInspector,
+  maxDepth = 10
+): { pid: number; startTime: string } | null {
+  let result: { pid: number; startTime: string } | null = null;
+  let currentPid: number | null | undefined = startPid;
+  let currentInspection = startInspection;
+  for (let i = 0; i < maxDepth; i++) {
+    if (currentPid == null || currentPid <= 1) break;
+    if (currentInspection === undefined) {
+      currentInspection = inspector.inspect(currentPid);
+    }
+    if (!currentInspection) break;
+    const label = deriveCommandLabel(currentInspection.command);
+    if (
+      HARNESS_COMMAND_MAPPING[label] === harness &&
+      currentInspection.startTime
+    ) {
+      result = { pid: currentPid, startTime: currentInspection.startTime };
+    }
+    currentPid = currentInspection.ppid ?? null;
+    currentInspection = undefined;
+  }
+  return result;
 }
 
 const TERMINAL_SESSION_ENV_VARS = [
