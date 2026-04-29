@@ -412,6 +412,66 @@ describe("CLI and MCP identity unification", () => {
     expect(mcpIdentity.process_metadata.session_kind).toBe("mcp_harness");
   });
 
+  test("unifies CLI and MCP codex identities via ancestry when CODEX_THREAD_ID is absent", () => {
+    // Codex root process at pid 100; codex's MCP subprocess is a direct child
+    // (parentPid=100). A `tt` CLI invocation goes codex → bash → tt, so its
+    // parentPid is the bash subshell (200), not codex. Without CODEX_THREAD_ID,
+    // both must still resolve to the same agent_id by anchoring to codex's pid.
+    const inspector = fakeInspector({
+      100: { startTime: "Tue Apr 28 19:00:00 2026", command: "codex", ppid: 1 },
+      200: { startTime: "Tue Apr 28 19:35:00 2026", command: "bash", ppid: 100 }
+    });
+    const env = { CODEX_MANAGED_BY_NPM: "1" };
+
+    const mcpIdentity = deriveMcpHarnessIdentity({
+      env,
+      username: "alice",
+      parentPid: 100,
+      hostId: "test-host",
+      inspector
+    });
+
+    const cliIdentity = deriveHarnessCliIdentity({
+      env,
+      username: "alice",
+      parentPid: 200,
+      hostId: "test-host",
+      inspector
+    });
+
+    expect(mcpIdentity.agent_id).toMatch(/^codex:[0-9a-f]{8}$/);
+    expect(cliIdentity!.agent_id).toBe(mcpIdentity.agent_id);
+  });
+
+  test("a second `tt` shell-out from the same codex session reuses the agent_id", () => {
+    // Same codex root, two distinct bash subshells with different pids.
+    // Anchoring the session id to codex's pid means both `tt` invocations
+    // produce the same agent_id.
+    const inspector = fakeInspector({
+      100: { startTime: "Tue Apr 28 19:00:00 2026", command: "codex", ppid: 1 },
+      200: { startTime: "Tue Apr 28 19:35:00 2026", command: "bash", ppid: 100 },
+      300: { startTime: "Tue Apr 28 22:12:00 2026", command: "bash", ppid: 100 }
+    });
+    const env = { CODEX_MANAGED_BY_NPM: "1" };
+
+    const first = deriveHarnessCliIdentity({
+      env,
+      username: "alice",
+      parentPid: 200,
+      hostId: "test-host",
+      inspector
+    });
+    const second = deriveHarnessCliIdentity({
+      env,
+      username: "alice",
+      parentPid: 300,
+      hostId: "test-host",
+      inspector
+    });
+
+    expect(first!.agent_id).toBe(second!.agent_id);
+  });
+
   test("MCP path falls back to ancestry-based id when no harness env is set (backwards compat)", () => {
     const inspector = fakeInspector({
       42: { startTime: "Thu Apr 23 14:15:00 2026", command: "some-other-harness --mcp" }
