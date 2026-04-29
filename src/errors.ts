@@ -3,6 +3,9 @@ import type { RoomState } from "./types.js";
 export type ProtocolErrorCode =
   | "room_not_found"
   | "unknown_member"
+  | "unknown_target"
+  | "target_active"
+  | "cannot_kick_self"
   | "invalid_handoff"
   | "stale_lease"
   | "turn_mismatch"

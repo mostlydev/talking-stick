@@ -91,6 +91,25 @@ export function createMcpServer(
   );
 
   server.registerTool(
+    "kick_member",
+    {
+      title: "Kick Member",
+      description:
+        "Remove an idle member from a room. Without force, only succeeds if the target's process is detected gone past the silence-grace window.",
+      inputSchema: {
+        room_id: z.string().min(1),
+        target_agent_id: z.string().min(1),
+        force: z.boolean().optional(),
+        reason: z.string().optional()
+      }
+    },
+    async (input, extra) =>
+      toolJson(() =>
+        commands.kickMember(resolveConnectionIdentity(extra.sessionId), input)
+      )
+  );
+
+  server.registerTool(
     "wait_for_turn",
     {
       title: "Wait For Turn",

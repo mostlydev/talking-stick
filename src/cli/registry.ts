@@ -12,6 +12,7 @@ import type { ParsedCommand } from "./parser.js";
 import {
   handleEventsCommand,
   handleJoinCommand,
+  handleKickCommand,
   handleLeaveCommand,
   handleListCommand,
   handleStateCommand,
@@ -142,6 +143,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt leave [path]",
     description: "Leave this agent's room membership.",
     handler: ({ runtime, parsed }) => handleLeaveCommand(requireRuntime(runtime), parsed)
+  },
+  {
+    name: "kick",
+    needsRuntime: true,
+    startupMaintenance: true,
+    internal: false,
+    usage: "tt kick <agent_id> [path] [--reason TEXT] [--force]",
+    description: "Kick an idle member out of the room.",
+    handler: ({ runtime, parsed }) => handleKickCommand(requireRuntime(runtime), parsed)
   },
   {
     name: "state",

@@ -1730,6 +1730,236 @@ describe("talking-stick vertical slice", () => {
 
     expect(codexAfterExpiry.status).toBe("not_yet");
   });
+
+  test("kick_member removes a gone member and records a kick event", async () => {
+    const harness = createHarness({ policy: { heartbeatIntervalMs: 1_000 } });
+    const project = createProject(harness.tempRoot);
+    const claudeProcess = harness.processRegistry.create("claude");
+    const codexProcess = harness.processRegistry.create("codex");
+
+    const claudeJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project,
+      process_metadata: claudeProcess
+    });
+    harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+
+    harness.processRegistry.markGone(codexProcess);
+    harness.clock.advance(2_001);
+
+    const result = harness.service.kickMember({
+      room_id: claudeJoin.room_id,
+      agent_id: "claude:test",
+      target_agent_id: "codex:test",
+      reason: "stale codex session"
+    });
+
+    expect(result.status).toBe("kicked");
+    expect(result.kicked_agent_id).toBe("codex:test");
+    expect(result.remaining_members).toBe(1);
+    expect(result.target_was_owner).toBe(false);
+
+    const state = harness.service.getRoomState({ room_id: claudeJoin.room_id });
+    expect(state.members.map((m) => m.agent_id)).toEqual(["claude:test"]);
+
+    const events = harness.service.getRoomEvents({
+      room_id: claudeJoin.room_id,
+      after_event_seq: 0
+    });
+    const kickEvent = events.find((e) => e.event_type === "kick");
+    expect(kickEvent).toBeDefined();
+    expect(kickEvent?.from_agent_id).toBe("claude:test");
+    expect(kickEvent?.to_agent_id).toBe("codex:test");
+    expect(kickEvent?.reason).toBe("stale codex session");
+  });
+
+  test("kick_member rejects an active target without force", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const claudeProcess = harness.processRegistry.create("claude");
+    const codexProcess = harness.processRegistry.create("codex");
+
+    const claudeJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project,
+      process_metadata: claudeProcess
+    });
+    harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+
+    expect(() =>
+      harness.service.kickMember({
+        room_id: claudeJoin.room_id,
+        agent_id: "claude:test",
+        target_agent_id: "codex:test"
+      })
+    ).toThrowProtocolError("target_active");
+  });
+
+  test("kick_member with force removes an active target", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const claudeProcess = harness.processRegistry.create("claude");
+    const codexProcess = harness.processRegistry.create("codex");
+
+    const claudeJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project,
+      process_metadata: claudeProcess
+    });
+    harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+
+    const result = harness.service.kickMember({
+      room_id: claudeJoin.room_id,
+      agent_id: "claude:test",
+      target_agent_id: "codex:test",
+      force: true
+    });
+
+    expect(result.status).toBe("kicked");
+    expect(result.remaining_members).toBe(1);
+  });
+
+  test("kick_member clears ownership when the target was the owner", async () => {
+    const harness = createHarness({ policy: { heartbeatIntervalMs: 1_000 } });
+    const project = createProject(harness.tempRoot);
+    const codexProcess = harness.processRegistry.create("codex");
+    const claudeProcess = harness.processRegistry.create("claude");
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project,
+      process_metadata: claudeProcess
+    });
+
+    asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.processRegistry.markGone(codexProcess);
+    harness.clock.advance(2_001);
+
+    const result = harness.service.kickMember({
+      room_id: codexJoin.room_id,
+      agent_id: "claude:test",
+      target_agent_id: "codex:test"
+    });
+
+    expect(result.target_was_owner).toBe(true);
+    const state = harness.service.getRoomState({ room_id: codexJoin.room_id });
+    expect(state.room.owner).toBeNull();
+    expect(state.room.state).toBe("idle");
+  });
+
+  test("kick_member deletes the room when no active members remain", async () => {
+    const harness = createHarness({ policy: { heartbeatIntervalMs: 1_000 } });
+    const project = createProject(harness.tempRoot);
+    const claudeProcess = harness.processRegistry.create("claude");
+    const codexProcess = harness.processRegistry.create("codex");
+
+    const claudeJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project,
+      process_metadata: claudeProcess
+    });
+    harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+
+    // Both processes are gone past the silence grace; the caller can still kick
+    // (touchMember refreshes their last_seen_at), and the room collapses since
+    // nobody else remains alive.
+    harness.processRegistry.markGone(codexProcess);
+    harness.clock.advance(2_001);
+    harness.processRegistry.markGone(claudeProcess);
+
+    const result = harness.service.kickMember({
+      room_id: claudeJoin.room_id,
+      agent_id: "claude:test",
+      target_agent_id: "codex:test"
+    });
+
+    expect(result.status).toBe("room_deleted");
+    expect(result.remaining_members).toBe(0);
+    expect(() =>
+      harness.service.getRoomState({ room_id: claudeJoin.room_id })
+    ).toThrowProtocolError("room_not_found");
+  });
+
+  test("kick_member rejects self-kick", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    expect(() =>
+      harness.service.kickMember({
+        room_id: join.room_id,
+        agent_id: "claude:test",
+        target_agent_id: "claude:test"
+      })
+    ).toThrowProtocolError("cannot_kick_self");
+  });
+
+  test("kick_member rejects a non-member caller", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    expect(() =>
+      harness.service.kickMember({
+        room_id: join.room_id,
+        agent_id: "stranger:test",
+        target_agent_id: "claude:test",
+        force: true
+      })
+    ).toThrowProtocolError("unknown_member");
+  });
+
+  test("kick_member rejects an unknown target", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    expect(() =>
+      harness.service.kickMember({
+        room_id: join.room_id,
+        agent_id: "claude:test",
+        target_agent_id: "ghost:test",
+        force: true
+      })
+    ).toThrowProtocolError("unknown_target");
+  });
 });
 
 function createHarness(
