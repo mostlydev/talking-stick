@@ -6,6 +6,7 @@ import type {
   GetRoomStateResult,
   HeartbeatResult,
   JoinPathResult,
+  KickMemberResult,
   LeaveRoomResult,
   ListNotesResult,
   ListRoomsInput,
@@ -29,6 +30,13 @@ export interface JoinPathCommandInput {
 
 export interface LeaveRoomCommandInput {
   room_id: string;
+}
+
+export interface KickMemberCommandInput {
+  room_id: string;
+  target_agent_id: string;
+  force?: boolean;
+  reason?: string;
 }
 
 export interface HeartbeatCommandInput {
@@ -101,6 +109,19 @@ export class TalkingStickCommands {
     return this.service.leaveRoom({
       agent_id: identity.agent_id,
       room_id: input.room_id
+    });
+  }
+
+  kickMember(
+    identity: DerivedIdentity,
+    input: KickMemberCommandInput
+  ): KickMemberResult {
+    return this.service.kickMember({
+      agent_id: identity.agent_id,
+      room_id: input.room_id,
+      target_agent_id: input.target_agent_id,
+      force: input.force,
+      reason: input.reason
     });
   }
 

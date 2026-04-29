@@ -29,6 +29,8 @@ import type {
   HeartbeatResult,
   JoinPathInput,
   JoinPathResult,
+  KickMemberInput,
+  KickMemberResult,
   LeaveRoomInput,
   LeaveRoomResult,
   ListNotesInput,
@@ -322,6 +324,132 @@ export class TalkingStickService {
         room_id: input.room_id,
         canonical_path: room.canonical_path,
         remaining_members: remainingMembers.length
+      };
+    });
+  }
+
+  kickMember(input: KickMemberInput): KickMemberResult {
+    assertNonEmpty(input.agent_id, "agent_id");
+    assertNonEmpty(input.room_id, "room_id");
+    assertNonEmpty(input.target_agent_id, "target_agent_id");
+
+    if (input.target_agent_id === input.agent_id) {
+      throw new ProtocolError(
+        "cannot_kick_self",
+        "Use leave_room to remove yourself.",
+        { to_agent_id: input.target_agent_id }
+      );
+    }
+
+    const now = this.now();
+    const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
+
+    return withImmediateTransaction(this.db, () => {
+      const room = this.requireRoom(input.room_id);
+      this.touchMember(input.room_id, input.agent_id, timestamp);
+
+      const target = this.getMember(input.room_id, input.target_agent_id);
+      if (!target) {
+        throw new ProtocolError(
+          "unknown_target",
+          "Target agent is not a member of this room.",
+          { to_agent_id: input.target_agent_id }
+        );
+      }
+
+      if (!input.force) {
+        const liveness = this.getMemberProcessLiveness(target);
+        if (!this.isGonePersistent(target, liveness, now)) {
+          throw new ProtocolError(
+            "target_active",
+            "Target is still active. Pass force=true to kick anyway.",
+            { to_agent_id: input.target_agent_id }
+          );
+        }
+      }
+
+      const targetWasOwner = room.owner === input.target_agent_id;
+      const targetWasReservedFor = room.reserved_for === input.target_agent_id;
+
+      this.db
+        .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
+        .run(input.room_id, input.target_agent_id);
+
+      this.appendEvent({
+        room_id: input.room_id,
+        turn_id: room.turn_id,
+        event_type: "kick",
+        from_agent_id: input.agent_id,
+        to_agent_id: input.target_agent_id,
+        handoff: null,
+        reason: input.reason ?? null,
+        created_at: timestamp
+      });
+
+      const remainingMembers = this.getMembers(input.room_id);
+      if (
+        remainingMembers.length === 0 ||
+        !remainingMembers.some((remaining) => this.isMemberActive(remaining, now))
+      ) {
+        this.deleteRoom(input.room_id);
+        return {
+          status: "room_deleted",
+          room_id: input.room_id,
+          canonical_path: room.canonical_path,
+          kicked_agent_id: input.target_agent_id,
+          remaining_members: 0,
+          target_was_owner: targetWasOwner,
+          target_was_reserved_for: targetWasReservedFor
+        };
+      }
+
+      const nextOwner = targetWasOwner ? null : room.owner;
+      const nextReservedFor = targetWasReservedFor ? null : room.reserved_for;
+      const nextState =
+        room.state === "closed"
+          ? "closed"
+          : nextOwner
+            ? "owned"
+            : nextReservedFor
+              ? "reserved"
+              : "idle";
+
+      this.db
+        .prepare(
+          `
+          UPDATE path_rooms
+          SET owner = ?,
+              reserved_for = ?,
+              pending_handoff_event_seq = ?,
+              lease_id = ?,
+              lease_expires_at = ?,
+              claim_expires_at = ?,
+              state = ?,
+              updated_at = ?
+          WHERE room_id = ?
+        `
+        )
+        .run(
+          nextOwner,
+          nextReservedFor,
+          targetWasOwner ? null : room.pending_handoff_event_seq,
+          targetWasOwner ? null : room.lease_id,
+          targetWasOwner ? null : room.lease_expires_at,
+          targetWasReservedFor ? null : room.claim_expires_at,
+          nextState,
+          timestamp,
+          input.room_id
+        );
+
+      return {
+        status: "kicked",
+        room_id: input.room_id,
+        canonical_path: room.canonical_path,
+        kicked_agent_id: input.target_agent_id,
+        remaining_members: remainingMembers.length,
+        target_was_owner: targetWasOwner,
+        target_was_reserved_for: targetWasReservedFor
       };
     });
   }

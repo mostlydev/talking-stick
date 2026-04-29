@@ -92,7 +92,7 @@ export interface RoomEvent {
   event_id: string;
   room_id: string;
   turn_id: number;
-  event_type: "claim" | "release" | "pass" | "takeover" | "close";
+  event_type: "claim" | "release" | "pass" | "takeover" | "close" | "kick";
   from_agent_id: AgentId | null;
   to_agent_id: AgentId | null;
   handoff: Handoff | null;
@@ -130,6 +130,24 @@ export interface LeaveRoomResult {
   room_id: string;
   canonical_path: string;
   remaining_members: number;
+}
+
+export interface KickMemberInput {
+  agent_id: AgentId;
+  room_id: string;
+  target_agent_id: AgentId;
+  force?: boolean;
+  reason?: string;
+}
+
+export interface KickMemberResult {
+  status: "kicked" | "room_deleted";
+  room_id: string;
+  canonical_path: string;
+  kicked_agent_id: AgentId;
+  remaining_members: number;
+  target_was_owner: boolean;
+  target_was_reserved_for: boolean;
 }
 
 export interface WaitForTurnInput {

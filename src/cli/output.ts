@@ -148,6 +148,7 @@ Commands:
   tt list [path]
   tt join [path] [--force-new]
   tt leave [path]
+  tt kick <agent_id> [path] [--reason TEXT] [--force]
   tt wait [path] [--timeout 30s]
   tt try [path]
   tt state [path]

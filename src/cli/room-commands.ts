@@ -6,6 +6,8 @@ import {
 } from "../index.js";
 import { stopGuardian } from "./guardian.js";
 import {
+  getStringOption,
+  hasOption,
   parseOptionalInteger,
   type ParsedCommand
 } from "./parser.js";
@@ -89,6 +91,41 @@ export function handleLeaveCommand(
     const memberLabel =
       result.remaining_members === 1 ? "member remains" : "members remain";
     return `Left ${session.canonical_path}; ${result.remaining_members} ${memberLabel}.`;
+  });
+}
+
+export function handleKickCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): void {
+  const [target, ...rest] = parsed.positionals;
+  if (!target) {
+    throw new Error("Missing required argument: <agent_id>");
+  }
+  const sessionParsed: ParsedCommand = { ...parsed, positionals: rest };
+  const identity = deriveCliIdentity(sessionParsed);
+  const session = resolveSessionForReads(runtime, sessionParsed, identity);
+  const result = runtime.commands.kickMember(identity, {
+    room_id: session.room_id,
+    target_agent_id: target,
+    force: hasOption(parsed, "force"),
+    reason: getStringOption(parsed, "reason")
+  });
+
+  const sessionPath = resolveCliSessionPath();
+  if (result.status === "room_deleted") {
+    removeCliSessionsForRoom(sessionPath, session.room_id);
+  } else {
+    removeCliSession(sessionPath, result.kicked_agent_id, session.room_id);
+  }
+
+  printResult(parsed, result, () => {
+    if (result.status === "room_deleted") {
+      return `Kicked ${result.kicked_agent_id}; room deleted.`;
+    }
+    const memberLabel =
+      result.remaining_members === 1 ? "member remains" : "members remain";
+    return `Kicked ${result.kicked_agent_id}; ${result.remaining_members} ${memberLabel}.`;
   });
 }
 

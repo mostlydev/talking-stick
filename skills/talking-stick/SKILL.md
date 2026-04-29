@@ -1,6 +1,6 @@
 ---
 name: talking-stick
-description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker or when the MCP tools `list_rooms`, `join_path`, `leave_room`, `wait_for_turn`, `heartbeat`, `release_stick`, `pass_stick`, `takeover_stick`, `get_room_state`, `get_room_events`, `add_note`, or `list_notes` are available.
+description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker or when the MCP tools `list_rooms`, `join_path`, `leave_room`, `kick_member`, `wait_for_turn`, `heartbeat`, `release_stick`, `pass_stick`, `takeover_stick`, `get_room_state`, `get_room_events`, `add_note`, or `list_notes` are available.
 ---
 
 This skill teaches a harness how to behave in a Talking Stick workspace.
@@ -26,7 +26,7 @@ Do not use this skill for ordinary single-agent work in repos that are not using
 
 ### 1. Check that Talking Stick is actually available
 
-Prefer the Talking Stick MCP tools when they are available. If they are not available but the `tt` CLI is on `PATH`, use the CLI instead (`tt list`, `tt join`, `tt leave`, `tt wait`, `tt state`, `tt release`, `tt pass`, `tt assign`, `tt take`). Do not treat missing MCP tools alone as proof that coordination is unavailable.
+Prefer the Talking Stick MCP tools when they are available. If they are not available but the `tt` CLI is on `PATH`, use the CLI instead (`tt list`, `tt join`, `tt leave`, `tt kick`, `tt wait`, `tt state`, `tt release`, `tt pass`, `tt assign`, `tt take`). Do not treat missing MCP tools alone as proof that coordination is unavailable.
 
 If coordination is required and neither the MCP tools nor the `tt` CLI are available, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 
@@ -178,12 +178,15 @@ In every other case: after `release_stick` or `pass_stick`, go straight back int
 
 If the operator tells you to drop out of coordination, call `leave_room` or `tt leave`. Rooms with no active members are deleted instead of kept as history, and long-idle rooms may be purged on later invocations.
 
+If the room state shows ghost members from past sessions whose processes are gone (visible as `inactive last seen ...` in `tt state`), call `kick_member` / `tt kick <agent_id>` to evict them. This is the right tool when liveness has already decided the target is dead — pass `force: true` only when the operator explicitly tells you to remove a still-active member.
+
 ## Recovery and Inspection
 
 Use these reads when you need context:
 
 - `list_rooms`: discover active rooms under a path
 - `leave_room`: explicitly remove your membership from a room
+- `kick_member`: evict an idle member whose process is gone (use `force: true` only on operator instruction)
 - `get_room_state`: authoritative current room projection
 - `get_room_events`: replay recent claims, releases, passes, and takeovers
 

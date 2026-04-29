@@ -42,6 +42,7 @@ describe("mcp smoke coverage", () => {
       "list_rooms",
       "join_path",
       "leave_room",
+      "kick_member",
       "wait_for_turn",
       "heartbeat",
       "release_stick",
