@@ -1,6 +1,6 @@
 # Out-of-Band Signaling — Implementation Plan
 
-**Status:** Draft for adversarial review by `codex:4ed7aa3c`. Author: `claude:c756bb19`. Branch: `oob-signaling`. **Design source:** [out-of-band-signaling.md](./out-of-band-signaling.md) (converged 2026-04-30).
+**Status:** Reviewed and amended by `codex:4ed7aa3c`; ready for implementation on this branch unless `claude:c756bb19` objects in review. Author: `claude:c756bb19`. Branch: `oob-signaling`. **Design source:** [out-of-band-signaling.md](./out-of-band-signaling.md) (converged 2026-04-30).
 
 This plan turns the converged design into a build sequence: concrete files, types, SQL, RPC shapes, CLI grammar, tests, and edge-case decisions. It does **not** re-litigate design choices the prior round closed; it locks the implementation-time choices the design deliberately deferred.
 
@@ -40,7 +40,7 @@ Append migration #5 to the `migrations` array (after id=4 `room_member_wait_pres
 
 Rationale: column is nullable, no default needed. Existing rows back-fill to NULL. SQLite `ALTER TABLE ADD COLUMN` is O(1) on big tables (no rewrite), so this is safe even on populated dogfood DBs.
 
-**No new index.** Filter queries in `waitForEvents` go through the existing `room_events_room_seq_idx` plus an `event_type` predicate; for 4-digit event counts per room that's fast enough. **DECISION: do we want a `room_events (room_id, event_type, event_seq)` index now or wait for measured slowness?** I lean wait — we have `event_seq > ?` as the dominant filter, and `event_type` is a discriminator on a small set; a partial scan over a single room's events past the cursor is bounded.
+**No new index for v1.** Filter queries in `waitForEvents` go through the existing `room_events_room_seq_idx` plus predicates on `event_type` / `from_agent_id` / `to_agent_id`; for 4-digit event counts per room that's fast enough. Decision: wait for measured slowness before adding `room_events (room_id, event_type, event_seq)` or sender/recipient-specific indexes. `event_seq > ?` remains the dominant filter, and a partial scan over a single room's events past the cursor is bounded.
 
 ### 1.2 Discriminated payload types
 
@@ -112,6 +112,7 @@ export interface WaitForEventsInput {
   after_event_seq?: number;
   event_type?: EventTypeFilter;
   target_agent_id?: TargetAgentFilter; // default "self"
+  from_agent_id?: AgentId;
   max_wait_ms?: number;
 }
 
@@ -120,6 +121,10 @@ export interface WaitForEventsResult {
   cursor_event_seq: number;
 }
 ```
+
+**File:** `src/errors.ts`
+
+Add protocol error codes used by this surface: `message_too_large`, `invalid_delivery_hint`, `unknown_recipient`, `ambiguous_recipient`, `agent_id_required`, and `invalid_event_type_filter`. Use `unknown_recipient` for message routing errors so they do not get confused with membership preconditions on the sender (`unknown_member`).
 
 ### 1.3 `appendEvent` extension
 
@@ -209,7 +214,7 @@ async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
     this.touchMember(input.room_id, input.agent_id, timestamp);
 
     if (input.to_agent_id) {
-      const target = this.findMember(input.room_id, input.to_agent_id);
+      const target = this.getMember(input.room_id, input.to_agent_id);
       if (!target) {
         throw new ProtocolError(
           "unknown_recipient",
@@ -248,7 +253,7 @@ async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
 
 **Constants:** add `const MAX_MESSAGE_BODY_BYTES = 4096;` near `MAX_NOTE_BODY_BYTES`.
 
-**RISK — sender liveness.** Using `touchMember` (write path) instead of `touchKnownMember` means a sender that has been GC'd-inactive will get `unknown_member`. This matches `add_note` and the design's framing that messages are between active processes. **DECISION:** confirm we want `unknown_member` (sender must be active) rather than `touchKnownMember` (silent no-op). I lean active-required: messages are a live-process artifact, and a stale sender shouldn't be able to inject into the event stream.
+**Decision — sender membership.** Use `touchMember` (write path), not `touchKnownMember`. A sender must already be a joined member and a live command/tool call refreshes `last_seen_at`. This matches `add_note` and prevents stale identities from injecting messages without first joining. It does not require the target recipient to be active when targeted by full `agent_id`; targeting is routing, not liveness proof.
 
 ### 1.5 `waitForEvents`
 
@@ -257,7 +262,6 @@ async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
 ```ts
 async waitForEvents(input: WaitForEventsInput): Promise<WaitForEventsResult> {
   assertNonEmpty(input.room_id, "room_id");
-  this.purgeExpiredIdleRooms(this.now());
 
   const targetFilter = input.target_agent_id ?? "self";
   if (targetFilter === "self" && !input.agent_id) {
@@ -283,6 +287,7 @@ async waitForEvents(input: WaitForEventsInput): Promise<WaitForEventsResult> {
       event_types: eventTypes,
       target: targetFilter,
       caller_agent_id: input.agent_id ?? null,
+      from_agent_id: input.from_agent_id ?? null,
       limit: this.policy.waitForEventsBatchLimit
     });
 
@@ -311,12 +316,14 @@ ORDER BY event_seq
 LIMIT ?
 ```
 
+Before the loop, call `requireRoom(input.room_id)` to fail fast if the room does not exist. Do **not** call `purgeExpiredIdleRooms`, `touchMember`, `touchKnownMember`, or `touchWaitingMember` from `waitForEvents`; this method's contract is observer-safe and read-only. Other write paths and existing room reads can continue to perform startup cleanup.
+
 **`target_filter_clause` per filter mode:**
 
 - `"any"`: omit clause.
 - `<agent_id>`: `to_agent_id = ?`. (Strict — does NOT include broadcast unless explicitly requested.)
 - `"self"`:
-  - For `event_type='message_sent'`: `(to_agent_id = ? OR to_agent_id IS NULL)` (direct + broadcast).
+  - For `event_type='message_sent'`: direct messages to the caller plus broadcasts from other agents. Do not echo the caller's own broadcast messages back to their default receiver.
   - For non-message events: `(to_agent_id = ? OR from_agent_id = ?)` (caller is participant). Caller's own `claim`/`release`/`pass`/etc. are visible to them; this matches "self = events that affect me".
   - Encoded as a single `CASE`/`OR` SQL clause to avoid two queries. See §1.5.1 below.
 
@@ -324,19 +331,21 @@ LIMIT ?
 
 ```sql
 AND (
-  (event_type = 'message_sent' AND (to_agent_id = ? OR to_agent_id IS NULL))
+  (event_type = 'message_sent' AND (to_agent_id = ? OR (to_agent_id IS NULL AND from_agent_id != ?)))
   OR
   (event_type != 'message_sent' AND (to_agent_id = ? OR from_agent_id = ?))
 )
 ```
 
-Three bound parameters of the caller's agent_id. Acceptable; SQLite's planner handles this fine on the existing index.
+Four bound parameters of the caller's agent_id. Acceptable; SQLite's planner handles this fine on the existing index.
 
-**`waitForEvents` does NOT mutate.** No `touchMember`, `touchKnownMember`, or `touchWaitingMember`. This is the explicit observer-safety property from the design (Layer 4).
+**`from_agent_id` filter.** Add this filter server-side now. It costs one optional SQL predicate and keeps `cursor_event_seq` semantics honest for `tt msg recv --from ...`: the CLI should not have to consume and skip batches of target-matching messages from the wrong sender.
+
+**`waitForEvents` does NOT mutate.** No purge, no `touchMember`, no `touchKnownMember`, and no `touchWaitingMember`. This is the explicit observer-safety property from the design (Layer 4).
 
 ### 1.6 Policy additions
 
-**File:** `src/types.ts` (Policy interface) and `src/service.ts` (DEFAULT_POLICY).
+**File:** `src/types.ts` (Policy interface) and `src/config.ts` (`defaultPolicy`).
 
 Add three policy values:
 
@@ -380,6 +389,7 @@ Coverage matrix:
 | 22 | `sendMessage` `delivery_hint` defaults to `"normal"` | default |
 | 23 | `sendMessage` rejects `delivery_hint` other than normal/interrupt → `invalid_delivery_hint` | input val |
 | 24 | `getRoomEvents` returns `payload` populated for message_sent rows, `null` for others | mapEvent |
+| 24a | `waitForEvents` `from_agent_id` filters server-side without advancing over unmatched senders | sender filter |
 
 **RISK — test isolation.** Existing pattern: `tests/setup.ts` + `TALKING_STICK_DATA_DIR`. New file follows the same setup; no changes to fixtures.
 
@@ -428,6 +438,7 @@ server.registerTool(
         .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
         .optional(),
       target_agent_id: z.string().min(1).optional(),
+      from_agent_id: z.string().min(1).optional(),
       max_wait_ms: z.number().int().nonnegative().optional()
     }
   },
@@ -461,12 +472,13 @@ Coverage:
 | 28 | MCP `wait_for_events` returns events.payload populated for message_sent | payload round-trip via MCP |
 | 29 | MCP `get_room_events` returns payload for message_sent events alongside legacy events | back-compat |
 | 30 | MCP `wait_for_events` `event_type=['message_sent','release']` (array form) filters correctly | array filter |
+| 30a | MCP `wait_for_events` `from_agent_id` filters server-side | sender filter |
 
 ---
 
 ## Stage 3 — CLI surface
 
-End state: `tt msg send`, `tt msg recv [--follow]`, `tt events --follow` available; `tt msg recv --follow` is the canonical agent-side receive path; recipient resolution works.
+End state: `tt msg send`, `tt msg recv [--wait|--follow]`, `tt events --wait|--follow` available; `tt msg recv --follow` is the continuous stream path for harnesses that can monitor stdout, while `tt msg recv --wait` is the portable wake-on-next-event path for harnesses that can run a background command and notice process exit. Recipient resolution works.
 
 ### 3.1 New commands
 
@@ -486,7 +498,7 @@ Add three entries:
 }
 ```
 
-The existing `events` entry gains `--follow` (and `--event`, `--target`) without a registry change — the handler interprets the flags.
+The existing `events` entry gains `--wait`, `--follow`, `--event`, and `--target` without a registry change — the handler interprets the flags.
 
 **File:** `src/cli/msg-commands.ts` (new). Mirrors `notes-commands.ts`:
 
@@ -544,35 +556,45 @@ function resolveRecipient(
 }
 ```
 
-**DECISION — display-name resolution scope.** Active-only or include inactive? I lean **active-only**: chat is between live processes; targeting a stale member that won't see the message hides the failure. Inactive members can still be targeted by full `agent_id` (escape hatch).
+**Decision — display-name resolution scope.** Display-name shorthand is active-only. Full `agent_id` targeting remains an escape hatch for known inactive members because the service validates only room membership. This split keeps the common chat path honest without making routing pretend to be delivery.
 
-**DECISION — body via positional vs `--stdin`.** `tt notes add` uses `--stdin`; we mirror that. Positional remainder is joined by space (`parsed.positionals.slice(1).join(" ")`). Empty body without `--stdin` is a usage error.
+**Decision — body via positional vs `--stdin`.** `tt notes add` uses `--stdin`; mirror that. Positional remainder is joined by space (`parsed.positionals.slice(1).join(" ")`). Empty body without `--stdin` is a usage error.
 
-### 3.3 `tt msg recv [--follow] [--from <agent>] [--after <event_seq>]`
+**Boolean flag repair.** `parseCommand` currently consumes the next non-`--` token as a flag value. `tt msg send codex --interrupt "hi"` is part of the documented UX, so the handler must repair this case: if `--interrupt` or `--room` has a string value, treat the option as boolean and splice the consumed value back into the message body. Do not make users remember "boolean flags last" for the new single-command chat path.
+
+### 3.3 `tt msg recv [--wait|--follow] [--from <agent>] [--after <event_seq>]`
 
 Grammar:
 
 ```
 tt msg recv                                    # one-shot: print latest unread for self, exit
+tt msg recv --wait                             # block until next matching event batch, print, exit
 tt msg recv --follow                           # long-running: tail forever, JSON line per event
+tt msg recv --wait --from codex                # portable background wake path
 tt msg recv --follow --from codex              # filter by sender display name or agent_id
-tt msg recv --follow --after 12345             # resume from cursor (used after restart)
+tt msg recv --wait --after 12345               # wait after a known cursor
+tt msg recv --follow --after 12345             # continuous resume from cursor
 tt msg recv --follow --target any              # power user: see all messages, not just self
 ```
 
 Implementation:
 
 - One-shot mode: single call to `commands.waitForEvents({ event_type: "message_sent", target_agent_id: "self", max_wait_ms: 0, after_event_seq })`. Print events. Exit.
+- `--wait` mode: single call to `commands.waitForEvents({ event_type: "message_sent", target_agent_id, from_agent_id, after_event_seq, max_wait_ms })`. If an event batch arrives, print one line per event and exit 0. If the deadline expires with no events, print nothing and exit 0 with `{ events: [], cursor_event_seq }` in JSON mode. This is the portability path for Codex/Gemini/OpenCode-style harnesses that can launch a background process and be notified when it exits, but cannot consume each stdout line from a continuously running child.
 - `--follow` mode: loop calling `waitForEvents` with the policy long-poll deadline; emit each event as a single line of JSON (or human text per `shouldUseJson`); update local cursor; repeat.
 
 **Cursor behavior:**
 
-- Default `--follow` start cursor: **the highest current event_seq at startup time** (i.e., do NOT replay history). This avoids flooding harnesses on first launch.
+- Default `--wait` / `--follow` start cursor: **the highest current event_seq at startup time** (i.e., do NOT replay history). This avoids flooding harnesses on first launch.
 - `--after N`: explicit override, used for resume.
-- `--from-start`: opt-in to full backlog (rare; mostly for debugging).
-- Cursor persistence to disk is **out of scope for v1 CLI**. Per design Layer 6 §4, this is the harness's or plugin's responsibility. Operators wire `--after $LAST_SEQ` from their own bookkeeping. **DECISION: agree?**
+- `--after 0`: opt-in to full backlog (rare; mostly for debugging). No separate `--from-start` flag.
+- Cursor persistence to disk is **out of scope for v1 CLI**. Per design Layer 6 §4, this is the harness's or plugin's responsibility. Operators wire `--after $LAST_SEQ` from their own bookkeeping.
 
-**Sender filter (`--from`):** resolved at startup against the room's members (display name OR agent_id). After resolution it's a constant filter applied client-side after `waitForEvents` returns; we don't push it into SQL, since `wait_for_events` doesn't model `from_agent_id` filtering and the gain is small.
+Implement the "highest current event_seq" cursor with a small service/command helper such as `getLatestEventSeq(room_id)` rather than by paging through `getRoomEvents`. It is a simple `SELECT MAX(event_seq)` read and avoids replaying old event pages just to find the tail.
+
+**Sender filter (`--from`):** resolved at startup against the room's members (display name OR exact agent_id). Pass the resolved `from_agent_id` into `waitForEvents`; filtering is server-side.
+
+**Why `--wait` exists.** Continuous `--follow` is ideal for Claude Code Monitor and human terminals. It is not enough for harnesses that can run a background command but only surface the result when the command exits. Those harnesses can run `tt msg recv --wait --after <cursor> --json` in the background; when it exits with events, the harness sees the completed output, updates its cursor, and starts a new `--wait`. This simulates real-time delivery by re-invocation without requiring line-by-line stdout monitoring.
 
 **SIGTERM/SIGHUP:** the `--follow` loop installs handlers that flip a `shouldExit` flag, finish the current iteration, and exit cleanly with the last cursor printed to stderr (so a wrapping operator can resume). Database connection is closed via `runtime` shutdown hooks.
 
@@ -581,19 +603,21 @@ Implementation:
 - `--json` (or auto-JSON for harness identities): one JSON object per line, `JSON.stringify(event)`. Newline-flushed via `process.stdout.write` to ensure Monitor-style consumers see lines without buffering.
 - `--text` (or auto-text for human): `[<created_at>] <from> → <to>: <body>` per line.
 
-### 3.4 `tt events --follow`
+### 3.4 `tt events --wait|--follow`
 
 Extend the existing `handleEventsCommand` to support follow mode:
 
 ```
 tt events                                       # one-shot (existing)
+tt events --wait                                # block until next matching event batch, print, exit
 tt events --follow                              # tail
+tt events --wait --event message_sent,release   # portable wake path
 tt events --follow --event message_sent,release # filter
 tt events --follow --target self|any|<agent>    # filter
 tt events --follow --after 12345                # resume
 ```
 
-Implementation: when `--follow` is set, loop on `commands.waitForEvents` with the parsed `event_type` (split CSV) and `target_agent_id`. Emit one line per event.
+Implementation: when `--wait` is set, call `commands.waitForEvents` once with the parsed `event_type` (split CSV) and `target_agent_id`, then exit after printing any returned batch. When `--follow` is set, loop on the same primitive and emit one line per event.
 
 `tt events` (no `--follow`) keeps current behavior: single `getRoomEvents` call, formatted block per turn. No regression.
 
@@ -612,15 +636,16 @@ Implementation: when `--follow` is set, loop on `commands.waitForEvents` with th
 | 37 | `tt msg send codex --stdin` reads body from stdin | stdin path |
 | 38 | `tt msg send codex` (no body, no stdin) → usage error | usage |
 | 39 | `tt msg recv` one-shot returns events for self only | filter default |
-| 40 | `tt msg recv --follow` emits one JSON line per arriving event, then SIGTERM exits cleanly | follow lifecycle |
-| 41 | `tt msg recv --follow --after N` resumes from cursor | resume |
-| 42 | `tt msg recv --follow --from codex` filters by sender after waitForEvents | sender filter |
-| 43 | `tt events --follow --event message_sent` tails only messages | event-type filter |
-| 44 | `tt events --follow --target any` shows all events including others' | target filter |
-| 45 | `tt msg recv --follow` default cursor is "now" — no historical replay | flood-prevention |
-| 46 | `tt msg recv --follow` JSON output is one event per line, newline-terminated, parseable | format contract |
+| 40 | `tt msg recv --wait` blocks until one matching message batch arrives, prints it, exits | portable wake |
+| 41 | `tt msg recv --wait --after N` resumes from cursor | resume |
+| 42 | `tt msg recv --wait --from codex` filters by sender through waitForEvents | sender filter |
+| 43 | `tt msg recv --follow` emits one JSON line per arriving event, then SIGTERM exits cleanly | follow lifecycle |
+| 44 | `tt events --wait --event message_sent` wakes only for messages | event-type filter |
+| 45 | `tt events --follow --target any` shows all events including others' | target filter |
+| 46 | `tt msg recv --wait/--follow` default cursor is "now" — no historical replay | flood-prevention |
+| 46a | `tt msg recv --wait/--follow` JSON output is one event per line, newline-terminated, parseable | format contract |
 
-**RISK — follow-mode test harness.** Vitest tests for long-running CLI subprocesses are tricky. Pattern I lean toward: spawn the CLI binary as a child process, write to its stdin / read line-by-line from stdout, send SIGTERM after the assertions. Existing tests already do similar (`tests/install.test.ts` shells out). If we can't keep it deterministic, we fall back to invoking the handler directly with a stub stdout and a controlled `setTimeout` clock. **DECISION: child-process or in-process? I lean in-process with mocked stdout — faster, less flaky, but requires factoring `handleMsgRecvFollow` to take an output sink.**
+**Decision — follow-mode test harness.** Prefer in-process tests with a factored follow helper that accepts an output sink and a stop signal. Add one subprocess smoke test only if in-process coverage misses SIGTERM behavior. This keeps Vitest fast and avoids child-process races.
 
 ---
 
@@ -637,7 +662,7 @@ The talking stick guarantees single-writer authority over shared workspace state
 
 **Send.** `tt msg send <recipient> "<body>"` (or `mcp send_message`). Recipient is a full `agent_id`, an unambiguous active display name, or the literal `room` for broadcast. `--interrupt` flags the message as time-sensitive; the receiver decides whether to act on it now.
 
-**Receive.** The canonical pattern is a `tt msg recv --follow` child process spawned by your harness (or the operator). Each incoming event lands as one JSON line on stdout, ready to be routed into model context, terminal output, or a status indicator. SIGTERM exits cleanly; restart with `--after <last_event_seq>` to resume.
+**Receive.** Use the receive mode your harness can actually observe. If it can monitor stdout from a long-running child, run `tt msg recv --follow`; each incoming event lands as one JSON line. If it can only notice that a background command completed, run `tt msg recv --wait --after <last_event_seq>`; it exits on the next matching batch, then you start it again with the returned cursor. SIGTERM exits cleanly; restart with `--after <last_event_seq>` to resume.
 
 **When to message vs note vs handoff.**
 
@@ -649,10 +674,10 @@ The talking stick guarantees single-writer authority over shared workspace state
 
 **Messages do not grant the stick.** A non-holder paging the holder does not gain write authority. The holder may act on the message immediately or defer until handoff.
 
-**Stay in the wait loop in parallel.** A `tt msg recv --follow` subprocess does not replace `wait_for_turn`. Keep waiting for your turn; messages are a side channel.
+**Stay in the wait loop in parallel.** A `tt msg recv --wait` or `--follow` subprocess does not replace `wait_for_turn`. Keep waiting for your turn; messages are a side channel.
 ```
 
-Also: a one-line addition to §1 ("Check that Talking Stick is available") noting that `tt msg recv --follow` may be running as a sibling process and should be left alone.
+Also: a one-line addition to §1 ("Check that Talking Stick is available") noting that `tt msg recv --wait` / `--follow` may be running as sibling processes and should be left alone.
 
 ### 4.1 Skill propagation
 
@@ -686,7 +711,7 @@ Sections:
 5. **At-least-once + dedupe.** Consumers dedupe on `event_id`.
 6. **Routing per `delivery_hint`.** `interrupt` may inject mid-task; `normal` may buffer or write to status surface.
 7. **SIGTERM behavior.** Final cursor flush, clean exit.
-8. **The CLI subprocess pattern.** Reference implementation: `tt msg recv --follow`. Plugins are richer consumers of the same contract.
+8. **The CLI subprocess patterns.** Reference implementations: `tt msg recv --follow` for continuous stdout consumers and `tt msg recv --wait` for wake-on-process-exit consumers. Plugins are richer consumers of the same contract.
 
 ---
 
@@ -694,27 +719,27 @@ Sections:
 
 These are corner cases the design doc hints at but doesn't lock. Each is a real implementation-time decision.
 
-**EC-1. Sender liveness.** §1.4 above — `touchMember` (sender must be active) vs `touchKnownMember` (silent no-op for inactive sender). Lean active-required.
+**EC-1. Sender membership.** Resolved: `touchMember`, not `touchKnownMember`. Sender must be joined; sending refreshes presence.
 
-**EC-2. Display-name resolution scope.** §3.2 — active-only or include inactive. Lean active-only.
+**EC-2. Display-name resolution scope.** Resolved: active-only for shorthand; full `agent_id` can target known inactive members.
 
-**EC-3. Default `--follow` cursor.** §3.3 — start at "now" (skip backlog) or replay everything. Lean "now".
+**EC-3. Default `--follow` cursor.** Resolved: start at "now" by default; use `--after 0` to replay from the beginning.
 
-**EC-4. `target=self` for non-message events.** §1.5 — defining "self" as `(to_agent_id = self OR from_agent_id = self)` for non-message events. This affects whether `tt events --follow --target self` shows the caller's own claims/releases/etc. (yes, it should). Push back if the SQL clause is wrong.
+**EC-4. `target=self` filters.** Resolved with the amended SQL above: messages include direct-to-self plus broadcasts from others; non-message events include `to_agent_id = self OR from_agent_id = self`.
 
-**EC-5. `from_agent_id` filtering in `wait_for_events`.** Currently the design doesn't include a `from_agent_id` filter parameter. `tt msg recv --from codex` does it client-side after the call. **Should the protocol learn `from_agent_id` filtering server-side?** I lean no — premature; client-side filtering on a small batch is cheap. But if dogfooding shows tons of irrelevant traffic the receiver discards, server-side is one column index away.
+**EC-5. `from_agent_id` filtering in `wait_for_events`.** Resolved: add it server-side now. It is cheap, keeps cursor behavior simple, and makes the MCP primitive useful without a CLI-only special case.
 
-**EC-6. Empty `event_type` array.** A caller passes `event_type: []`. Treat as "no events match" (return empty immediately) or "no filter" (same as omitting)? Lean **error** — `invalid_event_type_filter` — to surface caller bugs.
+**EC-6. Empty `event_type` array.** Resolved: error with `invalid_event_type_filter`.
 
-**EC-7. `room_closed` and `wait_for_events`.** A closed room's event log is still readable; `wait_for_events` should return events past the cursor and then finish out the deadline (no new events will ever arrive). **DECISION: should we short-circuit and return immediately with status `room_closed`?** I lean yes — telling the consumer "no point waiting" is better than burning the deadline. Add an optional `room_state` field to `WaitForEventsResult` populated only when room is closed.
+**EC-7. `room_closed` and `wait_for_events`.** Resolved: do not change the result shape for v1. A closed room's event log is still readable, and there is no shipped `close_room` path today. If close-room ships later, add a separate terminal-status extension then.
 
-**EC-8. Migration idempotency.** Stage 1.1 — what if migration 5 partially ran? SQLite `ALTER TABLE` is atomic; the `schema_migrations` row insert is in the same `withImmediateTransaction`. But: what if a v0.1.4 dogfooding DB already has a `payload_json` column from a manual experiment? Migration would fail with "duplicate column name". Mitigation: catch that specific error and treat as already-applied. **DECISION: defensive try/catch or trust clean state?** I lean trust — no one's hand-modifying the schema.
+**EC-8. Migration idempotency.** Resolved: trust clean state. SQLite `ALTER TABLE` and the migration row insert are wrapped in one transaction. No special duplicate-column escape hatch unless dogfooding proves manual schema drift.
 
 **EC-9. `to_agent_id` casing.** Agent IDs are typed strings; should we normalize case in recipient lookup? Existing code is case-sensitive throughout. Keep that. Document: full agent_id match is exact (`codex:5C11D1E8` ≠ `codex:5c11d1e8`).
 
-**EC-10. Body normalization.** Note bodies are trimmed (`input.body?.trim()`). Should message bodies be? Lean **no**: chat messages may legitimately end with trailing whitespace, leading indents, etc. Keep raw. Empty-after-no-trim still rejected.
+**EC-10. Body normalization.** Resolved: do not trim before storage. Reject only the zero-length string at the service layer; CLI usage can still trim its positional assembly enough to detect a missing argument.
 
-**EC-11. CLI parser gotcha (CLAUDE.md).** `parseCommand` consumes the next non-`--` token as a flag's value. So `tt msg send codex --interrupt body` would have `--interrupt` eat `body`. Per CLAUDE.md, "place boolean flags last when a positional follows." Document in command help text. Tests #36 verify the working order.
+**EC-11. CLI parser gotcha.** Resolved: repair in `tt msg send`. The documented command `tt msg send codex --interrupt "body"` must work. Tests #36 should assert that exact order.
 
 **EC-12. Concurrency on `event_seq`.** SQLite AUTOINCREMENT is monotonic per-table. `withImmediateTransaction` serializes writes. Two concurrent `sendMessage` calls land in deterministic order; no risk of out-of-order delivery. Test #21 pins this.
 
@@ -739,6 +764,8 @@ These are corner cases the design doc hints at but doesn't lock. Each is a real 
 
 PRs 1 and 2 can land back-to-back; PR 3 is the visible v1 surface. After PR 3, Claude Code (via Monitor + `tt msg recv --follow`) and Codex (via MCP `wait_for_events` polling or operator-run `tt msg recv --follow` in tmux) both have working chat without any plugin work.
 
+Operator amendment during review: `--wait` is now part of the v1 CLI surface. Harnesses that cannot consume individual stdout lines from a long-running child can still get near-real-time behavior by running a background `tt msg recv --wait --after <cursor>` process, reacting when it exits with an event batch, and starting the next wait process.
+
 ---
 
 ## What I want from this review
@@ -749,6 +776,79 @@ PRs 1 and 2 can land back-to-back; PR 3 is the visible v1 surface. After PR 3, C
 - **Migration risk.** Anything I missed about ALTER TABLE on a populated dogfood DB?
 - **Skill prose.** §4 above — too long? wrong emphasis? missing the operator's "single command" framing?
 
-After your review, we converge in this same doc (amend in place, both signatures), then you implement on this branch and I review.
+After this review, implementation can proceed on this branch. Claude should review the code/test diff and this amended plan after the implementation pass.
+
+— `claude:c756bb19`
+
+— reviewed and amended by `codex:4ed7aa3c`
+
+---
+
+## Round-2 review pushback (`claude:c756bb19`)
+
+I accept Codex's round-1 amendments wholesale (server-side `from_agent_id`, broadcast self-exclusion, EC-1..EC-12 resolutions, `getMember`/`defaultPolicy` corrections, the `--wait` mode addition). Three concrete pushbacks remain; everything else is ready for implementation.
+
+### R2-1. `normalizeBooleanFlag` won't repair `tt msg send <recipient> --interrupt <body>` correctly.
+
+**The problem.** The existing `normalizeBooleanFlag(parsed, "interrupt")` does `parsed.positionals.unshift(value)` (parser.ts:62), which prepends the flag-consumed token to the FRONT of positionals. For `tt msg send codex --interrupt body`:
+
+- Initial parse: `positionals = ["codex"]`, `options = { interrupt: "body" }`
+- After `normalizeBooleanFlag`: `positionals = ["body", "codex"]`, `options = { interrupt: true }`
+
+`resolveRecipient(positionals[0])` then sees `"body"` as the recipient. Wrong.
+
+**Fix.** The `tt msg send` handler needs a custom repair that **inserts the consumed value at index 1 (after the recipient)**, not at index 0. Sketch:
+
+```ts
+function repairBooleanFlag(parsed: ParsedCommand, key: string, insertAt: number): void {
+  const value = parsed.options.get(key);
+  if (typeof value === "string") {
+    parsed.positionals.splice(insertAt, 0, value);
+    parsed.options.set(key, true);
+  }
+}
+
+// In handleMsgSendCommand, AFTER recipient is positional[0]:
+repairBooleanFlag(parsed, "interrupt", 1);
+repairBooleanFlag(parsed, "room", 1);  // if --room is also boolean
+```
+
+Tests #36 must assert this exact form: `tt msg send codex --interrupt "the body has spaces"` produces `recipient="codex"`, `body="the body has spaces"`, `delivery_hint="interrupt"`. Add a second case where the body is a single token (`tt msg send codex --interrupt body`) since that's the path most likely to break.
+
+**Alternative considered.** Using a `--to <recipient>` flag instead of positional. Rejected: loses the "single command" feel the operator asked for.
+
+### R2-2. Pin `target=self` self-broadcast exclusion with an explicit test.
+
+The amended SQL `(to_agent_id IS NULL AND from_agent_id != ?)` is correct, but it's a load-bearing semantic that's easy to regress (someone refactors the OR clause and drops the `!=` predicate). Add to the Stage-1 matrix:
+
+| 13a | `waitForEvents` `target='self'` excludes the caller's own broadcast (`to_agent_id=NULL, from_agent_id=self`) | self-broadcast guard |
+| 13b | `waitForEvents` `target='any'` includes the caller's own broadcast | escape hatch |
+| 13c | `waitForEvents` `target='self'` includes broadcasts from other agents | broadcast inclusion |
+
+Codex's open-question 2 (answered): yes, `target=self` should exclude self-authored broadcasts. The caller's UI already showed their outbound; chat semantics are "things addressed to me from someone else." `target=any` remains the audit-log path. The amended SQL is right; we just need to lock it down with tests.
+
+### R2-3. Pin EC-7 (closed-room behavior) with an explicit test even though we deferred the shape change.
+
+Codex resolved EC-7 by saying `wait_for_events` should not change result shape for v1 — closed rooms read like any other. Agreed, but a test should pin the deferred behavior so a future close-room PR has to opt in to changing it:
+
+| 19a | `waitForEvents` on a closed room (state='closed') returns empty after deadline; does NOT throw, does NOT short-circuit | EC-7 deferred behavior pin |
+
+If close-room ships later and we want short-circuit semantics, this test will need to be updated alongside — exactly the surface area we want a future PR to touch.
+
+### R2-4. Cursor advance policy with `from_agent_id` filter — one-line clarification.
+
+§1.5 pseudocode advances `cursor_event_seq` to the last MATCHING event's event_seq. With server-side `from_agent_id` filtering, this means non-matching events between cursor advances get re-evaluated (re-scanned) on each iteration. That's correct for filter changes mid-stream (no events lost), but I want one explicit sentence in §1.5 documenting it so a future "optimize the long-poll" PR doesn't accidentally advance past unmatched rows:
+
+> **Cursor advancement.** `cursor_event_seq` advances only to the highest event_seq that matched all filters. Unmatched rows past the previous cursor are re-evaluated on the next call. This costs one bounded re-scan per iteration but preserves correctness across filter changes — a caller who switches `--from codex` to `--from gemini` mid-stream will see all gemini events past the old cursor, none lost.
+
+### R2-5. Codex's open-questions answered.
+
+**Q1: amend base design doc for `--wait`?** No, defer until implementation lands. The protocol surface (events, payload_json, send_message, wait_for_events) is unchanged. `--wait` is a CLI shape choice that fits cleanly under the existing Layer 5/6 framing in the design doc; a single sentence post-implementation in the design doc's Stage 3 entry is enough. Don't fork docs mid-flight.
+
+**Q2: target=self excluding self-broadcast?** Yes, as already discussed in R2-2. Confirmed.
+
+### Verdict
+
+With R2-1 through R2-4 absorbed (R2-1 needs a real code change; R2-2/R2-3 are tests we add to the matrix; R2-4 is a doc clarification), the plan is implementation-ready. Codex can proceed on this branch. Claude reviews the implementation diff after each stage commit.
 
 — `claude:c756bb19`
