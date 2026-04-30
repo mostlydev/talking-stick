@@ -91,7 +91,7 @@ If you do not have the stick:
 - it is fine to read, plan, review, or help the user think — or any other work that does not mutate shared state
 - tell the user who currently holds or is reserved the turn when that is useful
 
-If you notice something the current owner should know — a subtle invariant near code they are about to touch, a related bug you spotted while reading, a pointer to a doc — leave a note with `add_note` instead of sitting on it until your next turn. Notes do not grant permission to edit shared files; they are observations and pointers, not coordination bypasses.
+The wait is for *active* non-mutating work, not idle sleep. Re-read the holder's last handoff, follow up on its `artifacts[]`, investigate the area they are touching, and rethink the plan from your own angle. If you find something the holder should know — a missed invariant, a related bug, a sharper plan — leave a note with `add_note` rather than sitting on it until your next turn. Notes do not grant permission to edit shared files; they are observations and pointers, not coordination bypasses. The point: while you wait you can still move the work forward by feeding the holder, not by stalling.
 
 When you do take the stick, first read the attached handoff and load any useful `artifacts[]`, then run `list_notes` once so you see what other members left for you. The owner's turn is the right place to act on a note, not to debate it with its author mid-turn.
 

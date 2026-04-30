@@ -472,6 +472,51 @@ describe("talking-stick vertical slice", () => {
     expect(join.canonical_path).toBe(project);
   });
 
+  test("join_path with force_new creates a nested room when an ancestor room exists", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const nestedPath = path.join(project, "packages", "topic-a");
+    fs.mkdirSync(nestedPath, { recursive: true });
+
+    const rootJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const nestedJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: nestedPath,
+      force_new: true
+    });
+
+    expect(nestedJoin.room_id).not.toBe(rootJoin.room_id);
+    expect(nestedJoin.canonical_path).toBe(nestedPath);
+    expect(nestedJoin.joined_existing_room).toBe(false);
+    expect(nestedJoin.warning).toContain("Created nested room inside");
+  });
+
+  test("join_path with force_new is a no-op when an exact-path room already exists, and surfaces a warning", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const firstJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    expect(firstJoin.warning).toBeUndefined();
+
+    const secondJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project,
+      force_new: true
+    });
+
+    expect(secondJoin.room_id).toBe(firstJoin.room_id);
+    expect(secondJoin.joined_existing_room).toBe(true);
+    expect(secondJoin.warning).toBeDefined();
+    expect(secondJoin.warning).toContain("force_new had no effect");
+    expect(harness.service.listRooms({ context_path: project }).rooms).toHaveLength(1);
+  });
+
   test("leave_room removes a member and deletes the room when it was last", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
@@ -1544,13 +1589,17 @@ describe("talking-stick vertical slice", () => {
     services.splice(services.indexOf(harness.service), 1);
 
     const startAt = Date.now() + 500;
+    // The worker must share the parent fake clock so idle TTL purging
+    // does not depend on the wall-clock date when the test runs.
+    const workerNowIso = harness.clock.now().toISOString();
     const results = await Promise.all(
       agents.map((agent) =>
         runClaimWorker({
           dbPath: harness.dbPath,
           roomId: room.room_id,
           agentId: agent,
-          startAt
+          startAt,
+          nowIso: workerNowIso
         })
       )
     );
@@ -2106,6 +2155,7 @@ async function runClaimWorker(input: {
   roomId: string;
   agentId: string;
   startAt: number;
+  nowIso?: string;
 }): Promise<{ status: string }> {
   const workerPath = fileURLToPath(
     new URL("./fixtures/claim-worker.ts", import.meta.url)
@@ -2120,7 +2170,8 @@ async function runClaimWorker(input: {
         dbPath: input.dbPath,
         roomId: input.roomId,
         agentId: input.agentId,
-        startAt: input.startAt
+        startAt: input.startAt,
+        nowIso: input.nowIso
       })
     ],
     {

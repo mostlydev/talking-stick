@@ -57,7 +57,11 @@ export function handleJoinCommand(
   upsertSessionFromJoin(identity, joined);
 
   printResult(parsed, joined, () => {
-    return `Joined ${joined.canonical_path} as ${joined.agent_id}`;
+    const lines = [`Joined ${joined.canonical_path} as ${joined.agent_id}`];
+    if (joined.warning) {
+      lines.push(`Warning: ${joined.warning}`);
+    }
+    return lines.join("\n");
   });
 }
 

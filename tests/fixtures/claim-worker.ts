@@ -5,6 +5,7 @@ const input = JSON.parse(process.argv[2] ?? "{}") as {
   roomId: string;
   agentId: string;
   startAt: number;
+  nowIso?: string;
 };
 
 const delayMs = Math.max(0, input.startAt - Date.now());
@@ -12,8 +13,10 @@ if (delayMs > 0) {
   await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+const nowIso = input.nowIso;
 const service = new TalkingStickService({
   dbPath: input.dbPath,
+  now: nowIso ? () => new Date(nowIso) : undefined,
   policy: {
     waitForTurnMaxWaitMs: 0
   }

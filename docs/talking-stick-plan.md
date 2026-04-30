@@ -316,7 +316,7 @@ Resolution:
 2. Resolve the preferred workspace root.
 3. Walk up from the canonical `context_path` to the preferred workspace root looking for an existing room.
 4. If found and `force_new = false`: join the deepest existing ancestor room.
-5. If found and `force_new = true`: create a nested room at the canonical `context_path`, returning a warning that an ancestor room exists. If a room already exists at that exact path, join it.
+5. If found and `force_new = true`: create a nested room at the canonical `context_path`, returning a warning that an ancestor room exists. If a room already exists at the exact `canonical_context_path`, join it and return a warning that `force_new` was a no-op. `force_new` only creates *nested* rooms; it never duplicates a room at the same canonical path because `path_rooms.canonical_path` is unique. Callers that want a fresh room for a separate topic must join a distinct subpath.
 6. If not found: create a new room at the preferred workspace root.
 
 The response includes the resolved `room_id`, the `canonical_path` the agent actually joined (which may differ from the request path when workspace root resolution or ancestor lookup redirected the call), the effective room policy (including `heartbeat_interval_ms`), and a `handoff_template` hint describing the expected handoff shape. For the MVP this template is static server-wide; room-specific prompting can be added later if real workflows need it.

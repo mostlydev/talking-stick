@@ -579,6 +579,25 @@ describe("tt room commands", () => {
     const listOut = await captureStdout(["list", project]);
     expect(listOut.trim()).toBe("No rooms found.");
   });
+
+  test("tt join --force-new prints a warning when the exact path already has a room", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout(["join", project, "--agent", "human:first"]);
+    const joinOut = await captureStdout([
+      "join",
+      project,
+      "--agent",
+      "human:second",
+      "--force-new"
+    ]);
+
+    expect(joinOut).toContain(`Joined ${project} as human:second`);
+    expect(joinOut).toContain("Warning: force_new had no effect");
+
+    const listOut = await captureStdout(["list", project]);
+    expect(listOut.split("\n").filter(Boolean)).toHaveLength(1);
+  });
 });
 
 describe("tt notes", () => {

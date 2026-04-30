@@ -9,6 +9,15 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## [0.1.4] — 2026-04-30
+
+Full notes: [`docs/releases/0.1.4.md`](docs/releases/0.1.4.md).
+
+### Fixed
+- **`force_new` no-op on exact-path joins now surfaces a warning.** `join_path` with `force_new=true` against an existing room at the same `canonical_path` has always been a no-op (path rooms are `UNIQUE` by canonical path). Prior versions returned the existing room silently; the response now includes a `warning` explaining the no-op and pointing at the remedy (join a distinct subpath). The default `tt join` text output now renders both this warning and the existing nested-room warning, not just `--json`. Skill `§4 While waiting` is also rewritten to frame wait time as active investigation + `add_note`, not idle sleep.
+- **Contention test no longer races the room-purge clock.** The `only one process can claim an idle room under contention` test failed deterministically on wall-clock dates past the parent test's fake-clock window because the spawned claim worker constructed its service with real time and purged the idle room before claiming. The worker now inherits the parent fake-clock ISO timestamp.
+- **Identity-resolver memoization test asserts deltas, not absolute call counts.** The 0.1.3 ancestry-walk change made `deriveMcpHarnessIdentity` walk multiple parent inspections per derive; the existing test still expected exactly one. Updated to assert call-count deltas so it remains correct regardless of ancestry-walk depth.
+
 ## [0.1.3] — 2026-04-28
 
 Full notes: [`docs/releases/0.1.3.md`](docs/releases/0.1.3.md).

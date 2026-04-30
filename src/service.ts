@@ -1120,7 +1120,11 @@ export class TalkingStickService {
         resolved.canonical_context_path
       );
       if (exactRoom) {
-        return { room: exactRoom, joinedExistingRoom: true };
+        return {
+          room: exactRoom,
+          joinedExistingRoom: true,
+          warning: `force_new had no effect: a room already exists at ${exactRoom.canonical_path}. force_new only creates a nested room when an ancestor room exists; same-path duplicates are not supported. To get a fresh room for a separate topic, join a distinct subpath.`
+        };
       }
 
       return {

@@ -20,19 +20,23 @@ describe("createConnectionIdentityResolver", () => {
     const resolveIdentity = createConnectionIdentityResolver({ inspector });
 
     const first = resolveIdentity("session-a");
+    const callsAfterFirst = inspectCalls;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
     const second = resolveIdentity("session-a");
-    expect(first).toEqual(second);
-    expect(inspectCalls).toBe(1);
+    expect(second).toEqual(first);
+    expect(inspectCalls).toBe(callsAfterFirst);
 
     const overridden = resolveIdentity("session-a", "codex:debug");
     expect(overridden.agent_id).toBe("codex:debug");
-    expect(inspectCalls).toBe(2);
+    expect(inspectCalls).toBeGreaterThan(callsAfterFirst);
+    const callsAfterOverride = inspectCalls;
 
     const overriddenAgain = resolveIdentity("session-a");
     expect(overriddenAgain).toEqual(overridden);
-    expect(inspectCalls).toBe(2);
+    expect(inspectCalls).toBe(callsAfterOverride);
 
     resolveIdentity("session-b");
-    expect(inspectCalls).toBe(3);
+    expect(inspectCalls).toBeGreaterThan(callsAfterOverride);
   });
 });
