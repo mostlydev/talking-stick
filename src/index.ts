@@ -8,7 +8,9 @@ export {
   type ListNotesCommandInput,
   type PassStickCommandInput,
   type ReleaseStickCommandInput,
+  type SendMessageCommandInput,
   type TakeoverStickCommandInput,
+  type WaitForEventsCommandInput,
   type WaitForTurnCommandInput
 } from "./commands.js";
 export {
