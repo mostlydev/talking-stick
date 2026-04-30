@@ -8,6 +8,9 @@ export const defaultPolicy: Policy = {
   claimTtlMs: 20 * 60 * 1000,
   waitForTurnMaxWaitMs: 30 * 1000,
   waitForTurnPollMs: 250,
+  waitForEventsMaxWaitMs: 30 * 1000,
+  waitForEventsPollMs: 250,
+  waitForEventsBatchLimit: 100,
   presenceTtlMs: 4 * 60 * 60 * 1000,
   waiterGraceMs: 10 * 1000,
   idleRoomTtlMs: 7 * 24 * 60 * 60 * 1000

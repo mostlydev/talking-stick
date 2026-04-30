@@ -152,7 +152,9 @@ Commands:
   tt wait [path] [--timeout 30s]
   tt try [path]
   tt state [path]
-  tt events [path] [--after N] [--limit N]
+  tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
+  tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]
+  tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
   tt release [path] (--status TEXT --next-action TEXT | --stdin)
   tt pass [path] (--status TEXT --next-action TEXT | --stdin)
   tt assign <target|next> [path] (--status TEXT --next-action TEXT | --stdin)

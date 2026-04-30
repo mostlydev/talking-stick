@@ -126,6 +126,13 @@ const migrations: Migration[] = [
     up: `
       ALTER TABLE room_members ADD COLUMN last_wait_at TEXT;
     `
+  },
+  {
+    id: 5,
+    name: "room_events_payload_json",
+    up: `
+      ALTER TABLE room_events ADD COLUMN payload_json TEXT;
+    `
   }
 ];
 

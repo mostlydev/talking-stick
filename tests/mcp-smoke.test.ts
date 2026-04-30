@@ -50,6 +50,8 @@ describe("mcp smoke coverage", () => {
       "takeover_stick",
       "get_room_state",
       "get_room_events",
+      "send_message",
+      "wait_for_events",
       "add_note",
       "list_notes"
     ]);
@@ -294,6 +296,194 @@ describe("mcp smoke coverage", () => {
       turn_id: null
     });
   });
+
+  test("send_message and wait_for_events round-trip through the MCP adapter", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-mcp-"));
+    tempRoots.push(tempRoot);
+
+    const dbPath = path.join(tempRoot, "state", "rooms.sqlite");
+    const project = createProject(tempRoot);
+
+    const codex = await createMcpHarness(dbPath);
+    const claude = await createMcpHarness(dbPath);
+
+    await codex.client.callTool({
+      name: "join_path",
+      arguments: {
+        context_path: project,
+        agent_id_override: "codex:test"
+      }
+    });
+    const claudeJoin = parseToolResult(
+      await claude.client.callTool({
+        name: "join_path",
+        arguments: {
+          context_path: project,
+          agent_id_override: "claude:test"
+        }
+      })
+    );
+
+    const sent = parseToolResult(
+      await codex.client.callTool({
+        name: "send_message",
+        arguments: {
+          room_id: claudeJoin.room_id,
+          to_agent_id: "claude:test",
+          body: "can you review the parser?",
+          delivery_hint: "interrupt"
+        }
+      })
+    );
+
+    expect(sent.event_seq).toBeGreaterThan(0);
+    expect(sent.event_id).toMatch(/^[0-9a-f-]+$/);
+
+    const eventLog = parseToolResult(
+      await claude.client.callTool({
+        name: "get_room_events",
+        arguments: {
+          room_id: claudeJoin.room_id
+        }
+      })
+    );
+
+    expect(eventLog).toHaveLength(1);
+    expect(eventLog[0]).toMatchObject({
+      event_seq: sent.event_seq,
+      event_type: "message_sent",
+      from_agent_id: "codex:test",
+      to_agent_id: "claude:test",
+      payload: {
+        body: "can you review the parser?",
+        delivery_hint: "interrupt"
+      }
+    });
+
+    const waited = parseToolResult(
+      await claude.client.callTool({
+        name: "wait_for_events",
+        arguments: {
+          room_id: claudeJoin.room_id,
+          event_type: "message_sent",
+          target_agent_id: "self",
+          max_wait_ms: 0
+        }
+      })
+    );
+
+    expect(waited.cursor_event_seq).toBe(sent.event_seq);
+    expect(waited.events).toHaveLength(1);
+    expect(waited.events[0]).toMatchObject({
+      event_seq: sent.event_seq,
+      event_type: "message_sent",
+      from_agent_id: "codex:test",
+      to_agent_id: "claude:test",
+      payload: {
+        body: "can you review the parser?",
+        delivery_hint: "interrupt"
+      }
+    });
+  });
+
+  test("wait_for_events supports event-type arrays and sender filtering", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-mcp-"));
+    tempRoots.push(tempRoot);
+
+    const dbPath = path.join(tempRoot, "state", "rooms.sqlite");
+    const project = createProject(tempRoot);
+
+    const codex = await createMcpHarness(dbPath);
+    const claude = await createMcpHarness(dbPath);
+    const gemini = await createMcpHarness(dbPath);
+
+    await codex.client.callTool({
+      name: "join_path",
+      arguments: {
+        context_path: project,
+        agent_id_override: "codex:test"
+      }
+    });
+    const claudeJoin = parseToolResult(
+      await claude.client.callTool({
+        name: "join_path",
+        arguments: {
+          context_path: project,
+          agent_id_override: "claude:test"
+        }
+      })
+    );
+    await gemini.client.callTool({
+      name: "join_path",
+      arguments: {
+        context_path: project,
+        agent_id_override: "gemini:test"
+      }
+    });
+
+    await codex.client.callTool({
+      name: "send_message",
+      arguments: {
+        room_id: claudeJoin.room_id,
+        to_agent_id: "claude:test",
+        body: "from codex"
+      }
+    });
+    await gemini.client.callTool({
+      name: "send_message",
+      arguments: {
+        room_id: claudeJoin.room_id,
+        to_agent_id: "claude:test",
+        body: "from gemini"
+      }
+    });
+
+    const waited = parseToolResult(
+      await claude.client.callTool({
+        name: "wait_for_events",
+        arguments: {
+          room_id: claudeJoin.room_id,
+          event_type: ["message_sent", "release"],
+          target_agent_id: "self",
+          from_agent_id: "gemini:test",
+          max_wait_ms: 0
+        }
+      })
+    );
+
+    expect(waited.events).toHaveLength(1);
+    expect(waited.events[0].payload.body).toBe("from gemini");
+  });
+
+  test("send_message returns typed errors through the MCP adapter", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-mcp-"));
+    tempRoots.push(tempRoot);
+
+    const dbPath = path.join(tempRoot, "state", "rooms.sqlite");
+    const project = createProject(tempRoot);
+
+    const codex = await createMcpHarness(dbPath);
+    const join = parseToolResult(
+      await codex.client.callTool({
+        name: "join_path",
+        arguments: {
+          context_path: project,
+          agent_id_override: "codex:test"
+        }
+      })
+    );
+
+    const result = await codex.client.callTool({
+      name: "send_message",
+      arguments: {
+        room_id: join.room_id,
+        body: "x".repeat(4097)
+      }
+    });
+    const error = parseToolError(result);
+
+    expect(error.error).toBe("message_too_large");
+  });
 });
 
 async function createMcpHarness(existingDbPath?: string) {
@@ -348,6 +538,21 @@ function parseToolResult(result: unknown): any {
   const text = toolResult.content?.find((item) => item.type === "text")?.text;
   if (!text) {
     throw new Error("Expected MCP tool result to include JSON text content.");
+  }
+
+  return JSON.parse(text);
+}
+
+function parseToolError(result: unknown): any {
+  const toolResult = result as {
+    isError?: boolean;
+    content?: Array<{ type?: string; text?: string }>;
+  };
+
+  expect(toolResult.isError).toBe(true);
+  const text = toolResult.content?.find((item) => item.type === "text")?.text;
+  if (!text) {
+    throw new Error("Expected MCP tool error to include JSON text content.");
   }
 
   return JSON.parse(text);

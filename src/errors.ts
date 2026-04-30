@@ -14,6 +14,12 @@ export type ProtocolErrorCode =
   | "invalid_input"
   | "invalid_body"
   | "body_too_large"
+  | "message_too_large"
+  | "invalid_delivery_hint"
+  | "unknown_recipient"
+  | "ambiguous_recipient"
+  | "agent_id_required"
+  | "invalid_event_type_filter"
   | "room_closed"
   | "invalid_turn_id"
   | "invalid_cursor";
@@ -29,6 +35,7 @@ export interface ProtocolErrorDetails {
   room_id?: string;
   supplied?: number;
   after_note_id?: string;
+  candidates?: string[];
 }
 
 export class ProtocolError extends Error {

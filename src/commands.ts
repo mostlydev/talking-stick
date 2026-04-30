@@ -16,8 +16,11 @@ import type {
   ReleaseStickInput,
   ReleaseStickResult,
   RoomEvent,
+  SendMessageResult,
   TakeoverStickInput,
   TakeoverStickResult,
+  WaitForEventsInput,
+  WaitForEventsResult,
   WaitForTurnInput,
   WaitForTurnResult
 } from "./types.js";
@@ -78,6 +81,15 @@ export interface ListNotesCommandInput {
   include_resolved?: boolean;
   limit?: number;
 }
+
+export interface SendMessageCommandInput {
+  room_id: string;
+  body: string;
+  to_agent_id?: string | null;
+  delivery_hint?: "normal" | "interrupt";
+}
+
+export interface WaitForEventsCommandInput extends WaitForEventsInput {}
 
 export class TalkingStickCommands {
   constructor(private readonly service = new TalkingStickService()) {}
@@ -194,6 +206,27 @@ export class TalkingStickCommands {
 
   getRoomEvents(input: GetRoomEventsInput): RoomEvent[] {
     return this.service.getRoomEvents(input);
+  }
+
+  sendMessage(
+    identity: DerivedIdentity,
+    input: SendMessageCommandInput
+  ): SendMessageResult {
+    return this.service.sendMessage({
+      agent_id: identity.agent_id,
+      room_id: input.room_id,
+      body: input.body,
+      to_agent_id: input.to_agent_id,
+      delivery_hint: input.delivery_hint
+    });
+  }
+
+  waitForEvents(input: WaitForEventsCommandInput): Promise<WaitForEventsResult> {
+    return this.service.waitForEvents(input);
+  }
+
+  getLatestEventSeq(input: { room_id: string }): number {
+    return this.service.getLatestEventSeq(input);
   }
 
   addNote(

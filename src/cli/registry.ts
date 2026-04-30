@@ -7,6 +7,7 @@ import {
   runUninstallCommand,
   runUninstallSkillCommand
 } from "./install-commands.js";
+import { handleMsgCommand } from "./msg-commands.js";
 import { handleNotesCommand } from "./notes-commands.js";
 import type { ParsedCommand } from "./parser.js";
 import {
@@ -167,9 +168,18 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt events [path] [--after N] [--limit N]",
+    usage: "tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]",
     description: "Show room events.",
     handler: ({ runtime, parsed }) => handleEventsCommand(requireRuntime(runtime), parsed)
+  },
+  {
+    name: "msg",
+    needsRuntime: true,
+    startupMaintenance: true,
+    internal: false,
+    usage: "tt msg <send|recv> [...]",
+    description: "Send or receive transient messages on a room's event stream.",
+    handler: ({ runtime, parsed }) => handleMsgCommand(requireRuntime(runtime), parsed)
   },
   {
     name: "wait",

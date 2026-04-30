@@ -88,6 +88,27 @@ describe("talking-stick skill install", () => {
     expect(fs.readlinkSync(target)).toBe(resolveBundledSkillPath());
   });
 
+  test("linked install exposes out-of-band messaging guidance", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+
+    const action = planSkillInstall("codex", {
+      homeDir: tempRoot
+    });
+    expect(action.kind).toBe("file-patch");
+    if (action.kind !== "file-patch") {
+      throw new Error("unreachable");
+    }
+
+    action.apply();
+
+    const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toContain(
+      "### 4.5 Out-of-band messaging"
+    );
+  });
+
   test("skips skill install when the harness config directory is missing", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
@@ -143,6 +164,28 @@ describe("talking-stick skill install", () => {
     expect(fs.existsSync(path.join(target, "SKILL.md"))).toBe(true);
     expect(fs.existsSync(path.join(target, "agents", "openai.yaml"))).toBe(true);
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
+  });
+
+  test("copy install includes out-of-band messaging guidance", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+
+    const action = planSkillInstall("claude-code", {
+      homeDir: tempRoot,
+      link: false
+    });
+    expect(action.kind).toBe("file-patch");
+    if (action.kind !== "file-patch") {
+      throw new Error("unreachable");
+    }
+
+    action.apply();
+
+    const target = path.join(tempRoot, ".claude", "skills", "talking-stick");
+    expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toContain(
+      "### 4.5 Out-of-band messaging"
+    );
   });
 
   test("syncInstalledSkills updates an existing copied skill without installing missing harnesses", () => {

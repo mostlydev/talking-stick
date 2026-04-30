@@ -9,6 +9,7 @@ import {
 } from "./process-utils.js";
 import { TalkingStickCommands } from "./commands.js";
 import { TalkingStickService } from "./service.js";
+import type { EventTypeFilter, TargetAgentFilter } from "./types.js";
 
 const handoffSchema = z
   .object({
@@ -238,6 +239,58 @@ export function createMcpServer(
       toolJson(() =>
         commands.getRoomEvents({
           ...input,
+          agent_id: resolveConnectionIdentity(extra.sessionId).agent_id
+        })
+      )
+  );
+
+  server.registerTool(
+    "send_message",
+    {
+      title: "Send Message",
+      description:
+        "Send a transient message into the room event log. Routes via to_agent_id; omit it for room broadcast.",
+      inputSchema: {
+        room_id: z.string().min(1),
+        body: z.string().min(1),
+        to_agent_id: z.string().min(1).optional(),
+        delivery_hint: z.enum(["normal", "interrupt"]).optional()
+      }
+    },
+    async (input, extra) =>
+      toolJson(() =>
+        commands.sendMessage(resolveConnectionIdentity(extra.sessionId), input)
+      )
+  );
+
+  server.registerTool(
+    "wait_for_events",
+    {
+      title: "Wait for Events",
+      description:
+        "Long-poll the room event log past a cursor with optional event_type, target, and sender filters.",
+      inputSchema: {
+        room_id: z.string().min(1),
+        after_event_seq: z.number().int().nonnegative().optional(),
+        event_type: z
+          .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
+          .optional(),
+        target_agent_id: z.string().min(1).optional(),
+        from_agent_id: z.string().min(1).optional(),
+        max_wait_ms: z.number().int().nonnegative().optional()
+      }
+    },
+    async (input, extra) =>
+      toolJson(() =>
+        commands.waitForEvents({
+          room_id: input.room_id,
+          after_event_seq: input.after_event_seq,
+          event_type: input.event_type as EventTypeFilter | undefined,
+          target_agent_id: input.target_agent_id as
+            | TargetAgentFilter
+            | undefined,
+          from_agent_id: input.from_agent_id,
+          max_wait_ms: input.max_wait_ms,
           agent_id: resolveConnectionIdentity(extra.sessionId).agent_id
         })
       )
