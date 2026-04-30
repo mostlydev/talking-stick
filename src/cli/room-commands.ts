@@ -8,6 +8,7 @@ import { stopGuardian } from "./guardian.js";
 import {
   getStringOption,
   hasOption,
+  normalizeBooleanFlag,
   parseOptionalInteger,
   type ParsedCommand
 } from "./parser.js";
@@ -15,6 +16,10 @@ import {
   formatRelativeTime,
   printResult
 } from "./output.js";
+import {
+  parseEventTypeFilter,
+  runEventStream
+} from "./event-stream.js";
 import {
   resolveSessionForReads,
   upsertSessionFromJoin
@@ -184,12 +189,23 @@ export function handleStateCommand(
   });
 }
 
-export function handleEventsCommand(
+export async function handleEventsCommand(
   runtime: Runtime,
   parsed: ParsedCommand
-): void {
+): Promise<void> {
+  normalizeBooleanFlag(parsed, "wait");
+  normalizeBooleanFlag(parsed, "follow");
   const identity = deriveCliIdentity(parsed);
   const session = resolveSessionForReads(runtime, parsed, identity);
+  if (hasOption(parsed, "wait") || hasOption(parsed, "follow")) {
+    await runEventStream(runtime, parsed, identity, session.room_id, {
+      event_type: parseEventTypeFilter(getStringOption(parsed, "event")),
+      default_target: "any",
+      force_tail_cursor: false
+    });
+    return;
+  }
+
   const events = runtime.commands.getRoomEvents({
     room_id: session.room_id,
     agent_id: identity.agent_id,

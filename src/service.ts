@@ -918,6 +918,18 @@ export class TalkingStickService {
     }
   }
 
+  getLatestEventSeq(input: { room_id: string }): number {
+    assertNonEmpty(input.room_id, "room_id");
+    this.requireRoom(input.room_id);
+    return (
+      this.db
+        .prepare<[string], { event_seq: number | null }>(
+          "SELECT MAX(event_seq) AS event_seq FROM room_events WHERE room_id = ?"
+        )
+        .get(input.room_id)?.event_seq ?? 0
+    );
+  }
+
   addNote(input: AddNoteInput): AddNoteResult {
     assertNonEmpty(input.agent_id, "agent_id");
     assertNonEmpty(input.room_id, "room_id");

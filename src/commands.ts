@@ -225,6 +225,10 @@ export class TalkingStickCommands {
     return this.service.waitForEvents(input);
   }
 
+  getLatestEventSeq(input: { room_id: string }): number {
+    return this.service.getLatestEventSeq(input);
+  }
+
   addNote(
     identity: DerivedIdentity,
     input: AddNoteCommandInput

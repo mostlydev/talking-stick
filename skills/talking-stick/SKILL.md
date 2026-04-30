@@ -1,6 +1,6 @@
 ---
 name: talking-stick
-description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker or when the MCP tools `list_rooms`, `join_path`, `leave_room`, `kick_member`, `wait_for_turn`, `heartbeat`, `release_stick`, `pass_stick`, `takeover_stick`, `get_room_state`, `get_room_events`, `add_note`, or `list_notes` are available.
+description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker or when the MCP tools `list_rooms`, `join_path`, `leave_room`, `kick_member`, `wait_for_turn`, `heartbeat`, `release_stick`, `pass_stick`, `takeover_stick`, `get_room_state`, `get_room_events`, `send_message`, `wait_for_events`, `add_note`, or `list_notes` are available.
 ---
 
 This skill teaches a harness how to behave in a Talking Stick workspace.
@@ -26,7 +26,9 @@ Do not use this skill for ordinary single-agent work in repos that are not using
 
 ### 1. Check that Talking Stick is actually available
 
-Prefer the Talking Stick MCP tools when they are available. If they are not available but the `tt` CLI is on `PATH`, use the CLI instead (`tt list`, `tt join`, `tt leave`, `tt kick`, `tt wait`, `tt state`, `tt release`, `tt pass`, `tt assign`, `tt take`). Do not treat missing MCP tools alone as proof that coordination is unavailable.
+Prefer the Talking Stick MCP tools when they are available. If they are not available but the `tt` CLI is on `PATH`, use the CLI instead (`tt list`, `tt join`, `tt leave`, `tt kick`, `tt wait`, `tt state`, `tt release`, `tt pass`, `tt assign`, `tt take`, `tt msg`). Do not treat missing MCP tools alone as proof that coordination is unavailable.
+
+Some workspaces may also have sibling receive processes running `tt msg recv --wait` or `tt msg recv --follow`; leave them alone unless the operator explicitly asks you to stop or restart them.
 
 If coordination is required and neither the MCP tools nor the `tt` CLI are available, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 
@@ -94,6 +96,26 @@ If you do not have the stick:
 The wait is for *active* non-mutating work, not idle sleep. Re-read the holder's last handoff, follow up on its `artifacts[]`, investigate the area they are touching, and rethink the plan from your own angle. If you find something the holder should know — a missed invariant, a related bug, a sharper plan — leave a note with `add_note` rather than sitting on it until your next turn. Notes do not grant permission to edit shared files; they are observations and pointers, not coordination bypasses. The point: while you wait you can still move the work forward by feeding the holder, not by stalling.
 
 When you do take the stick, first read the attached handoff and load any useful `artifacts[]`, then run `list_notes` once so you see what other members left for you. The owner's turn is the right place to act on a note, not to debate it with its author mid-turn.
+
+### 4.5 Out-of-band messaging
+
+The talking stick guarantees single-writer authority over shared workspace state. It is not a chat protocol. For transient signaling -- paging the holder, asking a quick question, or broadcasting awareness -- use messages.
+
+**Send.** `tt msg send <recipient> "<body>"` or MCP `send_message`. Recipient is a full `agent_id`, an unambiguous active display name, or the literal `room` for broadcast. `--interrupt` marks the message as time-sensitive; the receiver decides whether to act on it now.
+
+**Receive.** Use the receive mode your harness can observe. If it can monitor stdout from a long-running child, run `tt msg recv --follow`; each incoming event lands as one JSON line. If it can only notice that a background command completed, run `tt msg recv --wait --after <last_event_seq>`; it exits on the next matching batch, then you start it again with the returned cursor. Restart with `--after <last_event_seq>` to resume.
+
+**When to message vs note vs handoff.**
+
+- **Message** when the exchange is conversational, ephemeral, and tied to processes that are currently online: design questions, "are you about to break X?", live coordination.
+- **Note** (`tt notes add`) when the artifact should outlive the moment: a finding the next holder should consider at handoff, or an observation that survives process churn.
+- **Handoff** (release/pass with a structured payload) when transferring work. Messages do not replace handoffs; they live alongside them.
+
+**Messages are not private.** Any room member can read any message via `get_room_events` or `tt events --follow --target any`. `to_agent_id` is routing, not an ACL.
+
+**Messages do not grant the stick.** A non-holder paging the holder does not gain write authority. The holder may act on the message immediately or defer until handoff.
+
+**Stay in the wait loop in parallel.** A `tt msg recv --wait` or `--follow` subprocess does not replace `wait_for_turn`. Keep waiting for your turn; messages are a side channel.
 
 ### 5. While holding the stick
 

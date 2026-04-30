@@ -193,16 +193,16 @@ Three commands, all wrappers over Layers 2 and 4:
 
 ```
 tt msg send <recipient> "<body>" [--interrupt] [--room]
-tt msg recv [--from <agent>] [--follow] [--after <event_seq>] [--json|--text]
-tt events --follow [--event <type[,type...]>] [--after <event_seq>] [--target self|any|<agent_id>] [--json|--text]
+tt msg recv [--from <agent>] [--wait|--follow] [--after <event_seq>] [--json|--text]
+tt events [--wait|--follow] [--event <type[,type...]>] [--after <event_seq>] [--target self|any|<agent_id>] [--json|--text]
 ```
 
 Resolution rules:
 
 - `tt msg send <recipient>`: `<recipient>` may be a full `agent_id` (`codex:5c11d1e8`), a display name (`codex`), or the literal `room` for broadcast (`to_agent_id=null`). A bare display name resolves to the unique active member with that display name; ambiguity returns `ambiguous_recipient` listing candidates. No active member with that name returns `unknown_member`.
 - `--interrupt`: sets `delivery_hint=interrupt`. Default is `normal`.
-- `tt msg recv`: defaults to `target=self` (direct + broadcast). `--from <agent>` filters by sender. `--follow` long-polls until SIGTERM/SIGHUP, emitting one JSON-line event per stdout flush.
-- `tt events --follow`: lower-level surface tailing arbitrary event types (not just messages). Output format follows identity (harness → JSON lines, human → text), per the `ambient-presence.md` contract.
+- `tt msg recv`: defaults to `target=self` (direct + broadcast). `--from <agent>` filters by sender. `--follow` long-polls until SIGTERM/SIGHUP, emitting one JSON-line event per stdout flush. `--wait` runs the same long-poll once, exits after the next matching batch, and is the portable path for harnesses that can observe process completion but not per-line output.
+- `tt events --wait|--follow`: lower-level surface tailing arbitrary event types (not just messages). Output format follows identity (harness -> JSON lines, human -> text), per the `ambient-presence.md` contract.
 
 **`tt msg recv --follow` is the canonical v1 agent-side receive path.** Any harness that can spawn a long-lived child process and watch its stdout (Claude Code's Monitor today, future Codex/Gemini/OpenCode equivalents) integrates by spawning `tt msg recv --follow` and routing the JSON-line stream into its own context-injection pipeline. No plugin code is required; the harness's existing subprocess mechanism IS the integration. For harnesses without that mechanism, two fallback v1 paths exist: (a) the operator runs `tt msg recv --follow` in a tmux pane and human-relays the message, or (b) the agent calls `wait_for_events` between turns via MCP. `tt events --follow` is for humans, debuggers, and tooling that wants the full event stream rather than just messages.
 

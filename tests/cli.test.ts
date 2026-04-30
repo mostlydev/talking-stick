@@ -892,6 +892,374 @@ describe("tt notes", () => {
   });
 });
 
+describe("tt msg", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("tt msg send resolves an active display name recipient", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "codex:target", display_name: "codex" }
+    ]);
+
+    const sendOut = await captureStdout([
+      "msg",
+      "send",
+      "codex",
+      "hello from sender",
+      "--agent",
+      "human:sender",
+      "--path",
+      project,
+      "--json"
+    ]);
+    const sent = JSON.parse(sendOut) as { event_seq: number };
+    expect(sent.event_seq).toBeGreaterThan(0);
+
+    const service = new TalkingStickService();
+    try {
+      const events = service.getRoomEvents({ room_id: roomId });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        event_type: "message_sent",
+        from_agent_id: "human:sender",
+        to_agent_id: "codex:target",
+        payload: {
+          body: "hello from sender",
+          delivery_hint: "normal"
+        }
+      });
+    } finally {
+      service.close();
+    }
+  });
+
+  test("tt msg send accepts full agent ids and broadcasts to room", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "codex:target", display_name: "codex" }
+    ]);
+
+    await captureStdout([
+      "msg",
+      "send",
+      "codex:target",
+      "direct",
+      "--agent",
+      "human:sender",
+      "--path",
+      project,
+      "--json"
+    ]);
+    await captureStdout([
+      "msg",
+      "send",
+      "room",
+      "broadcast",
+      "--agent",
+      "human:sender",
+      "--path",
+      project,
+      "--json"
+    ]);
+
+    const service = new TalkingStickService();
+    try {
+      const events = service.getRoomEvents({ room_id: roomId });
+      expect(events.map((event) => event.to_agent_id)).toEqual([
+        "codex:target",
+        null
+      ]);
+      expect(events.map((event) => event.payload?.body)).toEqual([
+        "direct",
+        "broadcast"
+      ]);
+    } finally {
+      service.close();
+    }
+  });
+
+  test("tt msg send repairs --interrupt before a one-token body", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "codex:target", display_name: "codex" }
+    ]);
+
+    await captureStdout([
+      "msg",
+      "send",
+      "codex",
+      "--interrupt",
+      "body",
+      "--agent",
+      "human:sender",
+      "--path",
+      project,
+      "--json"
+    ]);
+
+    const service = new TalkingStickService();
+    try {
+      const events = service.getRoomEvents({ room_id: roomId });
+      expect(events[0]).toMatchObject({
+        to_agent_id: "codex:target",
+        payload: {
+          body: "body",
+          delivery_hint: "interrupt"
+        }
+      });
+    } finally {
+      service.close();
+    }
+  });
+
+  test("tt msg send repairs --interrupt before a multi-word body", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "codex:target", display_name: "codex" }
+    ]);
+
+    await captureStdout([
+      "msg",
+      "send",
+      "codex",
+      "--interrupt",
+      "the body has spaces",
+      "--agent",
+      "human:sender",
+      "--path",
+      project,
+      "--json"
+    ]);
+
+    const service = new TalkingStickService();
+    try {
+      const events = service.getRoomEvents({ room_id: roomId });
+      expect(events[0]).toMatchObject({
+        to_agent_id: "codex:target",
+        payload: {
+          body: "the body has spaces",
+          delivery_hint: "interrupt"
+        }
+      });
+    } finally {
+      service.close();
+    }
+  });
+
+  test("tt msg send reports unknown and ambiguous display recipients", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "codex:first", display_name: "codex" },
+      { agent_id: "codex:second", display_name: "codex" }
+    ]);
+
+    await expect(
+      captureStdout([
+        "msg",
+        "send",
+        "gemini",
+        "hello",
+        "--agent",
+        "human:sender",
+        "--path",
+        project
+      ])
+    ).rejects.toThrow(/No active room member matches 'gemini'/);
+
+    await expect(
+      captureStdout([
+        "msg",
+        "send",
+        "codex",
+        "hello",
+        "--agent",
+        "human:sender",
+        "--path",
+        project
+      ])
+    ).rejects.toMatchObject({ code: "ambiguous_recipient" });
+  });
+
+  test("tt msg send rejects a missing body", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "codex:target", display_name: "codex" }
+    ]);
+
+    await expect(
+      captureStdout([
+        "msg",
+        "send",
+        "codex",
+        "--agent",
+        "human:sender",
+        "--path",
+        project
+      ])
+    ).rejects.toThrow(/Message body is required/);
+  });
+
+  test("tt msg recv one-shot returns messages for self", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "human:receiver", display_name: "receiver" }
+    ]);
+    sendCliTestMessage(roomId, "human:sender", "human:receiver", "direct");
+
+    const recvOut = await captureStdout([
+      "msg",
+      "recv",
+      "--agent",
+      "human:receiver",
+      "--path",
+      project,
+      "--json"
+    ]);
+    const events = parseJsonLines(recvOut);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      from_agent_id: "human:sender",
+      to_agent_id: "human:receiver",
+      payload: { body: "direct" }
+    });
+  });
+
+  test("tt msg recv --wait exits after the next matching message", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "human:receiver", display_name: "receiver" }
+    ]);
+
+    const recvPromise = captureStdout([
+      "msg",
+      "recv",
+      "--wait",
+      "--timeout",
+      "2s",
+      "--agent",
+      "human:receiver",
+      "--path",
+      project,
+      "--json"
+    ]);
+    setTimeout(() => {
+      sendCliTestMessage(roomId, "human:sender", "human:receiver", "wake");
+    }, 25);
+
+    const events = parseJsonLines(await recvPromise);
+    expect(events).toHaveLength(1);
+    expect(events[0].payload.body).toBe("wake");
+  });
+
+  test("tt msg recv --wait --from filters by sender server-side", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:receiver", display_name: "receiver" },
+      { agent_id: "codex:sender", display_name: "codex" },
+      { agent_id: "gemini:sender", display_name: "gemini" }
+    ]);
+
+    const recvPromise = captureStdout([
+      "msg",
+      "recv",
+      "--wait",
+      "--from",
+      "codex",
+      "--timeout",
+      "2s",
+      "--agent",
+      "human:receiver",
+      "--path",
+      project,
+      "--json"
+    ]);
+    setTimeout(() => {
+      sendCliTestMessage(roomId, "gemini:sender", "human:receiver", "ignore");
+      sendCliTestMessage(roomId, "codex:sender", "human:receiver", "include");
+    }, 25);
+
+    const events = parseJsonLines(await recvPromise);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      from_agent_id: "codex:sender",
+      payload: { body: "include" }
+    });
+  });
+
+  test("tt msg recv --wait starts at the current tail by default", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "human:receiver", display_name: "receiver" }
+    ]);
+    sendCliTestMessage(roomId, "human:sender", "human:receiver", "old");
+
+    const recvOut = await captureStdout([
+      "msg",
+      "recv",
+      "--wait",
+      "--timeout",
+      "20ms",
+      "--agent",
+      "human:receiver",
+      "--path",
+      project,
+      "--json"
+    ]);
+
+    expect(recvOut).toBe("");
+  });
+
+  test("tt events --wait filters event types and emits JSON lines", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "human:observer", display_name: "observer" }
+    ]);
+
+    const eventsPromise = captureStdout([
+      "events",
+      project,
+      "--wait",
+      "--event",
+      "message_sent",
+      "--target",
+      "any",
+      "--timeout",
+      "2s",
+      "--agent",
+      "human:observer",
+      "--json"
+    ]);
+    setTimeout(() => {
+      sendCliTestMessage(roomId, "human:sender", null, "broadcast");
+    }, 25);
+
+    const events = parseJsonLines(await eventsPromise);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event_type: "message_sent",
+      to_agent_id: null,
+      payload: { body: "broadcast" }
+    });
+  });
+});
+
 function setupIsolatedCli(registry: string[]): { dataDir: string; project: string } {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-cli-"));
   registry.push(dataDir);
@@ -958,6 +1326,63 @@ async function seedCliLease(
   } finally {
     service.close();
   }
+}
+
+interface SeedCliMember {
+  agent_id: string;
+  display_name: string;
+}
+
+function seedCliRoomMembers(project: string, members: SeedCliMember[]): string {
+  const service = new TalkingStickService();
+  try {
+    let roomId: string | null = null;
+    for (const member of members) {
+      const joined = service.joinPath({
+        agent_id: member.agent_id,
+        context_path: project,
+        process_metadata: {
+          session_kind: member.agent_id.startsWith("human:")
+            ? "human_cli"
+            : "mcp_harness",
+          display_name: member.display_name
+        }
+      });
+      roomId = joined.room_id;
+    }
+    if (!roomId) {
+      throw new Error("seedCliRoomMembers requires at least one member.");
+    }
+    return roomId;
+  } finally {
+    service.close();
+  }
+}
+
+function sendCliTestMessage(
+  roomId: string,
+  fromAgentId: string,
+  toAgentId: string | null,
+  body: string
+): void {
+  const service = new TalkingStickService();
+  try {
+    service.sendMessage({
+      agent_id: fromAgentId,
+      room_id: roomId,
+      to_agent_id: toAgentId,
+      body
+    });
+  } finally {
+    service.close();
+  }
+}
+
+function parseJsonLines(output: string): any[] {
+  return output
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line));
 }
 
 async function captureStdout(argv: string[]): Promise<string> {
