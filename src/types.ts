@@ -52,6 +52,9 @@ export interface Policy {
   claimTtlMs: number;
   waitForTurnMaxWaitMs: number;
   waitForTurnPollMs: number;
+  waitForEventsMaxWaitMs: number;
+  waitForEventsPollMs: number;
+  waitForEventsBatchLimit: number;
   presenceTtlMs: number;
   waiterGraceMs: number;
   idleRoomTtlMs: number;
@@ -87,17 +90,34 @@ export interface RoomMember {
   status: "active" | "inactive";
 }
 
+export type EventType =
+  | "claim"
+  | "release"
+  | "pass"
+  | "takeover"
+  | "close"
+  | "kick"
+  | "message_sent";
+
+export type DeliveryHint = "normal" | "interrupt";
+
+export interface MessagePayload {
+  body: string;
+  delivery_hint: DeliveryHint;
+}
+
 export interface RoomEvent {
   event_seq: number;
   event_id: string;
   room_id: string;
   turn_id: number;
-  event_type: "claim" | "release" | "pass" | "takeover" | "close" | "kick";
+  event_type: EventType;
   from_agent_id: AgentId | null;
   to_agent_id: AgentId | null;
   handoff: Handoff | null;
   reason: string | null;
   created_at: string;
+  payload: MessagePayload | null;
 }
 
 export interface JoinPathInput {
@@ -273,6 +293,39 @@ export interface GetRoomEventsInput {
   agent_id?: AgentId;
   after_event_seq?: number;
   limit?: number;
+}
+
+export interface SendMessageInput {
+  agent_id: AgentId;
+  room_id: string;
+  body: string;
+  to_agent_id?: AgentId | null;
+  delivery_hint?: DeliveryHint;
+}
+
+export interface SendMessageResult {
+  event_seq: number;
+  event_id: string;
+  created_at: string;
+}
+
+export type EventTypeFilter = EventType | EventType[];
+
+export type TargetAgentFilter = "self" | "any" | AgentId;
+
+export interface WaitForEventsInput {
+  agent_id?: AgentId;
+  room_id: string;
+  after_event_seq?: number;
+  event_type?: EventTypeFilter;
+  target_agent_id?: TargetAgentFilter;
+  from_agent_id?: AgentId;
+  max_wait_ms?: number;
+}
+
+export interface WaitForEventsResult {
+  events: RoomEvent[];
+  cursor_event_seq: number;
 }
 
 export interface ListRoomsInput {

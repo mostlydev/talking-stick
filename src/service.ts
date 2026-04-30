@@ -22,6 +22,9 @@ import type {
   AddNoteInput,
   AddNoteResult,
   AgentId,
+  DeliveryHint,
+  EventType,
+  EventTypeFilter,
   GetRoomEventsInput,
   GetRoomStateInput,
   GetRoomStateResult,
@@ -37,6 +40,7 @@ import type {
   ListNotesResult,
   ListRoomsInput,
   ListRoomsResult,
+  MessagePayload,
   Note,
   OwnerMutationInput,
   PassStickInput,
@@ -49,10 +53,15 @@ import type {
   RoomEvent,
   RoomMember,
   RoomState,
+  SendMessageInput,
+  SendMessageResult,
   SessionKind,
   StoredRoomState,
   TakeoverStickInput,
   TakeoverStickResult,
+  TargetAgentFilter,
+  WaitForEventsInput,
+  WaitForEventsResult,
   WaitForTurnInput,
   WaitForTurnResult
 } from "./types.js";
@@ -92,12 +101,13 @@ interface RoomEventRow {
   event_id: string;
   room_id: string;
   turn_id: number;
-  event_type: RoomEvent["event_type"];
+  event_type: EventType;
   from_agent_id: string | null;
   to_agent_id: string | null;
   handoff_json: string | null;
   reason: string | null;
   created_at: string;
+  payload_json: string | null;
 }
 
 interface NoteRow {
@@ -112,6 +122,16 @@ interface NoteRow {
 }
 
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
+const MAX_MESSAGE_BODY_BYTES = 4096;
+const KNOWN_EVENT_TYPES: readonly EventType[] = [
+  "claim",
+  "release",
+  "pass",
+  "takeover",
+  "close",
+  "kick",
+  "message_sent"
+];
 
 interface RoomInspection {
   room: PathRoomRow;
@@ -773,6 +793,129 @@ export class TalkingStickService {
       )
       .all(input.room_id, afterEventSeq, limit)
       .map((row) => this.mapEvent(row));
+  }
+
+  sendMessage(input: SendMessageInput): SendMessageResult {
+    assertNonEmpty(input.agent_id, "agent_id");
+    assertNonEmpty(input.room_id, "room_id");
+
+    const body = input.body ?? "";
+    if (body.length === 0) {
+      throw new ProtocolError("invalid_body", "Message body must not be empty.");
+    }
+
+    const byteLength = Buffer.byteLength(body, "utf8");
+    if (byteLength > MAX_MESSAGE_BODY_BYTES) {
+      throw new ProtocolError(
+        "message_too_large",
+        `Message body exceeds ${MAX_MESSAGE_BODY_BYTES} bytes.`,
+        { supplied: byteLength }
+      );
+    }
+
+    const deliveryHint: DeliveryHint = input.delivery_hint ?? "normal";
+    if (deliveryHint !== "normal" && deliveryHint !== "interrupt") {
+      throw new ProtocolError(
+        "invalid_delivery_hint",
+        "delivery_hint must be 'normal' or 'interrupt'."
+      );
+    }
+
+    const now = this.now();
+    const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
+
+    return withImmediateTransaction(this.db, () => {
+      const room = this.requireRoom(input.room_id);
+      if (room.state === "closed") {
+        throw new ProtocolError(
+          "room_closed",
+          "Messages cannot be sent to a closed room.",
+          { room_id: input.room_id }
+        );
+      }
+
+      this.touchMember(input.room_id, input.agent_id, timestamp);
+
+      if (input.to_agent_id) {
+        const target = this.getMember(input.room_id, input.to_agent_id);
+        if (!target) {
+          throw new ProtocolError(
+            "unknown_recipient",
+            "to_agent_id is not a member of this room.",
+            { to_agent_id: input.to_agent_id }
+          );
+        }
+      }
+
+      const eventSeq = this.appendEvent({
+        room_id: input.room_id,
+        turn_id: room.turn_id,
+        event_type: "message_sent",
+        from_agent_id: input.agent_id,
+        to_agent_id: input.to_agent_id ?? null,
+        handoff: null,
+        reason: null,
+        created_at: timestamp,
+        payload: { body, delivery_hint: deliveryHint }
+      });
+
+      const row = this.db
+        .prepare<[number], { event_id: string }>(
+          "SELECT event_id FROM room_events WHERE event_seq = ?"
+        )
+        .get(eventSeq);
+
+      return {
+        event_seq: eventSeq,
+        event_id: row?.event_id ?? "",
+        created_at: timestamp
+      };
+    });
+  }
+
+  async waitForEvents(input: WaitForEventsInput): Promise<WaitForEventsResult> {
+    assertNonEmpty(input.room_id, "room_id");
+    this.requireRoom(input.room_id);
+
+    const targetFilter = input.target_agent_id ?? "self";
+    if (targetFilter === "self" && !input.agent_id) {
+      throw new ProtocolError(
+        "agent_id_required",
+        "agent_id is required when target_agent_id is 'self'."
+      );
+    }
+
+    const eventTypes = normalizeEventTypeFilter(input.event_type);
+    const afterEventSeq = input.after_event_seq ?? 0;
+    const maxWaitMs = Math.min(
+      Math.max(input.max_wait_ms ?? this.policy.waitForEventsMaxWaitMs, 0),
+      this.policy.waitForEventsMaxWaitMs
+    );
+    const deadline = Date.now() + maxWaitMs;
+
+    while (true) {
+      const events = this.queryEvents({
+        room_id: input.room_id,
+        after_event_seq: afterEventSeq,
+        event_types: eventTypes,
+        target: targetFilter,
+        caller_agent_id: input.agent_id ?? null,
+        from_agent_id: input.from_agent_id ?? null,
+        limit: this.policy.waitForEventsBatchLimit
+      });
+
+      if (events.length > 0 || Date.now() >= deadline) {
+        const lastSeq =
+          events.length > 0
+            ? events[events.length - 1].event_seq
+            : afterEventSeq;
+        return { events, cursor_event_seq: lastSeq };
+      }
+
+      const remainingMs = deadline - Date.now();
+      await sleep(Math.min(this.policy.waitForEventsPollMs, remainingMs));
+    }
   }
 
   addNote(input: AddNoteInput): AddNoteResult {
@@ -1625,12 +1768,13 @@ export class TalkingStickService {
   private appendEvent(input: {
     room_id: string;
     turn_id: number;
-    event_type: RoomEvent["event_type"];
+    event_type: EventType;
     from_agent_id: string | null;
     to_agent_id: string | null;
     handoff: Handoff | null;
     reason: string | null;
     created_at: string;
+    payload?: MessagePayload | null;
   }): number {
     const result = this.db
       .prepare(
@@ -1644,9 +1788,10 @@ export class TalkingStickService {
           to_agent_id,
           handoff_json,
           reason,
-          created_at
+          created_at,
+          payload_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -1658,10 +1803,76 @@ export class TalkingStickService {
         input.to_agent_id,
         input.handoff ? JSON.stringify(input.handoff) : null,
         input.reason,
-        input.created_at
+        input.created_at,
+        input.payload ? JSON.stringify(input.payload) : null
       );
 
     return Number(result.lastInsertRowid);
+  }
+
+  private queryEvents(input: {
+    room_id: string;
+    after_event_seq: number;
+    event_types: EventType[] | null;
+    target: TargetAgentFilter;
+    caller_agent_id: AgentId | null;
+    from_agent_id: AgentId | null;
+    limit: number;
+  }): RoomEvent[] {
+    const clauses = ["room_id = ?", "event_seq > ?"];
+    const params: unknown[] = [input.room_id, input.after_event_seq];
+
+    if (input.event_types) {
+      clauses.push(
+        `event_type IN (${input.event_types.map(() => "?").join(", ")})`
+      );
+      params.push(...input.event_types);
+    }
+
+    if (input.target === "self") {
+      if (!input.caller_agent_id) {
+        throw new ProtocolError(
+          "agent_id_required",
+          "agent_id is required when target_agent_id is 'self'."
+        );
+      }
+      clauses.push(
+        `(
+          (event_type = 'message_sent' AND (to_agent_id = ? OR (to_agent_id IS NULL AND from_agent_id != ?)))
+          OR
+          (event_type != 'message_sent' AND (to_agent_id = ? OR from_agent_id = ?))
+        )`
+      );
+      params.push(
+        input.caller_agent_id,
+        input.caller_agent_id,
+        input.caller_agent_id,
+        input.caller_agent_id
+      );
+    } else if (input.target !== "any") {
+      clauses.push("to_agent_id = ?");
+      params.push(input.target);
+    }
+
+    if (input.from_agent_id) {
+      clauses.push("from_agent_id = ?");
+      params.push(input.from_agent_id);
+    }
+
+    params.push(Math.min(Math.max(input.limit, 1), 500));
+
+    return this.db
+      .prepare<unknown[], RoomEventRow>(
+        `
+        SELECT *
+        FROM room_events
+        WHERE ${clauses.join(" AND ")}
+        ORDER BY event_seq
+        LIMIT ?
+      `
+      )
+      .all(...params)
+      .map((row) => this.mapEvent(row));
   }
 
   private getRoomRow(roomId: string): PathRoomRow | undefined {
@@ -2068,6 +2279,11 @@ export class TalkingStickService {
   }
 
   private mapEvent(row: RoomEventRow): RoomEvent {
+    const payload =
+      row.event_type === "message_sent" && row.payload_json
+        ? (JSON.parse(row.payload_json) as MessagePayload)
+        : null;
+
     return {
       event_seq: row.event_seq,
       event_id: row.event_id,
@@ -2080,7 +2296,8 @@ export class TalkingStickService {
         ? (JSON.parse(row.handoff_json) as Handoff)
         : null,
       reason: row.reason,
-      created_at: row.created_at
+      created_at: row.created_at,
+      payload
     };
   }
 }
@@ -2285,6 +2502,33 @@ function validateHandoff(handoff: Handoff): void {
       { field: "artifacts" }
     );
   }
+}
+
+function normalizeEventTypeFilter(
+  filter: EventTypeFilter | undefined
+): EventType[] | null {
+  if (filter === undefined) {
+    return null;
+  }
+
+  const values = Array.isArray(filter) ? filter : [filter];
+  if (values.length === 0) {
+    throw new ProtocolError(
+      "invalid_event_type_filter",
+      "event_type filter must not be empty."
+    );
+  }
+
+  for (const value of values) {
+    if (!KNOWN_EVENT_TYPES.includes(value)) {
+      throw new ProtocolError(
+        "invalid_event_type_filter",
+        `Unsupported event_type: ${value}.`
+      );
+    }
+  }
+
+  return values;
 }
 
 function assertNonEmpty(value: string | undefined, field: string): void {
