@@ -339,6 +339,27 @@ describe("mcp smoke coverage", () => {
     expect(sent.event_seq).toBeGreaterThan(0);
     expect(sent.event_id).toMatch(/^[0-9a-f-]+$/);
 
+    const eventLog = parseToolResult(
+      await claude.client.callTool({
+        name: "get_room_events",
+        arguments: {
+          room_id: claudeJoin.room_id
+        }
+      })
+    );
+
+    expect(eventLog).toHaveLength(1);
+    expect(eventLog[0]).toMatchObject({
+      event_seq: sent.event_seq,
+      event_type: "message_sent",
+      from_agent_id: "codex:test",
+      to_agent_id: "claude:test",
+      payload: {
+        body: "can you review the parser?",
+        delivery_hint: "interrupt"
+      }
+    });
+
     const waited = parseToolResult(
       await claude.client.callTool({
         name: "wait_for_events",
