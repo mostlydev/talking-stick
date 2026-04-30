@@ -2,7 +2,7 @@
 
 An MCP coordination server that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.1.2. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box.
+**Version:** 0.2.0. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv` and the matching MCP tools.
 
 ## Quickstart
 
@@ -46,7 +46,7 @@ That's the whole workflow. They negotiate turns automatically, hand off structur
 
 | Method | Command | Notes |
 |---|---|---|
-| **From npm** | `npm i -g talking-stick` | Published as `0.1.2`. Requires Node ≥ 22. |
+| **From npm** | `npm i -g talking-stick` | Published as `0.2.0`. Requires Node ≥ 22. |
 | **From GitHub** | `npm i -g github:mostlydev/talking-stick` | Tracks the `master` branch; builds on install via the `prepare` hook. |
 | **From source** | `git clone … && npm install && npm link` | For contributors. |
 
@@ -97,10 +97,13 @@ heartbeat          — prove liveness while holding the stick
 release_stick      — normal handoff to the next fair waiter, with structured Handoff
 pass_stick         — explicit handoff to a named agent
 takeover_stick     — deliberate claim when the prior holder is gone/stuck
+kick_member        — evict an idle member whose process is gone
 get_room_state     — authoritative state projection
 get_room_events    — audit log of turn transitions
 add_note           — leave an async observation for the current owner
 list_notes         — read notes left for the room
+send_message       — out-of-band chat into the room event log (direct or broadcast)
+wait_for_events    — observer-safe long-poll over the event log with type/target/sender filters
 ```
 
 A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically.
@@ -117,6 +120,30 @@ While you wait your turn you may still need to flag something to the current own
 - Any joined member (owner or not) can `add_note` with a short plain-text body (≤ 16 KB). An optional `turn_id` scopes the note to a specific turn; omitted, the note is room-scoped and survives turn transitions.
 - `list_notes` returns notes for the room; readers can paginate with `after_note_id` and opt into resolved entries with `include_resolved`.
 - Notes are for observations and pointers, not for coordinating shared edits. Shared workspace changes still require holding the stick.
+
+## Out-of-band messaging
+
+The stick guarantees single-writer authority over shared workspace state. It is **not** a chat protocol. When two agents need to talk — design questions, "are you about to break X?", live coordination — use messages instead of churning the stick.
+
+```bash
+tt msg send <recipient|room> "<body>" [--interrupt] [--stdin]
+tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent]
+tt events --wait|--follow [--event TYPE[,TYPE]] [--target self|any|agent]
+```
+
+- `<recipient>` is a full `agent_id`, an unambiguous active display name (`codex`, `claude`), or the literal `room` for broadcast.
+- `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
+- `tt msg recv --follow` is a long-running tail (one JSON line per event) suited to harnesses that can monitor child stdout (Claude Code Monitor, terminals).
+- `tt msg recv --wait` exits on the next matching batch — ideal for harnesses that can launch a background command and notice when it completes; restart with `--after <last_event_seq>` to resume.
+- `wait_for_events` is observer-safe: it never mutates room state, so non-holders can use it freely without disturbing turn-fairness bookkeeping.
+
+**When to message vs note vs handoff.**
+
+- **Message** — conversational, ephemeral, between live processes. Six round-trips of "what about line 84?" cost about as much as one structured handoff and zero stick churn.
+- **Note** (`tt notes add`) — durable, resolvable artifacts. Leave a note when the next holder should consider something at handoff, or when the observation should outlive the conversation.
+- **Handoff** (`release_stick` / `pass_stick`) — transfer of work. Messages do not replace handoffs; they live alongside them.
+
+**`to_agent_id` is routing, not ACL.** Any room member can read any message via `get_room_events` or `tt events --follow --target any`. Messages are not private. They also do not grant the stick — a non-holder paging the holder gets attention, not write authority.
 
 ## How installation works per harness
 
@@ -160,7 +187,9 @@ tt leave [path]                                           # leave the room for p
 tt wait [path] [--timeout 30s]                            # block until your turn
 tt try [path]                                             # non-blocking claim attempt
 tt state [path]                                           # full room state
-tt events [path] [--after N] [--limit N]                  # room event log
+tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # room event log; --wait/--follow long-polls
+tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
+tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
 tt release [path] --status TEXT --next-action TEXT        # normal handoff
 tt pass [path] --status TEXT --next-action TEXT           # pass/end your turn
 tt assign <target|next> [path] --status TEXT --next-action TEXT  # explicit handoff
