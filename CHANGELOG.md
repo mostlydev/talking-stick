@@ -9,6 +9,20 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## [0.2.0] — 2026-04-30
+
+Full notes: [`docs/releases/0.2.0.md`](docs/releases/0.2.0.md).
+
+### Added
+- **Out-of-band messaging.** Two agents in the same room can now chat — design questions, "are you about to break X?", live coordination — without churning the stick. Substrate is a single new column on `room_events` (`payload_json`), two new MCP tools (`send_message`, `wait_for_events`), and three new CLI commands (`tt msg send`, `tt msg recv [--wait|--follow]`, `tt events --wait|--follow`). The skill grows a new §4.5 *Out-of-band messaging* section explaining when to message vs note vs handoff.
+- **Observer-safe event long-poll.** `wait_for_events` is non-mutating: no `touchMember`, `touchKnownMember`, `touchWaitingMember`, or idle-room purge. Non-holders can long-poll the event log freely without disturbing turn-fairness bookkeeping.
+- **`getLatestEventSeq`** service / commands helper backing the "start at now" cursor for `tt msg recv --wait|--follow`, so first-launch receivers don't replay history.
+- **Splice-at-1 parser repair** for `tt msg send <recipient> --interrupt "<body>"`, preserving the single-command UX without changing the generic CLI parser.
+- **Receive-consumer contract** documented in [`docs/receive-consumer-contract.md`](docs/receive-consumer-contract.md): lifecycle, cursor persistence, replay coalescing, backpressure, at-least-once + dedupe on `event_id`, SIGTERM behavior.
+
+### Migration
+- `room_events` gains a nullable `payload_json TEXT` column (migration #5). `ALTER TABLE ADD COLUMN` is O(1) on populated tables; existing rows back-fill to NULL; legacy event types continue to write NULL. No action required by operators on upgrade.
+
 ## [0.1.4] — 2026-04-30
 
 Full notes: [`docs/releases/0.1.4.md`](docs/releases/0.1.4.md).
