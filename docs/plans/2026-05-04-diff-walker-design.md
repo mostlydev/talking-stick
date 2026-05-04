@@ -9,6 +9,7 @@
 - A separate operator-facing process (`tt walk`) that displays diffs as agents make them, navigable like a radiologist scrubs a film stack — keys for up/down/left/right, line/block selection, enter to annotate.
 - Annotations route as messages back to the agent who made the change (or, if they are no longer reachable, the current stick holder, falling back to a durable note). Every annotation is persisted before any delivery attempt.
 - Resilient under noisy editor saves, rapid sequential edits, atomic rename writes, and external/manual edits. The watcher captures every stable state it observes, periodically reconciles to recover from dropped filesystem events, never claims a torn read as a real change, and never blocks the agents.
+- Fresh by default. Opening `tt walk` for a folder makes that moment the new baseline and permanently scrubs prior walker-local history for that folder unless the operator explicitly asks to resume.
 - Harness-neutral. v1 must work uniformly whether the agent is Claude Code, Codex CLI, Gemini, OpenCode, or a human at the keyboard. No hook integration required.
 - **Scoped to human-readable source code.** The walker is for examining source diffs a human can read. Files with a known source extension get full content tracking and rendered diffs. Files with unknown extensions get hash-only tracking — the operator sees that they changed, but the walker does not store or render their bodies. Files past a hard size ceiling are not tracked at all.
 
@@ -17,6 +18,7 @@
 - Hook-driven exact attribution per tool call. Schema leaves room (see §Attribution); v2 enriches.
 - Inline editing of agent code from the walker UI. The walker is read-mostly with annotation as the only mutation.
 - Multi-workspace aggregation. One walker pane = one room. Operator opens multiple panes for multiple rooms.
+- Long-term local diff archives. The default invocation is intentionally destructive for old walker history. Operators who need an archive must request one before the reset.
 - Conflict resolution / merging. We surface what changed; we do not arbitrate.
 - Replacing `git diff` for review of merged work. The walker is for the live coordination phase, not historical review.
 
@@ -44,15 +46,58 @@
 
 The watcher's data lives **outside the repository**.
 
-**Default location:** `${TALKING_STICK_DATA_DIR:-$XDG_DATA_HOME/talking-stick}/watch/<room_id>/` — sqlite at `watch.sqlite`, blobs in `blobs/<sha256-prefix>/<sha256>`. Keyed by `room_id`, not workspace path: a workspace can host multiple rooms over time, and each one gets its own watch tree.
+**Default location:** `${TALKING_STICK_DATA_DIR:-$XDG_DATA_HOME/talking-stick}/watch/workspaces/<workspace_key>/` — sqlite at `watch.sqlite`, blobs in `blobs/<sha256-prefix>/<sha256>`, projection cache at `projection.git/`, and a small `manifest.json`. A separate non-resettable registry lives at `${...}/watch/registry.sqlite`.
+
+`workspace_key = sha256(realpath(canonical_workspace_path))[:32]`. The manifest stores the canonical path, the active room id, the active watcher session id, and the last reset timestamp. The store is keyed by canonical folder, not by room id, because the operator's mental model is "this current folder starts fresh when I open the walker." If the same folder gets a new Talking Stick room later, the old folder-local walker lint must not survive under an obsolete room id.
 
 **Override:** `--store <path>` flag on `tt watch` and `tt walk` for explicit repo-local mode (debugging, ephemeral worktrees). When repo-local mode is used, the implementation must add the store path to `.git/info/exclude` automatically so it never appears in `git status`.
 
 **Why outside the repo by default:** snapshot blobs are high-churn and would dirty `git status`, defeat `git clean`, balloon backups, and force every consuming repo to add a `.gitignore` entry. The CAS journal is operator infrastructure, not project artifact.
 
-### Schema (v1)
+**Why folder-scoped instead of room-scoped:** room ids are coordination epochs, not storage ownership boundaries. A folder can accumulate multiple rooms during planning, implementation, and review. Resetting by canonical folder makes `tt walk` a reliable "start watching from now" command and keeps old room stores from growing forever.
+
+### Watch registry (v1)
+
+The registry is the only watcher state that survives default resets. It is small, path-indexed, and exists so a destructive session reset can safely delete the per-workspace journal without deleting the writer lease that protects that reset.
 
 ```sql
+CREATE TABLE watch_workspaces (
+  workspace_key      TEXT PRIMARY KEY,
+  canonical_path     TEXT NOT NULL UNIQUE,
+  store_path         TEXT NOT NULL,
+  current_room_id    TEXT,
+  current_session_id TEXT,
+  last_reset_at      TEXT
+);
+
+CREATE TABLE watcher_leases (
+  workspace_key     TEXT PRIMARY KEY REFERENCES watch_workspaces(workspace_key),
+  holder_id         TEXT NOT NULL,
+  host_id           TEXT,
+  pid               INTEGER,
+  heartbeat_at      TEXT NOT NULL,
+  lease_expires_at  TEXT NOT NULL
+);
+```
+
+The lease lives in `registry.sqlite`, not in `watch.sqlite`. That boundary is load-bearing: the reset path can atomically rename and recreate the entire workspace store while the registry lease remains valid.
+
+### Session schema (v1)
+
+This schema lives in the resettable per-workspace `watch.sqlite`.
+
+```sql
+CREATE TABLE watch_session (
+  singleton       INTEGER PRIMARY KEY CHECK (singleton = 1),
+  session_id      TEXT NOT NULL,          -- uuid for the current fresh baseline
+  canonical_path  TEXT NOT NULL,
+  room_id         TEXT NOT NULL,
+  started_at      TEXT NOT NULL,
+  reset_mode      TEXT NOT NULL,          -- 'fresh' | 'resume'
+  baseline_event_seq INTEGER,
+  baseline_git_head TEXT
+);
+
 CREATE TABLE file_versions (
   version_id   TEXT PRIMARY KEY,         -- "<sha256>:<size>"
   sha256       TEXT NOT NULL,
@@ -112,15 +157,6 @@ CREATE TABLE annotations (
   note_id       TEXT                     -- talking-stick note_id if note route
 );
 
-CREATE TABLE watcher_lease (
-  singleton     INTEGER PRIMARY KEY CHECK (singleton = 1),
-  holder_id     TEXT NOT NULL,
-  host_id       TEXT,
-  pid           INTEGER,
-  heartbeat_at  TEXT NOT NULL,
-  lease_expires_at TEXT NOT NULL
-);
-
 CREATE INDEX idx_file_changes_batch ON file_changes(batch_id);
 CREATE INDEX idx_file_changes_path  ON file_changes(path);
 CREATE INDEX idx_path_heads_version ON path_heads(version_id);
@@ -128,11 +164,13 @@ CREATE INDEX idx_annotations_change ON annotations(change_seq);
 CREATE INDEX idx_annotations_pending ON annotations(delivery_status) WHERE delivery_status = 'pending';
 ```
 
+The database represents one live watcher session for the folder. In the default `fresh` mode, startup deletes and recreates `watch.sqlite`, `blobs/`, and `projection.git/` before inserting a new `watch_session` row, so old `change_batches`, `file_changes`, `path_heads`, `file_versions`, and local annotations cannot leak into the new operator view. `reset_mode='resume'` exists only when the operator explicitly opts out of the default wipe.
+
 `file_versions` is content-addressed; it does not own classification because classification is path- and scan-context-dependent. The same bytes may be a rendered source diff at `README.md` and an opaque attachment under another path. `file_changes.class` records how this path/change is reviewed, while `path_heads.class` records the current path state. If content is first observed as opaque and later appears as source, the implementation may backfill `blob_path` for the existing `version_id`.
 
 `path_heads` is the fast "what did we last believe this path contained?" table. `file_changes` is the immutable audit trail. This avoids deriving current state by scanning the tail of `file_changes` on every filesystem event, makes deletes/re-adds explicit, and lets `version_id = NULL, class = 'skipped', exists_now = 1` represent "the file exists but is intentionally outside the walker's tracking budget."
 
-**Invariant:** deleting the shadow git cache (see §Diff projection) never loses review history. Deleting `watch.sqlite` and `blobs/` does. Operator-facing: `tt watch prune --room <room_id>` removes the journal; routine cleanup is just `tt watch gc` against blobs unreferenced by any `file_versions` or `path_heads` row.
+**Invariant:** deleting the shadow git cache (see §Diff projection) never loses current-session review history. Deleting `watch.sqlite` and `blobs/` does, and that deletion is now the normal default when a fresh walker session starts. Operator-facing: `tt walk` / `tt watch start` resets the folder-local journal; `tt walk --resume` is the explicit "keep the previous session" escape hatch.
 
 ## File classification
 
@@ -185,9 +223,9 @@ source_extensions_extra = ["mdc"]                       # additive without repla
 
 ## Watcher algorithm
 
-The watcher is a long-lived process started by `tt watch [--room <id>]`, scoped to one room/workspace. It is independent of the talking-stick MCP server — separate process, separate sqlite file, no shared schema.
+The watcher is a long-lived process started by `tt watch [--room <id>]`, scoped to one room and one canonical workspace. It is independent of the talking-stick MCP server — separate process, separate sqlite file, no shared schema.
 
-Only one writer may own a watch journal at a time. `tt walk` and `tt watch start` first try to acquire `watcher_lease`; if a healthy writer exists, they become readers/subscribers. If the lease is expired and the process is gone, the next starter takes over after a full reconciliation pass.
+Only one writer may own a canonical workspace at a time. `tt walk` and `tt watch start` first try to acquire the registry `watcher_leases` row. If a healthy writer exists for the same room, they become readers/subscribers. If a healthy writer exists for another room in the same folder, startup fails with an active-watcher conflict. If the lease is expired and the process is gone, the next starter takes over and follows the session reset contract: fresh baseline by default, or reconciliation against the prior journal only when `--resume` was explicit.
 
 ```
 on_fs_event(path):                          # via chokidar/watchman
@@ -257,7 +295,7 @@ scan_one(path):
 
 **Path discovery.** v1 uses chokidar with the workspace root as the watch root. Tracked files are always eligible even if they match an ignore rule; untracked files are eligible only when `git ls-files --others --exclude-standard` would show them. In non-git workspaces, the watcher falls back to a bounded filesystem walk with `.gitignore`-style excludes where available. The watcher's own `--store` path, the talking-stick data dir, nested watch stores, and `.git/` are unconditionally ignored.
 
-**Bootstrapping.** On first run for a room, the watcher seeds `file_versions` and `path_heads` from the current tracked + untracked-non-ignored set without emitting thousands of normal feed items. The UI shows a single baseline summary row ("baseline captured: 1,284 files") that can be expanded for debugging. Normal `file_changes` start only after the baseline is complete. A `--show-baseline-changes` debug flag may materialize baseline rows, but it is not the default operator UX.
+**Bootstrapping.** At the beginning of every fresh session, the watcher seeds `file_versions` and `path_heads` from the current tracked + untracked-non-ignored set without emitting thousands of normal feed items. The UI shows a single baseline summary row ("baseline captured: 1,284 files") that can be expanded for debugging. Normal `file_changes` start only after the baseline is complete. A `--show-baseline-changes` debug flag may materialize baseline rows, but it is not the default operator UX.
 
 ## Attribution model
 
@@ -352,10 +390,60 @@ The annotation modal must allow manual retargeting before send. The automatic ch
 
 ## Lifecycle and cleanup
 
-- **Start:** `tt watch` autospawns when `tt walk` is opened on a room with no live watcher. Operator can also start explicitly with `tt watch --room <id> --background`.
-- **Stop:** the watcher exits when (a) operator runs `tt watch stop --room <id>`, (b) the room is closed/deleted, (c) all members of the room go inactive for > `idleRoomTtlMs / 4` (configurable). The walker can reconnect to a paused/exited watcher's state — `tt walk` against a stopped room shows historical changes read-only.
-- **GC:** `tt watch gc` removes blobs not referenced by any `file_versions` row, plus any `file_versions` rows orphaned by a `tt watch prune` of older batches. Operator-driven; never automatic.
-- **Archive:** `tt watch archive --room <id> --to <path>` produces a self-contained tarball of `watch.sqlite + blobs/ + projection.git`. For the "I want to come back to this review next week" case.
+- **Start:** `tt watch start` autospawns when `tt walk` is opened on a workspace/room pair with no live watcher. Operator can also start explicitly with `tt watch start --room <id> --background`.
+- **Default reset:** when a starter becomes the writer for a canonical workspace, it resets that workspace's watcher store before bootstrapping. This is true even if old history exists from a previous room for the same folder.
+- **Attach:** if a healthy watcher already owns the workspace lease for the same room, a new `tt walk` attaches as a reader/subscriber and does not reset anything. Co-walking an active session must not wipe the writer's state. If the live writer is tied to a different room for the same folder, startup fails with an active-watcher conflict instead of mixing attribution windows.
+- **Resume:** `tt walk --resume` or `tt watch start --resume` keeps the prior watcher store and skips the default reset. This flag is explicit because the safe ergonomic default is "show me changes from now."
+- **Stop:** the watcher exits when (a) operator runs `tt watch stop --room <id>`, (b) the room is closed/deleted, (c) all members of the room go inactive for > `idleRoomTtlMs / 4` (configurable). A later plain `tt walk` starts a fresh baseline; a later `tt walk --resume` reopens the stopped session read-only or restarts it.
+- **GC:** `tt watch gc` removes blobs not referenced by any current-session `file_versions` row. It is mostly a repair/debug command because default reset deletes the whole store instead of relying on incremental pruning.
+- **Archive:** `tt watch archive --room <id> --to <path>` or `tt walk --archive <path>` produces a self-contained tarball of `watch.sqlite + blobs/ + projection.git` before any reset. Archiving is opt-in so the default cleanup actually keeps disk use down.
+
+## Session reset
+
+The reset path is part of the normal startup contract, not a maintenance command the operator has to remember.
+
+```
+tt walk / tt watch start:
+    resolve canonical workspace path and room id
+    workspace_key = sha256(realpath(canonical_workspace_path))[:32]
+    acquire registry watcher lease for workspace_key
+
+    if a healthy writer already holds the lease for the same room:
+        attach as reader/subscriber
+        return
+
+    if a healthy writer already holds the lease for another room:
+        fail with active-watcher conflict; operator can stop that watcher first
+
+    if --resume:
+        open existing store if present; otherwise create fresh store
+        bootstrap if no baseline exists; otherwise reconcile prior journal
+        continue as writer
+
+    if pending annotations exist:
+        flush_pending_annotations()
+        if any remain pending and not --force:
+            fail before deleting local state
+
+    if --archive <path>:
+        tar watch.sqlite + blobs/ + projection.git before deletion
+
+    atomically rename current store to deleting-<timestamp>
+    create empty store at watch/workspaces/<workspace_key>
+    initialize schema and manifest
+    insert watch_session(reset_mode='fresh')
+    update registry current_session_id/current_room_id/last_reset_at
+    bootstrap baseline from current filesystem state
+    asynchronously remove deleting-<timestamp>
+```
+
+**What is scrubbed:** `watch.sqlite`, `blobs/`, `projection.git/`, local `annotations`, `file_versions`, `change_batches`, `file_changes`, `path_heads`, and any transient IPC/read-model state under the workspace watch store.
+
+**What is not scrubbed:** Talking Stick room events, sent messages, and notes. Those belong to the coordination substrate. If an annotation was already delivered as a message or note, the walker reset removes only the local copy, not the room audit record.
+
+**Pending annotations.** The design keeps the durable-before-delivery invariant for operator-authored annotations. Before a destructive reset, the watcher tries to deliver every `delivery_status='pending'` annotation through the normal routing chain. If the target agent is gone and no owner is present, it writes a Talking Stick note as the final durable sink. Only after the pending queue is empty does the reset delete local annotation rows. `--force` may hard-drop pending local annotations, but the UI must label that as data loss.
+
+**Why atomic rename:** deleting a large blob tree can take time and can fail halfway on disk errors. Renaming the old store out of the active path first lets the new session start from a clean directory. If cleanup of `deleting-<timestamp>` fails, a later `tt watch gc --stores` can retry without exposing the old rows to the new walker.
 
 ## Failure modes
 
@@ -364,9 +452,13 @@ The annotation modal must allow manual retargeting before send. The automatic ch
 | fs watcher dies | health check + heartbeat from watcher process | walker shows red banner; offers `tt watch restart` |
 | fs event dropped | periodic reconciliation finds path hash mismatch | create normal batch with `source='reconcile'`; UI labels it as recovered |
 | disk full mid-batch | sqlite write fails | watcher exits with diagnostic; partial batch rolled back; UI shows last good batch |
-| sqlite corruption | startup PRAGMA quick_check | move corrupt file aside as `watch.sqlite.bad-<ts>`; replay from `projection.git` if intact, else cold start with new baseline |
+| sqlite corruption | startup PRAGMA quick_check | plain fresh startup moves old store aside and starts a new baseline; `--resume` refuses unless operator archives or forces a reset |
 | projection.git corrupted | rebuild on detection | rebuild from CAS; no data loss |
 | annotation delivery flake | MCP/CLI error | row stays `pending`; UI offers retry; periodic background retry |
+| pending annotation before reset | reset preflight sees `delivery_status='pending'` | flush to message/note before wipe; fail unless `--force` if any cannot be durably handed off |
+| reset interrupted mid-delete | active path missing or `deleting-<timestamp>` remains | recreate active store from scratch; retry old-store removal through `tt watch gc --stores` |
+| second walker starts during live session | registry lease heartbeat fresh for same room | attach as reader; no reset |
+| walker starts for different room in same folder | registry lease heartbeat fresh for another room | refuse with active-watcher conflict; attribution cannot safely mix rooms |
 | operator annotates while watcher is offline | walker writes pending annotation against last known `change_seq` | watcher on restart processes pending queue and delivers |
 | ambiguous rename | git heuristic uncertain | record as add+delete pair; UI hint "possibly renamed from X" |
 | opaque file change (unknown extension or binary content) | scan_one classifies | record `file_changes.class='opaque'`, `blob_path=NULL`; UI shows hash delta only |
@@ -376,8 +468,9 @@ The annotation modal must allow manual retargeting before send. The automatic ch
 ## Concrete surface (v1)
 
 CLI:
-- `tt watch [start|stop|status|gc|prune|archive] [--room <id>] [--store <path>]`
-- `tt walk [--room <id>] [--store <path>]` — interactive TUI
+- `tt watch start [--room <id>] [--store <path>] [--resume] [--archive <path>] [--force]`
+- `tt watch [stop|status|gc|archive] [--room <id>] [--store <path>]`
+- `tt walk [--room <id>] [--store <path>] [--resume] [--archive <path>] [--force]` — interactive TUI
 
 MCP:
 - No new MCP tools in v1. The walker is operator-side; agents do not interact with it directly. v2 may add `mcp__talking-stick__list_recent_diffs` for agents that want to see what just happened.
@@ -403,7 +496,8 @@ Configuration (env / config file under `~/.config/talking-stick/watch.toml`):
 - TUI walker with feed/diff panes, keyboard nav, line/block annotation
 - Owner-inferred attribution
 - Durable annotation persistence + message/note delivery
-- Workspace-scoped, single room per walker pane
+- Folder-scoped default reset, single live writer per canonical workspace
+- Single room per walker pane
 
 **v2 candidates:**
 - Hook integration for exact tool-call attribution (Claude Code PostToolUse, Codex equivalent)
@@ -418,5 +512,5 @@ Configuration (env / config file under `~/.config/talking-stick/watch.toml`):
 1. **Watcher implementation language.** Decision for v1: keep it in TypeScript with the existing `tt` package. A sibling Go binary is attractive for fs-watch performance, but it adds packaging, release, and cross-platform install surface before we know this is the bottleneck. Profile first; split only if the Node watcher proves inadequate.
 2. **Walker TUI library.** Decision for v1: prefer a blessed/neo-blessed-style terminal renderer over Ink. The UX needs scroll panes, mouse support, stable diff layout, and low-level keyboard handling more than React component ergonomics. Keep the UI model separated enough that a future web or Ink renderer can reuse state.
 3. **`get_room_state` polling cost.** The watcher needs a near-realtime read of room owner. Polling at batch open is one read per ~150ms-1s — fine. We could subscribe to `wait_for_events` instead, but that's more complex and the savings are tiny.
-4. **Concurrent walkers.** Two operator panes on one room can both write annotations, but only one watcher process owns `watcher_lease` and writes snapshots. Annotation writes still share the same sqlite WAL journal. Should be fine, but worth a stress test.
+4. **Concurrent walkers.** Two operator panes on one room can both write annotations, but only one watcher process owns the registry lease and writes snapshots. Annotation writes still share the same sqlite WAL journal for the active workspace store. Should be fine, but worth a stress test.
 5. **Ignore/reconciliation cost.** Running `git status` / `git ls-files` on every batch is cheap for normal dirty sets, but pathological generated trees can be large. Cache tracked/ignored sets between periodic reconciliations and fall back to path-prefix caches when a batch has thousands of files.
