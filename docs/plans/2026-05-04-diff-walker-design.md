@@ -57,14 +57,14 @@ CREATE TABLE file_versions (
   version_id   TEXT PRIMARY KEY,         -- "<sha256>:<size>"
   sha256       TEXT NOT NULL,
   size_bytes   INTEGER NOT NULL,
-  class        TEXT NOT NULL,            -- 'source' | 'opaque'
-  blob_path    TEXT,                     -- relative to watch dir; NULL when body not stored
+  blob_path    TEXT,                     -- relative to watch dir; NULL until/no body stored
   first_seen_at TEXT NOT NULL
 );
 
 CREATE TABLE path_heads (
   path          TEXT PRIMARY KEY,         -- workspace-relative
   version_id    TEXT REFERENCES file_versions(version_id),
+  class         TEXT,                     -- 'source' | 'opaque' | 'skipped'; NULL when deleted
   exists_now    INTEGER NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -85,6 +85,7 @@ CREATE TABLE file_changes (
   batch_id      INTEGER NOT NULL REFERENCES change_batches(batch_id),
   path          TEXT NOT NULL,           -- workspace-relative
   rename_from   TEXT,                    -- non-null if detected rename
+  class         TEXT NOT NULL,           -- after-state class: 'source' | 'opaque'
   before_version_id TEXT REFERENCES file_versions(version_id),  -- NULL on add
   after_version_id  TEXT REFERENCES file_versions(version_id),  -- NULL on delete
   observed_at   TEXT NOT NULL,
@@ -127,7 +128,9 @@ CREATE INDEX idx_annotations_change ON annotations(change_seq);
 CREATE INDEX idx_annotations_pending ON annotations(delivery_status) WHERE delivery_status = 'pending';
 ```
 
-`path_heads` is the fast "what did we last believe this path contained?" table. `file_changes` is the immutable audit trail. This avoids deriving current state by scanning the tail of `file_changes` on every filesystem event, and makes deletes/re-adds explicit.
+`file_versions` is content-addressed; it does not own classification because classification is path- and scan-context-dependent. The same bytes may be a rendered source diff at `README.md` and an opaque attachment under another path. `file_changes.class` records how this path/change is reviewed, while `path_heads.class` records the current path state. If content is first observed as opaque and later appears as source, the implementation may backfill `blob_path` for the existing `version_id`.
+
+`path_heads` is the fast "what did we last believe this path contained?" table. `file_changes` is the immutable audit trail. This avoids deriving current state by scanning the tail of `file_changes` on every filesystem event, makes deletes/re-adds explicit, and lets `version_id = NULL, class = 'skipped', exists_now = 1` represent "the file exists but is intentionally outside the walker's tracking budget."
 
 **Invariant:** deleting the shadow git cache (see §Diff projection) never loses review history. Deleting `watch.sqlite` and `blobs/` does. Operator-facing: `tt watch prune --room <room_id>` removes the journal; routine cleanup is just `tt watch gc` against blobs unreferenced by any `file_versions` or `path_heads` row.
 
@@ -137,10 +140,10 @@ Every path the watcher considers falls into one of three buckets:
 
 | Class | Trigger | Storage | Feed display | Diff body |
 |---|---|---|---|---|
-| `source` (body stored) | extension in allowlist AND size ≤ `max_blob_bytes` AND content sniff is text | `file_versions` row + blob written | `+12 −3 src/service.ts` | unified diff rendered |
-| `source` (truncated) | extension in allowlist AND size > `max_blob_bytes` | `file_versions` row, `blob_path = NULL` | `~ src/big.sql (12.4 MB → 12.6 MB)` | "file too large to render" |
-| `opaque` | extension NOT in allowlist OR content sniff trips binary detection | `file_versions` row, `blob_path = NULL` | `~ assets/logo.png (hash a3f1… → b29c…)` | "binary or unknown file type — hash delta only" |
-| `skipped` | size > `max_track_bytes` (any extension) | no row written, never appears | — | — |
+| `source` (body stored) | extension in allowlist AND size ≤ `max_blob_bytes` AND content sniff is text | `file_versions` row + blob written; `file_changes.class='source'` | `+12 −3 src/service.ts` | unified diff rendered |
+| `source` (truncated) | extension in allowlist AND size > `max_blob_bytes` | `file_versions` row, `blob_path = NULL`; `file_changes.class='source'` | `~ src/big.sql (12.4 MB → 12.6 MB)` | "file too large to render" |
+| `opaque` | extension NOT in allowlist OR content sniff trips binary detection | `file_versions` row, `blob_path = NULL`; `file_changes.class='opaque'` | `~ assets/logo.png (hash a3f1… → b29c…)` | "binary or unknown file type — hash delta only" |
+| `skipped` | size > `max_track_bytes` (any extension) | no `file_versions` or `file_changes` row; `path_heads.class='skipped'`, `version_id=NULL` | not shown as a diff item | — |
 
 **Default source extension allowlist** (compiled in, extendable via `source_extensions` config):
 
@@ -172,12 +175,12 @@ source_filenames  = ["Dockerfile", "..."]
 source_extensions_extra = ["mdc"]                       # additive without replacing defaults
 ```
 
-**Binary detection.** Even if a path has a source extension, the watcher peeks the first 8 KiB. If it contains a NUL byte, the file is reclassified as `opaque` for that version. This protects against accidentally rendering a `.json` that turned out to be a binary blob, or a `.txt` that's actually a UTF-16 BOM dump.
+**Binary detection.** Even if a path has a source extension, the watcher peeks the first 8 KiB. If the file has a UTF-8/UTF-16 BOM and decodes cleanly, it stays source. Otherwise, any NUL byte in the peek window reclassifies the path as `opaque` for that change. This protects against accidentally rendering a `.json` that turned out to be a binary blob without incorrectly demoting legitimate UTF-16 source files.
 
 **Why three classes, not two:**
 
 - `opaque` exists so the operator still sees that `assets/logo.png` or `data.parquet` *changed* — useful context when an agent regenerates a build artifact — without forcing the walker to read or render arbitrarily large or binary bodies.
-- `skipped` exists so a 2 GB `node_modules` dump or a generated 500 MB JSON file doesn't make the watcher waste I/O hashing it on every save. We don't hash, we don't record. The operator never sees it.
+- `skipped` exists so a 2 GB `node_modules` dump or a generated 500 MB JSON file doesn't make the watcher waste I/O hashing it on every save. We record only the current path head so future shrink/delete events do not diff against stale older content; there is no content hash, no diff row, and no feed item.
 - `source` is the human-readable middle. The walker's whole reason for existing.
 
 ## Watcher algorithm
@@ -216,9 +219,9 @@ scan_one(path):
         emit deletion change against last known version
         return
     if s1.size > MAX_TRACK_BYTES:
-        # huge file: skip entirely, no row written. If it had a path_heads row from
-        # a smaller earlier version, leave that head alone — the file is now opaque
-        # to the walker.
+        # huge file: outside tracking budget. Mark the path head so later
+        # deletion/shrink does not diff against stale older content.
+        update path_heads(path, version_id=NULL, class='skipped', exists_now=1)
         log diagnostic ("skipped huge file {path} {size}"); return
     is_source = ext_in_allowlist(path) or basename_in_allowlist(path)
     if is_source and s1.size <= MAX_BLOB_BYTES:
@@ -229,11 +232,12 @@ scan_one(path):
         if first_8kib(body) contains NUL:
             # source extension but actually binary — downgrade to opaque
             sha = sha256(body)
-            record version with class='opaque', blob_path=NULL
+            record version with blob_path=NULL
+            record file_change with class='opaque'
             return
         sha = sha256(body)
-        if version (sha,size) not in store: write blob, insert file_versions class='source'
-        record file_change
+        if version (sha,size) not in store: write blob, insert file_versions
+        record file_change with class='source'
         return
     # source-but-truncated, or opaque: hash only, no body
     sha = streaming_sha256(path)
@@ -241,8 +245,8 @@ scan_one(path):
     if s1.size != s2.size or s1.mtime_ns != s2.mtime_ns:
         retry_as_torn(); return
     cls = 'source' if is_source else 'opaque'
-    record version with class=cls, blob_path=NULL
-    record file_change against previous version for this path
+    record version with blob_path=NULL
+    record file_change with class=cls against previous version for this path
 ```
 
 **Wake-vs-truth.** fs events only mark `dirty_set` and start the deadline. The actual statement of fact (this version replaced that version) comes from the post-quiet-window scan. Editor save patterns that emit weird sequences (atomic rename, `vim` swap dance, multi-write fsync) all collapse into one batch.
@@ -298,7 +302,7 @@ On batch close, after the CAS write, the watcher:
 
 Diff requests from the walker UI are served as `git diff -M --find-renames=85% <prev_tree> <next_tree> -- <path>`. The CAS already has the bodies; git just gives us the algorithm.
 
-Only `class='source'` versions with a stored blob get committed into `projection.git`. `opaque` versions and source-truncated versions appear in the feed (with size and hash deltas) but never reach the projection or the text diff renderer. Skipped paths never appear at all. This means the projection's tree size is bounded by the source-extension subset of the workspace, which is typically a small fraction of the total tree on disk — git's similarity heuristic stays fast and rename detection stays meaningful.
+Only `file_changes.class='source'` entries whose after-version has a stored blob get committed into `projection.git`. `opaque` changes and source-truncated changes appear in the feed (with size and hash deltas) but never reach the projection or the text diff renderer. Skipped paths never appear as diff items. This means the projection's tree size is bounded by the stored source subset of the workspace, which is typically a small fraction of the total tree on disk — git's similarity heuristic stays fast and rename detection stays meaningful.
 
 **If `projection.git` is corrupted or deleted**, the watcher detects on next start, recreates it by replaying `change_batches` in `batch_id` order. No history is lost; only the projection rebuild costs time.
 
@@ -365,9 +369,9 @@ The annotation modal must allow manual retargeting before send. The automatic ch
 | annotation delivery flake | MCP/CLI error | row stays `pending`; UI offers retry; periodic background retry |
 | operator annotates while watcher is offline | walker writes pending annotation against last known `change_seq` | watcher on restart processes pending queue and delivers |
 | ambiguous rename | git heuristic uncertain | record as add+delete pair; UI hint "possibly renamed from X" |
-| opaque file change (unknown extension or binary content) | scan_one classifies | record version with `class='opaque'`, `blob_path=NULL`; UI shows hash delta only |
-| source file over `max_blob_bytes` (default 8 MiB) | scan_one classifies | record version with `class='source'`, `blob_path=NULL`; UI shows size delta with "too large to render" |
-| huge file over `max_track_bytes` (default 256 MiB) | scan_one early-out | no row written; logged as skip diagnostic; never appears in feed |
+| opaque file change (unknown extension or binary content) | scan_one classifies | record `file_changes.class='opaque'`, `blob_path=NULL`; UI shows hash delta only |
+| source file over `max_blob_bytes` (default 8 MiB) | scan_one classifies | record `file_changes.class='source'`, `blob_path=NULL`; UI shows size delta with "too large to render" |
+| huge file over `max_track_bytes` (default 64 MiB) | scan_one early-out | mark `path_heads.class='skipped'`; no diff row written; logged as skip diagnostic; never appears in feed |
 
 ## Concrete surface (v1)
 
@@ -381,7 +385,7 @@ MCP:
 Configuration (env / config file under `~/.config/talking-stick/watch.toml`):
 - `max_blob_bytes` (default `8388608` — 8 MiB; source files larger than this are tracked as `class='source'` with `blob_path=NULL`)
 - `max_render_bytes` (default `1048576` — 1 MiB; larger source blobs are stored but collapsed in the diff body by default)
-- `max_track_bytes` (default `268435456` — 256 MiB; files larger than this are skipped entirely, no row written)
+- `max_track_bytes` (default `67108864` — 64 MiB; files larger than this are skipped entirely, no diff row written)
 - `source_extensions` (replaces default extension allowlist if present)
 - `source_extensions_extra` (additive — appends to default allowlist)
 - `source_filenames` (replaces default filename allowlist if present)
