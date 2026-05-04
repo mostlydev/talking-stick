@@ -6,7 +6,7 @@
 
 ## Goals
 
-- A separate operator-facing process (`tt walk`) that displays diffs as agents make them, navigable like a radiologist scrubs a film stack — keys for up/down/left/right, line/block selection, enter to annotate.
+- A separate operator-facing process (`tt walk`) that displays diffs as agents make them, navigable like a radiologist scrubs a film stack — live follow by default, keys for up/down/left/right, line/block selection, enter to annotate.
 - Annotations route as messages back to the agent who made the change (or, if they are no longer reachable, the current stick holder, falling back to a durable note). Every annotation is persisted before any delivery attempt.
 - Resilient under noisy editor saves, rapid sequential edits, atomic rename writes, and external/manual edits. The watcher captures every stable state it observes, periodically reconciles to recover from dropped filesystem events, never claims a torn read as a real change, and never blocks the agents.
 - Fresh by default. Opening `tt walk` for a folder makes that moment the new baseline and permanently scrubs prior walker-local history for that folder unless the operator explicitly asks to resume.
@@ -34,13 +34,31 @@
 │  ▸ tests/x.test.ts +8 −0     │                                  │
 │    claude 13:58:44 ✎ note    │                                  │
 └──────────────────────────────┴──────────────────────────────────┘
-   w/s scroll feed   a/d prev-next change   space mark line
-   enter annotate   tab toggle pane   /  search   ?  help
+   w/s scroll feed   a/d prev-next change   space hold pause
+   m mark line       enter annotate        esc live follow
+   tab toggle pane   / search              ? help
 ```
 
-- The feed (left) is reverse-chronological by `change_seq`. Active edits appear at the top with a live cursor; resolved-and-quiet items dim.
-- The diff body (right) shows the unified diff for the selected `change_seq`. `space` marks line ranges; `enter` opens the annotation modal pre-targeted at the attributed agent.
-- A status bar shows the current room owner, the watcher's lag (events behind real time), and the snapshot store size.
+- The feed (left) is reverse-chronological by visible `change_seq`. Active edits appear at the top with a live cursor; resolved-and-quiet items dim.
+- The diff body (right) shows the unified diff for the selected `change_seq`. `m` marks line ranges; `enter` opens the annotation modal pre-targeted at the attributed agent.
+- In follow mode, the selected row automatically advances to each new completed batch after a short settle delay, so the operator can watch complete diffs appear at agent pace without chasing the feed manually.
+- Any navigation key, mouse scroll, line mark, search, or annotation entry switches into review mode. Review mode preserves the current selection while new changes continue collecting above it.
+- `Esc` exits annotation/search/selection state first; repeated `Esc` returns all the way to follow mode. When not editing text, `Esc` is "show me live again."
+- Review mode automatically returns to follow mode after `follow_idle_timeout_ms` with no navigation or annotation activity. Holding the follow-pause key keeps review mode active; releasing it lets the idle timer resume.
+- A status bar shows the current room owner, the watcher's lag (events behind real time), follow/review state, and the snapshot store size.
+
+### Follow / review state machine
+
+The default viewing behavior is closer to `tail -f` than to a static review list.
+
+| State | Entry | Behavior | Exit |
+|---|---|---|---|
+| `follow` | initial `tt walk`, repeated `Esc`, idle timeout | after `follow_settle_delay_ms`, select the newest visible change and scroll the diff body to top | navigation, mouse scroll, search, mark, annotation entry, or hold-pause |
+| `review` | navigation, mouse scroll, search, mark, annotation entry | keep current selection stable while new changes accumulate; show a "N new" indicator | repeated `Esc`, idle timeout |
+| `hold` | hold the pause key, default `Space` | freeze selection and suppress idle return while key is held | key release returns to `review` and restarts idle timer |
+| `compose` | annotation modal or search input | preserve draft text and selection; never auto-follow while text entry is active | `Esc` closes current layer; repeated `Esc` eventually returns to `follow` |
+
+`follow_settle_delay_ms` defaults to 1500 ms. This avoids dragging the UI through every intermediate save event and lets a completed batch land before the viewer advances. `follow_idle_timeout_ms` defaults to 30000 ms. The idle timeout is reset by navigation, mouse movement/scroll, search, marking, or annotation edits.
 
 ## Storage model
 
@@ -65,6 +83,7 @@ CREATE TABLE watch_workspaces (
   workspace_key      TEXT PRIMARY KEY,
   canonical_path     TEXT NOT NULL UNIQUE,
   store_path         TEXT NOT NULL,
+  schema_version     INTEGER NOT NULL,
   current_room_id    TEXT,
   current_session_id TEXT,
   last_reset_at      TEXT
@@ -82,6 +101,8 @@ CREATE TABLE watcher_leases (
 
 The lease lives in `registry.sqlite`, not in `watch.sqlite`. That boundary is load-bearing: the reset path can atomically rename and recreate the entire workspace store while the registry lease remains valid.
 
+On startup, the registry must compare `workspace_key` against the stored `canonical_path`. A hash collision or manifest mismatch is a hard error, not a reason to reuse another folder's store.
+
 ### Session schema (v1)
 
 This schema lives in the resettable per-workspace `watch.sqlite`.
@@ -93,6 +114,7 @@ CREATE TABLE watch_session (
   canonical_path  TEXT NOT NULL,
   room_id         TEXT NOT NULL,
   started_at      TEXT NOT NULL,
+  schema_version  INTEGER NOT NULL,
   reset_mode      TEXT NOT NULL,          -- 'fresh' | 'resume'
   baseline_event_seq INTEGER,
   baseline_git_head TEXT
@@ -130,7 +152,8 @@ CREATE TABLE file_changes (
   batch_id      INTEGER NOT NULL REFERENCES change_batches(batch_id),
   path          TEXT NOT NULL,           -- workspace-relative
   rename_from   TEXT,                    -- non-null if detected rename
-  class         TEXT NOT NULL,           -- after-state class: 'source' | 'opaque'
+  class         TEXT NOT NULL,           -- render/projection class: 'source' | 'opaque' | 'skipped'
+  visible       INTEGER NOT NULL DEFAULT 1, -- 0 for internal projection-maintenance rows
   before_version_id TEXT REFERENCES file_versions(version_id),  -- NULL on add
   after_version_id  TEXT REFERENCES file_versions(version_id),  -- NULL on delete
   observed_at   TEXT NOT NULL,
@@ -159,6 +182,7 @@ CREATE TABLE annotations (
 
 CREATE INDEX idx_file_changes_batch ON file_changes(batch_id);
 CREATE INDEX idx_file_changes_path  ON file_changes(path);
+CREATE INDEX idx_file_changes_feed  ON file_changes(change_seq) WHERE visible = 1;
 CREATE INDEX idx_path_heads_version ON path_heads(version_id);
 CREATE INDEX idx_annotations_change ON annotations(change_seq);
 CREATE INDEX idx_annotations_pending ON annotations(delivery_status) WHERE delivery_status = 'pending';
@@ -166,7 +190,9 @@ CREATE INDEX idx_annotations_pending ON annotations(delivery_status) WHERE deliv
 
 The database represents one live watcher session for the folder. In the default `fresh` mode, startup deletes and recreates `watch.sqlite`, `blobs/`, and `projection.git/` before inserting a new `watch_session` row, so old `change_batches`, `file_changes`, `path_heads`, `file_versions`, and local annotations cannot leak into the new operator view. `reset_mode='resume'` exists only when the operator explicitly opts out of the default wipe.
 
-`file_versions` is content-addressed; it does not own classification because classification is path- and scan-context-dependent. The same bytes may be a rendered source diff at `README.md` and an opaque attachment under another path. `file_changes.class` records how this path/change is reviewed, while `path_heads.class` records the current path state. If content is first observed as opaque and later appears as source, the implementation may backfill `blob_path` for the existing `version_id`.
+`file_versions` is content-addressed; it does not own classification because classification is path- and scan-context-dependent. The same bytes may be a rendered source diff at `README.md` and an opaque attachment under another path. `file_changes.class` records how this change is reviewed and projected, while `path_heads.class` records the current path state. For adds and modifications, `file_changes.class` is the after-state class. For deletions, it is the previous `path_heads.class`, because the UI still needs to know whether the delete is renderable as a source diff. If content is first observed as opaque and later appears as source, the implementation may backfill `blob_path` for the existing `version_id`.
+
+`file_changes.visible=0` exists for internal maintenance only. The main case is a previously projected source path becoming skipped because it crossed `max_track_bytes`: the operator should not see a huge-file diff item, but the projection still needs a tombstone so rebuilds do not keep stale source content.
 
 `path_heads` is the fast "what did we last believe this path contained?" table. `file_changes` is the immutable audit trail. This avoids deriving current state by scanning the tail of `file_changes` on every filesystem event, makes deletes/re-adds explicit, and lets `version_id = NULL, class = 'skipped', exists_now = 1` represent "the file exists but is intentionally outside the walker's tracking budget."
 
@@ -181,7 +207,7 @@ Every path the watcher considers falls into one of three buckets:
 | `source` (body stored) | extension in allowlist AND size ≤ `max_blob_bytes` AND content sniff is text | `file_versions` row + blob written; `file_changes.class='source'` | `+12 −3 src/service.ts` | unified diff rendered |
 | `source` (truncated) | extension in allowlist AND size > `max_blob_bytes` | `file_versions` row, `blob_path = NULL`; `file_changes.class='source'` | `~ src/big.sql (12.4 MB → 12.6 MB)` | "file too large to render" |
 | `opaque` | extension NOT in allowlist OR content sniff trips binary detection | `file_versions` row, `blob_path = NULL`; `file_changes.class='opaque'` | `~ assets/logo.png (hash a3f1… → b29c…)` | "binary or unknown file type — hash delta only" |
-| `skipped` | size > `max_track_bytes` (any extension) | no `file_versions` or `file_changes` row; `path_heads.class='skipped'`, `version_id=NULL` | not shown as a diff item | — |
+| `skipped` | size > `max_track_bytes` (any extension) | no `file_versions`; `path_heads.class='skipped'`, `version_id=NULL`; hidden `file_changes.visible=0` row only when needed to remove prior projected source | not shown as a diff item | — |
 
 **Default source extension allowlist** (compiled in, extendable via `source_extensions` config):
 
@@ -218,12 +244,12 @@ source_extensions_extra = ["mdc"]                       # additive without repla
 **Why three classes, not two:**
 
 - `opaque` exists so the operator still sees that `assets/logo.png` or `data.parquet` *changed* — useful context when an agent regenerates a build artifact — without forcing the walker to read or render arbitrarily large or binary bodies.
-- `skipped` exists so a 2 GB `node_modules` dump or a generated 500 MB JSON file doesn't make the watcher waste I/O hashing it on every save. We record only the current path head so future shrink/delete events do not diff against stale older content; there is no content hash, no diff row, and no feed item.
+- `skipped` exists so a 2 GB `node_modules` dump or a generated 500 MB JSON file doesn't make the watcher waste I/O hashing it on every save. We record the current path head so future shrink/delete events do not diff against stale older content; there is no content hash and no feed item. If the path used to be projected source, we also record a hidden projection tombstone so `projection.git` does not retain stale text.
 - `source` is the human-readable middle. The walker's whole reason for existing.
 
 ## Watcher algorithm
 
-The watcher is a long-lived process started by `tt watch [--room <id>]`, scoped to one room and one canonical workspace. It is independent of the talking-stick MCP server — separate process, separate sqlite file, no shared schema.
+The watcher is a long-lived process started by `tt watch start [--room <id>]`, scoped to one room and one canonical workspace. It is independent of the talking-stick MCP server — separate process, separate sqlite file, no shared schema.
 
 Only one writer may own a canonical workspace at a time. `tt walk` and `tt watch start` first try to acquire the registry `watcher_leases` row. If a healthy writer exists for the same room, they become readers/subscribers. If a healthy writer exists for another room in the same folder, startup fails with an active-watcher conflict. If the lease is expired and the process is gone, the next starter takes over and follows the session reset contract: fresh baseline by default, or reconciliation against the prior journal only when `--resume` was explicit.
 
@@ -259,6 +285,8 @@ scan_one(path):
     if s1.size > MAX_TRACK_BYTES:
         # huge file: outside tracking budget. Mark the path head so later
         # deletion/shrink does not diff against stale older content.
+        if previous head was projected source:
+            record hidden file_change with class='skipped', visible=0
         update path_heads(path, version_id=NULL, class='skipped', exists_now=1)
         log diagnostic ("skipped huge file {path} {size}"); return
     is_source = ext_in_allowlist(path) or basename_in_allowlist(path)
@@ -297,6 +325,8 @@ scan_one(path):
 
 **Bootstrapping.** At the beginning of every fresh session, the watcher seeds `file_versions` and `path_heads` from the current tracked + untracked-non-ignored set without emitting thousands of normal feed items. The UI shows a single baseline summary row ("baseline captured: 1,284 files") that can be expanded for debugging. Normal `file_changes` start only after the baseline is complete. A `--show-baseline-changes` debug flag may materialize baseline rows, but it is not the default operator UX.
 
+The bootstrap also seeds `projection.git` with one baseline tree containing every current `source` path whose version has a stored blob. That baseline commit has no visible `file_changes` row. Without it, the first real batch cannot produce correct deletes, renames, or modifications against the session starting point.
+
 ## Attribution model
 
 Attribution is observational, not authoritative. The watcher reads room state at batch open and brackets the batch with the room event cursor. It may maintain that cursor through `wait_for_events --target any` or by reading `getLatestEventSeq` / `getRoomEvents` directly; the important point is that attribution is tied to an event-seq window, not just wall-clock timestamps.
@@ -322,7 +352,7 @@ The walker UI displays:
 - `multi_owner`: "during handoff" — visual indicator that ownership changed mid-batch
 - `none`: "no owner" — change happened while room was idle (probably operator or unattributed automation)
 
-**v2 schema affordance.** `change_batches.source` and `file_changes.tool_call_id` / `harness_event_id` exist now but are populated only by `fs_watch` in v1. A future hook integration writes `source = 'hook'` rows alongside the watcher's `fs_watch` rows; the UI prefers hook-attributed rows when both cover the same change_seq.
+**v2 schema affordance.** `change_batches.source` and `file_changes.tool_call_id` / `harness_event_id` exist now but are populated only by `fs_watch` in v1. A future hook integration may either enrich watcher-observed rows with hook metadata or write `source = 'hook'` batches that the UI coalesces with watcher rows by `(path, before_version_id, after_version_id)`. It cannot rely on two independent rows sharing the same `change_seq`, because `change_seq` is the primary key.
 
 ## Diff / projection layer
 
@@ -334,13 +364,15 @@ ${watch_dir}/projection.git/   # bare git repo, --object-format=sha256
 
 On batch close, after the CAS write, the watcher:
 
-1. Reads the after-state of every changed file from the CAS blobs.
-2. Stages them into `projection.git`'s index against the prior batch's tree.
-3. Commits with metadata: `author = attributed_to`, `committer = "watcher"`, message `batch:<batch_id>`.
+1. Starts from the prior projected tree.
+2. For source add/modify rows with a stored after-blob, writes that blob into the index.
+3. For source delete rows, removes the path from the index.
+4. For source paths that become opaque, skipped, or source-truncated, removes any prior projected path so stale text cannot survive in later diffs.
+5. Commits with metadata: `author = attributed_to` when it can be converted into a valid git identity, otherwise `author = "watcher"`, message `batch:<batch_id>`.
 
 Diff requests from the walker UI are served as `git diff -M --find-renames=85% <prev_tree> <next_tree> -- <path>`. The CAS already has the bodies; git just gives us the algorithm.
 
-Only `file_changes.class='source'` entries whose after-version has a stored blob get committed into `projection.git`. `opaque` changes and source-truncated changes appear in the feed (with size and hash deltas) but never reach the projection or the text diff renderer. Skipped paths never appear as diff items. This means the projection's tree size is bounded by the stored source subset of the workspace, which is typically a small fraction of the total tree on disk — git's similarity heuristic stays fast and rename detection stays meaningful.
+The projection's tree contains only paths whose current state is source with a stored blob. Source deletes, source-to-opaque transitions, source-to-truncated transitions, and hidden source-to-skipped tombstones remove prior projected paths even when the new state has no blob. Opaque changes and source-truncated changes appear in the feed (with size and hash deltas) but never render as text diffs. Skipped paths never appear as feed items. This means the projection's tree size is bounded by the stored source subset of the workspace, which is typically a small fraction of the total tree on disk — git's similarity heuristic stays fast and rename detection stays meaningful.
 
 **If `projection.git` is corrupted or deleted**, the watcher detects on next start, recreates it by replaying `change_batches` in `batch_id` order. No history is lost; only the projection rebuild costs time.
 
@@ -463,13 +495,14 @@ tt walk / tt watch start:
 | ambiguous rename | git heuristic uncertain | record as add+delete pair; UI hint "possibly renamed from X" |
 | opaque file change (unknown extension or binary content) | scan_one classifies | record `file_changes.class='opaque'`, `blob_path=NULL`; UI shows hash delta only |
 | source file over `max_blob_bytes` (default 8 MiB) | scan_one classifies | record `file_changes.class='source'`, `blob_path=NULL`; UI shows size delta with "too large to render" |
-| huge file over `max_track_bytes` (default 64 MiB) | scan_one early-out | mark `path_heads.class='skipped'`; no diff row written; logged as skip diagnostic; never appears in feed |
+| huge file over `max_track_bytes` (default 64 MiB) | scan_one early-out | mark `path_heads.class='skipped'`; write only a hidden projection tombstone if prior source must be removed; logged as skip diagnostic; never appears in feed |
 
 ## Concrete surface (v1)
 
 CLI:
 - `tt watch start [--room <id>] [--store <path>] [--resume] [--archive <path>] [--force]`
 - `tt watch [stop|status|gc|archive] [--room <id>] [--store <path>]`
+- `tt watch gc --stores` — retry removal of abandoned `deleting-<timestamp>` stores and stale registry rows whose processes are gone
 - `tt walk [--room <id>] [--store <path>] [--resume] [--archive <path>] [--force]` — interactive TUI
 
 MCP:
@@ -478,7 +511,7 @@ MCP:
 Configuration (env / config file under `~/.config/talking-stick/watch.toml`):
 - `max_blob_bytes` (default `8388608` — 8 MiB; source files larger than this are tracked as `class='source'` with `blob_path=NULL`)
 - `max_render_bytes` (default `1048576` — 1 MiB; larger source blobs are stored but collapsed in the diff body by default)
-- `max_track_bytes` (default `67108864` — 64 MiB; files larger than this are skipped entirely, no diff row written)
+- `max_track_bytes` (default `67108864` — 64 MiB; files larger than this are skipped entirely from the feed, with only path-head state and any needed hidden projection tombstone recorded)
 - `source_extensions` (replaces default extension allowlist if present)
 - `source_extensions_extra` (additive — appends to default allowlist)
 - `source_filenames` (replaces default filename allowlist if present)
@@ -488,12 +521,35 @@ Configuration (env / config file under `~/.config/talking-stick/watch.toml`):
 - `reconcile_interval_ms` (default `30000`)
 - `recent_owner_window_ms` (default `300000`)
 - `idle_watcher_grace_ms` (default `idleRoomTtlMs / 4`)
+- `follow_settle_delay_ms` (default `1500`)
+- `follow_idle_timeout_ms` (default `30000`)
+
+## Implementation sequence
+
+Build this in slices that can be reviewed and tested independently:
+
+1. **Watch store and reset substrate.** Add registry/session sqlite modules, workspace key resolution, schema version checks, manifest validation, registry lease heartbeats, atomic reset, `--resume`, `--archive`, and `gc --stores`. No filesystem watcher yet.
+2. **Scanner and classifier.** Implement git-aware path discovery, ignore handling, torn-read retries, source/opaque/skipped classification, CAS blob writes, and `path_heads` updates. Cover this with deterministic fixture directories before introducing live watcher events.
+3. **Batch journal and reconciliation.** Add dirty-set batching, quiet/hard deadlines, periodic reconciliation, attribution windows, and subscriber notifications. At this point a polling/debug UI can list batches without rendering diffs.
+4. **Projection and diff rendering.** Seed the baseline projection, apply source add/modify/delete rows, rebuild projection from CAS, detect renames, and serve unified diffs. Keep projection disposable; corruption must not poison the journal.
+5. **Annotation delivery.** Add selection metadata, durable-first annotation writes, retry state, routing to attributed/recent owner/current owner/note, and reset preflight flushing of pending annotations.
+6. **TUI walker.** Build the keyboard/mouse feed, diff pane, status bar, follow/review state machine, selection model, annotation modal, manual retargeting, and degraded states for offline watcher, opaque/truncated/skipped changes, and pending delivery.
+
+## Test plan
+
+- **Reset semantics:** default startup deletes old session rows/blobs/projection for the same canonical folder, preserves only registry metadata, and starts a new baseline. `--resume` keeps prior rows. A live same-room writer causes attach/no wipe; a live different-room writer fails.
+- **Store safety:** workspace-key manifest mismatch hard-fails, reset uses atomic rename, interrupted deletion leaves a recoverable `deleting-<timestamp>` store, and `gc --stores` removes only stores not referenced by live leases.
+- **Classification:** allowlisted text stores blobs, UTF-8/UTF-16 BOM source remains source, binary-looking source downgrades to opaque, unknown extensions hash-only, large source truncates, and huge files update `path_heads` as skipped without feed rows.
+- **Watcher correctness:** rapid saves collapse into bounded batches, torn reads retry instead of recording false versions, atomic rename writes settle to one path, dropped fs events are recovered by reconciliation, and git ignored/untracked rules match `git ls-files` output.
+- **Projection:** baseline projection exists before first visible batch; source adds/modifies/deletes produce correct diffs; source renames are detected; opaque/truncated/skipped changes never remain in the projected tree; hidden skipped tombstones remove prior projected source; projection rebuild from CAS matches the original tree sequence.
+- **Annotation delivery:** annotations persist before delivery, route to attributed/recent/current owner before note fallback, survive delivery failures as retryable pending rows, and reset preflight flushes or blocks before destructive deletion unless `--force` is explicit.
+- **TUI ergonomics:** default follow mode advances to new completed batches after the settle delay; navigation, mouse scroll, marking, search, and annotation entry enter review/compose mode; repeated `Esc` returns to live follow; idle review mode returns to live after the timeout; keyboard navigation is stable under live batch inserts; mouse and key selection produce the same line ranges; long lines and tiny terminals remain readable; offline/lag/pending-delivery states are visible without obscuring the diff.
 
 ## v1 / v2 cut
 
 **v1:**
 - Watcher process + CAS journal + projection.git
-- TUI walker with feed/diff panes, keyboard nav, line/block annotation
+- TUI walker with live follow mode, feed/diff panes, keyboard nav, line/block annotation
 - Owner-inferred attribution
 - Durable annotation persistence + message/note delivery
 - Folder-scoped default reset, single live writer per canonical workspace
