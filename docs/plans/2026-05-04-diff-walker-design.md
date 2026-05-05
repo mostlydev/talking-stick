@@ -37,6 +37,7 @@
    w/s scroll feed   a/d prev-next change   space hold pause
    m mark line       enter annotate        esc live follow
    tab toggle pane   / search              ? help
+   bksp / ^O return to last reviewed change after auto-follow
 ```
 
 - The feed (left) is reverse-chronological by visible `change_seq`. Active edits appear at the top with a live cursor; resolved-and-quiet items dim.
@@ -44,7 +45,8 @@
 - In follow mode, the selected row automatically advances to each new completed batch after a short settle delay, so the operator can watch complete diffs appear at agent pace without chasing the feed manually.
 - Any navigation key, mouse scroll, line mark, search, or annotation entry switches into review mode. Review mode preserves the current selection while new changes continue collecting above it.
 - `Esc` exits annotation/search/selection state first; repeated `Esc` returns all the way to follow mode. When not editing text, `Esc` is "show me live again."
-- Review mode automatically returns to follow mode after `follow_idle_timeout_ms` with no navigation or annotation activity. Holding the follow-pause key keeps review mode active; releasing it lets the idle timer resume.
+- Review mode automatically returns to follow mode after `follow_idle_timeout_ms` with no key, mouse, or annotation activity. **Any key press the viewer recognizes resets the idle timer** — not just navigation, but search, marking, annotation entry, help, and pane toggle alike. Holding the follow-pause key keeps review mode active; releasing it lets the idle timer resume.
+- After auto-follow snaps the viewer forward to the live tip, `Backspace` (or `Ctrl+O` for vim/less muscle memory) returns to the `change_seq` the operator was last on. See §Return-to-review below.
 - A status bar shows the current room owner, the watcher's lag (events behind real time), follow/review state, and the snapshot store size.
 
 ### Follow / review state machine
@@ -53,12 +55,22 @@ The default viewing behavior is closer to `tail -f` than to a static review list
 
 | State | Entry | Behavior | Exit |
 |---|---|---|---|
-| `follow` | initial `tt walk`, repeated `Esc`, idle timeout | after `follow_settle_delay_ms`, select the newest visible change and scroll the diff body to top | navigation, mouse scroll, search, mark, annotation entry, or hold-pause |
+| `follow` | initial `tt walk`, repeated `Esc`, idle timeout | after `follow_settle_delay_ms`, select the newest visible change and scroll the diff body to top; before snapping forward, capture the prior `change_seq` as the back-step anchor | navigation, mouse scroll, search, mark, annotation entry, or hold-pause |
 | `review` | navigation, mouse scroll, search, mark, annotation entry | keep current selection stable while new changes accumulate; show a "N new" indicator | repeated `Esc`, idle timeout |
 | `hold` | hold the pause key, default `Space` | freeze selection and suppress idle return while key is held | key release returns to `review` and restarts idle timer |
 | `compose` | annotation modal or search input | preserve draft text and selection; never auto-follow while text entry is active | `Esc` closes current layer; repeated `Esc` eventually returns to `follow` |
 
-`follow_settle_delay_ms` defaults to 1500 ms. This avoids dragging the UI through every intermediate save event and lets a completed batch land before the viewer advances. `follow_idle_timeout_ms` defaults to 30000 ms. The idle timeout is reset by navigation, mouse movement/scroll, search, marking, or annotation edits.
+`follow_settle_delay_ms` defaults to 1500 ms. This avoids dragging the UI through every intermediate save event and lets a completed batch land before the viewer advances. `follow_idle_timeout_ms` defaults to 30000 ms. The idle timer is reset by *any* key press the viewer recognizes and by mouse movement or scroll — not only navigation. The only exception is the hold-pause key, which is itself the explicit "freeze for as long as I'm holding this" gesture.
+
+### Return-to-review
+
+When the idle timer (or repeated `Esc`) auto-follows the viewer forward, the operator may have been mid-thought on an older `change_seq`. Backspace returns them there.
+
+- **Single-slot anchor.** The state machine captures one `back_anchor: change_seq` value at the moment auto-follow snaps forward. It is *not* a multi-step history stack — YAGNI for v1.
+- **Trigger.** `Backspace` (primary) or `Ctrl+O` (alias, for vim/less muscle memory) jumps the selection to `back_anchor` and re-enters `review` mode. The idle timer restarts.
+- **Inside text entry.** When the annotation modal or search input has focus, `Backspace` is delete-char as expected. The back-step binding is only active in `follow`/`review` outside text entry.
+- **Anchor lifecycle.** A new deliberate navigation in `review` updates the anchor to the row the operator just left, so a subsequent auto-follow → backspace returns there. Pressing `Backspace` consumes the anchor (it's a single-slot, not a stack); a second press is a no-op until the next auto-follow event captures a fresh one.
+- **No anchor case.** If the operator never auto-followed (they entered `review` deliberately and stayed), `Backspace` is a no-op and the status bar briefly shows "no back step" — a quieter affordance than a beep.
 
 ## Storage model
 
@@ -543,7 +555,8 @@ Build this in slices that can be reviewed and tested independently:
 - **Watcher correctness:** rapid saves collapse into bounded batches, torn reads retry instead of recording false versions, atomic rename writes settle to one path, dropped fs events are recovered by reconciliation, and git ignored/untracked rules match `git ls-files` output.
 - **Projection:** baseline projection exists before first visible batch; source adds/modifies/deletes produce correct diffs; source renames are detected; opaque/truncated/skipped changes never remain in the projected tree; hidden skipped tombstones remove prior projected source; projection rebuild from CAS matches the original tree sequence.
 - **Annotation delivery:** annotations persist before delivery, route to attributed/recent/current owner before note fallback, survive delivery failures as retryable pending rows, and reset preflight flushes or blocks before destructive deletion unless `--force` is explicit.
-- **TUI ergonomics:** default follow mode advances to new completed batches after the settle delay; navigation, mouse scroll, marking, search, and annotation entry enter review/compose mode; repeated `Esc` returns to live follow; idle review mode returns to live after the timeout; keyboard navigation is stable under live batch inserts; mouse and key selection produce the same line ranges; long lines and tiny terminals remain readable; offline/lag/pending-delivery states are visible without obscuring the diff.
+- **TUI ergonomics:** default follow mode advances to new completed batches after the settle delay; navigation, mouse scroll, marking, search, and annotation entry enter review/compose mode; repeated `Esc` returns to live follow; idle review mode returns to live after the timeout; **any recognized key resets the idle timer**; keyboard navigation is stable under live batch inserts; mouse and key selection produce the same line ranges; long lines and tiny terminals remain readable; offline/lag/pending-delivery states are visible without obscuring the diff.
+- **Return-to-review:** auto-follow forward captures the prior `change_seq` as `back_anchor`; `Backspace` and `Ctrl+O` jump back to `back_anchor` and re-enter `review` mode; `Backspace` inside the annotation modal or search input is delete-char and does not back-step; consuming the anchor leaves a no-op state until the next auto-follow re-arms it; the no-anchor case shows a quiet "no back step" status hint and does not beep.
 
 ## v1 / v2 cut
 
