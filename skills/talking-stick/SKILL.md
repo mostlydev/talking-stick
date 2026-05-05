@@ -1,6 +1,6 @@
 ---
 name: talking-stick
-description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker or when the MCP tools `list_rooms`, `join_path`, `leave_room`, `kick_member`, `wait_for_turn`, `heartbeat`, `release_stick`, `pass_stick`, `takeover_stick`, `get_room_state`, `get_room_events`, `send_message`, `wait_for_events`, `add_note`, or `list_notes` are available.
+description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker.
 ---
 
 This skill teaches a harness how to behave in a Talking Stick workspace.
@@ -18,48 +18,56 @@ Use this skill when any of these are true:
 - the user mentions `talking-stick`, `tt`, handoffs, turn-taking, or avoiding parallel work
 - the repo is known to use Talking Stick coordination
 - a `.talking-stick/` marker exists
-- the Talking Stick MCP tools are available in the current harness
 
 Do not use this skill for ordinary single-agent work in repos that are not using Talking Stick.
 
 ## Workflow
 
-### 1. Check that Talking Stick is actually available
+### 1. Use The CLI
 
-Prefer the Talking Stick MCP tools when they are available. If they are not available but the `tt` CLI is on `PATH`, use the CLI instead (`tt list`, `tt join`, `tt leave`, `tt kick`, `tt wait`, `tt state`, `tt release`, `tt pass`, `tt assign`, `tt take`, `tt msg`). Do not treat missing MCP tools alone as proof that coordination is unavailable.
+Use the `tt` CLI for all Talking Stick coordination. Do not use old Talking Stick MCP tools for repo coordination, even if an older install exposes them; the CLI is the source of truth. Current updates should remove stale Talking Stick MCP registrations automatically.
+
+Useful commands:
+
+- `tt whoami --json`
+- `tt join . --json`
+- `tt wait . --timeout 110s --json`
+- `tt try . --json`
+- `tt state . --json`
+- `tt events . --after N --target any --json`
+- `tt notes add "..." --json`
+- `tt notes list --json`
+- `tt msg send <recipient|room> "..." --json`
+- `tt msg recv --follow --target self --json`
+- `tt release . --stdin`
+- `tt assign <agent_id|next> . --stdin`
+- `tt take . --reason "..." --json`
 
 Some workspaces may also have sibling receive processes running `tt msg recv --wait` or `tt msg recv --follow`; leave them alone unless the operator explicitly asks you to stop or restart them.
 
-If coordination is required and neither the MCP tools nor the `tt` CLI are available, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
+If coordination is required and `tt` is unavailable, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 
 Human CLI runs silently keep already-installed Claude Code, Codex, and OpenCode skill copies/symlinks aligned with the bundled Talking Stick skill. This is best effort and only updates existing installs; Gemini skills are registry-managed and should be refreshed with `tt install gemini` when needed.
 
-### 2. Join the workspace room once
+### 2. Join The Workspace Room Once
 
-On the first substantial task in a Talking Stick workspace:
+On the first substantial task in a Talking Stick workspace, run:
 
-1. call `join_path` with the current workspace path
-2. keep the returned `room_id`
-3. note the returned policy, especially `heartbeatIntervalMs`
-
-If the workspace is nested, accept the resolved canonical path the server returns.
-
-### 3. Wait before doing shared work
-
-Before making shared edits or running owner-style actions, call `wait_for_turn`.
-
-Use the `room_id` returned by `join_path`. Do not pass the original filesystem path to `wait_for_turn`; path resolution belongs to `join_path`, and waiting must target the exact resolved room. This avoids ambiguity when a nested workspace resolves to an ancestor room or when multiple rooms could exist under the same tree.
-
-Keep the wait input minimal:
-
-```json
-{
-  "room_id": "<room_id from join_path>",
-  "max_wait_ms": 110000
-}
+```sh
+tt join . --json
 ```
 
-`max_wait_ms` is optional. Use the longest client-safe wait you can support: 110000 ms is a good MCP default when the harness can tolerate it; 180000 ms is fine only when the tool/client timeout is known to exceed that. If the call times out at the harness layer, fall back to a shorter value and call again. Do not send `cursor`, even if an old tool schema still exposes it; `wait_for_turn` is cursor-free, and resumable event replay belongs to `get_room_events`.
+Keep the returned room id and canonical path in mind, but keep using the workspace path (`.` is fine) for later CLI commands. If the workspace is nested, accept the resolved canonical path the CLI returns.
+
+### 3. Wait Before Shared Work
+
+Before making shared edits or running owner-style actions, run:
+
+```sh
+tt wait . --timeout 110s --json
+```
+
+Use the longest client-safe wait you can support. `110s` is a good default for active multi-agent coordination. If your harness has a shorter tool timeout, use the longest safe value and immediately wait again when it returns without granting the turn. Do not busy-loop with short waits.
 
 Possible outcomes:
 
@@ -68,91 +76,108 @@ Possible outcomes:
 - `takeover_available`: surface the reason and make takeover explicit
 - `closed`: stop and explain that the room is closed
 
-### 4. While waiting
+A successful `tt wait` or `tt take` starts an internal `tt guard` lease guardian and returns `guardian_pid` in JSON. Do not kill that guardian. If work may take minutes and the JSON response does not show a guardian, stop and inspect before starting long edits because the lease may expire while you work.
 
-**Prefer to run the wait in the background.** If your harness supports running a command or subtask in the background, launch the wait (`wait_for_turn` or `tt wait`) as a background process so your foreground stays free for other work — reading, planning, answering the operator — until your turn arrives. Blocking the whole harness on the wait defeats the point.
+### 4. While Waiting
 
-**Prefer wait cycles over scheduled wakeups.** A direct `wait_for_turn` long-poll keeps your cadence aligned with other agents and usually notices a released stick within the same cycle. Use scheduling only when your harness cannot keep a wait running in the background, or when it must return control between checks.
+Prefer to run `tt wait` in the background if your harness supports background commands. That keeps the foreground free for reading, planning, answering the operator, and watching OOB messages until your turn arrives.
 
-Wakeup pattern:
-
-1. Probe `wait_for_turn` with `max_wait_ms: 0`.
-2. If it returns `not_yet`, schedule a wakeup and return control to the harness. Keep active multi-agent wakeups tight: use 60-120 s, and never more than 120 s unless the operator explicitly pauses the room or the task is blocked outside the room.
-3. On wakeup, repeat from step 1.
-
-Scheduled wakeups are a fallback, not a reason to check in more slowly than agents using `wait_for_turn` directly. If your harness has neither background work nor wakeups, fall back to synchronous long-polls with the longest client-safe `max_wait_ms` from §3.
-
-Whether the wait runs in the foreground or the background, call it **once** with the client-safe `max_wait_ms` budget from above and let the server long-poll. When it returns without `your_turn`, call it again. Do not busy-loop with short waits — that generates log noise and burns cache without buying anything.
-
-Coordination is meant to be lightweight. `wait_for_turn` is the only long-running call you should make. Room-inspection RPCs (`get_room_state`, `get_room_events`) exist to answer specific questions ("who holds the stick right now?", "what was in my predecessor's handoff?") — do not call them on a timer or repeatedly just to check on another agent's progress. If you find yourself inspecting the room more than a few times per turn, stop; long-poll on `wait_for_turn` instead and trust the protocol.
+Prefer wait cycles over scheduled wakeups. A direct long-poll stays aligned with other agents and usually notices a released stick within the same cycle. Use scheduled wakeups only when your harness cannot keep a wait running in the background.
 
 If you do not have the stick:
 
 - do not make shared repo changes
 - do not silently race another harness
-- it is fine to read, plan, review, or help the user think — or any other work that does not mutate shared state
+- it is fine to read, plan, review, or help the user think
 - tell the user who currently holds or is reserved the turn when that is useful
 
-The wait is for *active* non-mutating work, not idle sleep. Re-read the holder's last handoff, follow up on its `artifacts[]`, investigate the area they are touching, and rethink the plan from your own angle. If you find something the holder should know — a missed invariant, a related bug, a sharper plan — leave a note with `add_note` rather than sitting on it until your next turn. Notes do not grant permission to edit shared files; they are observations and pointers, not coordination bypasses. The point: while you wait you can still move the work forward by feeding the holder, not by stalling.
+The wait is for active non-mutating work, not idle sleep. Re-read the holder's last handoff, follow up on its `artifacts[]`, investigate the area they are touching, and rethink the plan from your own angle. If you find something the holder should know, leave a durable note:
 
-When you do take the stick, first read the attached handoff and load any useful `artifacts[]`, then run `list_notes` once so you see what other members left for you. The owner's turn is the right place to act on a note, not to debate it with its author mid-turn.
+```sh
+tt notes add "Finding or pointer for the current/next holder." --json
+```
 
-### 4.5 Out-of-band messaging
+Room inspection exists to answer specific questions, not to poll. Use `tt state`, `tt events`, and `tt notes list` sparingly.
 
-The talking stick guarantees single-writer authority over shared workspace state. It is not a chat protocol. For transient signaling -- paging the holder, asking a quick question, or broadcasting awareness -- use messages.
+When you do take the stick, first read the attached handoff and load any useful `artifacts[]`, then run `tt notes list --json` once so you see what other members left for you.
 
-**Send.** `tt msg send <recipient> "<body>"` or MCP `send_message`. Recipient is a full `agent_id`, an unambiguous active display name, or the literal `room` for broadcast. `--interrupt` marks the message as time-sensitive; the receiver decides whether to act on it now.
+### 4.5 Out-Of-Band Messaging
 
-**Receive.** Use the receive mode your harness can observe. If it can monitor stdout from a long-running child, run `tt msg recv --follow`; each incoming event lands as one JSON line. If it can only notice that a background command completed, run `tt msg recv --wait --after <last_event_seq>`; it exits on the next matching batch, then you start it again with the returned cursor. Restart with `--after <last_event_seq>` to resume.
+The talking stick guarantees single-writer authority over shared workspace state. It is not a chat protocol. For transient signaling, use messages.
 
-**When to message vs note vs handoff.**
+Send:
 
-- **Message** when the exchange is conversational, ephemeral, and tied to processes that are currently online: design questions, "are you about to break X?", live coordination.
-- **Note** (`tt notes add`) when the artifact should outlive the moment: a finding the next holder should consider at handoff, or an observation that survives process churn.
-- **Handoff** (release/pass with a structured payload) when transferring work. Messages do not replace handoffs; they live alongside them.
+```sh
+tt msg send <recipient|room> "message body" --json
+```
 
-**Messages are not private.** Any room member can read any message via `get_room_events` or `tt events --follow --target any`. `to_agent_id` is routing, not an ACL.
+Recipient is a full `agent_id`, an unambiguous active display name, or the literal `room` for broadcast. `--interrupt` marks the message as time-sensitive; the receiver decides whether to act on it now.
 
-**Messages do not grant the stick.** A non-holder paging the holder does not gain write authority. The holder may act on the message immediately or defer until handoff.
+Receive with the mode your harness can observe:
 
-**Stay in the wait loop in parallel.** A `tt msg recv --wait` or `--follow` subprocess does not replace `wait_for_turn`. Keep waiting for your turn; messages are a side channel.
+```sh
+tt msg recv --follow --target self --json
+tt msg recv --wait --after <last_event_seq> --target self --json
+```
 
-### 5. While holding the stick
+Use `--follow` when the harness can monitor stdout from a long-running child. Use `--wait --after <last_event_seq>` when it can only notice that a background command completed. Restart with the returned cursor to resume.
 
-If the task may run longer than a few minutes, heartbeat periodically.
+Messages are public room events. Any room member can read them with `tt events --target any`. `to_agent_id` is routing, not an ACL.
 
-Use the cadence from `join_path.policy.heartbeatIntervalMs` when available. Do not invent your own cadence if the server already told you one.
+Messages do not grant the stick. A non-holder paging the holder does not gain write authority. Keep waiting for your turn; messages are only a side channel.
 
-**Holding the stick is for active work.** The moment you stop actively editing, reasoning through edits, or asking the operator a blocking question, release or pass. Do not idle-hold the room while waiting on long verification, non-blocking operator input, CI, or any other pause where another harness could make progress.
+### 5. While Holding The Stick
 
-### 6. Takeover is explicit
+Holding the stick is for active work. The moment you stop actively editing, reasoning through edits, or asking the operator a blocking question, release or assign the turn. Do not idle-hold the room while waiting on long verification, non-blocking operator input, CI, or any other pause where another harness could make progress.
 
-If `wait_for_turn` reports `takeover_available`:
+The `tt guard` process spawned by `tt wait` keeps the lease alive during active work. Later owner commands such as `tt release`, `tt assign`, and `tt take` must run under the same harness identity. If identity is ambiguous, use the exact active id with `TT_HARNESS_AGENT_ID=<agent_id>`.
+
+### 6. Takeover Is Explicit
+
+If `tt wait` reports `takeover_available`:
 
 - explain why takeover is available (`owner_timeout`, `owner_gone`, `claim_timeout`, `recipient_gone`)
 - do not silently take over just because it is possible
-- if takeover is chosen, call `takeover_stick`
-- after takeover, call `get_room_events` so you can reconstruct the last handoff before touching code
+- if takeover is chosen, run `tt take . --reason "..." --json`
+- after takeover, run `tt events . --target any --json` so you can reconstruct the last handoff before touching code
 
-If the operator explicitly tells you to take over despite a reservation or live owner, use the CLI path when available: `tt take --operator-requested --reason "<operator requested takeover>"`. Do not invent this override yourself; it is for direct operator intervention.
+If the operator explicitly tells you to take over despite a reservation or live owner, use:
 
-### 7. Finish with a real handoff
+```sh
+tt take . --operator-requested --reason "operator requested takeover" --json
+```
 
-When you are done with your turn, default to `release_stick`.
+Do not invent this override yourself; it is for direct operator intervention.
 
-**Default to `release_stick`.** Releasing lets the server pick the next fair waiter: a recent waiter that is new or has gone longest without holding the stick. If the best-known candidate is between wait polls, the room can briefly stay claimable instead of pinning a stale reservation. This keeps the room open instead of silently turning agent-to-agent handoffs into a duopoly.
+### 7. Finish With A Real Handoff
 
-Use `pass_stick` only when you have a concrete reason a specific named member must go next:
+When you are done with your turn, default to releasing:
+
+```sh
+tt release . --stdin <<'JSON'
+{
+  "status": "Updated the CLI-only coordination plan and the bundled skill so harnesses use tt subprocesses for join, wait, OOB messaging, notes, and handoffs.",
+  "next_action": "Review the plan and then start the code-removal pass.",
+  "artifacts": [
+    {
+      "path": "docs/plans/2026-05-05-cli-only-coordination.md",
+      "role": "review",
+      "note": "CLI-only migration plan."
+    }
+  ]
+}
+JSON
+```
+
+Use `tt assign <agent_id> . --stdin` only when a specific named member must go next:
 
 - they have unique context the next step requires
 - they hold a credential or capability others lack
 - the operator explicitly addressed the work to them
 
-Otherwise release. Ping-ponging `pass_stick` between two agents is an antipattern because it can lock humans out of their own room.
+Otherwise release. Pinning turns between two agents is an antipattern because it can lock humans out of their own room.
 
-Always include a non-empty handoff.
-
-**Keep handoffs tight.** Handoffs are persisted in the event log and re-read on claims. Aim for roughly 150-300 words of `status`; reference commits by SHA instead of restating diffs, and use `artifacts[]` with path, line range, and role instead of pasting code. The handoff is the headline; long-form context belongs in `docs/` or a note.
+Always include a non-empty handoff. Keep it tight: aim for roughly 150-300 words of `status`; reference commits by SHA instead of restating diffs, and use `artifacts[]` with path and role instead of pasting code.
 
 Minimum handoff quality:
 
@@ -161,58 +186,33 @@ Minimum handoff quality:
 
 Add `artifacts`, `open_questions`, and `do_not` when they will save the next harness real time or prevent rework.
 
-Example:
+### 8. After Release, Stay In The Loop
 
-```json
-{
-  "status": "Added the MCP smoke test and verified it against two clients sharing one SQLite database.",
-  "next_action": "Run the same handoff path through the human CLI and confirm pass/release behavior matches the MCP flow.",
-  "artifacts": [
-    {
-      "path": "tests/mcp-smoke.test.ts",
-      "role": "review",
-      "note": "End-to-end MCP adapter smoke coverage."
-    }
-  ],
-  "open_questions": [
-    "Should tt install default to copy or link for local development?"
-  ]
-}
-```
-
-**`pass_stick` requires the target to be an active room member.** If the intended recipient's harness session has ended and they show as `inactive` in `get_room_state.members`, `pass_stick` can return `unknown_member`. Use `release_stick` instead; the next fair waiter can claim through the normal sequence path.
-
-Remember that the operator can join their own room as `human:<user>`. Default behavior should leave room for them to claim turns naturally; releasing rather than passing keeps that door open.
-
-### 8. After passing or releasing, stay in the loop
-
-**The default after `release_stick` or `pass_stick` is to re-enter the wait loop and keep waiting until your next turn arrives.** Do not stop and ask the operator whether they want you back in the loop. Do not treat a handoff as end-of-session. In a multi-agent workspace, the expectation is: work on your turn, hand off, wait for your next turn, repeat.
-
-Stopping to ask questions after every handoff defeats the coordination protocol — the operator wired you into a room so that you *would* keep showing up without being asked.
+The default after `tt release` or `tt assign` is to re-enter the wait loop and keep waiting until your next turn arrives. Do not stop and ask the operator whether they want you back in the loop. Do not treat a handoff as end-of-session.
 
 Exit the wait loop only when one of these is true:
 
-- the shared task is explicitly finished (the operator said so, or the final handoff marks the work complete)
+- the shared task is explicitly finished
 - you are the only active member and there is no one to hand off to
-- the operator gives a direct redirect or stop ("that's enough," "drop out of the room," a new unrelated task, etc.)
+- the operator gives a direct redirect or stop
 
-In every other case: after `release_stick` or `pass_stick`, go straight back into the wait loop (ideally backgrounded — see §4).
+In every other case, after `tt release` or `tt assign`, go straight back into `tt wait . --timeout 110s --json`.
 
-If the operator tells you to drop out of coordination, call `leave_room` or `tt leave`. Rooms with no active members are deleted instead of kept as history, and long-idle rooms may be purged on later invocations.
+If the operator tells you to drop out of coordination, run `tt leave . --json`. Rooms with no active members are deleted instead of kept as history, and long-idle rooms may be purged on later invocations.
 
-If the room state shows ghost members from past sessions whose processes are gone (visible as `inactive last seen ...` in `tt state`), call `kick_member` / `tt kick <agent_id>` to evict them. This is the right tool when liveness has already decided the target is dead — pass `force: true` only when the operator explicitly tells you to remove a still-active member.
+If the room state shows ghost members from past sessions whose processes are gone, run `tt kick <agent_id> . --json` to evict them. Use `--force` only when the operator explicitly tells you to remove a still-active member.
 
-## Recovery and Inspection
+## Recovery And Inspection
 
 Use these reads when you need context:
 
-- `list_rooms`: discover active rooms under a path
-- `leave_room`: explicitly remove your membership from a room
-- `kick_member`: evict an idle member whose process is gone (use `force: true` only on operator instruction)
-- `get_room_state`: authoritative current room projection
-- `get_room_events`: replay recent claims, releases, passes, and takeovers
+- `tt list . --json`: discover active rooms under a path
+- `tt state . --json`: authoritative current room projection
+- `tt events . --target any --json`: replay recent claims, releases, assignments, messages, and takeovers
+- `tt notes list --json`: list durable notes
+- `tt whoami --explain`: inspect identity resolution
 
-Prefer `get_room_state` over guessing from local memory when ownership may have changed.
+Prefer `tt state` over guessing from local memory when ownership may have changed.
 
 ## Behavior Priorities
 
