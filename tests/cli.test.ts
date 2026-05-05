@@ -464,6 +464,90 @@ describe("tt turn commands", () => {
     expect(passed.reserved_for).toBe("human:next");
   });
 
+  test("tt wait returns a live guardian pid", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let guardianPid: number | undefined;
+
+    try {
+      await captureStdout(["join", project, "--agent", "human:worker"]);
+      const waitOut = await captureStdout([
+        "wait",
+        project,
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ]);
+      const waitResult = JSON.parse(waitOut) as {
+        status: string;
+        guardian_pid?: number;
+      };
+      guardianPid = waitResult.guardian_pid;
+
+      expect(waitResult.status).toBe("your_turn");
+      expect(guardianPid).toEqual(expect.any(Number));
+      expect(isPidAlive(guardianPid as number)).toBe(true);
+    } finally {
+      await releaseIfHeld(project, "human:worker");
+      killPidIfAlive(guardianPid);
+    }
+  });
+
+  test("tt wait repairs a missing guardian for an existing owner", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let firstGuardianPid: number | undefined;
+    let repairedGuardianPid: number | undefined;
+
+    try {
+      await captureStdout(["join", project, "--agent", "human:worker"]);
+      const firstWaitOut = await captureStdout([
+        "wait",
+        project,
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ]);
+      const firstWait = JSON.parse(firstWaitOut) as {
+        status: string;
+        guardian_pid: number;
+      };
+      firstGuardianPid = firstWait.guardian_pid;
+      expect(firstWait.status).toBe("your_turn");
+      expect(isPidAlive(firstGuardianPid)).toBe(true);
+
+      process.kill(firstGuardianPid, "SIGTERM");
+      await waitForPidGone(firstGuardianPid);
+
+      const secondWaitOut = await captureStdout([
+        "wait",
+        project,
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ]);
+      const secondWait = JSON.parse(secondWaitOut) as {
+        status: string;
+        reason: string;
+        guardian_pid: number;
+      };
+      repairedGuardianPid = secondWait.guardian_pid;
+
+      expect(secondWait.status).toBe("your_turn");
+      expect(secondWait.reason).toBe("already_owner");
+      expect(repairedGuardianPid).toEqual(expect.any(Number));
+      expect(isPidAlive(repairedGuardianPid)).toBe(true);
+    } finally {
+      await releaseIfHeld(project, "human:worker");
+      killPidIfAlive(firstGuardianPid);
+      killPidIfAlive(repairedGuardianPid);
+    }
+  });
+
   test("tt assign next resolves the fair active recipient", async () => {
     const { project } = setupIsolatedCli(tempDirs);
 
@@ -1343,6 +1427,33 @@ describe("tt msg", () => {
     );
   });
 
+  test("tt msg recv stays messages-only when a turn is passed", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:owner", display_name: "owner" },
+      { agent_id: "human:receiver", display_name: "receiver" }
+    ]);
+
+    const recvPromise = captureStdout([
+      "msg",
+      "recv",
+      "--wait",
+      "--timeout",
+      "100ms",
+      "--agent",
+      "human:receiver",
+      "--path",
+      project,
+      "--json"
+    ]);
+    const passPromise = delay(25).then(() =>
+      passCliTestTurn(roomId, "human:owner", "human:receiver")
+    );
+
+    expect(await recvPromise).toBe("");
+    await passPromise;
+  });
+
   test("tt events --wait filters event types and emits JSON lines", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     const roomId = seedCliRoomMembers(project, [
@@ -1413,6 +1524,154 @@ describe("tt msg", () => {
       from_agent_id: "human:sender",
       to_agent_id: "human:receiver",
       payload: { body: "not for observer" }
+    });
+  });
+
+  test("tt events --follow --target self sees direct messages and turn handoffs", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:owner", display_name: "owner" },
+      { agent_id: "human:receiver", display_name: "receiver" }
+    ]);
+    const watcher = spawnCliProcess([
+      "events",
+      project,
+      "--follow",
+      "--after",
+      "0",
+      "--target",
+      "self",
+      "--timeout",
+      "50ms",
+      "--agent",
+      "human:receiver",
+      "--json"
+    ]);
+
+    sendCliTestMessage(roomId, "human:owner", "human:receiver", "direct");
+    await passCliTestTurn(roomId, "human:owner", "human:receiver");
+    const lines = await waitForStdoutLines(watcher, 2);
+    const events = lines.map((line) => JSON.parse(line));
+
+    const closePromise = waitForProcessClose(watcher.child);
+    watcher.child.kill("SIGTERM");
+    const close = await closePromise;
+
+    expect(close).toMatchObject({ code: 0, signal: null });
+    expect(events.map((event) => event.event_type)).toEqual([
+      "message_sent",
+      "pass"
+    ]);
+    expect(events[0]).toMatchObject({
+      from_agent_id: "human:owner",
+      to_agent_id: "human:receiver",
+      payload: { body: "direct" }
+    });
+    expect(events[1]).toMatchObject({
+      from_agent_id: "human:owner",
+      to_agent_id: "human:receiver",
+      handoff: {
+        status: "Owner is passing.",
+        next_action: "Receiver should claim."
+      }
+    });
+  });
+
+  test("tt events --target self uses harness identity without TT_HARNESS_AGENT_ID", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const harnessEnv = {
+      CODEX_THREAD_ID: "stage2-thread"
+    };
+    const joinOut = await runCliProcess([
+      "join",
+      project,
+      "--json"
+    ], "", harnessEnv);
+    const joined = JSON.parse(joinOut.stdout) as {
+      agent_id: string;
+      room_id: string;
+    };
+
+    const service = new TalkingStickService();
+    try {
+      const sender = deriveHumanCliIdentity({
+        agentId: "human:sender",
+        displayName: "sender"
+      });
+      const owner = deriveHumanCliIdentity({
+        agentId: "human:owner",
+        displayName: "owner"
+      });
+      service.joinPath({
+        agent_id: sender.agent_id,
+        context_path: project,
+        process_metadata: sender.process_metadata
+      });
+      service.joinPath({
+        agent_id: owner.agent_id,
+        context_path: project,
+        process_metadata: owner.process_metadata
+      });
+      service.sendMessage({
+        agent_id: sender.agent_id,
+        room_id: joined.room_id,
+        to_agent_id: joined.agent_id,
+        body: "direct to harness"
+      });
+
+      const turn = await service.waitForTurn({
+        agent_id: owner.agent_id,
+        room_id: joined.room_id,
+        max_wait_ms: 0
+      });
+      expect(turn.status).toBe("your_turn");
+      if (turn.status !== "your_turn") {
+        throw new Error(`Expected owner turn, got ${turn.status}`);
+      }
+      service.passStick({
+        agent_id: owner.agent_id,
+        room_id: joined.room_id,
+        lease_id: turn.lease_id,
+        expected_turn_id: turn.turn_id,
+        to_agent_id: joined.agent_id,
+        handoff: {
+          status: "Owner is passing.",
+          next_action: "Harness should claim."
+        }
+      });
+    } finally {
+      service.close();
+    }
+
+    const eventsOut = await runCliProcess([
+      "events",
+      project,
+      "--wait",
+      "--after",
+      "0",
+      "--target",
+      "self",
+      "--timeout",
+      "100ms",
+      "--json"
+    ], "", harnessEnv);
+    const events = parseJsonLines(eventsOut.stdout);
+
+    expect(joined.agent_id).toMatch(/^codex:/);
+    expect(events.map((event) => event.event_type)).toEqual([
+      "message_sent",
+      "pass"
+    ]);
+    expect(events[0]).toMatchObject({
+      to_agent_id: joined.agent_id,
+      payload: { body: "direct to harness" }
+    });
+    expect(events[1]).toMatchObject({
+      to_agent_id: joined.agent_id,
+      handoff: {
+        status: "Owner is passing.",
+        next_action: "Harness should claim."
+      }
     });
   });
 });
@@ -1535,6 +1794,39 @@ function sendCliTestMessage(
   }
 }
 
+async function passCliTestTurn(
+  roomId: string,
+  ownerAgentId: string,
+  targetAgentId: string
+): Promise<void> {
+  const service = new TalkingStickService();
+  try {
+    const turn = await service.waitForTurn({
+      agent_id: ownerAgentId,
+      room_id: roomId,
+      max_wait_ms: 0
+    });
+    expect(turn.status).toBe("your_turn");
+    if (turn.status !== "your_turn") {
+      throw new Error(`Expected owner turn, got ${turn.status}`);
+    }
+
+    service.passStick({
+      agent_id: ownerAgentId,
+      room_id: roomId,
+      lease_id: turn.lease_id,
+      expected_turn_id: turn.turn_id,
+      to_agent_id: targetAgentId,
+      handoff: {
+        status: "Owner is passing.",
+        next_action: "Receiver should claim."
+      }
+    });
+  } finally {
+    service.close();
+  }
+}
+
 function parseJsonLines(output: string): any[] {
   return output
     .split("\n")
@@ -1548,7 +1840,11 @@ interface SpawnedCliProcess {
   stderr: () => string;
 }
 
-function spawnCliProcess(argv: string[], stdin = ""): SpawnedCliProcess {
+function spawnCliProcess(
+  argv: string[],
+  stdin = "",
+  extraEnv: NodeJS.ProcessEnv = {}
+): SpawnedCliProcess {
   const child = spawn(
     process.execPath,
     ["--import", "tsx", "src/cli.ts", ...argv],
@@ -1556,6 +1852,7 @@ function spawnCliProcess(argv: string[], stdin = ""): SpawnedCliProcess {
       cwd: process.cwd(),
       env: {
         ...process.env,
+        ...extraEnv,
         TALKING_STICK_DISABLE_SKILL_SYNC: "1"
       },
       stdio: "pipe"
@@ -1581,9 +1878,10 @@ function spawnCliProcess(argv: string[], stdin = ""): SpawnedCliProcess {
 
 async function runCliProcess(
   argv: string[],
-  stdin: string
+  stdin: string,
+  extraEnv: NodeJS.ProcessEnv = {}
 ): Promise<{ stdout: string; stderr: string }> {
-  const processState = spawnCliProcess(argv, stdin);
+  const processState = spawnCliProcess(argv, stdin, extraEnv);
   const close = await waitForProcessClose(processState.child);
   if (close.code !== 0) {
     throw new Error(
@@ -1641,6 +1939,52 @@ async function waitForFirstStdoutLine(
   });
 }
 
+async function waitForStdoutLines(
+  processState: SpawnedCliProcess,
+  count: number,
+  timeoutMs = 3000
+): Promise<string[]> {
+  const existing = stdoutLines(processState.stdout());
+  if (existing.length >= count) {
+    return existing.slice(0, count);
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      processState.child.kill("SIGKILL");
+      reject(
+        new Error(
+          `Timed out waiting for ${count} stdout lines. stderr=${processState.stderr()}`
+        )
+      );
+    }, timeoutMs);
+    const onData = () => {
+      const lines = stdoutLines(processState.stdout());
+      if (lines.length >= count) {
+        cleanup();
+        resolve(lines.slice(0, count));
+      }
+    };
+    const onClose = () => {
+      cleanup();
+      reject(
+        new Error(
+          `CLI process closed before ${count} stdout lines. stderr=${processState.stderr()}`
+        )
+      );
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      processState.child.stdout.off("data", onData);
+      processState.child.off("close", onClose);
+    };
+
+    processState.child.stdout.on("data", onData);
+    processState.child.once("close", onClose);
+  });
+}
+
 async function waitForProcessClose(
   child: ChildProcessWithoutNullStreams,
   timeoutMs = 3000
@@ -1664,9 +2008,67 @@ async function waitForProcessClose(
   });
 }
 
+async function releaseIfHeld(project: string, agentId: string): Promise<void> {
+  try {
+    await captureStdout([
+      "release",
+      project,
+      "--agent",
+      agentId,
+      "--status",
+      "Cleanup release.",
+      "--next-action",
+      "Continue.",
+      "--json"
+    ]);
+  } catch {
+    // Best-effort test cleanup; the assertion that matters already happened.
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function killPidIfAlive(pid: number | undefined): void {
+  if (pid === undefined || !isPidAlive(pid)) {
+    return;
+  }
+
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    // Best-effort test cleanup.
+  }
+}
+
+async function waitForPidGone(pid: number, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) {
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error(`Timed out waiting for pid ${pid} to exit.`);
+}
+
 function firstLine(output: string): string | null {
-  const line = output.split("\n").find((item) => item.length > 0);
+  const line = stdoutLines(output)[0];
   return line ?? null;
+}
+
+function stdoutLines(output: string): string[] {
+  return output.split("\n").filter((item) => item.length > 0);
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function captureStdout(argv: string[]): Promise<string> {
