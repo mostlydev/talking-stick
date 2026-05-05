@@ -37,8 +37,9 @@ Useful commands:
 - `tt events . --after N --target any --json`
 - `tt notes add "..." --json`
 - `tt notes list --json`
+- `tt events --follow --target self --json`
 - `tt msg send <recipient|room> "..." --json`
-- `tt msg recv --follow --target self --json`
+- `tt msg recv --follow --target self --json` (messages-only fallback when an event-stream consumer is too broad)
 - `tt release . --stdin`
 - `tt assign <agent_id|next> . --stdin`
 - `tt take . --reason "..." --json`
@@ -59,6 +60,14 @@ tt join . --json
 
 Keep the returned room id and canonical path in mind, but keep using the workspace path (`.` is fine) for later CLI commands. If the workspace is nested, accept the resolved canonical path the CLI returns.
 
+Right after joining, start a background ambient receiver so direct messages and turn passes/reservations surface as soon as they happen instead of waiting for the next time you poll:
+
+```sh
+tt events --follow --target self --json
+```
+
+If your harness can stream a child process's stdout into the model's context (Claude Code's Monitor, Codex `attach`-style), this is enough — each line becomes an event you see mid-task. If your harness can only notice that a backgrounded command exits, use the polling fallback in §4.5. Without an ambient receiver, neither messages nor turn handoffs reach you between deliberate `tt wait` / `tt events` calls.
+
 ### 3. Wait Before Shared Work
 
 Before making shared edits or running owner-style actions, run:
@@ -76,7 +85,7 @@ Possible outcomes:
 - `takeover_available`: surface the reason and make takeover explicit
 - `closed`: stop and explain that the room is closed
 
-A successful `tt wait` or `tt take` starts an internal `tt guard` lease guardian and returns `guardian_pid` in JSON. Do not kill that guardian. If work may take minutes and the JSON response does not show a guardian, stop and inspect before starting long edits because the lease may expire while you work.
+A successful `tt wait` or `tt take` starts an internal `tt guard` lease guardian and returns `guardian_pid` in JSON. Verify the field is present and the pid is alive before you start a long edit; the guardian is what keeps your lease from expiring after the foreground `tt wait` process exits. If `guardian_pid` is missing or the pid is gone, stop, run `tt wait` again to repair the guardian (it will detect the existing ownership and respawn the guardian), and only then continue. Do not kill that guardian.
 
 ### 4. While Waiting
 
@@ -113,14 +122,20 @@ tt msg send <recipient|room> "message body" --json
 
 Recipient is a full `agent_id`, an unambiguous active display name, or the literal `room` for broadcast. `--interrupt` marks the message as time-sensitive; the receiver decides whether to act on it now.
 
-Receive with the mode your harness can observe:
+Receive with the mode your harness can observe. The recommended primary path is the unified event stream you started in §2:
 
 ```sh
-tt msg recv --follow --target self --json
-tt msg recv --wait --after <last_event_seq> --target self --json
+tt events --follow --target self --json
 ```
 
-Use `--follow` when the harness can monitor stdout from a long-running child. Use `--wait --after <last_event_seq>` when it can only notice that a background command completed. Restart with the returned cursor to resume.
+That streams direct messages, broadcasts, and turn passes/reservations as a single ordered feed — one JSON event per line. Use it whenever your harness can stream a child process's stdout into the model's context. If the harness can only notice that a backgrounded command exits, use the polling fallbacks:
+
+```sh
+tt events --wait --after <last_event_seq> --target self --json   # all event types
+tt msg recv --wait --after <last_event_seq> --target self --json # messages only
+```
+
+Restart with the returned cursor to resume. `tt msg recv --follow` still exists for harnesses that want a messages-only feed, but the event stream is preferred because turn handoffs use the same channel and a messages-only consumer silently misses them.
 
 Messages are public room events. Any room member can read them with `tt events --target any`. `to_agent_id` is routing, not an ACL.
 

@@ -126,16 +126,20 @@ Implementation shape:
 - Reuse the existing harness config discovery/write helpers and adapter-level install shape. Removal should be the inverse of install, not a second parser/matcher.
 - Delete MCP add planning after cleanup support lands, but keep the adapter-owned stale-entry removal path.
 - Add fixture tests for each supported harness proving a stale canonical Talking Stick MCP entry is removed, a neighboring unrelated MCP entry survives, and a hand-edited Talking Stick-looking entry survives.
+- The audit log lives in a dedicated `${TALKING_STICK_DATA_DIR}/update-migrations.log`, not the general maintenance log. Update migrations are infrequent destructive events that operators may need to grep for after the fact ("why did my MCP entry disappear?"); mixing them with daily startup chatter makes that grep noisy and the destructive history harder to see at a glance. Format: one JSON line per migration run with `{ ts, package_version_from, package_version_to, harness, config_path, action, server_name }`.
 
-### OOB Messaging
+### OOB Messaging And Ambient Receive
 
 OOB stays on the existing `room_events` / `message_sent` substrate, but all live receive UX is CLI-based.
 
+The recommended ambient consumer is **`tt events --follow --target self --json`**, not `tt msg recv --follow`. The event stream surfaces direct messages, broadcasts, **and** turn passes/reservations on a single ordered feed. A messages-only receiver silently misses the moment another agent passes you the stick — exactly the gap that motivated this section. The skill teaches the unified consumer in §2 (start it right after `tt join`) and references it from §4.5.
+
 Required receive contract:
 
-- `tt msg recv --follow --target self --json` emits one JSON event per line.
+- `tt events --follow --target self --json` emits one JSON event per line for messages, broadcasts, and turn handoffs targeting the caller.
 - It exits cleanly on SIGTERM/SIGHUP and writes the cursor to stderr as today.
-- `tt msg recv --wait --after <cursor> --json` exits after the next matching batch for harnesses that cannot monitor long-running stdout.
+- `tt events --wait --after <cursor> --target self --json` exits after the next matching batch for harnesses that cannot monitor long-running stdout.
+- `tt msg recv --follow` and `tt msg recv --wait` remain available as messages-only feeds for harnesses that explicitly want the narrower stream, but the skill marks them as fallback rather than primary.
 - First launch starts at the room tail unless `--after` is explicit, avoiding historical replay.
 - Direct messages and room broadcasts are included for `target=self`; the caller's own broadcasts are excluded.
 
@@ -212,3 +216,5 @@ Before merging the code-removal PR:
 3. Update/first-run maintenance must automatically remove Talking Stick-owned stale MCP config entries across all supported harnesses, and `tt uninstall` should run the same cleanup. It must not touch unrelated harness config.
 4. Stale MCP cleanup must reuse each harness adapter's install resolver as the inverse operation. Do not reimplement config matching separately.
 5. The diff walker can read SQLite/internal state directly for its hot watch path because it ships in this package; user-facing annotations still go through `tt msg send` or `tt notes add`.
+6. The skill's primary ambient receiver is `tt events --follow --target self --json`, not `tt msg recv --follow`. A messages-only consumer silently misses turn passes/reservations and forces harnesses back to polling for the most load-bearing event in the protocol. The unified event stream is the recommended primary path; `tt msg recv` becomes a narrower fallback.
+7. Cleanup audit lives in a dedicated `update-migrations.log`, not folded into general maintenance logging. Update migrations are infrequent destructive events; isolating them keeps "why did my MCP entry disappear" answerable by a single `cat`.
