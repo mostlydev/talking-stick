@@ -39,7 +39,6 @@ export {
   resolveContextPath,
   resolveWorkspaceRoot
 } from "./path-resolution.js";
-export { createMcpServer, runStdioServer } from "./mcp-server.js";
 export {
   SUPPORTED_HARNESSES,
   MissingHarnessError,
