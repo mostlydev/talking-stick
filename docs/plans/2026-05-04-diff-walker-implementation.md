@@ -775,14 +775,18 @@ Reviewer alternation matches the OOB cycle pattern. Each stage gets its own comm
 | D2 | Lease TTL | 5 min | codex |
 | D3 | Projection git object format | default git object format; CAS stays sha256 | accepted |
 | D4 | TOML parser: dependency vs hand-rolled | `toml` package | revised by codex |
-| D5 | IPC fallback on Windows | named pipe; polling backup | codex |
+| D5 | IPC fallback on Windows | v1 ships polling-only on Windows; named pipe deferred to v2 (the polling 250 ms cadence is fine for the walker's update rate, and named-pipe APIs are not pulling their weight before we've shipped anything) | accepted with scope cut |
 | D6 | Watcher reads talking-stick state via service import vs MCP client vs read-only SQL | narrow read-only SQL adapter for attribution | revised by codex |
 | D7 | Test fixture style for fs-watch tests | use real fs + chokidar with short waits, NOT mock fs | codex |
 | D8 | terminal UI library | `blessed` + `@types/blessed`; no local type shim | revised by codex |
-| D9 | Stage gating — do all stages need their own PR, or can we land 1+2 together since 2 has no CLI surface? | one PR per stage; bisectability matters | codex |
-| D10 | Scope of `tt walk --print` (stage 4) — JSON dump vs unified-diff stream? | unified-diff stream of latest N batches | codex |
+| D9 | Stage gating | one PR per stage is the default; stages 1+2 may share a PR if review is in-flight at the same time and the diff stays bisectable by commit (substrate commit, then scanner commit) | accepted with stage-1+2 carve-out |
+| D10 | Scope of `tt walk --print` (stage 4) | `tt walk --print [--batches N=10] [--since <change_seq>] [--format unified\|json]` — `unified` is default and emits the projection diff per batch with a separator header; `json` emits one row per `file_changes` row plus its diff text. Used for stage 4 acceptance and CI smoke. | accepted with concrete flag spec |
 
 ---
+
+## Identity consistency (gates stage 5)
+
+The watcher process must derive its own `agent_id` by the same ancestry walk the MCP server uses, not by the env-hash path that `tt whoami` currently takes. CLI/MCP identity divergence is tracked as **[issue #19](https://github.com/mostlydev/talking-stick/issues/19)** — `harness_cli_env_detection` and the MCP ancestry resolver currently produce different ids for the same harness session, which silently breaks `tt msg recv --target self` and would also break stage 5 routing if the watcher ever asks "is this annotation's `attributed_to` me?". Stage 5 must either land after #19 is fixed, or use the MCP-derived id explicitly via `TT_HARNESS_AGENT_ID` and document the workaround in the watcher startup path.
 
 ## Risks I'd flag for codex specifically
 
