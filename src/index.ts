@@ -45,7 +45,6 @@ export {
   MissingHarnessError,
   detectHarness,
   parseHarnessList,
-  planInstall,
   planUninstall,
   resolveHarnessConfigDir,
   resolveOpencodeConfigDir,
@@ -75,6 +74,17 @@ export {
   type SkillSyncTargetResult,
   type SkillInstallOptions
 } from "./skill-install.js";
+export {
+  readPackageVersion,
+  readUpdateMigrationState,
+  resolveUpdateMigrationStatePath,
+  runFirstRunMcpMigration,
+  runStaleMcpCleanup,
+  writeUpdateMigrationState,
+  type FirstRunMcpMigrationRun,
+  type StaleMcpCleanupRun,
+  type UpdateMigrationState
+} from "./update-migration.js";
 export {
   createSystemProcessInspector,
   terminateKnownProcess,

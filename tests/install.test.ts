@@ -3,7 +3,6 @@ import {
   detectHarness,
   parseHarnessList,
   resolveHarnessConfigDir,
-  planInstall,
   planUninstall,
   resolveOpencodeConfigPath,
   runAction,
@@ -12,106 +11,17 @@ import {
   type InstallOptions
 } from "../src/install.js";
 
-describe("planInstall", () => {
+describe("planUninstall", () => {
   test.each([
-    ["claude-code", "claude mcp add -s user talking-stick -- tt mcp"],
-    ["codex", "codex mcp add talking-stick -- tt mcp"],
-    ["gemini", "gemini mcp add -s user -t stdio talking-stick tt mcp"]
-  ] satisfies Array<[HarnessId, string]>)("produces expected exec command for %s", (harness, expected) => {
-    const action = planInstall(harness);
+    ["claude-code", "claude mcp remove -s user talking-stick"],
+    ["codex", "codex mcp remove talking-stick"],
+    ["gemini", "gemini mcp remove -s user talking-stick"]
+  ] satisfies Array<[HarnessId, string]>)("plans stale MCP removal for %s", (harness, expected) => {
+    const action = planUninstall(harness);
     expect(action.kind).toBe("exec");
     expect(action.description).toBe(expected);
   });
 
-  test("produces a file-patch action for opencode with merged config", () => {
-    const memory = memoryFs();
-    const action = planInstall("opencode", {
-      env: { HOME: "/tmp/home" },
-      platform: "linux",
-      homeDir: "/tmp/home",
-      ...memory.hooks
-    });
-    expect(action.kind).toBe("file-patch");
-    if (action.kind !== "file-patch") throw new Error("unreachable");
-
-    action.apply();
-    const written = memory.files.get("/tmp/home/.config/opencode/opencode.json");
-    expect(written).toBeDefined();
-    const config = JSON.parse(written!) as { mcp: Record<string, unknown> };
-    expect(config.mcp["talking-stick"]).toEqual({
-      type: "local",
-      command: ["tt", "mcp"],
-      enabled: true
-    });
-  });
-
-  test("opencode install preserves existing mcp entries and other config keys", () => {
-    const memory = memoryFs({
-      "/home/u/.config/opencode/opencode.json": JSON.stringify({
-        theme: "opendark",
-        mcp: {
-          other: { type: "local", command: ["other", "run"], enabled: true }
-        }
-      })
-    });
-    const action = planInstall("opencode", {
-      env: {},
-      platform: "linux",
-      homeDir: "/home/u",
-      ...memory.hooks
-    });
-    if (action.kind !== "file-patch") throw new Error("unreachable");
-    action.apply();
-
-    const config = JSON.parse(memory.files.get("/home/u/.config/opencode/opencode.json")!);
-    expect(config.theme).toBe("opendark");
-    expect(config.mcp.other).toEqual({ type: "local", command: ["other", "run"], enabled: true });
-    expect(config.mcp["talking-stick"]).toEqual({
-      type: "local",
-      command: ["tt", "mcp"],
-      enabled: true
-    });
-  });
-
-  test("honors XDG_CONFIG_HOME for opencode", () => {
-    const configPath = resolveOpencodeConfigPath({
-      env: { XDG_CONFIG_HOME: "/custom/config" },
-      platform: "linux",
-      homeDir: "/home/u"
-    });
-    expect(configPath).toBe("/custom/config/opencode/opencode.json");
-  });
-
-  test("resolves expected harness config directories", () => {
-    expect(resolveHarnessConfigDir("claude-code", { homeDir: "/home/u" })).toBe("/home/u/.claude");
-    expect(resolveHarnessConfigDir("codex", { homeDir: "/home/u" })).toBe("/home/u/.codex");
-    expect(resolveHarnessConfigDir("gemini", { homeDir: "/home/u" })).toBe("/home/u/.gemini");
-    expect(resolveHarnessConfigDir("opencode", { env: {}, homeDir: "/home/u" })).toBe(
-      "/home/u/.config/opencode"
-    );
-  });
-
-  test("serverName and serverCommand overrides are respected", () => {
-    const action = planInstall("claude-code", {
-      serverName: "ts-alpha",
-      serverCommand: ["node", "/abs/path/cli.js", "mcp"]
-    });
-    if (action.kind !== "exec") throw new Error("unreachable");
-    expect(action.args).toEqual([
-      "mcp",
-      "add",
-      "-s",
-      "user",
-      "ts-alpha",
-      "--",
-      "node",
-      "/abs/path/cli.js",
-      "mcp"
-    ]);
-  });
-});
-
-describe("planUninstall", () => {
   test("removes the server entry from opencode config", () => {
     const memory = memoryFs({
       "/home/u/.config/opencode/opencode.json": JSON.stringify({
@@ -135,9 +45,47 @@ describe("planUninstall", () => {
     expect(config.mcp.keep).toBeDefined();
   });
 
-  test("produces claude mcp remove with user scope", () => {
-    const action = planUninstall("claude-code");
-    expect(action.description).toBe("claude mcp remove -s user talking-stick");
+  test("preserves existing opencode config keys while removing MCP", () => {
+    const memory = memoryFs({
+      "/home/u/.config/opencode/opencode.json": JSON.stringify({
+        theme: "opendark",
+        mcp: {
+          "talking-stick": { type: "local", command: ["tt", "mcp"], enabled: true },
+          other: { type: "local", command: ["other", "run"], enabled: true }
+        }
+      })
+    });
+    const action = planUninstall("opencode", {
+      env: {},
+      platform: "linux",
+      homeDir: "/home/u",
+      ...memory.hooks
+    });
+    if (action.kind !== "file-patch") throw new Error("unreachable");
+    action.apply();
+
+    const config = JSON.parse(memory.files.get("/home/u/.config/opencode/opencode.json")!);
+    expect(config.theme).toBe("opendark");
+    expect(config.mcp.other).toEqual({ type: "local", command: ["other", "run"], enabled: true });
+    expect(config.mcp["talking-stick"]).toBeUndefined();
+  });
+
+  test("honors XDG_CONFIG_HOME for opencode", () => {
+    const configPath = resolveOpencodeConfigPath({
+      env: { XDG_CONFIG_HOME: "/custom/config" },
+      platform: "linux",
+      homeDir: "/home/u"
+    });
+    expect(configPath).toBe("/custom/config/opencode/opencode.json");
+  });
+
+  test("resolves expected harness config directories", () => {
+    expect(resolveHarnessConfigDir("claude-code", { homeDir: "/home/u" })).toBe("/home/u/.claude");
+    expect(resolveHarnessConfigDir("codex", { homeDir: "/home/u" })).toBe("/home/u/.codex");
+    expect(resolveHarnessConfigDir("gemini", { homeDir: "/home/u" })).toBe("/home/u/.gemini");
+    expect(resolveHarnessConfigDir("opencode", { env: {}, homeDir: "/home/u" })).toBe(
+      "/home/u/.config/opencode"
+    );
   });
 });
 
@@ -199,91 +147,87 @@ describe("parseHarnessList", () => {
 });
 
 describe("runAction", () => {
-  test("skips native add when a Claude MCP server is already registered", async () => {
-    const action = planInstall("claude-code");
+  test("skips native remove when a Claude MCP server is already absent", async () => {
+    const action = planUninstall("claude-code");
     const calls: string[][] = [];
     const result = await runAction(action, {
       which: () => "/usr/local/bin/claude",
       run: async (_command, args) => {
         calls.push(args);
-        return { exitCode: 0, stdout: "talking-stick: tt mcp", stderr: "" };
+        return { exitCode: 1, stdout: "", stderr: "not found" };
       }
     });
 
     expect(result.ok).toBe(true);
-    expect(result.status).toBe("already_present");
+    expect(result.status).toBe("already_absent");
     expect(result.message).toBe(
-      "MCP server 'talking-stick' already registered in Claude Code user config."
+      "MCP server 'talking-stick' is not registered in Claude Code user config."
     );
     expect(calls).toEqual([["mcp", "get", "talking-stick"]]);
   });
 
-  test("runs native add and reports added when preflight does not find the server", async () => {
-    const action = planInstall("claude-code");
+  test("runs native remove and reports removed when preflight finds the server", async () => {
+    const action = planUninstall("claude-code");
     const calls: string[][] = [];
     const result = await runAction(action, {
       which: () => "/usr/local/bin/claude",
       run: async (_command, args) => {
         calls.push(args);
         if (args[1] === "get") {
-          return { exitCode: 1, stdout: "", stderr: "not found" };
+          return { exitCode: 0, stdout: "talking-stick: tt mcp", stderr: "" };
         }
-        return { exitCode: 0, stdout: "Added talking-stick", stderr: "" };
+        return { exitCode: 0, stdout: "Removed talking-stick", stderr: "" };
       }
     });
 
     expect(result.ok).toBe(true);
-    expect(result.status).toBe("added");
+    expect(result.status).toBe("removed");
     expect(result.message).toBe(
-      "MCP server 'talking-stick' registered in Claude Code user config."
+      "MCP server 'talking-stick' removed from Claude Code user config."
     );
     expect(calls).toEqual([
       ["mcp", "get", "talking-stick"],
-      ["mcp", "add", "-s", "user", "talking-stick", "--", "tt", "mcp"]
+      ["mcp", "remove", "-s", "user", "talking-stick"]
     ]);
   });
 
-  test("marks ok=false on non-zero exit and prefers stderr", async () => {
-    const action = planInstall("claude-code");
+  test("marks ok=false on non-zero remove and prefers stderr", async () => {
+    const action = planUninstall("claude-code");
     const result = await runAction(action, {
       which: () => "/usr/local/bin/claude",
       run: async (_command, args) => {
         if (args[1] === "get") {
-          return { exitCode: 1, stdout: "", stderr: "not found" };
+          return { exitCode: 0, stdout: "talking-stick: tt mcp", stderr: "" };
         }
-        return { exitCode: 2, stdout: "", stderr: "claude: command not found" };
+        return { exitCode: 2, stdout: "", stderr: "claude: remove failed" };
       }
     });
     expect(result.ok).toBe(false);
     expect(result.status).toBe("failed");
-    expect(result.message).toBe("claude: command not found");
+    expect(result.message).toBe("claude: remove failed");
   });
 
-  test("treats native already-exists errors as already present", async () => {
-    const action = planInstall("claude-code");
+  test("treats native already-absent errors as already absent", async () => {
+    const action = planUninstall("claude-code");
     const result = await runAction(action, {
       which: () => "/usr/local/bin/claude",
       run: async (_command, args) => {
         if (args[1] === "get") {
-          return { exitCode: 1, stdout: "", stderr: "not found" };
+          return { exitCode: 0, stdout: "talking-stick: tt mcp", stderr: "" };
         }
-        return {
-          exitCode: 1,
-          stdout: "",
-          stderr: "MCP server talking-stick already exists in user config"
-        };
+        return { exitCode: 1, stdout: "", stderr: "MCP server talking-stick not found" };
       }
     });
 
     expect(result.ok).toBe(true);
-    expect(result.status).toBe("already_present");
+    expect(result.status).toBe("already_absent");
     expect(result.message).toBe(
-      "MCP server 'talking-stick' already registered in Claude Code user config."
+      "MCP server 'talking-stick' is not registered in Claude Code user config."
     );
   });
 
   test("fails cleanly before spawn when the executable is not on PATH", async () => {
-    const action = planInstall("codex");
+    const action = planUninstall("codex");
     let invoked = false;
     const result = await runAction(action, {
       which: () => null,
@@ -300,7 +244,7 @@ describe("runAction", () => {
   });
 
   test("skips missing exec harnesses when requested", async () => {
-    const action = planInstall("codex");
+    const action = planUninstall("codex");
     let invoked = false;
     const result = await runAction(action, {
       skipMissing: true,
@@ -318,9 +262,9 @@ describe("runAction", () => {
     expect(result.message).toBe("codex not on PATH");
   });
 
-  test("skips opencode install when its config directory is missing", async () => {
+  test("skips opencode removal when its config directory is missing", async () => {
     const memory = memoryFs();
-    const action = planInstall("opencode", {
+    const action = planUninstall("opencode", {
       env: {},
       platform: "linux",
       homeDir: "/home/u",
@@ -339,40 +283,19 @@ describe("runAction", () => {
     expect(memory.files.has("/home/u/.config/opencode/opencode.json")).toBe(false);
   });
 
-  test("installs opencode config when skipMissing is set and config directory exists", async () => {
-    const memory = memoryFs({}, ["/home/u/.config/opencode"]);
-    const action = planInstall("opencode", {
-      env: {},
-      platform: "linux",
-      homeDir: "/home/u",
-      skipMissing: true,
-      ...memory.hooks
-    });
-
-    const result = await runAction(action, {
-      skipMissing: true,
-      ...memory.hooks
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.status).toBe("added");
-    expect(result.skipped).toBeUndefined();
-    expect(memory.files.has("/home/u/.config/opencode/opencode.json")).toBe(true);
-  });
-
-  test("skips opencode install when the MCP config is already exact", async () => {
+  test("skips opencode removal when the MCP config is already absent", async () => {
     const memory = memoryFs({
       "/home/u/.config/opencode/opencode.json": JSON.stringify({
         mcp: {
-          "talking-stick": {
+          keep: {
             type: "local",
-            command: ["tt", "mcp"],
+            command: ["keep"],
             enabled: true
           }
         }
       })
     }, ["/home/u/.config/opencode"]);
-    const action = planInstall("opencode", {
+    const action = planUninstall("opencode", {
       env: {},
       platform: "linux",
       homeDir: "/home/u",
@@ -387,22 +310,22 @@ describe("runAction", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(result.status).toBe("already_present");
+    expect(result.status).toBe("already_absent");
     expect(memory.files.get("/home/u/.config/opencode/opencode.json")).toBe(before);
   });
 
-  test("skips gemini add when settings already contain the MCP server", async () => {
+  test("skips gemini remove when settings do not contain the MCP server", async () => {
     const memory = memoryFs({
       "/home/u/.gemini/settings.json": JSON.stringify({
         mcpServers: {
-          "talking-stick": {
-            command: "tt",
+          other: {
+            command: "other",
             args: ["mcp"]
           }
         }
       })
     });
-    const action = planInstall("gemini", {
+    const action = planUninstall("gemini", {
       env: {},
       platform: "linux",
       homeDir: "/home/u",
@@ -424,14 +347,14 @@ describe("runAction", () => {
 
     expect(invoked).toBe(false);
     expect(result.ok).toBe(true);
-    expect(result.status).toBe("already_present");
+    expect(result.status).toBe("already_absent");
     expect(result.message).toBe(
-      "MCP server 'talking-stick' already registered in Gemini user config."
+      "MCP server 'talking-stick' is not registered in Gemini user config."
     );
   });
 
   test("uses the resolved executable path for direct binaries", async () => {
-    const action = planInstall("codex");
+    const action = planUninstall("codex");
     const calls: Array<{
       command: string;
       args: string[];
@@ -449,7 +372,7 @@ describe("runAction", () => {
           windowsHide: options?.windowsHide
         });
         if (resolvedArgs[1] === "get") {
-          return { exitCode: 1, stdout: "", stderr: "not found" };
+          return { exitCode: 0, stdout: "talking-stick: tt mcp", stderr: "" };
         }
         return { exitCode: 0, stdout: "ok", stderr: "" };
       }
@@ -458,13 +381,13 @@ describe("runAction", () => {
     expect(result.ok).toBe(true);
     expect(calls.at(-1)).toEqual({
       command: "C:\\Tools\\codex.exe",
-      args: ["mcp", "add", "talking-stick", "--", "tt", "mcp"],
+      args: ["mcp", "remove", "talking-stick"],
       windowsHide: true
     });
   });
 
   test("uses cmd.exe to launch .cmd wrappers on Windows", async () => {
-    const action = planInstall("codex");
+    const action = planUninstall("codex");
     const calls: Array<{
       command: string;
       args: string[];
@@ -481,8 +404,8 @@ describe("runAction", () => {
           args: resolvedArgs,
           windowsHide: options?.windowsHide
         });
-        if (resolvedArgs.at(-2) === "get") {
-          return { exitCode: 1, stdout: "", stderr: "not found" };
+        if (resolvedArgs.at(-1) === "talking-stick" && resolvedArgs.at(-3) === "get") {
+          return { exitCode: 0, stdout: "talking-stick: tt mcp", stderr: "" };
         }
         return { exitCode: 0, stdout: "ok", stderr: "" };
       }
@@ -497,18 +420,15 @@ describe("runAction", () => {
         "/c",
         "C:\\Tools\\codex.cmd",
         "mcp",
-        "add",
-        "talking-stick",
-        "--",
-        "tt",
-        "mcp"
+        "remove",
+        "talking-stick"
       ],
       windowsHide: true
     });
   });
 
   test("rejects cmd.exe wrapper args with Windows command metacharacters", async () => {
-    const action = planInstall("codex", { serverName: "talking&stick" });
+    const action = planUninstall("codex", { serverName: "talking&stick" });
     let invoked = false;
 
     const result = await runAction(action, {
@@ -530,11 +450,14 @@ describe("runAction", () => {
     );
   });
 
-  test("converts thrown spawn errors into a normal install failure", async () => {
-    const action = planInstall("claude-code");
+  test("converts thrown spawn errors into a normal uninstall failure", async () => {
+    const action = planUninstall("claude-code");
     const result = await runAction(action, {
       which: () => "/usr/local/bin/claude",
-      run: async () => {
+      run: async (_command, args) => {
+        if (args[1] === "get") {
+          return { exitCode: 0, stdout: "talking-stick: tt mcp", stderr: "" };
+        }
         throw new Error("spawn /usr/local/bin/claude EACCES");
       }
     });

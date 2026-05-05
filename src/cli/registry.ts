@@ -1,11 +1,9 @@
-import { runStdioServer } from "../index.js";
 import { runGuardCommand } from "./guardian.js";
 import {
   runInstallCommand,
-  runInstallSkillCommand,
+  runMcpMigrationCommand,
   runSelfUpdateCommand,
-  runUninstallCommand,
-  runUninstallSkillCommand
+  runUninstallCommand
 } from "./install-commands.js";
 import { handleMsgCommand } from "./msg-commands.js";
 import { handleNotesCommand } from "./notes-commands.js";
@@ -47,15 +45,6 @@ export interface CommandEntry {
 
 export const COMMAND_REGISTRY: CommandEntry[] = [
   {
-    name: "mcp",
-    needsRuntime: false,
-    startupMaintenance: false,
-    internal: true,
-    usage: "tt mcp",
-    description: "Run the MCP server over stdio.",
-    handler: () => runStdioServer()
-  },
-  {
     name: "guard",
     needsRuntime: false,
     startupMaintenance: false,
@@ -70,7 +59,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: "tt install <harness...> | --all [--print] [--copy] [--link]",
-    description: "Install Talking Stick into harness MCP configs and skills.",
+    description: "Install the Talking Stick skill and remove stale MCP registrations.",
     handler: ({ parsed }) => runInstallCommand(parsed)
   },
   {
@@ -79,35 +68,26 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: "tt uninstall <harness...> | --all [--print]",
-    description: "Remove Talking Stick from harness MCP configs and skills.",
+    description: "Remove the Talking Stick skill and stale MCP registrations.",
     handler: ({ parsed }) => runUninstallCommand(parsed)
-  },
-  {
-    name: "install-skill",
-    needsRuntime: false,
-    startupMaintenance: false,
-    internal: false,
-    usage: "tt install-skill <harness...> | --all [--print] [--copy] [--link]",
-    description: "Install the bundled Talking Stick skill.",
-    handler: ({ parsed }) => runInstallSkillCommand(parsed)
-  },
-  {
-    name: "uninstall-skill",
-    needsRuntime: false,
-    startupMaintenance: false,
-    internal: false,
-    usage: "tt uninstall-skill <harness...> | --all [--print]",
-    description: "Remove the bundled Talking Stick skill.",
-    handler: ({ parsed }) => runUninstallSkillCommand(parsed)
   },
   {
     name: "self-update",
     needsRuntime: false,
-    startupMaintenance: true,
+    startupMaintenance: false,
     internal: false,
     usage: "tt self-update [--print] [--manager npm|pnpm|yarn|bun]",
     description: "Update the globally installed tt package.",
     handler: ({ parsed, cliEntryUrl }) => runSelfUpdateCommand(parsed, cliEntryUrl)
+  },
+  {
+    name: "migrate-mcp",
+    needsRuntime: false,
+    startupMaintenance: false,
+    internal: true,
+    usage: "tt migrate-mcp [--reason update|first-run|uninstall|manual] [--quiet]",
+    description: "Remove stale Talking Stick MCP registrations.",
+    handler: ({ parsed }) => runMcpMigrationCommand(parsed)
   },
   {
     name: "whoami",
