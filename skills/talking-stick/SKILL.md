@@ -44,7 +44,7 @@ Useful commands:
 - `tt assign <agent_id|next> . --stdin`
 - `tt take . --reason "..." --json`
 
-Some workspaces may also have sibling receive processes running `tt msg recv --wait` or `tt msg recv --follow`; leave them alone unless the operator explicitly asks you to stop or restart them.
+Some workspaces may also have sibling receive processes running `tt events --follow`, `tt msg recv --wait`, or `tt msg recv --follow`; leave them alone unless the operator explicitly asks you to stop or restart them.
 
 If coordination is required and `tt` is unavailable, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 

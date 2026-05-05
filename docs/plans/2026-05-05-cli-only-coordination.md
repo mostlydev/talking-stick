@@ -11,7 +11,7 @@ The new direction is simpler: **the `tt` CLI is the only harness contract.** Age
 ## Goals
 
 - Make every agent workflow expressible through CLI commands: `tt join`, `tt wait`, `tt release`, `tt assign`, `tt take`, `tt state`, `tt events`, `tt notes`, and `tt msg`.
-- Make OOB messaging CLI-first: `tt msg recv --follow` for live stdout consumers, `tt msg recv --wait --after <cursor>` for process-completion consumers.
+- Make ambient receive CLI-first: `tt events --follow --target self --json` for live stdout consumers, `tt events --wait --after <cursor> --target self --json` for process-completion consumers, and `tt msg recv` only for messages-only consumers.
 - Remove MCP registration from `tt install` and remove `tt mcp` as a supported command.
 - Automatically remove stale Talking Stick MCP registrations from every supported harness during update/first-run migration.
 - Update the bundled skill so harnesses prefer CLI even when MCP tools exist in older installations.
@@ -46,7 +46,8 @@ Core command mapping:
 | Events | `tt events [path] --after N --target any --json` |
 | Notes | `tt notes add/list ... --json` |
 | Send OOB | `tt msg send <recipient|room> <body...> --json` |
-| Receive OOB | `tt msg recv --follow --target self --json` |
+| Ambient receive | `tt events --follow --target self --json` |
+| Messages-only receive | `tt msg recv --follow --target self --json` |
 
 The skill should teach these exact commands. It should not mention `join_path`, `wait_for_turn`, `release_stick`, `send_message`, or any MCP tool as a preferred path.
 
@@ -158,7 +159,8 @@ This PR:
 
 - Change resolver precedence so harness-root ancestry beats terminal-session fallback when a harness env marker exists but no stable session id is present.
 - Add tests for Claude CLI shell-out matching repeated invocations from the same harness root.
-- Add child-process tests proving `tt msg recv --target self` receives a message addressed to the active CLI member without `TT_HARNESS_AGENT_ID`.
+- Add child-process tests proving `tt events --target self` receives direct messages and turn handoffs addressed to the active CLI member without `TT_HARNESS_AGENT_ID`.
+- Keep narrower coverage proving `tt msg recv --target self` receives direct messages without widening into non-message events.
 - Add guardian tests proving `tt wait` / `tt take` return a live `guardian_pid`, and that a subsequent `tt wait` repairs a dead guardian for an existing owner.
 - Keep `TT_HARNESS_AGENT_ID` override as the explicit escape hatch.
 
@@ -192,7 +194,7 @@ This PR:
 
 Before merging the code-removal PR:
 
-- Start Claude receiver with `tt msg recv --follow --target self --json`.
+- Start Claude receiver with `tt events --follow --target self --json`.
 - Start Codex receiver the same way.
 - Send direct and broadcast messages both directions.
 - Verify `tt wait --timeout 110s --json`, `tt release --stdin`, and `tt assign <agent>` work from harness shell-outs.
