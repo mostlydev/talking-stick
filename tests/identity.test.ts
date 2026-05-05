@@ -379,6 +379,37 @@ describe("deriveHarnessCliIdentity", () => {
     });
     expect(a!.agent_id).not.toBe(b!.agent_id);
   });
+
+  test("prefers harness root ancestry over terminal ids when the harness has no session id", () => {
+    const ancestryInspector = fakeInspector({
+      8000: { startTime: "Thu Apr 23 13:50:00 2026", command: "claude", ppid: 1 },
+      9000: { startTime: "Thu Apr 23 14:00:00 2026", command: "bash", ppid: 8000 },
+      9001: { startTime: "Thu Apr 23 14:05:00 2026", command: "bash", ppid: 8000 }
+    });
+
+    const first = deriveHarnessCliIdentity({
+      env: {
+        CLAUDECODE: "1",
+        ITERM_SESSION_ID: "w0t0p0:first"
+      },
+      username: "alice",
+      parentPid: 9000,
+      hostId: "test-host",
+      inspector: ancestryInspector
+    });
+    const second = deriveHarnessCliIdentity({
+      env: {
+        CLAUDECODE: "1",
+        ITERM_SESSION_ID: "w0t0p0:second"
+      },
+      username: "alice",
+      parentPid: 9001,
+      hostId: "test-host",
+      inspector: ancestryInspector
+    });
+
+    expect(first!.agent_id).toBe(second!.agent_id);
+  });
 });
 
 describe("CLI and MCP identity unification", () => {

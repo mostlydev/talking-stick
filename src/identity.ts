@@ -245,8 +245,6 @@ function resolveHarnessSessionId(
   inspector: ProcessInspector
 ): string {
   if (signal.sessionId) return `harness:${signal.sessionId}`;
-  const terminalId = resolveTerminalSessionId(env);
-  if (terminalId) return terminalId;
 
   const harnessRoot = findHarnessRootInAncestry(
     signal.harness,
@@ -257,6 +255,9 @@ function resolveHarnessSessionId(
   if (harnessRoot) {
     return `pid:${harnessRoot.pid}@${harnessRoot.startTime}`;
   }
+
+  const terminalId = resolveTerminalSessionId(env);
+  if (terminalId) return terminalId;
 
   if (parentInspection?.startTime) {
     return `pid:${parentPid}@${parentInspection.startTime}`;
