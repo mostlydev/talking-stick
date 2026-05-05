@@ -99,7 +99,7 @@ interface ExecInvocationError {
   error: string;
 }
 
-type InstallTargetState = "absent" | "present" | "different" | "unknown";
+export type InstallTargetState = "absent" | "present" | "different" | "unknown";
 
 interface ResolvedOptions {
   env: NodeJS.ProcessEnv;
