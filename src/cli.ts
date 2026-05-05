@@ -15,12 +15,15 @@ export {
   formatRelativeTime,
   shouldUseJson
 } from "./cli/output.js";
-export { shouldAutoSyncInstalledSkills } from "./cli/startup-maintenance.js";
+export {
+  shouldAutoSyncInstalledSkills,
+  shouldRunFirstRunMcpMigration
+} from "./cli/startup-maintenance.js";
 
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const parsed = parseCommand(argv);
 
-  runStartupMaintenance(parsed);
+  await runStartupMaintenance(parsed, import.meta.url);
 
   if (!parsed.name || parsed.name === "help" || parsed.name === "--help") {
     printHelp();

@@ -1,7 +1,7 @@
 {
   "name": "talking-stick",
   "version": "0.2.0",
-  "description": "MCP coordination server for path-scoped agent handoffs.",
+  "description": "CLI coordination tool for path-scoped agent handoffs.",
   "type": "module",
   "bin": {
     "tt": "dist/cli.js"
@@ -11,12 +11,14 @@
   },
   "files": [
     "dist",
+    "scripts",
     "skills",
     "docs",
     "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "postinstall": "node scripts/postinstall-mcp-cleanup.cjs",
     "prepare": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"

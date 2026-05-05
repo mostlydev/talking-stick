@@ -162,7 +162,6 @@ Commands:
   tt takeover [path] [--reason TEXT] [--operator-requested]
   tt notes add <body> [--turn N] [--path DIR] [--stdin]
   tt notes list [--all] [--after NOTE_ID] [--limit N] [--path DIR]
-  tt mcp
   tt install <harness...> | --all [--print] [--copy] [--link]
   tt uninstall <harness...> | --all [--print]
   tt self-update [--print] [--manager npm|pnpm|yarn|bun]

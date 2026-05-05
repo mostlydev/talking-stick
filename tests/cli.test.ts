@@ -9,6 +9,7 @@ import {
   parseHandoffJson,
   runCli,
   shouldAutoSyncInstalledSkills,
+  shouldRunFirstRunMcpMigration,
   shouldUseJson
 } from "../src/cli.js";
 import {
@@ -32,6 +33,7 @@ const ENV_KEYS = [
   "OPENCODE_RUN_ID",
   "OPENCODE_PID",
   "TALKING_STICK_DATA_DIR",
+  "TALKING_STICK_DISABLE_MCP_MIGRATION",
   "TALKING_STICK_DISABLE_SKILL_SYNC"
 ] as const;
 
@@ -233,8 +235,38 @@ describe("shouldAutoSyncInstalledSkills", () => {
     expect(
       shouldAutoSyncInstalledSkills({
         ...parsed,
-        name: "install-skill"
+        name: "uninstall"
       }, {})
+    ).toBe(false);
+  });
+});
+
+describe("shouldRunFirstRunMcpMigration", () => {
+  const parsed = {
+    name: "state",
+    positionals: [],
+    options: new Map<string, string | true>()
+  };
+  const installedUrl =
+    "file:///Users/alice/.local/share/mise/installs/node/lts/lib/node_modules/talking-stick/dist/cli.js";
+  const devUrl = "file:///Users/alice/dev/ai/talking-stick/src/cli.ts";
+
+  test("runs for installed package commands with startup maintenance", () => {
+    expect(shouldRunFirstRunMcpMigration(parsed, installedUrl, {})).toBe(true);
+  });
+
+  test("skips dev checkouts, disabled env, and installer commands", () => {
+    expect(shouldRunFirstRunMcpMigration(parsed, devUrl, {})).toBe(false);
+    expect(
+      shouldRunFirstRunMcpMigration(parsed, installedUrl, {
+        TALKING_STICK_DISABLE_MCP_MIGRATION: "1"
+      })
+    ).toBe(false);
+    expect(
+      shouldRunFirstRunMcpMigration({
+        ...parsed,
+        name: "install"
+      }, installedUrl, {})
     ).toBe(false);
   });
 });
@@ -922,23 +954,51 @@ describe("tt notes", () => {
     ).rejects.toThrow(/--manager must be one of/);
   });
 
-  test("tt install --print includes MCP and skill actions", async () => {
-    const out = await captureStdout(["install", "codex", "--print"]);
+  test("tt install --print includes skill actions and no MCP add", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
+    tempDirs.push(home);
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    let out = "";
+    try {
+      out = await captureStdout(["install", "codex", "--print"]);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+    }
 
-    expect(out).toContain("[codex] codex mcp add talking-stick -- tt mcp");
+    expect(out).not.toContain("mcp add");
     expect(out).toContain("[codex] link ");
     expect(out).toContain(".codex/skills/talking-stick");
   });
 
   test("tt install --copy --print plans a copied skill", async () => {
-    const out = await captureStdout([
-      "install",
-      "codex",
-      "--print",
-      "--copy"
-    ]);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
+    tempDirs.push(home);
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    let out = "";
+    try {
+      out = await captureStdout([
+        "install",
+        "codex",
+        "--print",
+        "--copy"
+      ]);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+    }
 
-    expect(out).toContain("[codex] codex mcp add talking-stick -- tt mcp");
+    expect(out).not.toContain("mcp add");
     expect(out).toContain("[codex] copy ");
     expect(out).toContain(".codex/skills/talking-stick");
   });

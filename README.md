@@ -1,8 +1,8 @@
 # Talking Stick
 
-An MCP coordination server that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
+A CLI coordination tool that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.2.0. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv` and the matching MCP tools.
+**Version:** 0.2.0. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv`.
 
 ## Quickstart
 
@@ -14,13 +14,13 @@ Three steps, then you're coordinating two agents in the same repo.
 npm i -g talking-stick
 ```
 
-### 2. Register the MCP server and skill in every harness
+### 2. Install the skill in every harness
 
 ```bash
 tt install --all
 ```
 
-Restart any harness that was already running so it loads the new MCP server. The `talking_stick` tools and skill now appear in every workspace.
+Restart any harness that was already running so it loads the updated skill. The skill teaches agents to coordinate by running `tt` CLI commands from the workspace.
 
 ### 3. Try it: two agents, one repo
 
@@ -76,7 +76,7 @@ Uses the right npm/pnpm/yarn by default:
 tt self-update
 ```
 
-Skills are symlinked automatically, so they don't need an update.
+`tt self-update` also removes stale Talking Stick MCP registrations left by older installs. The first normal `tt` invocation after a package-version change runs the same cleanup if the package manager skipped lifecycle scripts.
 
 ### Remove
 
@@ -86,32 +86,26 @@ tt uninstall --all
 
 ## What it gives your agent
 
-Once installed, each agent harness sees these tools:
+Once installed, each agent harness has a skill that tells it to coordinate through the `tt` CLI:
 
 ```
-list_rooms         — which rooms exist under a path
-join_path          — join the room for this workspace
-leave_room         — explicitly leave a room; deletes it when no active members remain
-wait_for_turn      — block until the stick is available, with takeover signals
-heartbeat          — prove liveness while holding the stick
-release_stick      — normal handoff to the next fair waiter, with structured Handoff
-pass_stick         — explicit handoff to a named agent
-takeover_stick     — deliberate claim when the prior holder is gone/stuck
-kick_member        — evict an idle member whose process is gone
-get_room_state     — authoritative state projection
-get_room_events    — audit log of turn transitions
-add_note           — leave an async observation for the current owner
-list_notes         — read notes left for the room
-send_message       — out-of-band chat into the room event log (direct or broadcast)
-wait_for_events    — observer-safe long-poll over the event log with type/target/sender filters
+tt list            — which rooms exist under a path
+tt join            — join the room for this workspace
+tt leave           — explicitly leave a room; deletes it when no active members remain
+tt wait            — block until the stick is available, with takeover signals
+tt release         — normal handoff to the next fair waiter, with structured Handoff
+tt assign          — explicit handoff to a named agent
+tt take            — deliberate claim when the prior holder is gone/stuck
+tt kick            — evict an idle member whose process is gone
+tt state           — authoritative state projection
+tt events          — audit log and long-poll stream of turn transitions/messages
+tt notes add/list  — durable async observations for the room
+tt msg send/recv   — out-of-band chat into the room event log
 ```
 
 A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically.
 
-The skill complements the MCP tools:
-
-- MCP gives the harness the coordination surface
-- the global skill tells the model when to join, wait, heartbeat, take over, and hand off
+The global skill tells the model when to join, wait, verify its guardian, take over, leave notes, send messages, and hand off.
 
 ## Non-owner notes
 
@@ -147,24 +141,7 @@ tt events --wait|--follow [--event TYPE[,TYPE]] [--target self|any|agent]
 
 ## How installation works per harness
 
-`tt install` installs both pieces a harness needs: the MCP server registration and the bundled `talking-stick` skill.
-
-For MCP registration, it prefers each harness's own `mcp add` subcommand when available (so the server ends up in the right user-global config with the right schema), and falls back to direct JSON editing when it isn't.
-
-| Harness       | Scope        | Under the hood                                                              |
-|---------------|--------------|-----------------------------------------------------------------------------|
-| claude-code   | user         | `claude mcp add -s user talking-stick -- tt mcp`                            |
-| codex         | user         | `codex mcp add talking-stick -- tt mcp`                                     |
-| gemini        | user         | `gemini mcp add -s user -t stdio talking-stick tt mcp`                      |
-| opencode      | user         | Merge `mcp.talking-stick` into `$XDG_CONFIG_HOME/opencode/opencode.json`    |
-
-All four install into **user-global scope**, not project-local. A coordination server is only useful if every workspace your agent enters can see the same rooms — project-scoped MCP would defeat the point.
-
-If you'd rather apply setup by hand, run `tt install --print <harness>` to see the exact MCP and skill actions, then apply them yourself.
-
-## Skill paths per harness
-
-Talking Stick also ships with a portable `talking-stick` skill:
+`tt install` installs or refreshes the bundled `talking-stick` skill. It does not add MCP servers. During install, uninstall, package update, and first run after an installed package version changes, `tt` removes stale MCP registrations written by older Talking Stick releases.
 
 - Claude Code: copied or linked into `~/.claude/skills/talking-stick`
 - Codex: copied or linked into `~/.codex/skills/talking-stick`
@@ -172,6 +149,8 @@ Talking Stick also ships with a portable `talking-stick` skill:
 - OpenCode: copied or linked into `~/.opencode/skills/talking-stick`
 
 By default, `tt install` links the bundled skill into each harness so local updates are picked up immediately. Pass `--copy` if you want a standalone snapshot instead.
+
+Stale MCP cleanup is strict for OpenCode JSON entries: it removes only the canonical `mcp.talking-stick` value with `["tt", "mcp"]` and leaves hand-edited entries alone. Claude Code, Codex, and Gemini cleanup uses their own `mcp remove` commands when the old server name exists. Every cleanup run appends JSONL audit entries to `${TALKING_STICK_DATA_DIR}/update-migrations.log`.
 
 Human CLI invocations also perform a silent best-effort sync for already-installed file-based skills in Claude Code, Codex, and OpenCode. If the installed skill is a copy, it is refreshed from the bundled skill; if it is a stale symlink, it is relinked. Missing harness config directories and missing skill installs are skipped. Gemini skills are managed by Gemini's own registry, so use `tt install gemini` after updating when needed.
 
@@ -197,13 +176,12 @@ tt take [path] [--reason TEXT]                            # human-friendly take/
 tt takeover [path] [--reason TEXT]                        # alias for take
 tt notes add <body> [--turn N] [--path DIR] [--stdin]     # leave an async note
 tt notes list [--all] [--after ID] [--limit N] [--path DIR] # read notes
-tt mcp                                                    # run the MCP stdio server
-tt install <harness...> | --all [--print] [--copy] [--link]  # install MCP server and skill
-tt uninstall <harness...> | --all [--print]               # remove MCP server and skill
+tt install <harness...> | --all [--print] [--copy] [--link]  # install skill and clean stale MCP entries
+tt uninstall <harness...> | --all [--print]               # remove skill and stale MCP entries
 tt self-update [--print] [--manager npm|pnpm|yarn|bun]    # update to the latest published tt
 ```
 
-`tt self-update` detects how `tt` was installed (npm / pnpm / yarn / bun, including npm-via-Homebrew/mise/asdf/nvm) and runs the right global-update command. Pass `--print` to see the inferred command without running it; pass `--manager` to override detection. Running `tt self-update` from a development checkout (where `tt` resolves outside `node_modules/talking-stick`) refuses and tells you to `git pull && npm install && npm run build` instead.
+`tt self-update` detects how `tt` was installed (npm / pnpm / yarn / bun, including npm-via-Homebrew/mise/asdf/nvm), runs the right global-update command, then removes stale MCP registrations from older Talking Stick installs. Pass `--print` to see the inferred command without running it; pass `--manager` to override detection. Running `tt self-update` from a development checkout (where `tt` resolves outside `node_modules/talking-stick`) refuses and tells you to `git pull && npm install && npm run build` instead.
 
 Human CLI commands use a stable identity like `human:<username>`. When `tt wait`, `tt take`, or `tt takeover` wins the turn, a small background guardian keeps the lease alive on your behalf until you release, pass, or assign it. Human CLI `take` intentionally works without a required reason so an operator can step into a stuck room quickly; harness-aware CLI takeovers still require `--reason` unless the command includes `--operator-requested`.
 
@@ -231,7 +209,7 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.
 - **Multi-process safe.** Shared SQLite with WAL mode, `BEGIN IMMEDIATE` writes, 250 ms polling for `wait_for_turn`. No daemon required.
-- **Per-call identity derivation.** MCP callers don't supply `agent_id`; the adapter derives identity from the spawning harness process. Human CLI callers get a stable `human:<username>` identity.
+- **Per-call identity derivation.** Harness-launched CLI calls derive identity from harness environment or ancestry. Human CLI callers get a stable `human:<username>` identity.
 
 ## Storage
 

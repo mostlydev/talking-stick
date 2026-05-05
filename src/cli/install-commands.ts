@@ -3,7 +3,6 @@ import {
   SUPPORTED_HARNESSES,
   detectHarness,
   parseHarnessList,
-  planInstall,
   planUninstall,
   runAction,
   type HarnessId,
@@ -15,6 +14,12 @@ import {
   planSkillInstall,
   planSkillUninstall
 } from "../skill-install.js";
+import { resolveDataDir } from "../config.js";
+import { FileAuditLog, defaultAuditLogPath, type AuditReason } from "../install-audit.js";
+import {
+  removeStaleMcpRegistrations,
+  type RemoveStaleMcpResult
+} from "../install-migration.js";
 import {
   detectInstallSource,
   isPackageManager,
@@ -22,6 +27,7 @@ import {
   resolveCurrentBinaryPath,
   type InstallSource
 } from "../self-update.js";
+import { readPackageVersion, runStaleMcpCleanup } from "../update-migration.js";
 import {
   getStringOption,
   hasOption,
@@ -41,7 +47,10 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
   };
 
   if (dryRun) {
-    for (const action of planCombinedInstallActions(harnesses, installOptions)) {
+    for (const action of planInstallActions(harnesses, installOptions)) {
+      printActionPlan(action);
+    }
+    for (const action of planCleanupActions(harnesses, installOptions)) {
       printActionPlan(action);
     }
     return;
@@ -49,10 +58,11 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
 
   const results = (
     await Promise.all(
-      harnesses.map((harness) => runCombinedInstall(harness, installOptions))
+      harnesses.map((harness) => runSkillInstall(harness, installOptions))
     )
   ).flat();
   reportInstallResults(results, "install");
+  reportCleanupResults(await runCleanup(harnesses, "manual", installOptions), "install");
 }
 
 export async function runUninstallCommand(
@@ -62,7 +72,7 @@ export async function runUninstallCommand(
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
   const installOptions = { skipMissing: true };
-  const actions = planCombinedUninstallActions(harnesses, installOptions);
+  const actions = planUninstallActions(harnesses, installOptions);
 
   if (dryRun) {
     for (const action of actions) {
@@ -73,10 +83,11 @@ export async function runUninstallCommand(
 
   const results = (
     await Promise.all(
-      harnesses.map((harness) => runCombinedUninstall(harness, installOptions))
+      harnesses.map((harness) => runSkillUninstall(harness, installOptions))
     )
   ).flat();
   reportInstallResults(results, "uninstall");
+  reportCleanupResults(await runCleanup(harnesses, "uninstall", installOptions), "uninstall");
 }
 
 export async function runInstallSkillCommand(
@@ -145,6 +156,7 @@ export async function runSelfUpdateCommand(
     source = detectInstallSource({ binaryPath });
   }
 
+  const packageVersionFrom = readPackageVersion(cliEntryUrl);
   const plan = planSelfUpdate(source);
   if (!plan) {
     if (source === "dev") {
@@ -164,7 +176,31 @@ export async function runSelfUpdateCommand(
 
   process.stdout.write(`Updating via: ${plan.description}\n`);
   await runInheritIo(plan.command, plan.args);
-  process.stdout.write("Done. Restart your harness MCP subprocess to pick up the new dist.\n");
+  const packageVersionTo = readPackageVersion(cliEntryUrl);
+  const cleanup = await runStaleMcpCleanup({
+    harnesses: "all",
+    reason: "update",
+    packageVersionFrom,
+    packageVersionTo,
+    installOptions: { skipMissing: true }
+  });
+  reportCleanupResults(cleanup.results, "self-update");
+  process.stdout.write("Done. Restart any long-running harness sessions to pick up the new tt.\n");
+}
+
+export async function runMcpMigrationCommand(parsed: ParsedCommand): Promise<void> {
+  normalizeBooleanFlag(parsed, "quiet");
+  const reason = parseAuditReason(getStringOption(parsed, "reason") ?? "manual");
+  const quiet = hasOption(parsed, "quiet");
+  const cleanup = await runStaleMcpCleanup({
+    harnesses: "all",
+    reason,
+    installOptions: { skipMissing: true }
+  });
+
+  if (!quiet) {
+    reportCleanupResults(cleanup.results, "self-update");
+  }
 }
 
 function resolveSkillInstallLinkMode(parsed: ParsedCommand): boolean {
@@ -182,65 +218,63 @@ function resolveSkillInstallLinkMode(parsed: ParsedCommand): boolean {
   return true;
 }
 
-function planCombinedInstallActions(
+function planInstallActions(
   harnesses: HarnessId[],
   installOptions: { link: boolean; skipMissing: boolean }
 ): InstallAction[] {
-  return harnesses.flatMap((harness) => {
-    const mcpAction = planInstall(harness, installOptions);
-    if (mcpAction.kind === "skip") {
-      return [mcpAction];
-    }
-
-    return [
-      mcpAction,
-      planSkillInstall(harness, {
-        ...installOptions,
-        // In dry-run mode, show the skill action that will follow MCP setup
-        // even when the MCP installer is what creates the harness config root.
-        skipMissing: false
-      })
-    ];
-  });
+  return harnesses.map((harness) => planSkillInstall(harness, installOptions));
 }
 
-function planCombinedUninstallActions(
+function planUninstallActions(
   harnesses: HarnessId[],
   installOptions: { skipMissing: boolean }
 ): InstallAction[] {
   return harnesses.flatMap((harness) => [
-    planUninstall(harness, installOptions),
     planSkillUninstall(harness, {
       ...installOptions,
       skipMissing: false
-    })
+    }),
+    planUninstall(harness, installOptions)
   ]);
 }
 
-async function runCombinedInstall(
+function planCleanupActions(
+  harnesses: HarnessId[],
+  installOptions: { skipMissing: boolean }
+): InstallAction[] {
+  return harnesses.map((harness) => planUninstall(harness, installOptions));
+}
+
+async function runSkillInstall(
   harness: HarnessId,
   installOptions: { link: boolean; skipMissing: boolean }
 ): Promise<InstallResult[]> {
-  const mcpAction = planInstall(harness, installOptions);
-  const mcpResult = await runAction(mcpAction, installOptions);
-  if (!mcpResult.ok || mcpResult.skipped) {
-    return [mcpResult];
-  }
-
   const skillAction = planSkillInstall(harness, installOptions);
   const skillResult = await runAction(skillAction, installOptions);
-  return [mcpResult, skillResult];
+  return [skillResult];
 }
 
-async function runCombinedUninstall(
+async function runSkillUninstall(
   harness: HarnessId,
   installOptions: { skipMissing: boolean }
 ): Promise<InstallResult[]> {
-  const mcpAction = planUninstall(harness, installOptions);
-  const mcpResult = await runAction(mcpAction, installOptions);
   const skillAction = planSkillUninstall(harness, installOptions);
   const skillResult = await runAction(skillAction, installOptions);
-  return [mcpResult, skillResult];
+  return [skillResult];
+}
+
+async function runCleanup(
+  harnesses: HarnessId[],
+  reason: "manual" | "uninstall",
+  installOptions: { skipMissing: boolean }
+): Promise<RemoveStaleMcpResult[]> {
+  const dataDir = resolveDataDir();
+  return removeStaleMcpRegistrations({
+    harnesses,
+    reason,
+    audit: new FileAuditLog(defaultAuditLogPath(dataDir)),
+    installOptions
+  });
 }
 
 function selectHarnesses(parsed: ParsedCommand): HarnessId[] {
@@ -298,6 +332,27 @@ function reportInstallResults(
   }
 }
 
+function reportCleanupResults(
+  results: RemoveStaleMcpResult[],
+  mode: "install" | "uninstall" | "self-update"
+): void {
+  let anyFailed = false;
+  for (const result of results) {
+    process.stdout.write(`[${result.harness}] mcp-cleanup ${result.action}: ${result.message}\n`);
+    if (result.action === "failed") anyFailed = true;
+  }
+  if (anyFailed) {
+    throw new Error(`${mode} completed with MCP cleanup failures.`);
+  }
+}
+
 function formatInstallStatus(status: InstallStatus): string {
   return status.replaceAll("_", "-");
+}
+
+function parseAuditReason(value: string): AuditReason {
+  if (value === "update" || value === "first-run" || value === "uninstall" || value === "manual") {
+    return value;
+  }
+  throw new Error(`--reason must be one of update | first-run | uninstall | manual (got ${value}).`);
 }
