@@ -366,7 +366,7 @@ function detectHarnessSignal(env: NodeJS.ProcessEnv): HarnessSignal | null {
   if (env.CLAUDECODE === "1") {
     return {
       harness: "claude",
-      sessionId: null,
+      sessionId: nonEmpty(env.CLAUDE_CODE_SESSION_ID),
       pidHint: parsePositiveInteger(env.CMUX_CLAUDE_PID)
     };
   }
