@@ -2,7 +2,7 @@
 
 A CLI coordination tool that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.2.0. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv`.
+**Version:** 0.3.0. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv`.
 
 ## Quickstart
 
@@ -46,7 +46,7 @@ That's the whole workflow. They negotiate turns automatically, hand off structur
 
 | Method | Command | Notes |
 |---|---|---|
-| **From npm** | `npm i -g talking-stick` | Published as `0.2.0`. Requires Node ≥ 22. |
+| **From npm** | `npm i -g talking-stick` | Published as `0.3.0`. Requires Node ≥ 22. |
 | **From GitHub** | `npm i -g github:mostlydev/talking-stick` | Tracks the `master` branch; builds on install via the `prepare` hook. |
 | **From source** | `git clone … && npm install && npm link` | For contributors. |
 
@@ -129,7 +129,9 @@ tt events --wait|--follow [--event TYPE[,TYPE]] [--target self|any|agent]
 - `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
 - `tt msg recv --follow` is a long-running tail (one JSON line per event) suited to harnesses that can monitor child stdout (Claude Code Monitor, terminals).
 - `tt msg recv --wait` exits on the next matching batch — ideal for harnesses that can launch a background command and notice when it completes; restart with `--after <last_event_seq>` to resume.
+- `tt events --wait` and `tt events --follow` default to `--target self`; pass `--target any` only for audit/debug views.
 - `wait_for_events` is observer-safe: it never mutates room state, so non-holders can use it freely without disturbing turn-fairness bookkeeping.
+- Event receive does not grant the stick. Agents must still use `tt wait` for ownership and verify the returned guardian before editing shared files.
 
 **When to message vs note vs handoff.**
 
@@ -138,6 +140,8 @@ tt events --wait|--follow [--event TYPE[,TYPE]] [--target self|any|agent]
 - **Handoff** (`release_stick` / `pass_stick`) — transfer of work. Messages do not replace handoffs; they live alongside them.
 
 **`to_agent_id` is routing, not ACL.** Any room member can read any message via `get_room_events` or `tt events --follow --target any`. Messages are not private. They also do not grant the stick — a non-holder paging the holder gets attention, not write authority.
+
+For harnesses that only notice completed subprocesses, run `tt events --wait --after <cursor> --json` as a wake process alongside the normal `tt wait --json` loop. A message, pass, release, or assignment event should make the agent read/reply/retry `tt wait`; it is not permission to mutate the workspace.
 
 ## How installation works per harness
 
@@ -163,7 +167,7 @@ tt whoami [--explain]                                      # show the resolved C
 tt list [path]                                            # list rooms
 tt join [path] [--force-new]                              # join the room for path
 tt leave [path]                                           # leave the room for path
-tt wait [path] [--timeout 30s]                            # block until your turn
+tt wait [path] [--timeout 110s]                           # block until your turn
 tt try [path]                                             # non-blocking claim attempt
 tt state [path]                                           # full room state
 tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # room event log; --wait/--follow long-polls
@@ -180,6 +184,8 @@ tt install <harness...> | --all [--print] [--copy] [--link]  # install skill and
 tt uninstall <harness...> | --all [--print]               # remove skill and stale MCP entries
 tt self-update [--print] [--manager npm|pnpm|yarn|bun]    # update to the latest published tt
 ```
+
+`[path]` defaults to the current working directory. Omit it for normal in-repo coordination; pass it only when you intentionally want a different or nested room.
 
 `tt self-update` detects how `tt` was installed (npm / pnpm / yarn / bun, including npm-via-Homebrew/mise/asdf/nvm), runs the right global-update command, then removes stale MCP registrations from older Talking Stick installs. Pass `--print` to see the inferred command without running it; pass `--manager` to override detection. Running `tt self-update` from a development checkout (where `tt` resolves outside `node_modules/talking-stick`) refuses and tells you to `git pull && npm install && npm run build` instead.
 

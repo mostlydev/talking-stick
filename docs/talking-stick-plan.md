@@ -742,8 +742,9 @@ Recommended defaults (product scale, sized for real agent work rather than chat 
 owner_lease_ttl_ms         = 45 * 60 * 1000;       // 45 minutes
 heartbeat_interval_ms      =  5 * 60 * 1000;       // 5 minutes
 claim_ttl_ms               = 20 * 60 * 1000;       // 20 minutes
-wait_for_turn_max_wait_ms  = 30 * 1000;            // 30 seconds
+wait_for_turn_max_wait_ms  = 110 * 1000;           // 110 seconds
 wait_for_turn_poll_ms      = 250;                  // transport polling cadence
+wait_for_events_max_wait_ms = 110 * 1000;          // 110 seconds
 presence_ttl_ms            =  4 * 60 * 60 * 1000;  // 4 hours
 waiter_grace_ms            = 10 * 1000;            // 10 seconds
 ```
@@ -1158,5 +1159,5 @@ presence TTL:            4 hours
 close semantics:         no `close_room` tool in the MVP implementation;
                          rooms remain resumable and can become dormant
                          when nobody is live
-wait_for_turn max wait:  30 seconds, polled at 250 ms
+wait_for_turn max wait:  110 seconds, polled at 250 ms
 ```

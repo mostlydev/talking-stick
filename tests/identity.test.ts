@@ -410,6 +410,65 @@ describe("deriveHarnessCliIdentity", () => {
 
     expect(first!.agent_id).toBe(second!.agent_id);
   });
+
+  test("uses CLAUDE_CODE_SESSION_ID as the stable session id when Claude Code provides it", () => {
+    const inspector = fakeInspector({
+      9000: { startTime: "Thu Apr 23 14:00:00 2026", command: "bash", ppid: 1 },
+      9001: { startTime: "Thu Apr 23 14:05:00 2026", command: "bash", ppid: 1 }
+    });
+
+    const first = deriveHarnessCliIdentity({
+      env: {
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION_ID: "shared-session-uuid",
+        ITERM_SESSION_ID: "w0t0p0:first"
+      },
+      username: "alice",
+      parentPid: 9000,
+      hostId: "test-host",
+      inspector
+    });
+    const second = deriveHarnessCliIdentity({
+      env: {
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION_ID: "shared-session-uuid",
+        ITERM_SESSION_ID: "w0t0p0:second"
+      },
+      username: "alice",
+      parentPid: 9001,
+      hostId: "test-host",
+      inspector
+    });
+
+    expect(first!.agent_id).toBe(second!.agent_id);
+  });
+
+  test("different CLAUDE_CODE_SESSION_ID values produce different agent ids", () => {
+    const inspector = fakeInspector({
+      9000: { startTime: "Thu Apr 23 14:00:00 2026", command: "bash", ppid: 1 }
+    });
+
+    const env = {
+      CLAUDECODE: "1",
+      ITERM_SESSION_ID: "w0t0p0:same"
+    };
+    const a = deriveHarnessCliIdentity({
+      env: { ...env, CLAUDE_CODE_SESSION_ID: "session-a" },
+      username: "alice",
+      parentPid: 9000,
+      hostId: "test-host",
+      inspector
+    });
+    const b = deriveHarnessCliIdentity({
+      env: { ...env, CLAUDE_CODE_SESSION_ID: "session-b" },
+      username: "alice",
+      parentPid: 9000,
+      hostId: "test-host",
+      inspector
+    });
+
+    expect(a!.agent_id).not.toBe(b!.agent_id);
+  });
 });
 
 describe("CLI and MCP identity unification", () => {

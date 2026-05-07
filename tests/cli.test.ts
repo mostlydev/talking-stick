@@ -1514,7 +1514,7 @@ describe("tt msg", () => {
     await passPromise;
   });
 
-  test("tt events --wait filters event types and emits JSON lines", async () => {
+  test("tt events --wait defaults to self and emits JSON lines", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     const roomId = seedCliRoomMembers(project, [
       { agent_id: "human:sender", display_name: "sender" },
@@ -1527,8 +1527,6 @@ describe("tt msg", () => {
       "--wait",
       "--event",
       "message_sent",
-      "--target",
-      "any",
       "--timeout",
       "2s",
       "--agent",
@@ -1545,6 +1543,50 @@ describe("tt msg", () => {
       event_type: "message_sent",
       to_agent_id: null,
       payload: { body: "broadcast" }
+    });
+  });
+
+  test("tt events --wait default self ignores unrelated direct messages", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const roomId = seedCliRoomMembers(project, [
+      { agent_id: "human:sender", display_name: "sender" },
+      { agent_id: "human:receiver", display_name: "receiver" },
+      { agent_id: "human:observer", display_name: "observer" }
+    ]);
+
+    const eventsPromise = captureStdout([
+      "events",
+      project,
+      "--wait",
+      "--event",
+      "message_sent",
+      "--timeout",
+      "2s",
+      "--agent",
+      "human:observer",
+      "--json"
+    ]);
+    setTimeout(() => {
+      sendCliTestMessage(
+        roomId,
+        "human:sender",
+        "human:receiver",
+        "not for observer"
+      );
+      sendCliTestMessage(
+        roomId,
+        "human:sender",
+        "human:observer",
+        "for observer"
+      );
+    }, 25);
+
+    const events = parseJsonLines(await eventsPromise);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event_type: "message_sent",
+      to_agent_id: "human:observer",
+      payload: { body: "for observer" }
     });
   });
 
@@ -1587,7 +1629,7 @@ describe("tt msg", () => {
     });
   });
 
-  test("tt events --follow --target self sees direct messages and turn handoffs", async () => {
+  test("tt events --follow defaults to self and sees direct messages and turn handoffs", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     const roomId = seedCliRoomMembers(project, [
       { agent_id: "human:owner", display_name: "owner" },
@@ -1599,8 +1641,6 @@ describe("tt msg", () => {
       "--follow",
       "--after",
       "0",
-      "--target",
-      "self",
       "--timeout",
       "50ms",
       "--agent",
