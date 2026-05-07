@@ -200,7 +200,7 @@ export async function handleEventsCommand(
   if (hasOption(parsed, "wait") || hasOption(parsed, "follow")) {
     await runEventStream(runtime, parsed, identity, session.room_id, {
       event_type: parseEventTypeFilter(getStringOption(parsed, "event")),
-      default_target: "any",
+      default_target: "self",
       force_tail_cursor: false
     });
     return;

@@ -106,7 +106,7 @@ describe("talking-stick skill install", () => {
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("### 4.5 Out-Of-Band Messaging");
-    expect(skill).toContain("tt events --follow --target self --json");
+    expect(skill).toContain("tt events --follow --json");
   });
 
   test("skips skill install when the harness config directory is missing", async () => {
@@ -185,7 +185,7 @@ describe("talking-stick skill install", () => {
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("### 4.5 Out-Of-Band Messaging");
-    expect(skill).toContain("tt events --follow --target self --json");
+    expect(skill).toContain("tt events --follow --json");
   });
 
   test("syncInstalledSkills updates an existing copied skill without installing missing harnesses", () => {

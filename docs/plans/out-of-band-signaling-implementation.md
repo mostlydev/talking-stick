@@ -350,7 +350,7 @@ Four bound parameters of the caller's agent_id. Acceptable; SQLite's planner han
 Add three policy values:
 
 ```ts
-waitForEventsMaxWaitMs: number;   // default 30_000 (matches waitForTurn)
+waitForEventsMaxWaitMs: number;   // default 110_000 (matches waitForTurn)
 waitForEventsPollMs: number;      // default 250  (matches waitForTurn)
 waitForEventsBatchLimit: number;  // default 100
 ```
@@ -662,7 +662,7 @@ The talking stick guarantees single-writer authority over shared workspace state
 
 **Send.** `tt msg send <recipient> "<body>"` (or `mcp send_message`). Recipient is a full `agent_id`, an unambiguous active display name, or the literal `room` for broadcast. `--interrupt` flags the message as time-sensitive; the receiver decides whether to act on it now.
 
-**Receive.** Use the receive mode your harness can actually observe. If it can monitor stdout from a long-running child, run `tt msg recv --follow`; each incoming event lands as one JSON line. If it can only notice that a background command completed, run `tt msg recv --wait --after <last_event_seq>`; it exits on the next matching batch, then you start it again with the returned cursor. SIGTERM exits cleanly; restart with `--after <last_event_seq>` to resume.
+**Receive.** Use the receive mode your harness can actually observe. If it can monitor stdout from a long-running child, run `tt events --follow`; each incoming event lands as one JSON line. If it can only notice that a background command completed, run `tt events --wait --after <last_event_seq>`; it exits on the next matching batch, then you start it again with the returned cursor. SIGTERM exits cleanly; restart with `--after <last_event_seq>` to resume. Use `tt msg recv` only for messages-only consumers that intentionally do not want turn handoff events.
 
 **When to message vs note vs handoff.**
 
@@ -672,12 +672,12 @@ The talking stick guarantees single-writer authority over shared workspace state
 
 **Messages are not private.** Any room member can read any message via `get_room_events` or `tt events --follow --target any`. `to_agent_id` is routing, not ACL.
 
-**Messages do not grant the stick.** A non-holder paging the holder does not gain write authority. The holder may act on the message immediately or defer until handoff.
+**Messages and event wakes do not grant the stick.** A non-holder paging the holder does not gain write authority, and a receiver waking on `pass`, `release`, or `assignment` still has to run `tt wait` and receive `your_turn` before editing. The holder may act on the message immediately or defer until handoff.
 
-**Stay in the wait loop in parallel.** A `tt msg recv --wait` or `--follow` subprocess does not replace `wait_for_turn`. Keep waiting for your turn; messages are a side channel.
+**Stay in the wait loop in parallel.** A `tt events --wait`, `tt events --follow`, or `tt msg recv` subprocess does not replace `wait_for_turn`. Keep waiting for your turn; receive processes are side channels.
 ```
 
-Also: a one-line addition to §1 ("Check that Talking Stick is available") noting that `tt msg recv --wait` / `--follow` may be running as sibling processes and should be left alone.
+Also: a one-line addition to §1 ("Check that Talking Stick is available") noting that `tt events --follow`, `tt msg recv --wait`, or `tt msg recv --follow` may be running as sibling processes and should be left alone.
 
 ### 4.1 Skill propagation
 

@@ -149,7 +149,7 @@ Commands:
   tt join [path] [--force-new]
   tt leave [path]
   tt kick <agent_id> [path] [--reason TEXT] [--force]
-  tt wait [path] [--timeout 30s]
+  tt wait [path] [--timeout 110s]
   tt try [path]
   tt state [path]
   tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
@@ -169,6 +169,7 @@ Commands:
 Harnesses: ${SUPPORTED_HARNESSES.join(", ")}
 
 Common options:
+  [path]     Defaults to the current working directory when omitted
   --agent ID   Override the default human identity
   --json       Force JSON output (also default when invoked from a harness)
   --text       Force human-readable text even when invoked from a harness

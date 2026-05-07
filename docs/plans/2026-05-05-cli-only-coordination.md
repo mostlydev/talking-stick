@@ -11,7 +11,7 @@ The new direction is simpler: **the `tt` CLI is the only harness contract.** Age
 ## Goals
 
 - Make every agent workflow expressible through CLI commands: `tt join`, `tt wait`, `tt release`, `tt assign`, `tt take`, `tt state`, `tt events`, `tt notes`, and `tt msg`.
-- Make ambient receive CLI-first: `tt events --follow --target self --json` for live stdout consumers, `tt events --wait --after <cursor> --target self --json` for process-completion consumers, and `tt msg recv` only for messages-only consumers.
+- Make ambient receive CLI-first: `tt events --follow --json` for live stdout consumers, `tt events --wait --after <cursor> --json` for process-completion consumers, and `tt msg recv` only for messages-only consumers. `--wait` and `--follow` default to `--target self`.
 - Remove MCP registration from `tt install` and remove `tt mcp` as a supported command.
 - Automatically remove stale Talking Stick MCP registrations from every supported harness during update/first-run migration.
 - Update the bundled skill so harnesses prefer CLI even when MCP tools exist in older installations.
@@ -37,7 +37,7 @@ Core command mapping:
 | Need | CLI |
 |---|---|
 | Join room | `tt join [path] --json` |
-| Wait/claim | `tt wait [path] --timeout 110s --json` |
+| Wait/claim | `tt wait [path] --json` |
 | Probe | `tt try [path] --json` |
 | Release | `tt release [path] --stdin` |
 | Assign specific next holder | `tt assign <agent_id> [path] --stdin` |
@@ -46,8 +46,8 @@ Core command mapping:
 | Events | `tt events [path] --after N --target any --json` |
 | Notes | `tt notes add/list ... --json` |
 | Send OOB | `tt msg send <recipient|room> <body...> --json` |
-| Ambient receive | `tt events --follow --target self --json` |
-| Messages-only receive | `tt msg recv --follow --target self --json` |
+| Ambient receive | `tt events --follow --json` |
+| Messages-only receive | `tt msg recv --follow --json` |
 
 The skill should teach these exact commands. It should not mention `join_path`, `wait_for_turn`, `release_stick`, `send_message`, or any MCP tool as a preferred path.
 
@@ -133,13 +133,14 @@ Implementation shape:
 
 OOB stays on the existing `room_events` / `message_sent` substrate, but all live receive UX is CLI-based.
 
-The recommended ambient consumer is **`tt events --follow --target self --json`**, not `tt msg recv --follow`. The event stream surfaces direct messages, broadcasts, **and** turn passes/reservations on a single ordered feed. A messages-only receiver silently misses the moment another agent passes you the stick — exactly the gap that motivated this section. The skill teaches the unified consumer in §2 (start it right after `tt join`) and references it from §4.5.
+The recommended ambient consumer is **`tt events --follow --json`**, not `tt msg recv --follow`. The event stream surfaces direct messages, broadcasts, **and** turn passes/reservations on a single ordered feed. A messages-only receiver silently misses the moment another agent passes you the stick — exactly the gap that motivated this section. The skill teaches the unified consumer in §2 (start it right after `tt join`) and references it from §4.5.
 
 Required receive contract:
 
-- `tt events --follow --target self --json` emits one JSON event per line for messages, broadcasts, and turn handoffs targeting the caller.
+- `tt events --follow --json` emits one JSON event per line for messages, broadcasts, and turn handoffs targeting the caller.
 - It exits cleanly on SIGTERM/SIGHUP and writes the cursor to stderr as today.
-- `tt events --wait --after <cursor> --target self --json` exits after the next matching batch for harnesses that cannot monitor long-running stdout.
+- `tt events --wait --after <cursor> --json` exits after the next matching batch for harnesses that cannot monitor long-running stdout.
+- Event receive is observer-only. It does not claim the stick, does not start a guardian, and must not be treated as permission to edit. A receiver that wakes on `pass`, `release`, or `assignment` still has to run `tt wait --json` and get `your_turn` before touching shared files.
 - `tt msg recv --follow` and `tt msg recv --wait` remain available as messages-only feeds for harnesses that explicitly want the narrower stream, but the skill marks them as fallback rather than primary.
 - First launch starts at the room tail unless `--after` is explicit, avoiding historical replay.
 - Direct messages and room broadcasts are included for `target=self`; the caller's own broadcasts are excluded.
@@ -159,8 +160,8 @@ This PR:
 
 - Change resolver precedence so harness-root ancestry beats terminal-session fallback when a harness env marker exists but no stable session id is present.
 - Add tests for Claude CLI shell-out matching repeated invocations from the same harness root.
-- Add child-process tests proving `tt events --target self` receives direct messages and turn handoffs addressed to the active CLI member without `TT_HARNESS_AGENT_ID`.
-- Keep narrower coverage proving `tt msg recv --target self` receives direct messages without widening into non-message events.
+- Add child-process tests proving `tt events --wait` / `tt events --follow` default to self and receive direct messages and turn handoffs addressed to the active CLI member without `TT_HARNESS_AGENT_ID`.
+- Keep narrower coverage proving `tt msg recv` receives direct messages without widening into non-message events.
 - Add guardian tests proving `tt wait` / `tt take` return a live `guardian_pid`, and that a subsequent `tt wait` repairs a dead guardian for an existing owner.
 - Keep `TT_HARNESS_AGENT_ID` override as the explicit escape hatch.
 
@@ -194,10 +195,10 @@ This PR:
 
 Before merging the code-removal PR:
 
-- Start Claude receiver with `tt events --follow --target self --json`.
+- Start Claude receiver with `tt events --follow --json`.
 - Start Codex receiver the same way.
 - Send direct and broadcast messages both directions.
-- Verify `tt wait --timeout 110s --json`, `tt release --stdin`, and `tt assign <agent>` work from harness shell-outs.
+- Verify `tt wait --json`, `tt release --stdin`, and `tt assign <agent>` work from harness shell-outs.
 - Verify no MCP subprocess is required for the room to operate.
 
 ## Risks
@@ -206,6 +207,7 @@ Before merging the code-removal PR:
 - **Lease expiry during long turns.** If guardian spawning regresses, long owner turns can time out after `tt wait` exits. Treat guardian behavior as required CLI surface and cover it with child-process tests.
 - **Per-command process cost.** Repeated `tt` shell-outs pay Node startup and SQLite open cost. Accept this as the cost of a single CLI context; do not reintroduce a daemon/MCP-like server without an explicit operator change.
 - **Long-running receiver lifecycle.** Some harnesses cannot monitor stdout from a running child. Keep `--wait --after` as the supported fallback.
+- **Combined wait/event command ambiguity.** A future `tt await`-style command needs a separate design pass. It must distinguish observer events from ownership results so an agent cannot mistake a message or handoff wake for permission to edit.
 - **Skill drift.** Installed skills may still have old MCP-first text. Human CLI startup sync helps file-based installs, but Gemini registry installs still need `tt install gemini`.
 - **Config cleanup safety.** Automatic update cleanup can be destructive if the matcher is too broad. Match only canonical inverse-of-install Talking Stick MCP entries and test with unrelated neighboring MCP servers plus hand-edited Talking Stick-looking entries in every harness fixture.
 - **Large test deletion.** Removing MCP tests can accidentally reduce protocol coverage. Replace them with CLI tests before deleting assertions.
@@ -218,5 +220,5 @@ Before merging the code-removal PR:
 3. Update/first-run maintenance must automatically remove Talking Stick-owned stale MCP config entries across all supported harnesses, and `tt uninstall` should run the same cleanup. It must not touch unrelated harness config.
 4. Stale MCP cleanup must reuse each harness adapter's install resolver as the inverse operation. Do not reimplement config matching separately.
 5. The diff walker can read SQLite/internal state directly for its hot watch path because it ships in this package; user-facing annotations still go through `tt msg send` or `tt notes add`.
-6. The skill's primary ambient receiver is `tt events --follow --target self --json`, not `tt msg recv --follow`. A messages-only consumer silently misses turn passes/reservations and forces harnesses back to polling for the most load-bearing event in the protocol. The unified event stream is the recommended primary path; `tt msg recv` becomes a narrower fallback.
+6. The skill's primary ambient receiver is `tt events --follow --json`, not `tt msg recv --follow`. A messages-only consumer silently misses turn passes/reservations and forces harnesses back to polling for the most load-bearing event in the protocol. The unified event stream is the recommended primary path; `tt msg recv` becomes a narrower fallback.
 7. Cleanup audit lives in a dedicated `update-migrations.log`, not folded into general maintenance logging. Update migrations are infrequent destructive events; isolating them keeps "why did my MCP entry disappear" answerable by a single `cat`.

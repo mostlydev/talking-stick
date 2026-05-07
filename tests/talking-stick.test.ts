@@ -678,8 +678,9 @@ describe("talking-stick vertical slice", () => {
       ownerLeaseTtlMs: 50_000,
       heartbeatIntervalMs: 12_000,
       claimTtlMs: 30_000,
-      waitForTurnMaxWaitMs: 30_000,
-      waitForTurnPollMs: 250
+      waitForTurnMaxWaitMs: 110_000,
+      waitForTurnPollMs: 250,
+      waitForEventsMaxWaitMs: 110_000
     });
   });
 
