@@ -9,6 +9,13 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## [0.4.1] — 2026-05-10
+
+Full notes: [`docs/releases/0.4.1.md`](docs/releases/0.4.1.md).
+
+### Fixed
+- **Release/reclaim churn.** A prior owner who releases an idle handoff now waits through a bounded release cooldown when another active member exists, giving peers time to claim instead of immediately taking the stick back. Solo prior owners can still continue immediately, stale audit-only event reads do not refresh turn interest, and the bundled guidance now tells lone active members to stop polling after a clear handoff.
+
 ## [0.4.0] — 2026-05-10
 
 Full notes: [`docs/releases/0.4.0.md`](docs/releases/0.4.0.md).
@@ -161,6 +168,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.1
 [0.4.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.0
 [0.1.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.3
 [0.1.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.2

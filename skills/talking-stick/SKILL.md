@@ -224,7 +224,7 @@ Exit the wait loop only when one of these is true:
 - the shared task is explicitly finished
 - the operator gives a direct redirect or stop
 
-In every other case, after `tt release` or `tt assign`, go straight back into `tt wait --json`. Other-harness inactivity is not an exit signal; keep waiting or take the next useful action until the task is done.
+In every other case, after `tt release` or `tt assign`, go straight back into `tt wait --json`. If you are the only active member of the room, stop polling after a clear handoff. Treat "only active" as no other member that `tt state --json` reports active or that has been seen in the last hour; if liveness is ambiguous, run one more normal wait cycle instead of churning. Other agents going briefly quiet is not enough to declare yourself alone.
 
 If the operator tells you to drop out of coordination, run `tt leave --json`. Rooms with no active members are deleted instead of kept as history, and long-idle rooms may be purged on later invocations.
 

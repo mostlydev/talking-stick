@@ -217,7 +217,7 @@ describe("talking-stick vertical slice", () => {
     expect(fairClaim.reason).toBe("sequence");
   });
 
-  test("idle handoff briefly defers the prior owner while another member exists", async () => {
+  test("idle handoff defers the prior owner for release cooldown while another active member exists", async () => {
     const harness = createHarness({
       policy: {
         waiterGraceMs: 10_000
@@ -271,7 +271,7 @@ describe("talking-stick vertical slice", () => {
     expect(claudeTurn.reason).toBe("sequence");
   });
 
-  test("idle handoff allows the prior owner after grace if no other member claims", async () => {
+  test("idle handoff allows the prior owner after release cooldown if no other member claims", async () => {
     const harness = createHarness({
       policy: {
         waiterGraceMs: 10_000
@@ -306,7 +306,101 @@ describe("talking-stick vertical slice", () => {
       handoff: validHandoff()
     });
 
-    harness.clock.advance(10_001);
+    harness.clock.advance(60_001);
+
+    const codexAgain = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(codexAgain.reason).toBe("sequence");
+  });
+
+  test("idle handoff allows the prior owner immediately when solo", async () => {
+    const harness = createHarness({
+      policy: {
+        waiterGraceMs: 10_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    const release = harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    expect(release.reserved_for).toBeNull();
+
+    const codexAgain = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(codexAgain.reason).toBe("sequence");
+  });
+
+  test("target-any event waits do not make a stale peer block prior owner reclaim", async () => {
+    const harness = createHarness({
+      policy: {
+        presenceTtlMs: 1_000,
+        waiterGraceMs: 10_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.clock.advance(1_001);
+
+    await harness.service.waitForEvents({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      target_agent_id: "any",
+      max_wait_ms: 0
+    });
+
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
 
     const codexAgain = asYourTurn(
       await harness.service.waitForTurn({

@@ -53,7 +53,7 @@ export const DEFAULT_MAX_INSTRUCTION_FILE_BYTES = 256 * 1024;
 
 export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration instructions
 
-Keep using Talking Stick until the shared task is done. After releasing or handing off, re-enter the wait loop by default. Prefer continued action unless the task is complete or the operator explicitly redirects or stops the room.
+Keep using Talking Stick until the shared task is done. After releasing or handing off, re-enter the wait loop by default. Prefer continued action unless the task is complete or the operator explicitly redirects or stops the room. If you are the only active member of the room, stop polling after a clear handoff rather than churning release/reclaim turns.
 
 Use phase names in handoffs when they clarify the work: draft, adversarial review, convergence, implementation, implementation review, test review, and release. These phases are vocabulary, not protocol state.
 

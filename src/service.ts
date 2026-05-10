@@ -2072,18 +2072,20 @@ export class TalkingStickService {
       return false;
     }
 
-    if (now.getTime() - Date.parse(room.updated_at) >= this.policy.waiterGraceMs) {
-      return false;
-    }
+    const handoffAgeMs = now.getTime() - Date.parse(room.updated_at);
 
     const pendingEvent = this.getEventBySeq(room.pending_handoff_event_seq);
     const priorOwner = pendingEvent?.from_agent_id ?? null;
 
     if (
       priorOwner === agentId &&
-      this.hasOtherRoomMember(room.room_id, agentId)
+      this.hasOtherActiveRoomMember(room.room_id, agentId, now)
     ) {
-      return true;
+      return handoffAgeMs < this.priorOwnerReleaseCooldownMs();
+    }
+
+    if (handoffAgeMs >= this.policy.waiterGraceMs) {
+      return false;
     }
 
     const bestKnownMember = this.findBestFairKnownMember(
@@ -2095,8 +2097,18 @@ export class TalkingStickService {
     return bestKnownMember !== null && bestKnownMember.agent_id !== agentId;
   }
 
-  private hasOtherRoomMember(roomId: string, agentId: AgentId): boolean {
-    return this.getMembers(roomId).some((member) => member.agent_id !== agentId);
+  private hasOtherActiveRoomMember(
+    roomId: string,
+    agentId: AgentId,
+    now: Date
+  ): boolean {
+    return this.getMembers(roomId).some(
+      (member) => member.agent_id !== agentId && this.isMemberActive(member, now)
+    );
+  }
+
+  private priorOwnerReleaseCooldownMs(): number {
+    return Math.max(this.policy.waiterGraceMs * 6, 60_000);
   }
 
   private inspectRoom(room: PathRoomRow, now: Date): RoomInspection {
