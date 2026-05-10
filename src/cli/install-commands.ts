@@ -63,6 +63,7 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
   ).flat();
   reportInstallResults(results, "install");
   reportCleanupResults(await runCleanup(harnesses, "manual", installOptions), "install");
+  printInstructionHint(results);
 }
 
 export async function runUninstallCommand(
@@ -330,6 +331,15 @@ function reportInstallResults(
   if (anyFailed) {
     throw new Error(`${mode} completed with failures.`);
   }
+}
+
+function printInstructionHint(results: InstallResult[]): void {
+  if (!results.some((result) => result.ok && !result.skipped)) {
+    return;
+  }
+  process.stdout.write(
+    "Customize collaboration instructions with: tt instructions edit\n"
+  );
 }
 
 function reportCleanupResults(

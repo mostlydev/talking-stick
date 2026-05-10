@@ -9,6 +9,11 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## Unreleased
+
+### Added
+- **Editable collaboration instructions.** Added `tt instructions show|edit|reset` so bundled safety guidance can stay package-managed while user and project collaboration prompts live in editable Markdown. The bundled skill now loads the effective prompt after join.
+
 ## [0.2.0] — 2026-04-30
 
 Full notes: [`docs/releases/0.2.0.md`](docs/releases/0.2.0.md).

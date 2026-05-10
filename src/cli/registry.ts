@@ -5,6 +5,7 @@ import {
   runSelfUpdateCommand,
   runUninstallCommand
 } from "./install-commands.js";
+import { handleInstructionsCommand } from "./instructions-commands.js";
 import { handleMsgCommand } from "./msg-commands.js";
 import { handleNotesCommand } from "./notes-commands.js";
 import type { ParsedCommand } from "./parser.js";
@@ -88,6 +89,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt migrate-mcp [--reason update|first-run|uninstall|manual] [--quiet]",
     description: "Remove stale Talking Stick MCP registrations.",
     handler: ({ parsed }) => runMcpMigrationCommand(parsed)
+  },
+  {
+    name: "instructions",
+    needsRuntime: false,
+    startupMaintenance: true,
+    internal: false,
+    usage: "tt instructions [show|edit|reset] [--harness NAME] [--scope SCOPE]",
+    description: "Show, edit, or reset editable collaboration instructions.",
+    handler: ({ parsed }) => handleInstructionsCommand(parsed)
   },
   {
     name: "whoami",

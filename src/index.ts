@@ -40,6 +40,27 @@ export {
   resolveWorkspaceRoot
 } from "./path-resolution.js";
 export {
+  DEFAULT_MAX_INSTRUCTION_FILE_BYTES,
+  DEFAULT_INSTRUCTIONS_MARKDOWN,
+  editInstructions,
+  extractHarnessInstructions,
+  normalizeInstructionHarness,
+  parseInstructionScope,
+  resetInstructions,
+  resolveInstructionHarness,
+  resolveInstructionPaths,
+  showInstructions,
+  type EditableInstructionScope,
+  type EditInstructionsResult,
+  type InstructionHarness,
+  type InstructionOptions,
+  type InstructionPaths,
+  type InstructionScope,
+  type InstructionSource,
+  type ResetInstructionsResult,
+  type ShowInstructionsResult
+} from "./instructions.js";
+export {
   SUPPORTED_HARNESSES,
   MissingHarnessError,
   detectHarness,

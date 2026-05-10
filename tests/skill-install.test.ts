@@ -105,6 +105,7 @@ describe("talking-stick skill install", () => {
     const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
+    expect(skill).toContain("tt instructions show --json");
     expect(skill).toContain("### 4.5 Out-Of-Band Messaging");
     expect(skill).toContain("tt events --follow --json");
   });
@@ -184,6 +185,7 @@ describe("talking-stick skill install", () => {
     const target = path.join(tempRoot, ".claude", "skills", "talking-stick");
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
+    expect(skill).toContain("tt instructions show --json");
     expect(skill).toContain("### 4.5 Out-Of-Band Messaging");
     expect(skill).toContain("tt events --follow --json");
   });

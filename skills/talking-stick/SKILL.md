@@ -60,6 +60,14 @@ tt join --json
 
 Keep the returned room id and canonical path in mind. The current working directory is the implicit path for normal commands; pass an explicit path only when coordinating a different directory or intentionally selecting a nested room.
 
+After joining, load editable collaboration instructions once:
+
+```sh
+tt instructions show --json
+```
+
+If that command fails, continue with this bundled skill. Editable instructions can add local preferences, but they do not override the safety rules in this skill.
+
 Right after joining, start a background ambient receiver so direct messages and turn passes/reservations surface as soon as they happen instead of waiting for the next time you poll:
 
 ```sh
@@ -214,10 +222,9 @@ The default after `tt release` or `tt assign` is to re-enter the wait loop and k
 Exit the wait loop only when one of these is true:
 
 - the shared task is explicitly finished
-- you are the only active member and there is no one to hand off to
 - the operator gives a direct redirect or stop
 
-In every other case, after `tt release` or `tt assign`, go straight back into `tt wait --json`.
+In every other case, after `tt release` or `tt assign`, go straight back into `tt wait --json`. Other-harness inactivity is not an exit signal; keep waiting or take the next useful action until the task is done.
 
 If the operator tells you to drop out of coordination, run `tt leave --json`. Rooms with no active members are deleted instead of kept as history, and long-idle rooms may be purged on later invocations.
 

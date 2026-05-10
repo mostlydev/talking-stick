@@ -34,7 +34,12 @@ const ENV_KEYS = [
   "OPENCODE_PID",
   "TALKING_STICK_DATA_DIR",
   "TALKING_STICK_DISABLE_MCP_MIGRATION",
-  "TALKING_STICK_DISABLE_SKILL_SYNC"
+  "TALKING_STICK_DISABLE_SKILL_SYNC",
+  "VISUAL",
+  "EDITOR",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "XDG_DATA_HOME"
 ] as const;
 
 const originalEnv = new Map<string, string | undefined>(
@@ -952,6 +957,49 @@ describe("tt notes", () => {
     await expect(
       captureStdout(["self-update", "--print", "--manager", "winget"])
     ).rejects.toThrow(/--manager must be one of/);
+  });
+
+  test("tt instructions show returns the selected bundled harness prompt", async () => {
+    const out = await captureStdout([
+      "instructions",
+      "show",
+      "--harness",
+      "codex",
+      "--scope",
+      "bundled",
+      "--json"
+    ]);
+    const result = JSON.parse(out) as {
+      harness: string;
+      scope: string;
+      text: string;
+    };
+
+    expect(result.harness).toBe("codex");
+    expect(result.scope).toBe("bundled");
+    expect(result.text).toContain("## Codex");
+    expect(result.text).not.toContain("## Claude");
+  });
+
+  test("tt instructions show preserves a path after trailing --json", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const out = await captureStdout([
+      "instructions",
+      "show",
+      "--harness",
+      "codex",
+      "--scope",
+      "bundled",
+      "--json",
+      project
+    ]);
+    const result = JSON.parse(out) as {
+      paths: { project: string };
+    };
+
+    expect(result.paths.project).toBe(
+      path.join(project, ".talking-stick", "instructions.md")
+    );
   });
 
   test("tt install --print includes skill actions and no MCP add", async () => {

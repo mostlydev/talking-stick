@@ -20,7 +20,7 @@ npm i -g talking-stick
 tt install --all
 ```
 
-Restart any harness that was already running so it loads the updated skill. The skill teaches agents to coordinate by running `tt` CLI commands from the workspace.
+Restart any harness that was already running so it loads the updated skill. The skill teaches agents to coordinate by running `tt` CLI commands from the workspace. To tune the default collaboration prompt without editing installed package files, run `tt instructions edit`.
 
 ### 3. Try it: two agents, one repo
 
@@ -101,11 +101,26 @@ tt state           — authoritative state projection
 tt events          — audit log and long-poll stream of turn transitions/messages
 tt notes add/list  — durable async observations for the room
 tt msg send/recv   — out-of-band chat into the room event log
+tt instructions    — editable collaboration prompt loaded by the skill
 ```
 
 A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically.
 
 The global skill tells the model when to join, wait, verify its guardian, take over, leave notes, send messages, and hand off.
+
+## Editable collaboration instructions
+
+The bundled skill is the safety floor. It is intentionally small and package-managed. Local collaboration preferences live in editable Markdown files that `tt instructions` shows to agents after they join.
+
+```bash
+tt instructions show                     # effective prompt for the detected harness
+tt instructions show --harness codex     # view one harness's effective prompt
+tt instructions edit                     # edit user defaults
+tt instructions edit --project           # edit this repo's overrides
+tt instructions reset --project          # remove this repo's override
+```
+
+Effective instructions are layered in this order: bundled defaults, user defaults at `${TALKING_STICK_DATA_DIR}/instructions.md` (normally `~/.local/share/talking-stick/instructions.md`), then project overrides at `.talking-stick/instructions.md` in the workspace root. User and project files are created lazily on first edit, so installing `tt` does not litter repositories or harness config directories.
 
 ## Non-owner notes
 
@@ -173,6 +188,9 @@ tt state [path]                                           # full room state
 tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # room event log; --wait/--follow long-polls
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
+tt instructions show [path] [--harness claude|codex|gemini|opencode|all] [--scope effective|bundled|user|project]  # show collaboration prompt
+tt instructions edit [path] [--user|--project]             # edit user or project prompt
+tt instructions reset [path] (--user|--project)            # delete a user or project prompt
 tt release [path] --status TEXT --next-action TEXT        # normal handoff
 tt pass [path] --status TEXT --next-action TEXT           # pass/end your turn
 tt assign <target|next> [path] --status TEXT --next-action TEXT  # explicit handoff
