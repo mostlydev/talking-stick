@@ -9,7 +9,9 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
-## Unreleased
+## [0.4.0] — 2026-05-10
+
+Full notes: [`docs/releases/0.4.0.md`](docs/releases/0.4.0.md).
 
 ### Added
 - **Editable collaboration instructions.** Added `tt instructions show|edit|reset` so bundled safety guidance can stay package-managed while user and project collaboration prompts live in editable Markdown. The bundled skill now loads the effective prompt after join.
@@ -159,6 +161,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.0
 [0.1.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.3
 [0.1.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.2
 [0.1.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.1

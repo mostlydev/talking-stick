@@ -2,7 +2,7 @@
 
 A CLI coordination tool that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.3.0. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv`.
+**Version:** 0.4.0. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv`.
 
 ## Quickstart
 
@@ -46,7 +46,7 @@ That's the whole workflow. They negotiate turns automatically, hand off structur
 
 | Method | Command | Notes |
 |---|---|---|
-| **From npm** | `npm i -g talking-stick` | Published as `0.3.0`. Requires Node ≥ 22. |
+| **From npm** | `npm i -g talking-stick` | Published as `0.4.0`. Requires Node ≥ 22. |
 | **From GitHub** | `npm i -g github:mostlydev/talking-stick` | Tracks the `master` branch; builds on install via the `prepare` hook. |
 | **From source** | `git clone … && npm install && npm link` | For contributors. |
 
