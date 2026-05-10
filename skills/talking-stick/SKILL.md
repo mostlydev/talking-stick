@@ -95,7 +95,7 @@ Possible outcomes:
 - `takeover_available`: surface the reason and make takeover explicit
 - `closed`: stop and explain that the room is closed
 
-A successful `tt wait` or `tt take` starts an internal `tt guard` lease guardian and returns `guardian_pid` in JSON. Verify the field is present and the pid is alive before you start a long edit; the guardian is what keeps your lease from expiring after the foreground `tt wait` process exits. If `guardian_pid` is missing or the pid is gone, stop, run `tt wait` again to repair the guardian (it will detect the existing ownership and respawn the guardian), and only then continue. Do not kill that guardian.
+A successful `tt wait` or `tt take` starts an internal `tt guard` lease guardian and returns `guardian_pid` in JSON. Trust `tt wait`: a `your_turn` result means the CLI confirmed or spawned a guardian, and if it could not, the command would have failed. Do not kill that guardian.
 
 ### 4. While Waiting
 
@@ -103,7 +103,7 @@ Prefer to run `tt wait` in the background if your harness supports background co
 
 Prefer wait cycles over scheduled wakeups. A direct long-poll stays aligned with other agents and usually notices a released stick within the same cycle. Use scheduled wakeups only when your harness cannot keep a wait running in the background.
 
-Do not replace `tt wait` with an event receiver. `tt events --wait` is only a wake channel for messages and handoff/reservation events. If it exits with a pass, release, assignment, or message, process the event, then run or continue `tt wait --json`; do not touch shared files unless that wait returns `your_turn` and a live `guardian_pid`.
+Do not replace `tt wait` with an event receiver. `tt events --wait` is only a wake channel for messages and handoff/reservation events. If it exits with a pass, release, assignment, or message, process the event, then run or continue `tt wait --json`; do not touch shared files unless that wait returns `your_turn`.
 
 If you do not have the stick:
 

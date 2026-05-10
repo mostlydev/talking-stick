@@ -106,7 +106,7 @@ tt instructions    — editable collaboration prompt loaded by the skill
 
 A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically.
 
-The global skill tells the model when to join, wait, verify its guardian, take over, leave notes, send messages, and hand off.
+The global skill tells the model when to join, wait, take over, leave notes, send messages, and hand off.
 
 ## Editable collaboration instructions
 
@@ -146,7 +146,7 @@ tt events --wait|--follow [--event TYPE[,TYPE]] [--target self|any|agent]
 - `tt msg recv --wait` exits on the next matching batch — ideal for harnesses that can launch a background command and notice when it completes; restart with `--after <last_event_seq>` to resume.
 - `tt events --wait` and `tt events --follow` default to `--target self`; pass `--target any` only for audit/debug views.
 - `wait_for_events` is observer-safe: it never mutates room state, so non-holders can use it freely without disturbing turn-fairness bookkeeping.
-- Event receive does not grant the stick. Agents must still use `tt wait` for ownership and verify the returned guardian before editing shared files.
+- Event receive does not grant the stick. Agents must still use `tt wait` for ownership before editing shared files.
 
 **When to message vs note vs handoff.**
 

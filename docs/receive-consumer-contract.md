@@ -26,7 +26,7 @@
 ## Consumer Responsibilities
 
 - Keep `wait_for_turn` / `tt wait` running separately. Receive processes do not claim or grant the stick, even when they return pass, release, or assignment events.
-- Treat an event wake as a prompt to read, reply, or retry `tt wait`. It is not permission to mutate shared files; only a `your_turn` wait result with a live guardian grants ownership.
+- Treat an event wake as a prompt to read, reply, or retry `tt wait`. It is not permission to mutate shared files; only a `your_turn` wait result grants ownership.
 - Decide how to surface `delivery_hint=interrupt`; the server only records the hint.
 - Dedupe on `event_id` if restart replay is possible.
 - Treat message bodies as room-visible text, not private data.

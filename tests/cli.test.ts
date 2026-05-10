@@ -585,6 +585,61 @@ describe("tt turn commands", () => {
     }
   });
 
+  test("tt wait spawns a guardian for an already-owner with no recorded guardian", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let firstGuardianPid: number | undefined;
+    let repairedGuardianPid: number | undefined;
+
+    try {
+      await captureStdout(["join", project, "--agent", "human:worker"]);
+      const firstWaitOut = await captureStdout([
+        "wait",
+        project,
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ]);
+      const firstWait = JSON.parse(firstWaitOut) as {
+        status: string;
+        guardian_pid: number;
+      };
+      firstGuardianPid = firstWait.guardian_pid;
+      expect(firstWait.status).toBe("your_turn");
+      expect(isPidAlive(firstGuardianPid)).toBe(true);
+
+      process.kill(firstGuardianPid, "SIGTERM");
+      await waitForPidGone(firstGuardianPid);
+      fs.rmSync(resolveCliSessionPath(), { force: true });
+
+      const secondWaitOut = await captureStdout([
+        "wait",
+        project,
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ]);
+      const secondWait = JSON.parse(secondWaitOut) as {
+        status: string;
+        reason: string;
+        guardian_pid: number;
+      };
+      repairedGuardianPid = secondWait.guardian_pid;
+
+      expect(secondWait.status).toBe("your_turn");
+      expect(secondWait.reason).toBe("already_owner");
+      expect(repairedGuardianPid).toEqual(expect.any(Number));
+      expect(isPidAlive(repairedGuardianPid)).toBe(true);
+    } finally {
+      await releaseIfHeld(project, "human:worker");
+      killPidIfAlive(firstGuardianPid);
+      killPidIfAlive(repairedGuardianPid);
+    }
+  });
+
   test("tt assign next resolves the fair active recipient", async () => {
     const { project } = setupIsolatedCli(tempDirs);
 

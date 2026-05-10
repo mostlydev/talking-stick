@@ -59,7 +59,7 @@ export async function handleWaitCommand(
         joined.room_id
       );
 
-      const liveness = existing
+      const liveness = existing?.guardian_pid
         ? checkGuardianLiveness(
             {
               pid: existing.guardian_pid,
@@ -67,7 +67,7 @@ export async function handleWaitCommand(
             },
             createSystemProcessInspector()
           )
-        : "unknown";
+        : "gone";
 
       if (liveness === "gone") {
         const replacement = await spawnGuardian({
@@ -94,8 +94,12 @@ export async function handleWaitCommand(
         printResult(
           parsed,
           { ...waitResult, guardian_pid: replacement.pid },
-          () =>
-            `Already holding the stick (turn ${waitResult.turn_id}). Prior guardian was gone; spawned replacement ${replacement.pid}.`
+          () => {
+            const reason = existing?.guardian_pid
+              ? "Prior guardian was gone"
+              : "No guardian was recorded";
+            return `Already holding the stick (turn ${waitResult.turn_id}). ${reason}; spawned replacement ${replacement.pid}.`;
+          }
         );
         return;
       }

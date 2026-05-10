@@ -9,6 +9,13 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## [0.4.2] — 2026-05-10
+
+Full notes: [`docs/releases/0.4.2.md`](docs/releases/0.4.2.md).
+
+### Fixed
+- **Guardian ownership contract.** `tt wait` now repairs an already-owned turn when the local CLI session has no recorded guardian, and the bundled docs no longer ask agents to manually inspect guardian PIDs before editing.
+
 ## [0.4.1] — 2026-05-10
 
 Full notes: [`docs/releases/0.4.1.md`](docs/releases/0.4.1.md).
