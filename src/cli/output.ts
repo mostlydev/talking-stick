@@ -76,6 +76,9 @@ export function formatWaitResult(result: {
           : "";
         return `Not your turn — turn ${result.turn_id ?? "?"} is reserved for ${result.reserved_for}${deadline}.`;
       }
+      if (result.reason === "auto_claim_disabled") {
+        return "Parked — auto-claim disabled; idle room left untouched.";
+      }
       return "Not your turn yet.";
     }
     case "closed":
@@ -149,8 +152,8 @@ Commands:
   tt join [path] [--force-new]
   tt leave [path]
   tt kick <agent_id> [path] [--reason TEXT] [--force]
-  tt wait [path] [--timeout 110s]
-  tt try [path]
+  tt wait [path] [--timeout 110s] [--park]
+  tt try [path] [--park]
   tt state [path]
   tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
   tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]

@@ -93,6 +93,7 @@ tt list            — which rooms exist under a path
 tt join            — join the room for this workspace
 tt leave           — explicitly leave a room; deletes it when no active members remain
 tt wait            — block until the stick is available, with takeover signals
+tt wait --park     — stay coordinated without auto-claiming idle rooms
 tt release         — normal handoff to the next fair waiter, with structured Handoff
 tt assign          — explicit handoff to a named agent
 tt take            — deliberate claim when the prior holder is gone/stuck
@@ -182,8 +183,8 @@ tt whoami [--explain]                                      # show the resolved C
 tt list [path]                                            # list rooms
 tt join [path] [--force-new]                              # join the room for path
 tt leave [path]                                           # leave the room for path
-tt wait [path] [--timeout 110s]                           # block until your turn
-tt try [path]                                             # non-blocking claim attempt
+tt wait [path] [--timeout 110s] [--park]                  # block until your turn; --park disables idle auto-claim
+tt try [path] [--park]                                    # non-blocking claim attempt
 tt state [path]                                           # full room state
 tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # room event log; --wait/--follow long-polls
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message

@@ -640,6 +640,87 @@ describe("tt turn commands", () => {
     }
   });
 
+  test("tt wait --park does not auto-claim an idle room", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await captureStdout(["join", project, "--agent", "human:worker"]);
+    const waitOut = await captureStdout([
+      "wait",
+      project,
+      "--park",
+      "--timeout",
+      "0ms",
+      "--agent",
+      "human:worker",
+      "--json"
+    ]);
+    const waitResult = JSON.parse(waitOut) as {
+      status: string;
+      reason?: string;
+      guardian_pid?: number;
+    };
+
+    expect(waitResult.status).toBe("not_yet");
+    expect(waitResult.reason).toBe("auto_claim_disabled");
+    expect(waitResult.guardian_pid).toBeUndefined();
+
+    const service = new TalkingStickService();
+    try {
+      const rooms = service.listRooms({ context_path: project });
+      const room = rooms.rooms[0];
+      const events = service.getRoomEvents({ room_id: room.room_id });
+      expect(events.some((event) => event.event_type === "claim")).toBe(false);
+    } finally {
+      service.close();
+    }
+  });
+
+  test("tt wait --park returns your_turn with a guardian for the reserved recipient", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let guardianPid: number | undefined;
+
+    await seedCliLease(project, "human:owner", ["human:next"]);
+    try {
+      await captureStdout([
+        "pass",
+        project,
+        "human:next",
+        "--agent",
+        "human:owner",
+        "--status",
+        "Owner is passing.",
+        "--next-action",
+        "Take the reserved turn.",
+        "--json"
+      ]);
+
+      const waitOut = await captureStdout([
+        "wait",
+        project,
+        "--park",
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:next",
+        "--json"
+      ]);
+      const waitResult = JSON.parse(waitOut) as {
+        status: string;
+        reason: string;
+        guardian_pid?: number;
+      };
+      guardianPid = waitResult.guardian_pid;
+
+      expect(waitResult.status).toBe("your_turn");
+      expect(waitResult.reason).toBe("sequence");
+      expect(guardianPid).toEqual(expect.any(Number));
+      expect(isPidAlive(guardianPid as number)).toBe(true);
+    } finally {
+      await releaseIfHeld(project, "human:next");
+      killPidIfAlive(guardianPid);
+    }
+  });
+
   test("tt assign next resolves the fair active recipient", async () => {
     const { project } = setupIsolatedCli(tempDirs);
 

@@ -174,6 +174,7 @@ export interface WaitForTurnInput {
   agent_id: AgentId;
   room_id: string;
   max_wait_ms?: number;
+  auto_claim?: boolean;
 }
 
 export type WaitForTurnResult =
@@ -194,6 +195,7 @@ export type WaitForTurnResult =
       reserved_for?: AgentId;
       lease_expires_at?: string;
       claim_expires_at?: string;
+      reason?: "auto_claim_disabled";
     }
   | {
       status: "takeover_available";

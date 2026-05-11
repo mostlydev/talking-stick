@@ -32,6 +32,7 @@ Useful commands:
 - `tt whoami --json`
 - `tt join --json`
 - `tt wait --json`
+- `tt wait --park --json`
 - `tt try --json`
 - `tt state --json`
 - `tt events --after N --target any --json`
@@ -59,6 +60,8 @@ tt join --json
 ```
 
 Keep the returned room id and canonical path in mind. The current working directory is the implicit path for normal commands; pass an explicit path only when coordinating a different directory or intentionally selecting a nested room.
+
+On freshly invoked multi-agent tasks, give peers a short window to join before deciding you are alone. Use a normal wait timeout or spend about a minute on read-only repo orientation while other harnesses appear.
 
 After joining, load editable collaboration instructions once:
 
@@ -225,6 +228,8 @@ Exit the wait loop only when one of these is true:
 - the operator gives a direct redirect or stop
 
 In every other case, after `tt release` or `tt assign`, go straight back into `tt wait --json`. If you are the only active member of the room, stop polling after a clear handoff. Treat "only active" as no other member that `tt state --json` reports active or that has been seen in the last hour; if liveness is ambiguous, run one more normal wait cycle instead of churning. Other agents going briefly quiet is not enough to declare yourself alone.
+
+If you have no expected work and are blocked on operator input or an external signal, use `tt wait --park --json` instead of `tt wait --json` to stay coordinated without claiming idle turns. Park still surfaces explicit passes, assignments, and takeover availability; it never auto-claims an idle room. Switch back to plain `tt wait --json` once you have work to do.
 
 If the operator tells you to drop out of coordination, run `tt leave --json`. Rooms with no active members are deleted instead of kept as history, and long-idle rooms may be purged on later invocations.
 

@@ -9,6 +9,16 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## [0.4.3] — 2026-05-11
+
+Full notes: [`docs/releases/0.4.3.md`](docs/releases/0.4.3.md).
+
+### Added
+- **`tt wait --park`.** New flag opts out of idle-room auto-claim while keeping the agent coordinated for explicit passes, assignments, and takeover signals. Use it when waiting on operator input without intent to take the next idle turn. The service/command input field is `auto_claim` and defaults to true.
+
+### Changed
+- **Startup coordination guidance.** The bundled skill now tells freshly invoked agents to give peers a short window to join, using normal waits or read-only repo orientation before deciding they are alone.
+
 ## [0.4.2] — 2026-05-10
 
 Full notes: [`docs/releases/0.4.2.md`](docs/releases/0.4.2.md).

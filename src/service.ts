@@ -1105,6 +1105,19 @@ export class TalkingStickService {
     }
 
     if (!room.owner && !room.reserved_for) {
+      const autoClaim = input.auto_claim ?? true;
+      if (!autoClaim) {
+        return {
+          status: "not_yet",
+          room_state: inspection.state,
+          turn_id: room.turn_id,
+          current_owner: room.owner ?? undefined,
+          reserved_for: room.reserved_for ?? undefined,
+          lease_expires_at: room.lease_expires_at ?? undefined,
+          claim_expires_at: room.claim_expires_at ?? undefined,
+          reason: "auto_claim_disabled"
+        };
+      }
       if (this.shouldDeferIdleClaim(room, input.agent_id, now)) {
         return {
           status: "not_yet",

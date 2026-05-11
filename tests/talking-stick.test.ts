@@ -2104,6 +2104,254 @@ describe("talking-stick vertical slice", () => {
       })
     ).toThrowProtocolError("unknown_target");
   });
+
+  test("wait_for_turn with auto_claim=false returns not_yet on an idle room without minting a claim", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const result = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: join.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+
+    expect(result.status).toBe("not_yet");
+    if (result.status !== "not_yet") return;
+    expect(result.reason).toBe("auto_claim_disabled");
+    expect(result.current_owner).toBeUndefined();
+    expect(result.reserved_for).toBeUndefined();
+
+    const events = harness.service.getRoomEvents({ room_id: join.room_id });
+    expect(events.some((event) => event.event_type === "claim")).toBe(false);
+  });
+
+  test("wait_for_turn with auto_claim default still claims idle rooms", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const result = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: join.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(result.reason).toBe("open_claim");
+  });
+
+  test("wait_for_turn with auto_claim=false still returns your_turn for the current owner", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const firstTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: join.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    const parkedAsOwner = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: join.room_id,
+        max_wait_ms: 0,
+        auto_claim: false
+      })
+    );
+
+    expect(parkedAsOwner.reason).toBe("already_owner");
+    expect(parkedAsOwner.lease_id).toBe(firstTurn.lease_id);
+    expect(parkedAsOwner.turn_id).toBe(firstTurn.turn_id);
+  });
+
+  test("wait_for_turn with auto_claim=false still returns your_turn for the reserved recipient", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    const handoff = validHandoff();
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff
+    });
+
+    const claudeTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "claude:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0,
+        auto_claim: false
+      })
+    );
+
+    expect(claudeTurn.reason).toBe("sequence");
+    expect(claudeTurn.from_agent_id).toBe("codex:test");
+    expect(claudeTurn.handoff).toEqual(handoff);
+  });
+
+  test("wait_for_turn with auto_claim=false surfaces takeover_available after owner lease timeout", async () => {
+    const harness = createHarness({
+      policy: {
+        ownerLeaseTtlMs: 1_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.clock.advance(1_001);
+
+    const result = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+
+    expect(result).toEqual({
+      status: "takeover_available",
+      room_id: codexJoin.room_id,
+      turn_id: codexTurn.turn_id,
+      room_state: "stale_owner",
+      reason: "owner_timeout",
+      current_owner: "codex:test"
+    });
+  });
+
+  test("wait_for_turn with auto_claim=false surfaces takeover_available after claim timeout", async () => {
+    const harness = createHarness({
+      policy: {
+        claimTtlMs: 1_000,
+        presenceTtlMs: 60_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "gemini:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    harness.clock.advance(1_001);
+
+    const result = await harness.service.waitForTurn({
+      agent_id: "gemini:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+
+    expect(result).toEqual({
+      status: "takeover_available",
+      room_id: codexJoin.room_id,
+      turn_id: codexTurn.turn_id,
+      room_state: "reserved",
+      reason: "claim_timeout",
+      reserved_for: "claude:test"
+    });
+  });
+
+  test("wait_for_turn with auto_claim=false returns not_yet when another agent owns the stick", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    const claudeWait = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+
+    expect(claudeWait.status).toBe("not_yet");
+    if (claudeWait.status !== "not_yet") return;
+    expect(claudeWait.current_owner).toBe("codex:test");
+    expect(claudeWait.reason).toBeUndefined();
+  });
 });
 
 function createHarness(

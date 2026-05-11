@@ -21,6 +21,8 @@ import {
   shouldUseOperatorOverride
 } from "./identity.js";
 import {
+  hasOption,
+  normalizeBooleanFlag,
   parseWaitTimeout,
   type ParsedCommand
 } from "./parser.js";
@@ -40,6 +42,8 @@ export async function handleWaitCommand(
   isTry: boolean,
   cliEntryUrl: string
 ): Promise<void> {
+  normalizeBooleanFlag(parsed, "park");
+  const park = hasOption(parsed, "park");
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const identity = deriveCliIdentity(parsed);
   const joined = runtime.commands.joinPath(identity, { context_path: contextPath });
@@ -47,7 +51,8 @@ export async function handleWaitCommand(
 
   const waitResult = await runtime.commands.waitForTurn(identity, {
     room_id: joined.room_id,
-    max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed)
+    max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed),
+    auto_claim: park ? false : undefined
   });
 
   if (waitResult.status === "your_turn") {

@@ -60,6 +60,7 @@ export interface PassStickCommandInput extends HeartbeatCommandInput {
 export interface WaitForTurnCommandInput {
   room_id: string;
   max_wait_ms?: number;
+  auto_claim?: boolean;
 }
 
 export interface TakeoverStickCommandInput {
@@ -144,7 +145,8 @@ export class TalkingStickCommands {
     return this.service.waitForTurn({
       agent_id: identity.agent_id,
       room_id: input.room_id,
-      max_wait_ms: input.max_wait_ms
+      max_wait_ms: input.max_wait_ms,
+      auto_claim: input.auto_claim
     });
   }
 

@@ -176,7 +176,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt wait [path] [--timeout 110s]",
+    usage: "tt wait [path] [--timeout 110s] [--park]",
     description: "Wait until this agent can claim the stick.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, false, cliEntryUrl)
@@ -186,7 +186,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt try [path]",
+    usage: "tt try [path] [--park]",
     description: "Check turn availability without waiting.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, true, cliEntryUrl)
