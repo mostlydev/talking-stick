@@ -11,6 +11,12 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+- **`room_members.last_park_hint_event_seq`.** New nullable INTEGER column (migration 7) tracking which pending-handoff event sequence a member has already been hinted about via park mode. Used to give the `auto_claim_disabled` hint at most once per (member, pending handoff) pair.
+
+### Fixed
+- **Park no longer spins on truly idle rooms.** `tt wait --park` short-returns with `reason: auto_claim_disabled` and a hint only the first time a member parks against a given pending handoff in an idle room. Subsequent parks by the same member against the same pending handoff long-poll quietly. Truly idle (no pending handoff) always long-polls. A fresh pending handoff (newer event sequence) hints again, and each member is hinted independently. Previously the short-return fired on every park call, which kept a naive re-park loop spinning even after the agent saw the hint.
+
 ## [0.4.5] — 2026-05-12
 
 Full notes: [`docs/releases/0.4.5.md`](docs/releases/0.4.5.md).

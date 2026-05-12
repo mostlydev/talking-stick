@@ -662,8 +662,8 @@ describe("tt turn commands", () => {
     };
 
     expect(waitResult.status).toBe("not_yet");
-    expect(waitResult.reason).toBe("auto_claim_disabled");
-    expect(waitResult.hint).toContain("If work is pending");
+    expect(waitResult.reason).toBeUndefined();
+    expect(waitResult.hint).toBeUndefined();
     expect(waitResult.guardian_pid).toBeUndefined();
 
     const service = new TalkingStickService();

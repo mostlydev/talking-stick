@@ -97,6 +97,7 @@ export interface RoomMember {
   harness_host_id: string | null;
   harness_pid: number | null;
   harness_process_started_at: string | null;
+  last_park_hint_event_seq: number | null;
   status: "active" | "inactive";
 }
 

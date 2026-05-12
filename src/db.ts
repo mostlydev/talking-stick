@@ -144,6 +144,13 @@ const migrations: Migration[] = [
       ALTER TABLE room_members ADD COLUMN harness_pid INTEGER;
       ALTER TABLE room_members ADD COLUMN harness_process_started_at TEXT;
     `
+  },
+  {
+    id: 7,
+    name: "room_member_last_park_hint_event_seq",
+    up: `
+      ALTER TABLE room_members ADD COLUMN last_park_hint_event_seq INTEGER;
+    `
   }
 ];
 

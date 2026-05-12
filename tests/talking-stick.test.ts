@@ -2331,7 +2331,7 @@ describe("talking-stick vertical slice", () => {
     expect(newTurn.handoff).toEqual(handoff);
   });
 
-  test("wait_for_turn with auto_claim=false returns not_yet on an idle room without minting a claim", async () => {
+  test("wait_for_turn with auto_claim=false returns plain not_yet on a truly idle room", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
     const join = harness.service.joinPath({
@@ -2348,13 +2348,209 @@ describe("talking-stick vertical slice", () => {
 
     expect(result.status).toBe("not_yet");
     if (result.status !== "not_yet") return;
-    expect(result.reason).toBe("auto_claim_disabled");
-    expect(result.hint).toContain("If work is pending");
+    expect(result.reason).toBeUndefined();
+    expect(result.hint).toBeUndefined();
     expect(result.current_owner).toBeUndefined();
     expect(result.reserved_for).toBeUndefined();
 
     const events = harness.service.getRoomEvents({ room_id: join.room_id });
     expect(events.some((event) => event.event_type === "claim")).toBe(false);
+  });
+
+  test("wait_for_turn with auto_claim=false short-returns with a hint the first time an idle room has a pending handoff", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    const room = harness.service.listRooms({ context_path: project }).rooms[0];
+    expect(room.reserved_for).toBeNull();
+    expect(room.pending_handoff_event_seq).not.toBeNull();
+
+    const result = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+
+    expect(result.status).toBe("not_yet");
+    if (result.status !== "not_yet") return;
+    expect(result.reason).toBe("auto_claim_disabled");
+    expect(result.hint).toContain("pending handoff");
+  });
+
+  test("wait_for_turn with auto_claim=false stops hinting on subsequent parks against the same pending handoff", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    const first = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+    expect(first.status).toBe("not_yet");
+    if (first.status !== "not_yet") return;
+    expect(first.reason).toBe("auto_claim_disabled");
+
+    const second = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+    expect(second.status).toBe("not_yet");
+    if (second.status !== "not_yet") return;
+    expect(second.reason).toBeUndefined();
+    expect(second.hint).toBeUndefined();
+  });
+
+  test("wait_for_turn with auto_claim=false hints again when a new pending handoff replaces an acknowledged one", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const firstTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: firstTurn.lease_id,
+      expected_turn_id: firstTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    const firstHint = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+    expect(firstHint.status).toBe("not_yet");
+    if (firstHint.status !== "not_yet") return;
+    expect(firstHint.reason).toBe("auto_claim_disabled");
+
+    const secondTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: secondTurn.lease_id,
+      expected_turn_id: secondTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    const secondHint = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+    expect(secondHint.status).toBe("not_yet");
+    if (secondHint.status !== "not_yet") return;
+    expect(secondHint.reason).toBe("auto_claim_disabled");
+    expect(secondHint.hint).toContain("pending handoff");
+  });
+
+  test("wait_for_turn with auto_claim=false hints a newly joined member even if another member already acknowledged the same pending handoff", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    const codexHint = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+    expect(codexHint.status).toBe("not_yet");
+    if (codexHint.status !== "not_yet") return;
+    expect(codexHint.reason).toBe("auto_claim_disabled");
+
+    harness.service.joinPath({
+      agent_id: "gemini:test",
+      context_path: project
+    });
+
+    const geminiHint = await harness.service.waitForTurn({
+      agent_id: "gemini:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false
+    });
+    expect(geminiHint.status).toBe("not_yet");
+    if (geminiHint.status !== "not_yet") return;
+    expect(geminiHint.reason).toBe("auto_claim_disabled");
+    expect(geminiHint.hint).toContain("pending handoff");
   });
 
   test("wait_for_turn with auto_claim default still claims idle rooms", async () => {

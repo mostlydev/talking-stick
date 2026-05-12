@@ -98,6 +98,7 @@ interface RoomMemberRow {
   harness_host_id: string | null;
   harness_pid: number | null;
   harness_process_started_at: string | null;
+  last_park_hint_event_seq: number | null;
   status: "active" | "inactive";
 }
 
@@ -1132,6 +1133,29 @@ export class TalkingStickService {
     if (!room.owner && !room.reserved_for) {
       const autoClaim = input.auto_claim ?? true;
       if (!autoClaim) {
+        if (room.pending_handoff_event_seq) {
+          const member = this.getMember(input.room_id, input.agent_id);
+          const alreadyHinted =
+            member?.last_park_hint_event_seq === room.pending_handoff_event_seq;
+          if (!alreadyHinted) {
+            this.recordParkHint(
+              input.room_id,
+              input.agent_id,
+              room.pending_handoff_event_seq
+            );
+            return {
+              status: "not_yet",
+              room_state: inspection.state,
+              turn_id: room.turn_id,
+              current_owner: room.owner ?? undefined,
+              reserved_for: room.reserved_for ?? undefined,
+              lease_expires_at: room.lease_expires_at ?? undefined,
+              claim_expires_at: room.claim_expires_at ?? undefined,
+              reason: "auto_claim_disabled",
+              hint: "A pending handoff is waiting in this idle room, but park mode does not auto-claim. Run `tt wait --json` to pick it up, or ask for an explicit assignment."
+            };
+          }
+        }
         return {
           status: "not_yet",
           room_state: inspection.state,
@@ -1139,9 +1163,7 @@ export class TalkingStickService {
           current_owner: room.owner ?? undefined,
           reserved_for: room.reserved_for ?? undefined,
           lease_expires_at: room.lease_expires_at ?? undefined,
-          claim_expires_at: room.claim_expires_at ?? undefined,
-          reason: "auto_claim_disabled",
-          hint: "Idle room left unclaimed because park mode disables auto-claim. If work is pending, run `tt wait --json` or ask for an explicit assignment."
+          claim_expires_at: room.claim_expires_at ?? undefined
         };
       }
       if (this.shouldDeferIdleClaim(room, input.agent_id, now)) {
@@ -1643,6 +1665,22 @@ export class TalkingStickService {
         { to_agent_id: agentId }
       );
     }
+  }
+
+  private recordParkHint(
+    roomId: string,
+    agentId: AgentId,
+    pendingHandoffEventSeq: number
+  ): void {
+    this.db
+      .prepare(
+        `
+        UPDATE room_members
+        SET last_park_hint_event_seq = ?
+        WHERE room_id = ? AND agent_id = ?
+      `
+      )
+      .run(pendingHandoffEventSeq, roomId, agentId);
   }
 
   private touchWaitingMember(
