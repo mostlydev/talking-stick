@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.5] — 2026-05-12
+
+Full notes: [`docs/releases/0.4.5.md`](docs/releases/0.4.5.md).
+
 ### Added
 - **Harness-instance member metadata.** New nullable columns on `room_members` (`harness_name`, `harness_session_id`, `harness_host_id`, `harness_pid`, `harness_process_started_at`) track the root harness process and the in-process session id independently of the row's current liveness fields. Identity resolution walks the process ancestry to populate them; `tt guard` carries them forward on spawn so guardian rejoins do not clobber them.
 - **`session_superseded` event type.** Emitted when `tt join` detects that the room's owner or reserved recipient comes from the same harness process but a different in-process session (the `/clear` case). The superseded member row is deleted, owner/reservation/lease state is cleared as appropriate, and pending recipient handoffs are preserved for the next claimant. Legacy member rows with NULL harness-instance fields are skipped, so the migration is safe.
@@ -208,6 +212,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.5
 [0.4.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.4
 [0.4.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.1
 [0.4.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.0
