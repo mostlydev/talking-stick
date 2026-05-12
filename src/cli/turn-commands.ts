@@ -81,7 +81,8 @@ export async function handleWaitCommand(
           roomId: joined.room_id,
           leaseId: waitResult.lease_id,
           turnId: waitResult.turn_id,
-          cliEntryUrl
+          cliEntryUrl,
+          processMetadata: identity.process_metadata
         });
 
         upsertCliSession(sessionPath, {
@@ -130,7 +131,8 @@ export async function handleWaitCommand(
       roomId: joined.room_id,
       leaseId: waitResult.lease_id,
       turnId: waitResult.turn_id,
-      cliEntryUrl
+      cliEntryUrl,
+      processMetadata: identity.process_metadata
     });
 
     upsertCliSession(resolveCliSessionPath(), {
@@ -183,7 +185,8 @@ export async function handleTakeCommand(
       roomId: joined.room_id,
       leaseId: availability.lease_id,
       turnId: availability.turn_id,
-      cliEntryUrl
+      cliEntryUrl,
+      processMetadata: identity.process_metadata
     });
 
     upsertCliSession(resolveCliSessionPath(), {
@@ -227,7 +230,8 @@ export async function handleTakeCommand(
     roomId: joined.room_id,
     leaseId: result.lease_id,
     turnId: result.turn_id,
-    cliEntryUrl
+    cliEntryUrl,
+    processMetadata: identity.process_metadata
   });
 
   upsertCliSession(resolveCliSessionPath(), {

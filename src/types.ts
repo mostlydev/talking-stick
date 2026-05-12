@@ -22,6 +22,11 @@ export interface ProcessMetadata {
   process_started_at?: string | null;
   session_kind?: SessionKind;
   display_name?: string | null;
+  harness_name?: string | null;
+  harness_session_id?: string | null;
+  harness_host_id?: string | null;
+  harness_pid?: number | null;
+  harness_process_started_at?: string | null;
 }
 
 export type HandoffArtifactRole =
@@ -87,6 +92,11 @@ export interface RoomMember {
   process_started_at: string | null;
   session_kind: SessionKind;
   display_name: string | null;
+  harness_name: string | null;
+  harness_session_id: string | null;
+  harness_host_id: string | null;
+  harness_pid: number | null;
+  harness_process_started_at: string | null;
   status: "active" | "inactive";
 }
 
@@ -97,6 +107,7 @@ export type EventType =
   | "takeover"
   | "close"
   | "kick"
+  | "session_superseded"
   | "message_sent";
 
 export type DeliveryHint = "normal" | "interrupt";
@@ -196,6 +207,7 @@ export type WaitForTurnResult =
       lease_expires_at?: string;
       claim_expires_at?: string;
       reason?: "auto_claim_disabled";
+      hint?: string;
     }
   | {
       status: "takeover_available";

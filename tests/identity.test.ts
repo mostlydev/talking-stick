@@ -163,7 +163,12 @@ describe("deriveHarnessCliIdentity", () => {
       pid: 9000,
       process_started_at: "Thu Apr 23 14:00:00 2026",
       session_kind: "harness_cli",
-      display_name: "claude"
+      display_name: "claude",
+      harness_name: "claude",
+      harness_session_id: "pid:8000@Thu Apr 23 13:50:00 2026",
+      harness_host_id: "test-host",
+      harness_pid: 8000,
+      harness_process_started_at: "Thu Apr 23 13:50:00 2026"
     });
   });
 
@@ -235,6 +240,10 @@ describe("deriveHarnessCliIdentity", () => {
     });
     expect(first!.agent_id).toMatch(/^codex:[0-9a-f]{8}$/);
     expect(first!.agent_id).toBe(second!.agent_id);
+    expect(first!.process_metadata.harness_name).toBe("codex");
+    expect(first!.process_metadata.harness_session_id).toBe(
+      "harness:019dbc04-0695-77c0-8e59-2220fadcb7fb"
+    );
   });
 
   test("detects Codex via CODEX_THREAD_ID even without CODEX_MANAGED_BY_NPM", () => {

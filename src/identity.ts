@@ -116,6 +116,7 @@ export function deriveMcpHarnessIdentity(
       hostId,
       inspector
     );
+    const harnessProcess = resolveHarnessProcessRef(signal, processRef, inspector);
     const agentId =
       options.agentId ?? harnessAgentId(signal.harness, sessionId, hostId, username);
     return {
@@ -125,7 +126,12 @@ export function deriveMcpHarnessIdentity(
         pid: processRef.pid,
         process_started_at: processRef.inspection?.startTime ?? null,
         session_kind: "mcp_harness",
-        display_name: signal.harness
+        display_name: signal.harness,
+        harness_name: signal.harness,
+        harness_session_id: sessionId,
+        harness_host_id: hostId,
+        harness_pid: harnessProcess.pid,
+        harness_process_started_at: harnessProcess.startTime
       }
     };
   }
@@ -208,6 +214,7 @@ export function deriveHarnessCliIdentity(
 
   const agentId =
     options.agentId ?? harnessAgentId(signal.harness, sessionId, hostId, username);
+  const harnessProcess = resolveHarnessProcessRef(signal, processRef, inspector);
 
   return {
     agent_id: agentId,
@@ -216,7 +223,12 @@ export function deriveHarnessCliIdentity(
       pid: processRef.pid,
       process_started_at: processRef.inspection?.startTime ?? null,
       session_kind: "harness_cli",
-      display_name: options.displayName ?? signal.harness
+      display_name: options.displayName ?? signal.harness,
+      harness_name: signal.harness,
+      harness_session_id: sessionId,
+      harness_host_id: hostId,
+      harness_pid: harnessProcess.pid,
+      harness_process_started_at: harnessProcess.startTime
     }
   };
 }
@@ -263,6 +275,30 @@ function resolveHarnessSessionId(
     return `pid:${parentPid}@${parentInspection.startTime}`;
   }
   return `userhost:${sanitizeIdentityComponent(username)}@${hostId}`;
+}
+
+function resolveHarnessProcessRef(
+  signal: HarnessSignal,
+  processRef: {
+    pid: number;
+    inspection: ProcessInspection | null | undefined;
+  },
+  inspector: ProcessInspector
+): { pid: number; startTime: string | null } {
+  const harnessRoot = findHarnessRootInAncestry(
+    signal.harness,
+    processRef.pid,
+    processRef.inspection,
+    inspector
+  );
+  if (harnessRoot) {
+    return harnessRoot;
+  }
+
+  return {
+    pid: processRef.pid,
+    startTime: processRef.inspection?.startTime ?? null
+  };
 }
 
 // Walks the process ancestry (inclusive of startPid) looking for the deepest

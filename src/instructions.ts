@@ -53,7 +53,7 @@ export const DEFAULT_MAX_INSTRUCTION_FILE_BYTES = 256 * 1024;
 
 export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration instructions
 
-Keep using Talking Stick until the shared task is done. After releasing or handing off, re-enter the wait loop by default. Prefer continued action unless the task is complete or the operator explicitly redirects or stops the room. If you are the only active member of the room, stop polling after a clear handoff rather than churning release/reclaim turns. If you have no expected work and are blocked on operator input or an external signal, use \`tt wait --park --json\` so you stay coordinated without auto-claiming idle turns.
+Keep using Talking Stick until the shared task is done. After releasing or handing off, re-enter the wait loop by default. Prefer continued action unless the task is complete or the operator explicitly redirects or stops the room. If a handoff, message, or operator instruction leaves review, release, or other work pending, use normal \`tt wait --json\`; do not park. Use \`tt wait --park --json\` only for passive standby when no task is pending and you are blocked on operator input or an external signal.
 
 On freshly invoked multi-agent tasks, give peers a short window to join before deciding you are alone. Use a normal wait timeout or spend about a minute on read-only repo orientation while other harnesses appear.
 

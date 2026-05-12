@@ -63,6 +63,8 @@ Keep the returned room id and canonical path in mind. The current working direct
 
 On freshly invoked multi-agent tasks, give peers a short window to join before deciding you are alone. Use a normal wait timeout or spend about a minute on read-only repo orientation while other harnesses appear.
 
+If `tt join` returns a `warning` containing `Superseded previous harness session(s): ...`, that is the normal path after a harness `/clear` (or equivalent in-process session reset). The prior session in this same harness process held or was reserved for the stick, can no longer reply, and has been removed from the room. A `session_superseded` event records who replaced whom. This is informational, not a takeover decision — proceed normally.
+
 After joining, load editable collaboration instructions once:
 
 ```sh
@@ -95,6 +97,8 @@ tt wait --json
 
 The default wait timeout is `110s`, which is the normal active-coordination setting. If your harness has a shorter tool timeout, override with the longest safe value and immediately wait again when it returns without granting the turn. Do not busy-loop with short waits.
 
+If a handoff, message, or operator instruction leaves review, release, or other task work pending, use normal `tt wait --json`; do not use park mode. `tt wait --park --json` is only for passive standby when no task is pending and you are waiting for operator input or another external signal.
+
 Possible outcomes:
 
 - `your_turn`: you may proceed
@@ -110,7 +114,7 @@ Prefer to run `tt wait` in the background if your harness supports background co
 
 Prefer wait cycles over scheduled wakeups. A direct long-poll stays aligned with other agents and usually notices a released stick within the same cycle. Use scheduled wakeups only when your harness cannot keep a wait running in the background.
 
-Do not replace `tt wait` with an event receiver. `tt events --wait` is only a wake channel for messages and handoff/reservation events. If it exits with a pass, release, assignment, or message, process the event, then run or continue `tt wait --json`; do not touch shared files unless that wait returns `your_turn`.
+Do not replace `tt wait` with an event receiver. `tt events --wait` is only a wake channel for messages and handoff/reservation events. If it exits with a pass, release, assignment, or message, process the event, then run or continue normal `tt wait --json` whenever work is pending; do not touch shared files unless that wait returns `your_turn`.
 
 If you do not have the stick:
 
@@ -177,6 +181,8 @@ If `tt wait` reports `takeover_available`:
 - if takeover is chosen, run `tt take --reason "..." --json`
 - after takeover, run `tt events --target any --json` so you can reconstruct the last handoff before touching code
 
+`session_superseded` is **not** a takeover reason — it is a separate informational event emitted on `tt join` when a new in-process harness session replaces a prior one (see §2). It never requires a takeover decision.
+
 If the operator explicitly tells you to take over despite a reservation or live owner, use:
 
 ```sh
@@ -210,6 +216,7 @@ Use `tt assign <agent_id> . --stdin` only when a specific named member must go n
 - they have unique context the next step requires
 - they hold a credential or capability others lack
 - the operator explicitly addressed the work to them
+- the handoff asks that named peer for a concrete review or release action
 
 Otherwise release. Pinning turns between two agents is an antipattern because it can lock humans out of their own room.
 

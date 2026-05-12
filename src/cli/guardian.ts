@@ -6,9 +6,11 @@ import {
   createSystemProcessInspector,
   deriveHumanCliIdentity,
   isProtocolError,
-  terminateKnownProcess
+  terminateKnownProcess,
+  type ProcessMetadata
 } from "../index.js";
 import {
+  getStringOption,
   parseRequiredInteger,
   requireStringOption,
   type ParsedCommand
@@ -20,11 +22,18 @@ const GUARD_READY_TIMEOUT_MS = 10_000;
 const STALE_GUARD_ERRORS = new Set(["stale_lease", "turn_mismatch", "room_not_found"]);
 
 export async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
-  const identity = deriveHumanCliIdentity({
+  const baseIdentity = deriveHumanCliIdentity({
     agentId: requireStringOption(parsed, "agent"),
     displayName: requireStringOption(parsed, "agent").replace(/^human:/, ""),
     sessionKind: "human_guardian"
   });
+  const identity = {
+    ...baseIdentity,
+    process_metadata: {
+      ...baseIdentity.process_metadata,
+      ...parseHarnessMetadataOptions(parsed)
+    }
+  };
   const runtime = createRuntime();
 
   try {
@@ -72,8 +81,10 @@ export async function spawnGuardian(input: {
   leaseId: string;
   turnId: number;
   cliEntryUrl: string;
+  processMetadata?: ProcessMetadata;
 }): Promise<{ pid: number; process_started_at: string | null }> {
   const self = resolveSelfSpawn(input.cliEntryUrl);
+  const harnessArgs = serializeHarnessMetadataOptions(input.processMetadata);
   const child = spawn(
     self.command,
     [
@@ -88,7 +99,8 @@ export async function spawnGuardian(input: {
       "--lease-id",
       input.leaseId,
       "--turn-id",
-      String(input.turnId)
+      String(input.turnId),
+      ...harnessArgs
     ],
     {
       detached: true,
@@ -143,6 +155,51 @@ export async function spawnGuardian(input: {
       });
     }
   );
+}
+
+function parseHarnessMetadataOptions(parsed: ParsedCommand): ProcessMetadata {
+  const harnessPid = getStringOption(parsed, "harness-pid");
+  return {
+    harness_name: getStringOption(parsed, "harness-name") ?? null,
+    harness_session_id: getStringOption(parsed, "harness-session-id") ?? null,
+    harness_host_id: getStringOption(parsed, "harness-host-id") ?? null,
+    harness_pid: harnessPid ? Number.parseInt(harnessPid, 10) : null,
+    harness_process_started_at:
+      getStringOption(parsed, "harness-process-started-at") ?? null
+  };
+}
+
+function serializeHarnessMetadataOptions(
+  metadata: ProcessMetadata | undefined
+): string[] {
+  const args: string[] = [];
+  appendOption(args, "harness-name", metadata?.harness_name);
+  appendOption(args, "harness-session-id", metadata?.harness_session_id);
+  appendOption(args, "harness-host-id", metadata?.harness_host_id);
+  appendOption(
+    args,
+    "harness-pid",
+    metadata?.harness_pid === null || metadata?.harness_pid === undefined
+      ? null
+      : String(metadata.harness_pid)
+  );
+  appendOption(
+    args,
+    "harness-process-started-at",
+    metadata?.harness_process_started_at
+  );
+  return args;
+}
+
+function appendOption(
+  args: string[],
+  key: string,
+  value: string | null | undefined
+): void {
+  if (!value) {
+    return;
+  }
+  args.push(`--${key}`, value);
 }
 
 function resolveSelfSpawn(cliEntryUrl: string): { command: string; args: string[] } {

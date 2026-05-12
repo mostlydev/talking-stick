@@ -93,6 +93,11 @@ interface RoomMemberRow {
   process_started_at: string | null;
   session_kind: SessionKind;
   display_name: string | null;
+  harness_name: string | null;
+  harness_session_id: string | null;
+  harness_host_id: string | null;
+  harness_pid: number | null;
+  harness_process_started_at: string | null;
   status: "active" | "inactive";
 }
 
@@ -130,6 +135,7 @@ const KNOWN_EVENT_TYPES: readonly EventType[] = [
   "takeover",
   "close",
   "kick",
+  "session_superseded",
   "message_sent"
 ];
 
@@ -150,9 +156,7 @@ type TakeoverKind =
 
 export type ProcessLiveness = "alive" | "gone" | "unknown";
 
-export type ProcessLivenessChecker = (
-  metadata: RequiredProcessMetadata
-) => ProcessLiveness;
+export type ProcessLivenessChecker = (metadata: ProcessMetadata) => ProcessLiveness;
 
 interface RequiredProcessMetadata {
   host_id: string | null;
@@ -160,6 +164,11 @@ interface RequiredProcessMetadata {
   process_started_at: string | null;
   session_kind: SessionKind;
   display_name: string | null;
+  harness_name: string | null;
+  harness_session_id: string | null;
+  harness_host_id: string | null;
+  harness_pid: number | null;
+  harness_process_started_at: string | null;
 }
 
 export interface TalkingStickServiceOptions extends OpenDatabaseOptions {
@@ -245,8 +254,20 @@ export class TalkingStickService {
         timestamp,
         input.process_metadata
       );
+      const supersededAgentIds = this.retireSupersededHarnessSessions(
+        roomSelection.room.room_id,
+        input.agent_id,
+        normalizeProcessMetadata(input.process_metadata),
+        timestamp
+      );
 
       const freshRoom = this.requireRoom(roomSelection.room.room_id);
+      const warning = joinWarnings(
+        roomSelection.warning,
+        supersededAgentIds.length > 0
+          ? `Superseded previous harness session(s): ${supersededAgentIds.join(", ")}.`
+          : undefined
+      );
 
       return {
         agent_id: input.agent_id,
@@ -255,7 +276,7 @@ export class TalkingStickService {
         requested_path: resolved.requested_path,
         workspace_root: resolved.workspace_root,
         joined_existing_room: roomSelection.joinedExistingRoom,
-        warning: roomSelection.warning,
+        warning,
         policy: { ...this.policy },
         room_state: this.mapRoom(this.inspectRoom(freshRoom, now), now),
         handoff_template: handoffTemplate()
@@ -488,7 +509,11 @@ export class TalkingStickService {
         this.waitForTurnOnce(input)
       );
 
-      if (result.status !== "not_yet" || Date.now() >= deadline) {
+      if (
+        result.status !== "not_yet" ||
+        result.reason === "auto_claim_disabled" ||
+        Date.now() >= deadline
+      ) {
         return result;
       }
 
@@ -1115,7 +1140,8 @@ export class TalkingStickService {
           reserved_for: room.reserved_for ?? undefined,
           lease_expires_at: room.lease_expires_at ?? undefined,
           claim_expires_at: room.claim_expires_at ?? undefined,
-          reason: "auto_claim_disabled"
+          reason: "auto_claim_disabled",
+          hint: "Idle room left unclaimed because park mode disables auto-claim. If work is pending, run `tt wait --json` or ask for an explicit assignment."
         };
       }
       if (this.shouldDeferIdleClaim(room, input.agent_id, now)) {
@@ -1370,7 +1396,12 @@ export class TalkingStickService {
               pid = ?,
               process_started_at = ?,
               session_kind = ?,
-              display_name = ?
+              display_name = ?,
+              harness_name = ?,
+              harness_session_id = ?,
+              harness_host_id = ?,
+              harness_pid = ?,
+              harness_process_started_at = ?
           WHERE room_id = ? AND agent_id = ?
         `
         )
@@ -1382,6 +1413,11 @@ export class TalkingStickService {
           mergedMetadata.process_started_at,
           mergedMetadata.session_kind,
           mergedMetadata.display_name,
+          mergedMetadata.harness_name,
+          mergedMetadata.harness_session_id,
+          mergedMetadata.harness_host_id,
+          mergedMetadata.harness_pid,
+          mergedMetadata.harness_process_started_at,
           roomId,
           agentId
         );
@@ -1410,9 +1446,14 @@ export class TalkingStickService {
           pid,
           process_started_at,
           session_kind,
-          display_name
+          display_name,
+          harness_name,
+          harness_session_id,
+          harness_host_id,
+          harness_pid,
+          harness_process_started_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -1426,7 +1467,12 @@ export class TalkingStickService {
         normalizedMetadata.pid,
         normalizedMetadata.process_started_at,
         normalizedMetadata.session_kind,
-        normalizedMetadata.display_name
+        normalizedMetadata.display_name,
+        normalizedMetadata.harness_name,
+        normalizedMetadata.harness_session_id,
+        normalizedMetadata.harness_host_id,
+        normalizedMetadata.harness_pid,
+        normalizedMetadata.harness_process_started_at
       );
   }
 
@@ -1446,8 +1492,107 @@ export class TalkingStickService {
       pid: existing.pid,
       process_started_at: existing.process_started_at,
       session_kind: existing.session_kind,
-      display_name: existing.display_name
+      display_name: existing.display_name,
+      harness_name: existing.harness_name,
+      harness_session_id: existing.harness_session_id,
+      harness_host_id: existing.harness_host_id,
+      harness_pid: existing.harness_pid,
+      harness_process_started_at: existing.harness_process_started_at
     };
+  }
+
+  private retireSupersededHarnessSessions(
+    roomId: string,
+    incomingAgentId: AgentId,
+    incomingMetadata: RequiredProcessMetadata,
+    timestamp: string
+  ): AgentId[] {
+    if (!hasHarnessInstanceIdentity(incomingMetadata)) {
+      return [];
+    }
+
+    const room = this.requireRoom(roomId);
+    const targetAgentIds = [...new Set([room.owner, room.reserved_for])].filter(
+      (agentId): agentId is AgentId =>
+        agentId !== null && agentId !== incomingAgentId
+    );
+    const supersededAgentIds: AgentId[] = [];
+
+    for (const targetAgentId of targetAgentIds) {
+      const target = this.getMember(roomId, targetAgentId);
+      if (
+        !target ||
+        !isSupersededHarnessInstance(target, incomingMetadata)
+      ) {
+        continue;
+      }
+
+      supersededAgentIds.push(targetAgentId);
+      this.db
+        .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
+        .run(roomId, targetAgentId);
+
+      this.appendEvent({
+        room_id: roomId,
+        turn_id: room.turn_id,
+        event_type: "session_superseded",
+        from_agent_id: incomingAgentId,
+        to_agent_id: targetAgentId,
+        handoff: null,
+        reason: `superseded by newer ${incomingMetadata.harness_name} session from the same harness process`,
+        created_at: timestamp
+      });
+    }
+
+    if (supersededAgentIds.length === 0) {
+      return [];
+    }
+
+    const ownerSuperseded = room.owner
+      ? supersededAgentIds.includes(room.owner)
+      : false;
+    const recipientSuperseded = room.reserved_for
+      ? supersededAgentIds.includes(room.reserved_for)
+      : false;
+    const nextOwner = ownerSuperseded ? null : room.owner;
+    const nextReservedFor = recipientSuperseded ? null : room.reserved_for;
+    const nextState =
+      room.state === "closed"
+        ? "closed"
+        : nextOwner
+          ? "owned"
+          : nextReservedFor
+            ? "reserved"
+            : "idle";
+
+    this.db
+      .prepare(
+        `
+        UPDATE path_rooms
+        SET owner = ?,
+            reserved_for = ?,
+            pending_handoff_event_seq = ?,
+            lease_id = ?,
+            lease_expires_at = ?,
+            claim_expires_at = ?,
+            state = ?,
+            updated_at = ?
+        WHERE room_id = ?
+      `
+      )
+      .run(
+        nextOwner,
+        nextReservedFor,
+        ownerSuperseded ? null : room.pending_handoff_event_seq,
+        ownerSuperseded ? null : room.lease_id,
+        ownerSuperseded ? null : room.lease_expires_at,
+        recipientSuperseded ? null : room.claim_expires_at,
+        nextState,
+        timestamp,
+        roomId
+      );
+
+    return supersededAgentIds;
   }
 
   private shouldPreserveExactMemberProcessMetadata(
@@ -2284,7 +2429,12 @@ export class TalkingStickService {
       pid: member.pid,
       process_started_at: member.process_started_at,
       session_kind: member.session_kind,
-      display_name: member.display_name
+      display_name: member.display_name,
+      harness_name: member.harness_name,
+      harness_session_id: member.harness_session_id,
+      harness_host_id: member.harness_host_id,
+      harness_pid: member.harness_pid,
+      harness_process_started_at: member.harness_process_started_at
     });
   }
 
@@ -2431,7 +2581,13 @@ function normalizeProcessMetadata(
     pid: processMetadata?.pid ?? null,
     process_started_at: processMetadata?.process_started_at ?? null,
     session_kind: processMetadata?.session_kind ?? "mcp_harness",
-    display_name: processMetadata?.display_name ?? null
+    display_name: processMetadata?.display_name ?? null,
+    harness_name: processMetadata?.harness_name ?? null,
+    harness_session_id: processMetadata?.harness_session_id ?? null,
+    harness_host_id: processMetadata?.harness_host_id ?? null,
+    harness_pid: processMetadata?.harness_pid ?? null,
+    harness_process_started_at:
+      processMetadata?.harness_process_started_at ?? null
   };
 }
 
@@ -2448,7 +2604,9 @@ export function createDefaultProcessLivenessChecker(
   return (metadata) => {
     if (
       metadata.pid === null ||
+      metadata.pid === undefined ||
       metadata.process_started_at === null ||
+      metadata.process_started_at === undefined ||
       metadata.process_started_at.trim() === ""
     ) {
       return "unknown";
@@ -2494,6 +2652,60 @@ function hasExactProcessIdentity(
     metadata.process_started_at !== undefined &&
     metadata.process_started_at.trim() !== ""
   );
+}
+
+function hasHarnessInstanceIdentity(
+  metadata:
+    | RequiredProcessMetadata
+    | Pick<
+        RoomMemberRow,
+        | "harness_name"
+        | "harness_session_id"
+        | "harness_host_id"
+        | "harness_pid"
+        | "harness_process_started_at"
+      >
+): boolean {
+  return (
+    metadata.harness_name !== null &&
+    metadata.harness_name !== undefined &&
+    metadata.harness_name.trim() !== "" &&
+    metadata.harness_session_id !== null &&
+    metadata.harness_session_id !== undefined &&
+    metadata.harness_session_id.trim() !== "" &&
+    metadata.harness_pid !== null &&
+    metadata.harness_pid !== undefined &&
+    metadata.harness_process_started_at !== null &&
+    metadata.harness_process_started_at !== undefined &&
+    metadata.harness_process_started_at.trim() !== ""
+  );
+}
+
+function isSupersededHarnessInstance(
+  existing: RoomMemberRow,
+  incoming: RequiredProcessMetadata
+): boolean {
+  if (!hasHarnessInstanceIdentity(existing) || !hasHarnessInstanceIdentity(incoming)) {
+    return false;
+  }
+
+  return (
+    existing.harness_name === incoming.harness_name &&
+    existing.harness_host_id === incoming.harness_host_id &&
+    existing.harness_pid === incoming.harness_pid &&
+    existing.harness_process_started_at ===
+      incoming.harness_process_started_at &&
+    existing.harness_session_id !== incoming.harness_session_id
+  );
+}
+
+function joinWarnings(
+  ...warnings: Array<string | null | undefined>
+): string | undefined {
+  const present = warnings.filter(
+    (warning): warning is string => Boolean(warning?.trim())
+  );
+  return present.length > 0 ? present.join(" ") : undefined;
 }
 
 function sessionKindPriority(sessionKind: SessionKind): number {

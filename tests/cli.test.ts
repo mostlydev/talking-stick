@@ -657,11 +657,13 @@ describe("tt turn commands", () => {
     const waitResult = JSON.parse(waitOut) as {
       status: string;
       reason?: string;
+      hint?: string;
       guardian_pid?: number;
     };
 
     expect(waitResult.status).toBe("not_yet");
     expect(waitResult.reason).toBe("auto_claim_disabled");
+    expect(waitResult.hint).toContain("If work is pending");
     expect(waitResult.guardian_pid).toBeUndefined();
 
     const service = new TalkingStickService();

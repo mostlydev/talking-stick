@@ -2135,6 +2135,202 @@ describe("talking-stick vertical slice", () => {
     ).toThrowProtocolError("unknown_target");
   });
 
+  test("joining a new same-process harness session retires a superseded owner", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexProcess = harness.processRegistry.create("codex");
+    const guardianProcess = harness.processRegistry.create(
+      "codex:old",
+      "human_guardian"
+    );
+    const oldSession = withHarnessInstance(
+      codexProcess,
+      "codex",
+      "harness:old"
+    );
+    const oldGuard = withHarnessInstance(
+      guardianProcess,
+      "codex",
+      "harness:old",
+      codexProcess
+    );
+    const newSession = withHarnessInstance(
+      codexProcess,
+      "codex",
+      "harness:new"
+    );
+
+    const oldJoin = harness.service.joinPath({
+      agent_id: "codex:old",
+      context_path: project,
+      process_metadata: oldSession
+    });
+    asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:old",
+        room_id: oldJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.joinPath({
+      agent_id: "codex:old",
+      context_path: project,
+      process_metadata: oldGuard
+    });
+
+    const guardedState = harness.service.getRoomState({ room_id: oldJoin.room_id });
+    const guardedOwner = guardedState.members.find(
+      (member) => member.agent_id === "codex:old"
+    );
+    expect(guardedOwner?.pid).toBe(guardianProcess.pid);
+    expect(guardedOwner?.harness_pid).toBe(codexProcess.pid);
+
+    const newJoin = harness.service.joinPath({
+      agent_id: "codex:new",
+      context_path: project,
+      process_metadata: newSession
+    });
+
+    expect(newJoin.warning).toContain("Superseded previous harness session(s): codex:old");
+    expect(newJoin.room_state.owner).toBeNull();
+    expect(newJoin.room_state.state).toBe("idle");
+    expect(newJoin.room_state.lease_id).toBeNull();
+
+    const state = harness.service.getRoomState({ room_id: oldJoin.room_id });
+    expect(state.members.map((member) => member.agent_id)).not.toContain(
+      "codex:old"
+    );
+
+    const supersededEvent = harness.service
+      .getRoomEvents({ room_id: oldJoin.room_id })
+      .find((event) => event.event_type === "session_superseded");
+    expect(supersededEvent?.from_agent_id).toBe("codex:new");
+    expect(supersededEvent?.to_agent_id).toBe("codex:old");
+    expect(supersededEvent?.reason).toContain(
+      "superseded by newer codex session"
+    );
+
+    const newTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:new",
+        room_id: oldJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(newTurn.reason).toBe("open_claim");
+  });
+
+  test("joining a different-process harness session does not retire an owner", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const oldProcess = harness.processRegistry.create("codex");
+    const newProcess = harness.processRegistry.create("codex");
+
+    const oldJoin = harness.service.joinPath({
+      agent_id: "codex:old",
+      context_path: project,
+      process_metadata: withHarnessInstance(
+        oldProcess,
+        "codex",
+        "harness:old"
+      )
+    });
+    asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:old",
+        room_id: oldJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    const newJoin = harness.service.joinPath({
+      agent_id: "codex:new",
+      context_path: project,
+      process_metadata: withHarnessInstance(
+        newProcess,
+        "codex",
+        "harness:new"
+      )
+    });
+
+    expect(newJoin.warning).toBeUndefined();
+    expect(newJoin.room_state.owner).toBe("codex:old");
+
+    const waitResult = await harness.service.waitForTurn({
+      agent_id: "codex:new",
+      room_id: oldJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(waitResult.status).toBe("not_yet");
+    if (waitResult.status !== "not_yet") return;
+    expect(waitResult.current_owner).toBe("codex:old");
+  });
+
+  test("joining a new same-process harness session preserves a superseded recipient handoff", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexProcess = harness.processRegistry.create("codex");
+    const handoff = validHandoff();
+
+    const claudeJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "codex:old",
+      context_path: project,
+      process_metadata: withHarnessInstance(
+        codexProcess,
+        "codex",
+        "harness:old"
+      )
+    });
+
+    const claudeTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "claude:test",
+        room_id: claudeJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.releaseStick({
+      room_id: claudeJoin.room_id,
+      agent_id: "claude:test",
+      lease_id: claudeTurn.lease_id,
+      expected_turn_id: claudeTurn.turn_id,
+      handoff
+    });
+
+    expect(
+      harness.service.getRoomState({ room_id: claudeJoin.room_id }).room
+        .reserved_for
+    ).toBe("codex:old");
+
+    const newJoin = harness.service.joinPath({
+      agent_id: "codex:new",
+      context_path: project,
+      process_metadata: withHarnessInstance(
+        codexProcess,
+        "codex",
+        "harness:new"
+      )
+    });
+
+    expect(newJoin.room_state.reserved_for).toBeNull();
+    expect(newJoin.room_state.pending_handoff_event_seq).not.toBeNull();
+
+    const newTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:new",
+        room_id: claudeJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(newTurn.reason).toBe("sequence");
+    expect(newTurn.from_agent_id).toBe("claude:test");
+    expect(newTurn.handoff).toEqual(handoff);
+  });
+
   test("wait_for_turn with auto_claim=false returns not_yet on an idle room without minting a claim", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
@@ -2153,6 +2349,7 @@ describe("talking-stick vertical slice", () => {
     expect(result.status).toBe("not_yet");
     if (result.status !== "not_yet") return;
     expect(result.reason).toBe("auto_claim_disabled");
+    expect(result.hint).toContain("If work is pending");
     expect(result.current_owner).toBeUndefined();
     expect(result.reserved_for).toBeUndefined();
 
@@ -2469,6 +2666,22 @@ function createProcessRegistry() {
 
       return states.get(key(metadata)) ?? "unknown";
     }
+  };
+}
+
+function withHarnessInstance(
+  metadata: ProcessMetadata,
+  harnessName: string,
+  harnessSessionId: string,
+  harnessProcess: ProcessMetadata = metadata
+): ProcessMetadata {
+  return {
+    ...metadata,
+    harness_name: harnessName,
+    harness_session_id: harnessSessionId,
+    harness_host_id: harnessProcess.host_id ?? null,
+    harness_pid: harnessProcess.pid ?? null,
+    harness_process_started_at: harnessProcess.process_started_at ?? null
   };
 }
 

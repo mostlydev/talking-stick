@@ -11,6 +11,14 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+- **Harness-instance member metadata.** New nullable columns on `room_members` (`harness_name`, `harness_session_id`, `harness_host_id`, `harness_pid`, `harness_process_started_at`) track the root harness process and the in-process session id independently of the row's current liveness fields. Identity resolution walks the process ancestry to populate them; `tt guard` carries them forward on spawn so guardian rejoins do not clobber them.
+- **`session_superseded` event type.** Emitted when `tt join` detects that the room's owner or reserved recipient comes from the same harness process but a different in-process session (the `/clear` case). The superseded member row is deleted, owner/reservation/lease state is cleared as appropriate, and pending recipient handoffs are preserved for the next claimant. Legacy member rows with NULL harness-instance fields are skipped, so the migration is safe.
+
+### Fixed
+- **`/clear` no longer leaves a permanent stale stick holder.** When a harness like Codex or Claude Code resets its in-process session (e.g. `/clear`) while still holding or being reserved for the stick, the next `tt join` from the new in-process session evicts the prior agent and clears the lease so the new session can proceed. Previously the room stayed stuck until an operator forced a takeover.
+- **Park mode no longer looks like active pending work.** `tt wait --park` now returns immediately when the room is idle and unreserved, with a JSON hint telling agents to use normal `tt wait --json` when a handoff or operator instruction leaves review/release work pending. The bundled instructions now reserve park mode for true passive standby.
+
 ## [0.4.4] — 2026-05-12
 
 Full notes: [`docs/releases/0.4.4.md`](docs/releases/0.4.4.md).

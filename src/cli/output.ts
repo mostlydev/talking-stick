@@ -61,6 +61,7 @@ export function formatWaitResult(result: {
   claim_expires_at?: string;
   handoff?: Handoff | null;
   from_agent_id?: string | null;
+  hint?: string;
 }): string {
   switch (result.status) {
     case "not_yet": {
@@ -77,7 +78,7 @@ export function formatWaitResult(result: {
         return `Not your turn — turn ${result.turn_id ?? "?"} is reserved for ${result.reserved_for}${deadline}.`;
       }
       if (result.reason === "auto_claim_disabled") {
-        return "Parked — auto-claim disabled; idle room left untouched.";
+        return result.hint ?? "Parked — idle room left unclaimed.";
       }
       return "Not your turn yet.";
     }

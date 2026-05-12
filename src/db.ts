@@ -133,6 +133,17 @@ const migrations: Migration[] = [
     up: `
       ALTER TABLE room_events ADD COLUMN payload_json TEXT;
     `
+  },
+  {
+    id: 6,
+    name: "room_member_harness_instance_metadata",
+    up: `
+      ALTER TABLE room_members ADD COLUMN harness_name TEXT;
+      ALTER TABLE room_members ADD COLUMN harness_session_id TEXT;
+      ALTER TABLE room_members ADD COLUMN harness_host_id TEXT;
+      ALTER TABLE room_members ADD COLUMN harness_pid INTEGER;
+      ALTER TABLE room_members ADD COLUMN harness_process_started_at TEXT;
+    `
   }
 ];
 
