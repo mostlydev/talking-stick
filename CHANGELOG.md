@@ -9,6 +9,17 @@ Versioning is [SemVer](https://semver.org/). The historical alpha releases could
 make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
+## Unreleased
+
+### Added
+- **Automatic release prep.** `npm version <new-version>` now runs `scripts/prepare-release.mjs`, moving `CHANGELOG.md`'s `Unreleased` entries into the new version section, creating `docs/releases/<version>.md`, and adding the GitHub release link before npm creates the version commit/tag.
+
+### Changed
+- **Ambient receiver guidance.** The shipped skill now says to run exactly one streaming ambient receiver per session, and warns that exit-notify background commands silently swallow `tt events --follow` output instead of surfacing mid-task events.
+
+### Fixed
+- **Idle-room retention.** Opportunistic cleanup still deletes long-idle rooms after the seven-day default retention, but it now preserves a room when any recorded member process is provably still alive. Once no member is recently active or live, the same cleanup path removes the room and its member, event, and note rows.
+
 ## [0.4.3] — 2026-05-11
 
 Full notes: [`docs/releases/0.4.3.md`](docs/releases/0.4.3.md).

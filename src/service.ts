@@ -1997,7 +1997,7 @@ export class TalkingStickService {
           continue;
         }
 
-        if (members.some((member) => this.isMemberActive(member, now))) {
+        if (members.some((member) => this.shouldRetainIdleRoom(member, now))) {
           continue;
         }
 
@@ -2041,6 +2041,18 @@ export class TalkingStickService {
 
   private isMemberActive(member: RoomMemberRow, now: Date): boolean {
     if (this.getMemberProcessLiveness(member) === "gone") {
+      return false;
+    }
+
+    return this.hasRecentPresence(member, now);
+  }
+
+  private shouldRetainIdleRoom(member: RoomMemberRow, now: Date): boolean {
+    const liveness = this.getMemberProcessLiveness(member);
+    if (liveness === "alive") {
+      return true;
+    }
+    if (liveness === "gone") {
       return false;
     }
 

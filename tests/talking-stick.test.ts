@@ -753,6 +753,36 @@ describe("talking-stick vertical slice", () => {
     ).toThrowProtocolError("room_not_found");
   });
 
+  test("long-idle rooms are retained while a recorded member process is alive", () => {
+    const harness = createHarness({
+      policy: {
+        idleRoomTtlMs: 1_000,
+        presenceTtlMs: 500
+      }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexProcess = harness.processRegistry.create("codex");
+
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+
+    harness.clock.advance(1_001);
+
+    const retainedRooms = harness.service.listRooms({ context_path: project });
+    expect(retainedRooms.rooms).toHaveLength(1);
+    expect(retainedRooms.rooms[0]?.room_id).toBe(join.room_id);
+    expect(countRows(harness.service, "path_rooms")).toBe(1);
+
+    harness.processRegistry.markGone(codexProcess);
+
+    expect(harness.service.listRooms({ context_path: project }).rooms).toEqual([]);
+    expect(countRows(harness.service, "path_rooms")).toBe(0);
+    expect(countRows(harness.service, "room_members")).toBe(0);
+  });
+
   test("join_path returns the effective policy including heartbeat cadence", () => {
     const harness = createHarness({
       policy: {

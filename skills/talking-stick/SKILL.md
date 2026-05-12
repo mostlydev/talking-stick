@@ -71,13 +71,17 @@ tt instructions show --json
 
 If that command fails, continue with this bundled skill. Editable instructions can add local preferences, but they do not override the safety rules in this skill.
 
-Right after joining, start a background ambient receiver so direct messages and turn passes/reservations surface as soon as they happen instead of waiting for the next time you poll:
+Right after joining, start exactly one background ambient receiver so direct messages and turn passes/reservations surface as soon as they happen instead of waiting for the next time you poll:
 
 ```sh
 tt events --follow --json
 ```
 
-For `tt events --wait` and `tt events --follow`, the default target is `self`; add `--target any` only for audit/debug views. If your harness can stream a child process's stdout into the model's context (Claude Code's Monitor, Codex `attach`-style), this is enough — each line becomes an event you see mid-task. If your harness can only notice that a backgrounded command exits, use the polling fallback in §4.5. Without an ambient receiver, neither messages nor turn handoffs reach you between deliberate `tt wait` / `tt events` calls.
+For `tt events --wait` and `tt events --follow`, the default target is `self`; add `--target any` only for audit/debug views.
+
+The receiver must stream stdout line-by-line into your model context (Claude Code's Monitor, Codex `attach`-style) so each event becomes a notification you see mid-task. A backgrounded shell that only notifies when the process exits is **not** an ambient receiver — it silently swallows every event until termination, then fires a single useless notification at the end. If your harness can only observe process-exit, use the polling fallbacks in §4.5 instead; do not dress an exit-notify background command up as a stream consumer.
+
+Run exactly one ambient receiver per session. A second `tt events --follow` does not add coverage — both instances compete for the same stream, and one of them is likely silently consuming events you will never see. If you need a different filter, stop the existing receiver first.
 
 The ambient receiver is not a turn claimant. It never grants the stick and never starts the lease guardian. Keep using `tt wait --json` for ownership.
 

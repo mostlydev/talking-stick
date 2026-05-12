@@ -747,6 +747,7 @@ wait_for_turn_poll_ms      = 250;                  // transport polling cadence
 wait_for_events_max_wait_ms = 110 * 1000;          // 110 seconds
 presence_ttl_ms            =  4 * 60 * 60 * 1000;  // 4 hours
 waiter_grace_ms            = 10 * 1000;            // 10 seconds
+idle_room_ttl_ms           =  7 * 24 * 60 * 60 * 1000; // 7 days
 ```
 
 Timeout meanings:
@@ -757,6 +758,7 @@ Timeout meanings:
 - `owner_lease_ttl` is how long an owner may remain silent before takeover becomes possible.
 - `presence_ttl` determines whether a member is active for sequence selection and takeover eligibility.
 - `waiter_grace_ms` is the short window used to identify recent waiters and to avoid immediately recycling the turn while a fairer known member is between wait polls.
+- `idle_room_ttl` is the retention window for dormant coordination history. Opportunistic cleanup only purges a long-idle room when no member has recent presence and no recorded member process is provably still alive.
 
 Rationale for these defaults: a real agent turn often runs 20-30 minutes (plan-and-edit, build-and-verify, review-and-respond), and a human collaborator walking through a few rooms may easily be idle for an hour without being "gone." Earlier drafts inherited chat-scale defaults (5-minute lease, 10-minute presence) which would silently open takeover windows mid-turn. The selected values accept a slower takeover response in exchange for not interrupting legitimate long work; operators who want faster response can shorten them via per-room policy once that ships.
 

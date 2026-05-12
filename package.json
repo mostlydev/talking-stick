@@ -21,6 +21,7 @@
     "postinstall": "node scripts/postinstall-mcp-cleanup.cjs",
     "prepare": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "test": "vitest run",
+    "version": "node scripts/prepare-release.mjs --from-package",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

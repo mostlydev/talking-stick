@@ -230,7 +230,7 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 - **Structured handoffs.** `release_stick` and `pass_stick` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
 - **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest without holding the stick; if the best-known candidate is between wait polls, a short grace window prevents immediate recycling to a less-fair claimant.
 - **No immediate take-backs.** If release leaves a handoff idle, the prior owner waits through the short grace window before reclaiming while another member exists.
-- **Ephemeral rooms.** `leave_room`/`tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms are purged opportunistically on later invocations.
+- **Ephemeral rooms.** `leave_room`/`tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.
 - **Multi-process safe.** Shared SQLite with WAL mode, `BEGIN IMMEDIATE` writes, 250 ms polling for `wait_for_turn`. No daemon required.
@@ -257,6 +257,11 @@ npm run build
 ## Changelog
 
 See [`CHANGELOG.md`](CHANGELOG.md) for a per-version summary; full release notes live in [`docs/releases/`](docs/releases/).
+
+When cutting a release, add entries under `CHANGELOG.md`'s `Unreleased` section,
+then run `npm version <new-version>`. The version lifecycle script moves those
+entries into the new version section, writes `docs/releases/<version>.md`, and
+adds the GitHub release link before npm commits and tags the version.
 
 ## Read next
 
