@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.6] — 2026-05-12
+
+Full notes: [`docs/releases/0.4.6.md`](docs/releases/0.4.6.md).
+
 ### Added
 - **`room_members.last_park_hint_event_seq`.** New nullable INTEGER column (migration 7) tracking which pending-handoff event sequence a member has already been hinted about via park mode. Used to give the `auto_claim_disabled` hint at most once per (member, pending handoff) pair.
 
@@ -218,6 +222,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.6
 [0.4.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.5
 [0.4.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.4
 [0.4.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.1
