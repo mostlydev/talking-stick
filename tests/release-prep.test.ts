@@ -102,6 +102,57 @@ Existing release.
       fs.existsSync(path.join(tempRoot, "docs", "releases", "0.4.4.md"))
     ).toBe(false);
   });
+
+  test("stages generated files during npm version lifecycle", () => {
+    const tempRoot = createTempRoot();
+    fs.writeFileSync(
+      path.join(tempRoot, "CHANGELOG.md"),
+      `# Changelog
+
+## Unreleased
+
+### Added
+- Staged release note.
+
+## [0.4.3] — 2026-05-11
+
+Existing release.
+`
+    );
+    execFileSync("git", ["init"], { cwd: tempRoot });
+    execFileSync("git", ["config", "user.email", "test@example.test"], {
+      cwd: tempRoot
+    });
+    execFileSync("git", ["config", "user.name", "Test User"], {
+      cwd: tempRoot
+    });
+    execFileSync("git", ["add", "CHANGELOG.md"], { cwd: tempRoot });
+    execFileSync("git", ["commit", "-m", "Initial changelog"], {
+      cwd: tempRoot
+    });
+
+    execFileSync(
+      process.execPath,
+      [scriptPath, "--version", "0.4.4", "--date", "2026-05-12"],
+      {
+        cwd: tempRoot,
+        env: {
+          ...process.env,
+          npm_lifecycle_event: "version",
+          npm_config_git_tag_version: "true"
+        }
+      }
+    );
+
+    const staged = execFileSync("git", ["diff", "--cached", "--name-only"], {
+      cwd: tempRoot,
+      encoding: "utf8"
+    });
+    expect(staged.split("\n").filter(Boolean)).toEqual([
+      "CHANGELOG.md",
+      "docs/releases/0.4.4.md"
+    ]);
+  });
 });
 
 function createTempRoot(): string {

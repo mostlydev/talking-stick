@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const CHANGELOG_PATH = "CHANGELOG.md";
@@ -36,6 +37,7 @@ function main() {
   fs.mkdirSync(RELEASES_DIR, { recursive: true });
   writeText(CHANGELOG_PATH, nextChangelog);
   writeText(releasePath, renderReleaseNotes(version, date, releaseBody));
+  stageGeneratedFiles([CHANGELOG_PATH, releasePath]);
 
   console.log(`Prepared release notes for ${version}.`);
 }
@@ -221,6 +223,34 @@ function readText(filePath) {
 
 function writeText(filePath, content) {
   fs.writeFileSync(filePath, content, "utf8");
+}
+
+function stageGeneratedFiles(filePaths) {
+  if (
+    process.env.npm_lifecycle_event !== "version" ||
+    process.env.npm_config_git_tag_version === "false"
+  ) {
+    return;
+  }
+
+  const insideWorkTree = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  if (
+    insideWorkTree.status !== 0 ||
+    insideWorkTree.stdout.trim() !== "true"
+  ) {
+    return;
+  }
+
+  const add = spawnSync("git", ["add", ...filePaths], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (add.status !== 0) {
+    throw new Error(add.stderr.trim() || "Failed to stage release files.");
+  }
 }
 
 if (

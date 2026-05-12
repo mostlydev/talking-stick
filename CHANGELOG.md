@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.4] — 2026-05-12
+
+Full notes: [`docs/releases/0.4.4.md`](docs/releases/0.4.4.md).
+
 ### Added
 - **Automatic release prep.** `npm version <new-version>` now runs `scripts/prepare-release.mjs`, moving `CHANGELOG.md`'s `Unreleased` entries into the new version section, creating `docs/releases/<version>.md`, and adding the GitHub release link before npm creates the version commit/tag.
 
@@ -196,6 +200,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.4
 [0.4.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.1
 [0.4.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.0
 [0.1.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.3
