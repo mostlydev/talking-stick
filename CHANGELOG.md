@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.7] — 2026-05-20
+
+Full notes: [`docs/releases/0.4.7.md`](docs/releases/0.4.7.md).
+
 ### Added
 - **`tt wait --events --after N`.** New flag turns `tt wait` into a unified background receive loop that long-polls for ownership changes *and* messages without a separate `tt events --follow` consumer. Holders can run the same command to receive directed and broadcast messages without renewing their lease; non-holders wake on ownership-relevant transitions (grant, reservation, takeover-available, room closure) or on self-targeted events. Result shape gains `events`, `cursor_event_seq`, and `wake_reason` (`turn` | `event` | `timeout` | `closed`). The cursor is required and explicit so a harness keeps the receive loop precise across restarts. `--target self|any|<agent_id>` (default `self`) selects which events the loop surfaces; release-to-room broadcasts are excluded by `self` but still wake the loop via the ownership-check half. `tt try --events --after N` composes the same shape for one-shot checks, and `--park --events` composes with the existing park-hint throttle so a parked receiver wakes once on a fresh pending handoff and then times out cleanly.
 
@@ -225,6 +229,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.7]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.7
 [0.4.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.6
 [0.4.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.5
 [0.4.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.4
