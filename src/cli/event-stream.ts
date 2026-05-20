@@ -199,7 +199,7 @@ async function followEvents(
   }
 }
 
-function resolveTargetFilter(
+export function resolveTargetFilter(
   runtime: Runtime,
   identity: DerivedIdentity,
   roomId: string,

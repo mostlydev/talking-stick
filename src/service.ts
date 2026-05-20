@@ -63,7 +63,8 @@ import type {
   WaitForEventsInput,
   WaitForEventsResult,
   WaitForTurnInput,
-  WaitForTurnResult
+  WaitForTurnResult,
+  WaitWakeReason
 } from "./types.js";
 
 interface PathRoomRow {
@@ -501,6 +502,10 @@ export class TalkingStickService {
     assertNonEmpty(input.room_id, "room_id");
     this.purgeExpiredIdleRooms(this.now());
 
+    if (input.include_events) {
+      return this.waitForTurnWithEvents(input);
+    }
+
     const maxWaitMs = input.max_wait_ms ?? this.policy.waitForTurnMaxWaitMs;
     const deadline = Date.now() + Math.max(0, maxWaitMs);
 
@@ -520,6 +525,85 @@ export class TalkingStickService {
 
       const remainingMs = deadline - Date.now();
       await sleep(Math.min(this.policy.waitForTurnPollMs, remainingMs));
+    }
+  }
+
+  private async waitForTurnWithEvents(
+    input: WaitForTurnInput
+  ): Promise<WaitForTurnResult> {
+    if (input.after_event_seq === undefined) {
+      throw new ProtocolError(
+        "invalid_cursor",
+        "after_event_seq is required when include_events is true."
+      );
+    }
+    if (!Number.isInteger(input.after_event_seq) || input.after_event_seq < 0) {
+      throw new ProtocolError(
+        "invalid_cursor",
+        "after_event_seq must be a non-negative integer."
+      );
+    }
+
+    const targetFilter = input.target_agent_id ?? "self";
+    if (targetFilter === "self" && !input.agent_id) {
+      throw new ProtocolError(
+        "agent_id_required",
+        "agent_id is required when target_agent_id is 'self'."
+      );
+    }
+
+    this.requireRoom(input.room_id);
+    this.warmRoomTurnLiveness(input.room_id);
+    const startedAsOwner = this.isActiveOwner(
+      input.room_id,
+      input.agent_id,
+      this.now()
+    );
+    const afterEventSeq = input.after_event_seq;
+    const maxWaitMs = input.max_wait_ms ?? this.policy.waitForTurnMaxWaitMs;
+    const deadline = Date.now() + Math.max(0, maxWaitMs);
+
+    while (true) {
+      this.warmRoomTurnLiveness(input.room_id);
+      const waitResult = withImmediateTransaction(this.db, () =>
+        startedAsOwner
+          ? this.waitForOwnerEventTurnOnce(input)
+          : this.waitForTurnOnce(input)
+      );
+      const events = this.queryEvents({
+        room_id: input.room_id,
+        after_event_seq: afterEventSeq,
+        event_types: null,
+        target: targetFilter,
+        caller_agent_id: input.agent_id,
+        from_agent_id: null,
+        limit: this.policy.waitForEventsBatchLimit
+      });
+
+      if (waitResult.status === "closed") {
+        return this.withWaitEvents(waitResult, events, afterEventSeq, "closed");
+      }
+
+      if (this.isTurnWake(waitResult, startedAsOwner)) {
+        return this.withWaitEvents(waitResult, events, afterEventSeq, "turn");
+      }
+
+      if (events.length > 0) {
+        return this.withWaitEvents(waitResult, events, afterEventSeq, "event");
+      }
+
+      if (Date.now() >= deadline) {
+        return this.withWaitEvents(waitResult, events, afterEventSeq, "timeout");
+      }
+
+      const remainingMs = deadline - Date.now();
+      await sleep(
+        Math.min(
+          this.policy.waitForTurnPollMs,
+          this.policy.waitForEventsPollMs,
+          remainingMs
+        )
+      );
     }
   }
 
@@ -1250,6 +1334,104 @@ export class TalkingStickService {
       reserved_for: room.reserved_for ?? undefined,
       lease_expires_at: room.lease_expires_at ?? undefined,
       claim_expires_at: room.claim_expires_at ?? undefined
+    };
+  }
+
+  private waitForOwnerEventTurnOnce(
+    input: WaitForTurnInput
+  ): WaitForTurnResult {
+    const now = this.now();
+    const timestamp = now.toISOString();
+    const room = this.requireRoom(input.room_id);
+
+    this.touchWaitingMember(input.room_id, input.agent_id, timestamp);
+    const inspection = this.inspectRoomForMutation(room, now);
+
+    if (room.state === "closed") {
+      return { status: "closed", room_id: input.room_id };
+    }
+
+    if (
+      room.owner === input.agent_id &&
+      room.lease_id &&
+      room.lease_expires_at &&
+      !this.hasExpired(room.lease_expires_at, now)
+    ) {
+      return {
+        status: "your_turn",
+        room_id: input.room_id,
+        turn_id: room.turn_id,
+        lease_id: room.lease_id,
+        handoff: null,
+        from_agent_id: null,
+        reason: "already_owner"
+      };
+    }
+
+    return {
+      status: "not_yet",
+      room_state: inspection.state,
+      turn_id: room.turn_id,
+      current_owner: room.owner ?? undefined,
+      reserved_for: room.reserved_for ?? undefined,
+      lease_expires_at: room.lease_expires_at ?? undefined,
+      claim_expires_at: room.claim_expires_at ?? undefined,
+      reason: "lost_turn"
+    };
+  }
+
+  private isActiveOwner(
+    roomId: string,
+    agentId: AgentId,
+    now: Date
+  ): boolean {
+    const room = this.requireRoom(roomId);
+    return (
+      room.owner === agentId &&
+      !!room.lease_id &&
+      !!room.lease_expires_at &&
+      !this.hasExpired(room.lease_expires_at, now)
+    );
+  }
+
+  private isTurnWake(
+    result: WaitForTurnResult,
+    startedAsOwner = false
+  ): boolean {
+    if (
+      startedAsOwner &&
+      result.status === "your_turn" &&
+      result.reason === "already_owner"
+    ) {
+      return false;
+    }
+
+    return (
+      result.status === "your_turn" ||
+      result.status === "takeover_available" ||
+      // Park hints are turn wakes only because waitForTurnOnce throttles
+      // auto_claim_disabled per pending handoff; subsequent parked polls become
+      // plain not_yet and can timeout instead of tight-looping.
+      (result.status === "not_yet" &&
+        (result.reason === "auto_claim_disabled" ||
+          result.reason === "lost_turn"))
+    );
+  }
+
+  private withWaitEvents(
+    result: WaitForTurnResult,
+    events: RoomEvent[],
+    afterEventSeq: number,
+    wakeReason: WaitWakeReason
+  ): WaitForTurnResult {
+    return {
+      ...result,
+      events,
+      cursor_event_seq:
+        events.length > 0
+          ? events[events.length - 1].event_seq
+          : afterEventSeq,
+      wake_reason: wakeReason
     };
   }
 

@@ -11,6 +11,9 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+- **`tt wait --events --after N`.** New flag turns `tt wait` into a unified background receive loop that long-polls for ownership changes *and* messages without a separate `tt events --follow` consumer. Holders can run the same command to receive directed and broadcast messages without renewing their lease; non-holders wake on ownership-relevant transitions (grant, reservation, takeover-available, room closure) or on self-targeted events. Result shape gains `events`, `cursor_event_seq`, and `wake_reason` (`turn` | `event` | `timeout` | `closed`). The cursor is required and explicit so a harness keeps the receive loop precise across restarts. `--target self|any|<agent_id>` (default `self`) selects which events the loop surfaces; release-to-room broadcasts are excluded by `self` but still wake the loop via the ownership-check half. `tt try --events --after N` composes the same shape for one-shot checks, and `--park --events` composes with the existing park-hint throttle so a parked receiver wakes once on a fresh pending handoff and then times out cleanly.
+
 ## [0.4.6] — 2026-05-12
 
 Full notes: [`docs/releases/0.4.6.md`](docs/releases/0.4.6.md).

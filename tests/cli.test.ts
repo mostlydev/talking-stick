@@ -531,6 +531,81 @@ describe("tt turn commands", () => {
     }
   });
 
+  test("tt wait --events --after returns event fields and a live guardian pid", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let guardianPid: number | undefined;
+
+    try {
+      await captureStdout(["join", project, "--agent", "human:worker"]);
+      const waitOut = await captureStdout([
+        "wait",
+        project,
+        "--events",
+        "--after",
+        "0",
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ]);
+      const waitResult = JSON.parse(waitOut) as {
+        status: string;
+        guardian_pid?: number;
+        events?: Array<{ event_seq: number; event_type: string }>;
+        cursor_event_seq?: number;
+        wake_reason?: string;
+      };
+      guardianPid = waitResult.guardian_pid;
+
+      expect(waitResult.status).toBe("your_turn");
+      expect(waitResult.wake_reason).toBe("turn");
+      expect(waitResult.events?.map((event) => event.event_type)).toEqual([
+        "claim"
+      ]);
+      expect(waitResult.cursor_event_seq).toBe(
+        waitResult.events?.[0].event_seq
+      );
+      expect(guardianPid).toEqual(expect.any(Number));
+      expect(isPidAlive(guardianPid as number)).toBe(true);
+    } finally {
+      await releaseIfHeld(project, "human:worker");
+      killPidIfAlive(guardianPid);
+    }
+  });
+
+  test("tt wait validates wait-events cursor usage", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await captureStdout(["join", project, "--agent", "human:worker"]);
+
+    await expect(
+      captureStdout([
+        "wait",
+        project,
+        "--events",
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ])
+    ).rejects.toThrow(/Missing required option --after/);
+
+    await expect(
+      captureStdout([
+        "wait",
+        project,
+        "--after",
+        "0",
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ])
+    ).rejects.toThrow(/Pass --after only with --events/);
+  });
+
   test("tt wait repairs a missing guardian for an existing owner", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     let firstGuardianPid: number | undefined;

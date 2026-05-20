@@ -6,6 +6,7 @@ import {
   ProtocolError,
   TalkingStickService,
   type Handoff,
+  type Policy,
   type RoomEvent,
   type WaitForTurnResult
 } from "../src/index.js";
@@ -458,6 +459,381 @@ describe("out-of-band signaling substrate", () => {
     expect(result).toEqual({ events: [], cursor_event_seq: 0 });
   });
 
+  test("waitForTurn include_events on a closed room still returns queued events", async () => {
+    const harness = createHarness();
+    const room = joinPair(harness);
+    const message = harness.service.sendMessage({
+      agent_id: "claude:test",
+      room_id: room.room_id,
+      to_agent_id: "codex:test",
+      body: "final note before close"
+    });
+    harness.service.db
+      .prepare("UPDATE path_rooms SET state = 'closed' WHERE room_id = ?")
+      .run(room.room_id);
+
+    const result = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: room.room_id,
+      max_wait_ms: 0,
+      include_events: true,
+      after_event_seq: 0
+    });
+
+    expect(result.status).toBe("closed");
+    expect(result.events?.map((event) => event.event_seq)).toEqual([
+      message.event_seq
+    ]);
+    expect(result.cursor_event_seq).toBe(message.event_seq);
+    expect(result.wake_reason).toBe("closed");
+  });
+
+  test("waitForTurn include_events grants the turn with queued events", async () => {
+    const harness = createHarness();
+    const room = joinPair(harness);
+
+    harness.service.sendMessage({
+      agent_id: "codex:test",
+      room_id: room.room_id,
+      to_agent_id: "claude:test",
+      body: "claim with this context"
+    });
+
+    const result = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "claude:test",
+        room_id: room.room_id,
+        max_wait_ms: 0,
+        include_events: true,
+        after_event_seq: 0
+      })
+    );
+
+    expect(result.reason).toBe("open_claim");
+    expect(result.wake_reason).toBe("turn");
+    expect(result.events?.map((event) => event.event_type)).toEqual([
+      "message_sent",
+      "claim"
+    ]);
+    expect(result.events?.[0].payload?.body).toBe("claim with this context");
+    expect(result.cursor_event_seq).toBe(result.events?.[1].event_seq);
+  });
+
+  test("waitForTurn include_events lets the holder receive messages without mutating the lease", async () => {
+    const harness = createHarness();
+    const room = joinPair(harness);
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const afterClaim = harness.service.getLatestEventSeq({ room_id: room.room_id });
+    const beforeLease = harness.service.listRooms({
+      context_path: room.canonical_path
+    }).rooms[0].lease_expires_at;
+
+    harness.service.sendMessage({
+      agent_id: "claude:test",
+      room_id: room.room_id,
+      to_agent_id: "codex:test",
+      body: "still receiving?"
+    });
+
+    const result = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0,
+        include_events: true,
+        after_event_seq: afterClaim
+      })
+    );
+    const afterLease = harness.service.listRooms({
+      context_path: room.canonical_path
+    }).rooms[0].lease_expires_at;
+
+    expect(result.lease_id).toBe(codexTurn.lease_id);
+    expect(result.reason).toBe("already_owner");
+    expect(result.wake_reason).toBe("event");
+    expect(messageBodies(result.events ?? [])).toEqual(["still receiving?"]);
+    expect(result.cursor_event_seq).toBe(result.events?.[0].event_seq);
+    expect(afterLease).toBe(beforeLease);
+  });
+
+  test("waitForTurn include_events holder timeout returns an owner checkpoint", async () => {
+    const harness = createHarness();
+    const room = joinPair(harness);
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const afterClaim = harness.service.getLatestEventSeq({ room_id: room.room_id });
+
+    const result = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0,
+        include_events: true,
+        after_event_seq: afterClaim
+      })
+    );
+
+    expect(result.lease_id).toBe(codexTurn.lease_id);
+    expect(result.reason).toBe("already_owner");
+    expect(result.events).toEqual([]);
+    expect(result.cursor_event_seq).toBe(afterClaim);
+    expect(result.wake_reason).toBe("timeout");
+  });
+
+  test("waitForTurn include_events alone does not preserve ownership after lease expiry", async () => {
+    const harness = createHarness({
+      policy: {
+        ownerLeaseTtlMs: 1_000
+      }
+    });
+    const room = joinPair(harness);
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const afterClaim = harness.service.getLatestEventSeq({ room_id: room.room_id });
+    const beforeLease = harness.service.listRooms({
+      context_path: room.canonical_path
+    }).rooms[0].lease_expires_at;
+
+    const checkpoint = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0,
+        include_events: true,
+        after_event_seq: afterClaim
+      })
+    );
+    const afterCheckpointLease = harness.service.listRooms({
+      context_path: room.canonical_path
+    }).rooms[0].lease_expires_at;
+
+    expect(checkpoint.lease_id).toBe(codexTurn.lease_id);
+    expect(afterCheckpointLease).toBe(beforeLease);
+
+    harness.clock.advance(1_001);
+
+    const result = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: room.room_id,
+      max_wait_ms: 0
+    });
+
+    expect(result.status).toBe("takeover_available");
+    if (result.status !== "takeover_available") return;
+    expect(result.reason).toBe("owner_timeout");
+    expect(result.current_owner).toBe("codex:test");
+  });
+
+  test("waitForTurn include_events returns event-only wakes for non-owners", async () => {
+    const harness = createHarness();
+    const room = joinPair(harness);
+    asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const afterClaim = harness.service.getLatestEventSeq({ room_id: room.room_id });
+
+    harness.service.sendMessage({
+      agent_id: "codex:test",
+      room_id: room.room_id,
+      to_agent_id: "claude:test",
+      body: "read while waiting"
+    });
+
+    const result = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: room.room_id,
+      max_wait_ms: 0,
+      include_events: true,
+      after_event_seq: afterClaim
+    });
+
+    expect(result.status).toBe("not_yet");
+    if (result.status !== "not_yet") return;
+    expect(result.current_owner).toBe("codex:test");
+    expect(result.wake_reason).toBe("event");
+    expect(messageBodies(result.events ?? [])).toEqual(["read while waiting"]);
+  });
+
+  test("waitForTurn include_events reports lost_turn when a holder is taken over", async () => {
+    const harness = createHarness();
+    const room = joinPair(harness);
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const afterClaim = harness.service.getLatestEventSeq({ room_id: room.room_id });
+
+    const waitPromise = harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: room.room_id,
+      max_wait_ms: 50,
+      include_events: true,
+      after_event_seq: afterClaim
+    });
+
+    harness.service.takeoverStick({
+      agent_id: "claude:test",
+      room_id: room.room_id,
+      expected_turn_id: codexTurn.turn_id,
+      reason: "operator requested takeover",
+      operator_override: true
+    });
+
+    const result = await waitPromise;
+
+    expect(result.status).toBe("not_yet");
+    if (result.status !== "not_yet") return;
+    expect(result.reason).toBe("lost_turn");
+    expect(result.current_owner).toBe("claude:test");
+    expect(result.wake_reason).toBe("turn");
+    expect(result.events?.map((event) => event.event_type)).toEqual([
+      "takeover"
+    ]);
+  });
+
+  test("waitForTurn include_events composes with park mode in idle rooms", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+    const afterRelease = harness.service.getLatestEventSeq({
+      room_id: codexJoin.room_id
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    harness.service.sendMessage({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      to_agent_id: "codex:test",
+      body: "park wake"
+    });
+
+    const result = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      auto_claim: false,
+      include_events: true,
+      after_event_seq: afterRelease
+    });
+
+    expect(result.status).toBe("not_yet");
+    if (result.status !== "not_yet") return;
+    expect(result.reason).toBe("auto_claim_disabled");
+    expect(result.wake_reason).toBe("turn");
+    expect(messageBodies(result.events ?? [])).toEqual(["park wake"]);
+  });
+
+  test("waitForTurn include_events parked against an acknowledged handoff times out instead of turn-looping", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const turn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: join.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.releaseStick({
+      room_id: join.room_id,
+      agent_id: "codex:test",
+      lease_id: turn.lease_id,
+      expected_turn_id: turn.turn_id,
+      handoff: validHandoff()
+    });
+    const afterRelease = harness.service.getLatestEventSeq({
+      room_id: join.room_id
+    });
+
+    const firstPark = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: join.room_id,
+      max_wait_ms: 0,
+      auto_claim: false,
+      include_events: true,
+      after_event_seq: afterRelease
+    });
+    const secondPark = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: join.room_id,
+      max_wait_ms: 0,
+      auto_claim: false,
+      include_events: true,
+      after_event_seq: afterRelease
+    });
+
+    expect(firstPark.status).toBe("not_yet");
+    if (firstPark.status !== "not_yet") return;
+    expect(firstPark.reason).toBe("auto_claim_disabled");
+    expect(firstPark.wake_reason).toBe("turn");
+
+    expect(secondPark.status).toBe("not_yet");
+    if (secondPark.status !== "not_yet") return;
+    expect(secondPark.reason).toBeUndefined();
+    expect(secondPark.wake_reason).toBe("timeout");
+    expect(secondPark.events).toEqual([]);
+  });
+
+  test("waitForTurn include_events requires an explicit cursor", async () => {
+    const harness = createHarness();
+    const room = joinPair(harness);
+
+    await expectProtocolError(
+      harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: room.room_id,
+        max_wait_ms: 0,
+        include_events: true
+      }),
+      "invalid_cursor"
+    );
+  });
+
   test("message events preserve monotonic order when interleaved with release", async () => {
     const harness = createHarness();
     const room = joinPair(harness);
@@ -519,7 +895,7 @@ describe("out-of-band signaling substrate", () => {
   });
 });
 
-function createHarness() {
+function createHarness(options: { policy?: Partial<Policy> } = {}) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-oob-"));
   tempRoots.push(tempRoot);
 
@@ -529,6 +905,7 @@ function createHarness() {
     dbPath,
     now: clock.now,
     policy: {
+      ...options.policy,
       waitForEventsMaxWaitMs: 5,
       waitForEventsPollMs: 1
     }

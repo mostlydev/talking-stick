@@ -21,11 +21,14 @@ import {
   shouldUseOperatorOverride
 } from "./identity.js";
 import {
+  getStringOption,
   hasOption,
   normalizeBooleanFlag,
+  parseRequiredInteger,
   parseWaitTimeout,
   type ParsedCommand
 } from "./parser.js";
+import { resolveTargetFilter } from "./event-stream.js";
 import {
   formatWaitResult,
   printResult
@@ -43,16 +46,35 @@ export async function handleWaitCommand(
   cliEntryUrl: string
 ): Promise<void> {
   normalizeBooleanFlag(parsed, "park");
+  normalizeBooleanFlag(parsed, "events");
   const park = hasOption(parsed, "park");
+  const includeEvents = hasOption(parsed, "events");
+  const afterEventSeq = includeEvents
+    ? parseRequiredInteger(parsed, "after")
+    : undefined;
+  if (!includeEvents && hasOption(parsed, "after")) {
+    throw new Error("Pass --after only with --events.");
+  }
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const identity = deriveCliIdentity(parsed);
   const joined = runtime.commands.joinPath(identity, { context_path: contextPath });
   upsertSessionFromJoin(identity, joined);
+  const targetAgentId = includeEvents
+    ? resolveTargetFilter(
+        runtime,
+        identity,
+        joined.room_id,
+        getStringOption(parsed, "target") ?? "self"
+      )
+    : undefined;
 
   const waitResult = await runtime.commands.waitForTurn(identity, {
     room_id: joined.room_id,
     max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed),
-    auto_claim: park ? false : undefined
+    auto_claim: park ? false : undefined,
+    include_events: includeEvents,
+    after_event_seq: afterEventSeq,
+    target_agent_id: targetAgentId
   });
 
   if (waitResult.status === "your_turn") {

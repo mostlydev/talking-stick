@@ -1738,6 +1738,61 @@ describe("talking-stick vertical slice", () => {
     ).toEqual(new Set(["your_turn", "not_yet"]));
   });
 
+  test("two wait-events workers contending for idle claim produce one owner and one event-bearing waiter", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const room = harness.service.joinPath({
+      agent_id: "agent-0",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "agent-1",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "agent-2",
+      context_path: project
+    });
+
+    harness.service.sendMessage({
+      agent_id: "agent-2",
+      room_id: room.room_id,
+      to_agent_id: "agent-0",
+      body: "queued for agent 0"
+    });
+    harness.service.sendMessage({
+      agent_id: "agent-2",
+      room_id: room.room_id,
+      to_agent_id: "agent-1",
+      body: "queued for agent 1"
+    });
+    harness.service.close();
+    services.splice(services.indexOf(harness.service), 1);
+
+    const startAt = Date.now() + 500;
+    const workerNowIso = harness.clock.now().toISOString();
+    const results = await Promise.all(
+      ["agent-0", "agent-1"].map((agent) =>
+        runClaimWorker({
+          dbPath: harness.dbPath,
+          roomId: room.room_id,
+          agentId: agent,
+          startAt,
+          nowIso: workerNowIso,
+          includeEvents: true,
+          afterEventSeq: 0
+        })
+      )
+    );
+
+    expect(results.filter((result) => result.status === "your_turn")).toHaveLength(1);
+    const waiter = results.find((result) => result.status === "not_yet");
+    expect(waiter).toBeDefined();
+    expect(waiter?.events?.map((event) => event.event_type)).toEqual([
+      "message_sent"
+    ]);
+  });
+
   test("wait_for_turn is idempotent for the current owner and returns the same lease", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
@@ -2938,7 +2993,15 @@ async function runClaimWorker(input: {
   agentId: string;
   startAt: number;
   nowIso?: string;
-}): Promise<{ status: string }> {
+  includeEvents?: boolean;
+  afterEventSeq?: number;
+  autoClaim?: boolean;
+  maxWaitMs?: number;
+}): Promise<{
+  status: string;
+  reason?: string;
+  events?: Array<{ event_type: string; to_agent_id: string | null; body?: string }>;
+}> {
   const workerPath = fileURLToPath(
     new URL("./fixtures/claim-worker.ts", import.meta.url)
   );
@@ -2953,7 +3016,11 @@ async function runClaimWorker(input: {
         roomId: input.roomId,
         agentId: input.agentId,
         startAt: input.startAt,
-        nowIso: input.nowIso
+        nowIso: input.nowIso,
+        includeEvents: input.includeEvents,
+        afterEventSeq: input.afterEventSeq,
+        autoClaim: input.autoClaim,
+        maxWaitMs: input.maxWaitMs
       })
     ],
     {
@@ -2980,7 +3047,11 @@ async function runClaimWorker(input: {
     throw new Error(`worker failed (${exitCode}): ${stderr}`);
   }
 
-  return JSON.parse(stdout) as { status: string };
+  return JSON.parse(stdout) as {
+    status: string;
+    reason?: string;
+    events?: Array<{ event_type: string; to_agent_id: string | null; body?: string }>;
+  };
 }
 
 declare module "vitest" {

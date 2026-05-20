@@ -61,6 +61,9 @@ export interface WaitForTurnCommandInput {
   room_id: string;
   max_wait_ms?: number;
   auto_claim?: boolean;
+  include_events?: boolean;
+  after_event_seq?: number;
+  target_agent_id?: WaitForTurnInput["target_agent_id"];
 }
 
 export interface TakeoverStickCommandInput {
@@ -146,7 +149,10 @@ export class TalkingStickCommands {
       agent_id: identity.agent_id,
       room_id: input.room_id,
       max_wait_ms: input.max_wait_ms,
-      auto_claim: input.auto_claim
+      auto_claim: input.auto_claim,
+      include_events: input.include_events,
+      after_event_seq: input.after_event_seq,
+      target_agent_id: input.target_agent_id
     });
   }
 

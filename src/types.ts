@@ -187,9 +187,20 @@ export interface WaitForTurnInput {
   room_id: string;
   max_wait_ms?: number;
   auto_claim?: boolean;
+  include_events?: boolean;
+  after_event_seq?: number;
+  target_agent_id?: TargetAgentFilter;
 }
 
-export type WaitForTurnResult =
+export type WaitWakeReason = "turn" | "event" | "timeout" | "closed";
+
+export interface WaitForTurnEventFields {
+  events: RoomEvent[];
+  cursor_event_seq: number;
+  wake_reason: WaitWakeReason;
+}
+
+export type WaitForTurnCoreResult =
   | {
       status: "your_turn";
       room_id: string;
@@ -207,7 +218,7 @@ export type WaitForTurnResult =
       reserved_for?: AgentId;
       lease_expires_at?: string;
       claim_expires_at?: string;
-      reason?: "auto_claim_disabled";
+      reason?: "auto_claim_disabled" | "lost_turn";
       hint?: string;
     }
   | {
@@ -232,6 +243,9 @@ export type WaitForTurnResult =
       status: "closed";
       room_id: string;
     };
+
+export type WaitForTurnResult = WaitForTurnCoreResult &
+  Partial<WaitForTurnEventFields>;
 
 export interface OwnerMutationInput {
   room_id: string;
