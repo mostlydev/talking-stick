@@ -5,12 +5,14 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   checkGuardianLiveness,
+  COORDINATION_PROMPT,
   formatRelativeTime,
   parseHandoffJson,
   runCli,
   shouldAutoSyncInstalledSkills,
   shouldRunFirstRunMcpMigration,
-  shouldUseJson
+  shouldUseJson,
+  withCoordinationPrompt
 } from "../src/cli.js";
 import {
   deriveHumanCliIdentity,
@@ -198,6 +200,54 @@ describe("shouldUseJson", () => {
     expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "true" })).toBe(true);
     expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "TRUE" })).toBe(true);
     expect(shouldUseJson(emptyParsed, { TT_HARNESS_EXPORT: "True" })).toBe(true);
+  });
+});
+
+describe("withCoordinationPrompt", () => {
+  test("adds the short reminder to common command objects", () => {
+    const prompted = withCoordinationPrompt(
+      {
+        name: "wait",
+        positionals: [],
+        options: new Map<string, string | true>()
+      },
+      { status: "not_yet" }
+    );
+
+    expect(prompted).toMatchObject({
+      status: "not_yet",
+      coordination_prompt: COORDINATION_PROMPT
+    });
+  });
+
+  test("leaves event-stream style arrays unwrapped", () => {
+    const events = [{ event_seq: 1, event_type: "message_sent" }];
+
+    expect(
+      withCoordinationPrompt(
+        {
+          name: "events",
+          positionals: [],
+          options: new Map<string, string | true>()
+        },
+        events
+      )
+    ).toBe(events);
+  });
+
+  test("does not add reminders to instruction output", () => {
+    const result = { text: "instruction body" };
+
+    expect(
+      withCoordinationPrompt(
+        {
+          name: "instructions show",
+          positionals: [],
+          options: new Map<string, string | true>()
+        },
+        result
+      )
+    ).toBe(result);
   });
 });
 
@@ -519,12 +569,14 @@ describe("tt turn commands", () => {
       const waitResult = JSON.parse(waitOut) as {
         status: string;
         guardian_pid?: number;
+        coordination_prompt?: string;
       };
       guardianPid = waitResult.guardian_pid;
 
       expect(waitResult.status).toBe("your_turn");
       expect(guardianPid).toEqual(expect.any(Number));
       expect(isPidAlive(guardianPid as number)).toBe(true);
+      expect(waitResult.coordination_prompt).toBe(COORDINATION_PROMPT);
     } finally {
       await releaseIfHeld(project, "human:worker");
       killPidIfAlive(guardianPid);

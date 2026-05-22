@@ -12,8 +12,10 @@ import { runStartupMaintenance } from "./cli/startup-maintenance.js";
 export { checkGuardianLiveness } from "./cli/guardian.js";
 export { parseHandoffJson } from "./cli/handoff.js";
 export {
+  COORDINATION_PROMPT,
   formatRelativeTime,
-  shouldUseJson
+  shouldUseJson,
+  withCoordinationPrompt
 } from "./cli/output.js";
 export {
   shouldAutoSyncInstalledSkills,

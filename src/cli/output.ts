@@ -3,13 +3,32 @@ import type { Handoff } from "../index.js";
 import { isKnownHarnessCliEnv } from "./identity.js";
 import { hasOption, type ParsedCommand } from "./parser.js";
 
+export const COORDINATION_PROMPT =
+  "Keep `tt wait` or `tt events` active until all goals are met; re-read the Talking Stick skill if context slips.";
+
+const COORDINATION_PROMPT_COMMANDS = new Set([
+  "join",
+  "state",
+  "events",
+  "wait",
+  "try",
+  "take",
+  "takeover",
+  "release",
+  "pass",
+  "assign",
+  "msg send"
+]);
+
 export function printResult(
   parsed: ParsedCommand,
   result: unknown,
   renderText: () => string
 ): void {
   if (shouldUseJson(parsed)) {
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.stdout.write(
+      `${JSON.stringify(withCoordinationPrompt(parsed, result), null, 2)}\n`
+    );
     return;
   }
 
@@ -29,6 +48,29 @@ export function shouldUseJson(
   if (exportFlag === "1" || exportFlag?.toLowerCase() === "true") return true;
   if (isKnownHarnessCliEnv(env)) return true;
   return false;
+}
+
+export function withCoordinationPrompt(
+  parsed: ParsedCommand,
+  result: unknown
+): unknown {
+  if (!COORDINATION_PROMPT_COMMANDS.has(parsed.name)) {
+    return result;
+  }
+  if (!isObjectRecord(result) || Array.isArray(result)) {
+    return result;
+  }
+  if ("coordination_prompt" in result) {
+    return result;
+  }
+  return {
+    ...result,
+    coordination_prompt: COORDINATION_PROMPT
+  };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 export function formatRelativeTime(
