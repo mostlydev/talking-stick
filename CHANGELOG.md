@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.8] — 2026-05-21
+
+Full notes: [`docs/releases/0.4.8.md`](docs/releases/0.4.8.md).
+
 ### Added
 - **`coordination_prompt` in coordination command JSON.** Object-shaped JSON results from the common coordination commands (`join`, `state`, `events`, `wait`, `try`, `take`, `takeover`, `release`, `pass`, `assign`, `msg send`) now carry a short `coordination_prompt` reminder: keep `tt wait`/`tt events` active until all goals are met, and re-read the Talking Stick skill if context slips. The field is added only to plain JSON objects — event-stream arrays and instruction output are left untouched — and is never duplicated if a result already includes it. This keeps the stay-in-the-loop guidance in front of a harness even when the skill has scrolled out of context.
 
@@ -232,6 +236,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.8]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.8
 [0.4.7]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.7
 [0.4.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.6
 [0.4.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.5
