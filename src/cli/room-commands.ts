@@ -146,7 +146,8 @@ export function handleStateCommand(
   const session = resolveSessionForReads(runtime, parsed, identity);
   const state = runtime.commands.getRoomState({
     room_id: session.room_id,
-    agent_id: identity.agent_id
+    agent_id: identity.agent_id,
+    process_metadata: identity.process_metadata
   });
 
   printResult(parsed, { room: state.room, members: state.members }, () => {
@@ -210,7 +211,8 @@ export async function handleEventsCommand(
     room_id: session.room_id,
     agent_id: identity.agent_id,
     after_event_seq: parseOptionalInteger(parsed, "after"),
-    limit: parseOptionalInteger(parsed, "limit")
+    limit: parseOptionalInteger(parsed, "limit"),
+    process_metadata: identity.process_metadata
   });
 
   printResult(parsed, events, () => {

@@ -2832,6 +2832,400 @@ describe("talking-stick vertical slice", () => {
   });
 });
 
+describe("issue #29: presence and liveness track the harness, not the guardian", () => {
+  test("member liveness prefers the harness pid over the bare guardian pid", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const { combined, guardian, harnessProc } = buildGuardianBackedMetadata(
+      harness.processRegistry,
+      "codex"
+    );
+
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: combined
+    });
+
+    const statusOf = () =>
+      harness.service
+        .getRoomState({ room_id: join.room_id })
+        .members.find((m) => m.agent_id === "codex:test")?.status;
+
+    // Both processes alive → active.
+    expect(statusOf()).toBe("active");
+
+    // The per-turn guardian process exits (as it does after a release), but the
+    // harness lives on. Liveness must follow the harness, so the member stays
+    // active — this is the "live harness reads as inactive" failure (Defect 2).
+    harness.processRegistry.markGone(guardian);
+    expect(statusOf()).toBe("active");
+
+    // Now the harness itself exits. Even though the bare guardian pid is also
+    // gone here, the decisive signal is the harness identity → inactive.
+    harness.processRegistry.markGone(harnessProc);
+    expect(statusOf()).toBe("inactive");
+  });
+
+  test("guardian heartbeat renews the lease without faking harness presence (Defect 3)", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const turn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    // Read without an agent_id so the read itself does not refresh presence.
+    const before = harness.service.getRoomState({ room_id: codexJoin.room_id });
+    const seenBefore = before.members.find(
+      (m) => m.agent_id === "codex:test"
+    )?.last_seen_at;
+    const leaseBefore = before.room.lease_expires_at;
+
+    harness.clock.advance(60_000);
+    const hb = harness.service.heartbeat({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      lease_id: turn.lease_id,
+      expected_turn_id: turn.turn_id
+    });
+
+    // The lease was renewed...
+    expect(Date.parse(hb.lease_expires_at)).toBeGreaterThan(
+      Date.parse(leaseBefore!)
+    );
+
+    // ...but the owning member's presence did NOT move. A guardian renewal must
+    // not masquerade as harness activity, or an abandoned owner would look
+    // permanently active and could never be reclaimed.
+    const after = harness.service.getRoomState({ room_id: codexJoin.room_id });
+    const seenAfter = after.members.find(
+      (m) => m.agent_id === "codex:test"
+    )?.last_seen_at;
+    expect(seenAfter).toBe(seenBefore);
+  });
+
+  test("relinquishOwnership surrenders the turn straight to idle (Tier-1 guardian purge)", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const turn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    // A guardian whose turn/lease no longer matches (lost a race to a takeover
+    // or graceful release) must not clobber the room: it is a no-op.
+    const noop = harness.service.relinquishOwnership({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      lease_id: "00000000-0000-0000-0000-000000000000",
+      expected_turn_id: turn.turn_id
+    });
+    expect(noop.status).toBe("noop");
+    expect(
+      harness.service.getRoomState({ room_id: codexJoin.room_id }).room.owner
+    ).toBe("codex:test");
+
+    // With the matching lease, the harness-dead guardian surrenders the turn
+    // straight to idle so a waiter can claim immediately (no lease-TTL wait).
+    const result = harness.service.relinquishOwnership({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      lease_id: turn.lease_id,
+      expected_turn_id: turn.turn_id
+    });
+    expect(result.status).toBe("relinquished");
+
+    const room = harness.service.getRoomState({
+      room_id: codexJoin.room_id
+    }).room;
+    expect(room.owner).toBeNull();
+    expect(room.reserved_for).toBeNull();
+    expect(room.state).toBe("idle");
+
+    const events = harness.service.getRoomEvents({ room_id: codexJoin.room_id });
+    expect(
+      events.some(
+        (e) => e.event_type === "release" && e.reason === "harness_gone"
+      )
+    ).toBe(true);
+  });
+
+  test("owner_idle: a waiting peer can take over an alive-but-idle owner (Tier-2)", async () => {
+    const harness = createHarness({
+      policy: { ownerActivityTtlMs: 5_000, presenceTtlMs: 60_000 }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexProc = harness.processRegistry.create("codex", "harness_cli");
+    const codexMeta: ProcessMetadata = {
+      ...codexProc,
+      harness_name: "codex",
+      harness_session_id: "codex-session",
+      harness_host_id: harness.processRegistry.hostId,
+      harness_pid: codexProc.pid,
+      harness_process_started_at: codexProc.process_started_at
+    };
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexMeta
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    // While the owner is fresh, a waiting peer just gets not_yet.
+    const early = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(early.status).toBe("not_yet");
+
+    // The owner runs no `tt` command for longer than ownerActivityTtlMs. Its
+    // harness is still alive and (in production) its guardian keeps the lease
+    // renewed — so this is neither owner_gone nor owner_timeout.
+    harness.clock.advance(6_000);
+
+    const offered = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(offered.status).toBe("takeover_available");
+    if (offered.status === "takeover_available") {
+      expect(offered.reason).toBe("owner_idle");
+      expect(offered.room_state).toBe("owner_idle");
+      expect(offered.current_owner).toBe("codex:test");
+    }
+
+    // The peer exercises the offered takeover.
+    const taken = harness.service.takeoverStick({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      expected_turn_id: codexTurn.turn_id,
+      reason: "owner idle past activity ttl"
+    });
+    expect(taken.status).toBe("your_turn");
+    expect(taken.reason).toBe("owner_idle");
+    expect(taken.revoked_agent_id).toBe("codex:test");
+  });
+
+  test("owner_idle is peer-gated and any owner command clears it (operator's implicit-liveness rule)", async () => {
+    const harness = createHarness({
+      policy: { ownerActivityTtlMs: 5_000, presenceTtlMs: 60_000 }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+
+    harness.clock.advance(6_000);
+
+    // The owner issues a non-guardian command (a broadcast message). This is a
+    // tt tool use, so it must refresh presence and un-idle the session.
+    harness.service.sendMessage({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      body: "still here, just heads-down editing"
+    });
+
+    const afterActivity = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(afterActivity.status).toBe("not_yet");
+
+    // And the gate itself: with no peer waiting, owner_idle is never surfaced —
+    // it is only ever evaluated inside a waiter's own wait call. (Re-idle, then
+    // confirm the owner re-waiting on itself is not offered its own turn.)
+    harness.clock.advance(6_000);
+    const ownerWait = await harness.service.waitForTurn({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(ownerWait.status).toBe("your_turn");
+    if (ownerWait.status === "your_turn") {
+      expect(ownerWait.reason).toBe("already_owner");
+    }
+  });
+
+  test("sustained self-receiver keeps a member visible across the presence window (Defect 1)", async () => {
+    const harness = createHarness({ policy: { presenceTtlMs: 10_000 } });
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    const visibleClaude = () =>
+      harness.service
+        .getRoomState({ room_id: codexJoin.room_id })
+        .members.find((m) => m.agent_id === "claude:test")?.status;
+
+    // Past the presence window with no activity, claude reads as inactive...
+    harness.clock.advance(11_000);
+    expect(visibleClaude()).toBe("inactive");
+
+    // ...but a sustained self-targeted event wait (the §2 ambient receiver) is
+    // the documented presence primitive: watching refreshes presence.
+    await harness.service.waitForEvents({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      target_agent_id: "self",
+      max_wait_ms: 0
+    });
+    expect(visibleClaude()).toBe("active");
+  });
+
+  test("a never-joined sustained self-receiver registers and becomes visible (Defect 1)", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    // Only codex joins; claude NEVER runs tt join — it only watches.
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const claudePresent = () =>
+      harness.service
+        .getRoomState({ room_id: codexJoin.room_id })
+        .members.find((m) => m.agent_id === "claude:test");
+
+    expect(claudePresent()).toBeUndefined();
+
+    // claude starts a sustained self-receiver carrying its harness identity but
+    // never joined. The documented presence primitive must register it.
+    const claudeProc = harness.processRegistry.create("claude", "harness_cli");
+    await harness.service.waitForEvents({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      target_agent_id: "self",
+      max_wait_ms: 0,
+      process_metadata: {
+        ...claudeProc,
+        harness_name: "claude",
+        harness_session_id: "claude-session",
+        harness_host_id: harness.processRegistry.hostId,
+        harness_pid: claudeProc.pid,
+        harness_process_started_at: claudeProc.process_started_at
+      }
+    });
+
+    const claude = claudePresent();
+    expect(claude).toBeDefined();
+    expect(claude?.status).toBe("active");
+    // Watching is presence, not turn interest.
+    expect(claude?.last_wait_at).toBeNull();
+  });
+
+  test("an ordinary non-guardian command re-stamps stale process metadata (Defect 1 contract)", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    // Join with no process metadata: the row has no usable identity yet.
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+
+    const codexRow = () =>
+      harness.service
+        .getRoomState({ room_id: codexJoin.room_id })
+        .members.find((m) => m.agent_id === "codex:test");
+
+    expect(codexRow()?.harness_pid).toBeNull();
+
+    // An ordinary command (sendMessage) carrying the harness identity must
+    // re-stamp the row — repair is not exclusive to tt join.
+    const codexProc = harness.processRegistry.create("codex", "harness_cli");
+    harness.service.sendMessage({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      body: "checking in",
+      process_metadata: {
+        ...codexProc,
+        harness_name: "codex",
+        harness_session_id: "codex-session",
+        harness_host_id: harness.processRegistry.hostId,
+        harness_pid: codexProc.pid,
+        harness_process_started_at: codexProc.process_started_at
+      }
+    });
+
+    expect(codexRow()?.harness_pid).toBe(codexProc.pid);
+    expect(codexRow()?.harness_process_started_at).toBe(
+      codexProc.process_started_at
+    );
+  });
+});
+
+function buildGuardianBackedMetadata(
+  registry: ReturnType<typeof createProcessRegistry>,
+  displayName: string
+): {
+  combined: ProcessMetadata;
+  guardian: ProcessMetadata;
+  harnessProc: ProcessMetadata;
+} {
+  // Mirror what the real metadata merge produces for an owner: the bare pid is
+  // the per-turn guardian (sessionKind human_guardian, highest priority), while
+  // the harness_* fields point at the durable harness process.
+  const harnessProc = registry.create(displayName, "harness_cli");
+  const guardian = registry.create(displayName, "human_guardian");
+  const combined: ProcessMetadata = {
+    host_id: registry.hostId,
+    pid: guardian.pid,
+    process_started_at: guardian.process_started_at,
+    session_kind: "human_guardian",
+    display_name: displayName,
+    harness_name: displayName,
+    harness_session_id: `${displayName}-session`,
+    harness_host_id: registry.hostId,
+    harness_pid: harnessProc.pid,
+    harness_process_started_at: harnessProc.process_started_at
+  };
+  return { combined, guardian, harnessProc };
+}
+
 function createHarness(
   options: {
     policy?: Partial<Policy>;

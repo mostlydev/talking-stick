@@ -420,7 +420,7 @@ describe("out-of-band signaling substrate", () => {
     );
   });
 
-  test("waitForEvents does not touch member presence", async () => {
+  test("waitForEvents target=self refreshes presence but not wait-interest", async () => {
     const harness = createHarness();
     const room = joinPair(harness);
     const before = harness.service.getRoomState({ room_id: room.room_id });
@@ -435,6 +435,35 @@ describe("out-of-band signaling substrate", () => {
       max_wait_ms: 0
     });
 
+    const after = harness.service.getRoomState({ room_id: room.room_id });
+    const codexAfter = after.members.find((m) => m.agent_id === "codex:test");
+    // The sustained self-receiver is the documented presence primitive: it
+    // refreshes last_seen_at so a watcher stays visible (issue #29 Defect 1)...
+    expect(codexAfter?.last_seen_at).not.toBe(codexBefore?.last_seen_at);
+    expect(Date.parse(codexAfter!.last_seen_at)).toBeGreaterThan(
+      Date.parse(codexBefore!.last_seen_at)
+    );
+    // ...but watching is not turn-interest, so last_wait_at is untouched.
+    expect(codexAfter?.last_wait_at).toBe(codexBefore?.last_wait_at);
+  });
+
+  test("waitForEvents target=any does not touch member presence", async () => {
+    const harness = createHarness();
+    const room = joinPair(harness);
+    const before = harness.service.getRoomState({ room_id: room.room_id });
+    const codexBefore = before.members.find((m) => m.agent_id === "codex:test");
+    expect(codexBefore).toBeDefined();
+
+    harness.clock.advance(5_000);
+    await harness.service.waitForEvents({
+      agent_id: "codex:test",
+      room_id: room.room_id,
+      target_agent_id: "any",
+      max_wait_ms: 0
+    });
+
+    // An audit/debug target=any view is not participation: it must not refresh
+    // presence (which would resurrect a stale peer into an active waiter).
     const after = harness.service.getRoomState({ room_id: room.room_id });
     const codexAfter = after.members.find((m) => m.agent_id === "codex:test");
     expect(codexAfter?.last_seen_at).toBe(codexBefore?.last_seen_at);

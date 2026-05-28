@@ -59,7 +59,11 @@ export async function runEventStream(
     event_type: options.event_type,
     target_agent_id: targetAgentId,
     from_agent_id: fromAgentId,
-    max_wait_ms: follow || wait ? parseWaitTimeout(parsed) : 0
+    max_wait_ms: follow || wait ? parseWaitTimeout(parsed) : 0,
+    // Carry the caller's identity so a sustained self-receiver registers and
+    // refreshes presence (issue #29 Defect 1) — a `tt events --follow` /
+    // `--wait` watcher stays visible even if it never ran `tt join`.
+    process_metadata: identity.process_metadata
   };
 
   if (!follow) {
@@ -91,7 +95,8 @@ export function resolveAgentSelector(
 ): AgentId {
   const members = runtime.commands.getRoomState({
     room_id: roomId,
-    agent_id: identity.agent_id
+    agent_id: identity.agent_id,
+    process_metadata: identity.process_metadata
   }).members;
   const exact = members.find((member) => member.agent_id === raw);
   if (exact) {

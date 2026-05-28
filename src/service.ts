@@ -50,6 +50,7 @@ import type {
   ProcessMetadata,
   ReleaseStickInput,
   ReleaseStickResult,
+  RelinquishOwnershipResult,
   RoomEvent,
   RoomMember,
   RoomState,
@@ -153,6 +154,7 @@ type TakeoverKind =
   | "claim_timeout"
   | "owner_timeout"
   | "owner_gone"
+  | "owner_idle"
   | "recipient_gone"
   | "operator_override";
 
@@ -617,8 +619,14 @@ export class TalkingStickService {
     return withImmediateTransaction(this.db, () => {
       const room = this.requireRoom(input.room_id);
       this.assertOwnerMutation(room, input, now);
-      this.touchMember(input.room_id, input.agent_id, timestamp);
-
+      // Deliberately do NOT touch the member's last_seen_at here. Lease renewal
+      // is the guardian's job and must not be mistaken for harness presence:
+      // an abandoned-but-alive owner whose guardian keeps renewing would
+      // otherwise look permanently active and its turn could never be reclaimed
+      // (`owner_idle`). The lease itself (lease_expires_at, below) is the
+      // guardian's liveness signal; harness presence is recorded only by the
+      // harness's own `tt` commands. assertOwnerMutation already guarantees the
+      // owning member still exists.
       this.db
         .prepare(
           `
@@ -702,6 +710,65 @@ export class TalkingStickService {
         status: "released",
         room_id: input.room_id,
         reserved_for: reservedFor,
+        event_seq: eventSeq
+      };
+    });
+  }
+
+  /**
+   * Tier-1 stale-guardian purge: the lease guardian discovered that its own
+   * harness process is provably gone, so it surrenders the turn before exiting.
+   * Unlike `releaseStick` this carries no handoff and is a no-op unless this
+   * agent still owns this exact turn/lease (the guardian may race a takeover or
+   * a graceful release). The room drops straight to `idle` so any waiter can
+   * claim it immediately, instead of waiting out the full lease TTL.
+   */
+  relinquishOwnership(input: OwnerMutationInput): RelinquishOwnershipResult {
+    const now = this.now();
+    const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
+
+    return withImmediateTransaction(this.db, () => {
+      const room = this.requireRoom(input.room_id);
+      if (
+        room.owner !== input.agent_id ||
+        room.turn_id !== input.expected_turn_id ||
+        room.lease_id !== input.lease_id
+      ) {
+        return { status: "noop", room_id: input.room_id };
+      }
+
+      const eventSeq = this.appendEvent({
+        room_id: input.room_id,
+        turn_id: room.turn_id,
+        event_type: "release",
+        from_agent_id: input.agent_id,
+        to_agent_id: null,
+        handoff: null,
+        reason: "harness_gone",
+        created_at: timestamp
+      });
+
+      this.db
+        .prepare(
+          `
+          UPDATE path_rooms
+          SET owner = NULL,
+              reserved_for = NULL,
+              pending_handoff_event_seq = NULL,
+              lease_id = NULL,
+              lease_expires_at = NULL,
+              claim_expires_at = NULL,
+              state = 'idle',
+              updated_at = ?
+          WHERE room_id = ?
+        `
+        )
+        .run(timestamp, input.room_id);
+
+      return {
+        status: "relinquished",
+        room_id: input.room_id,
         event_seq: eventSeq
       };
     });
@@ -870,7 +937,12 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
     const room = this.requireRoom(input.room_id);
-    this.touchKnownMember(input.room_id, input.agent_id, timestamp);
+    this.touchKnownMember(
+      input.room_id,
+      input.agent_id,
+      timestamp,
+      input.process_metadata
+    );
     const inspection = this.inspectRoom(room, now);
 
     return {
@@ -886,7 +958,8 @@ export class TalkingStickService {
     this.touchKnownMember(
       input.room_id,
       input.agent_id,
-      this.now().toISOString()
+      this.now().toISOString(),
+      input.process_metadata
     );
     const afterEventSeq = input.after_event_seq ?? 0;
     const limit = Math.min(input.limit ?? 100, 500);
@@ -945,7 +1018,12 @@ export class TalkingStickService {
         );
       }
 
-      this.touchMember(input.room_id, input.agent_id, timestamp);
+      this.touchMember(
+        input.room_id,
+        input.agent_id,
+        timestamp,
+        input.process_metadata
+      );
 
       if (input.to_agent_id) {
         const target = this.getMember(input.room_id, input.to_agent_id);
@@ -993,6 +1071,23 @@ export class TalkingStickService {
       throw new ProtocolError(
         "agent_id_required",
         "agent_id is required when target_agent_id is 'self'."
+      );
+    }
+
+    // The default `target=self` event wait is the documented per-session
+    // presence primitive (the §2 ambient receiver): "watching" the room keeps
+    // the member visible. Refresh — and, for a receiver that never ran
+    // `tt join`, register — presence at entry (each long-poll cycle re-enters
+    // with a fresh cursor), re-stamping current harness metadata but never
+    // recording turn interest. An audit/debug `target=any` (or a third-party
+    // `target=<other>`) wait deliberately does NOT touch presence: it is not
+    // participation and must not resurrect a stale peer into an active waiter.
+    if (targetFilter === "self" && input.agent_id) {
+      this.recordReceiverPresence(
+        input.room_id,
+        input.agent_id,
+        this.now().toISOString(),
+        input.process_metadata
       );
     }
 
@@ -1083,7 +1178,12 @@ export class TalkingStickService {
         );
       }
 
-      this.touchMember(input.room_id, input.agent_id, timestamp);
+      this.touchMember(
+        input.room_id,
+        input.agent_id,
+        timestamp,
+        input.process_metadata
+      );
 
       const noteId = randomUUID();
       const turnId = input.turn_id ?? null;
@@ -1115,7 +1215,8 @@ export class TalkingStickService {
     this.touchKnownMember(
       input.room_id,
       input.agent_id,
-      this.now().toISOString()
+      this.now().toISOString(),
+      input.process_metadata
     );
 
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
@@ -1190,7 +1291,12 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     const room = this.requireRoom(input.room_id);
 
-    this.touchWaitingMember(input.room_id, input.agent_id, timestamp);
+    this.touchWaitingMember(
+      input.room_id,
+      input.agent_id,
+      timestamp,
+      input.process_metadata
+    );
     const inspection = this.inspectRoomForMutation(room, now);
 
     if (room.state === "closed") {
@@ -1326,6 +1432,22 @@ export class TalkingStickService {
       };
     }
 
+    if (
+      room.owner &&
+      room.owner !== input.agent_id &&
+      inspection.state === "owned" &&
+      this.isOwnerHarnessIdle(inspection.ownerMember, now)
+    ) {
+      return {
+        status: "takeover_available",
+        room_id: input.room_id,
+        turn_id: room.turn_id,
+        room_state: "owner_idle",
+        reason: "owner_idle",
+        current_owner: room.owner
+      };
+    }
+
     return {
       status: "not_yet",
       room_state: inspection.state,
@@ -1344,7 +1466,12 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     const room = this.requireRoom(input.room_id);
 
-    this.touchWaitingMember(input.room_id, input.agent_id, timestamp);
+    this.touchWaitingMember(
+      input.room_id,
+      input.agent_id,
+      timestamp,
+      input.process_metadata
+    );
     const inspection = this.inspectRoomForMutation(room, now);
 
     if (room.state === "closed") {
@@ -1578,53 +1705,104 @@ export class TalkingStickService {
     timestamp: string,
     processMetadata?: ProcessMetadata
   ): void {
+    // `tt join`: create the member if absent, refresh presence, record wait
+    // interest, and re-stamp process metadata.
+    this.applyPresence(roomId, agentId, timestamp, {
+      processMetadata,
+      recordWait: true,
+      allowCreate: true,
+      requireMember: false
+    });
+  }
+
+  /**
+   * Unified presence write. Every non-guardian command routes through here so a
+   * member's last_seen_at and current process metadata are refreshed by
+   * ordinary `tt` use, not only by `tt join` (issue #29 Defect 1, and the
+   * operator's "liveness updates on all tt tool use" rule).
+   *
+   * - `recordWait` also bumps last_wait_at (turn interest) — wait/try/join only;
+   *   reads and event receivers leave it untouched (watching is not a claim).
+   * - Metadata is re-stamped only when the caller carries a usable process
+   *   identity, and the merge preserves a live owner/recipient's exact (guardian)
+   *   identity so a holder's own command never clobbers the guardian pid.
+   * - `allowCreate` inserts a missing row (join, and sustained self-receivers
+   *   that never ran `tt join`); `requireMember` instead throws for write-RPCs.
+   */
+  private applyPresence(
+    roomId: string,
+    agentId: AgentId,
+    timestamp: string,
+    options: {
+      processMetadata?: ProcessMetadata;
+      recordWait: boolean;
+      allowCreate: boolean;
+      requireMember: boolean;
+    }
+  ): void {
     const existing = this.getMember(roomId, agentId);
-    const normalizedMetadata = normalizeProcessMetadata(processMetadata);
+    const normalized = normalizeProcessMetadata(options.processMetadata);
+    const hasIdentity =
+      hasExactProcessIdentity(normalized) ||
+      hasHarnessProcessIdentity(normalized);
 
     if (existing) {
-      const room = this.requireRoom(roomId);
-      const mergedMetadata = this.mergeMemberProcessMetadata(
-        room,
-        existing,
-        normalizedMetadata
-      );
-
+      const sets = ["last_seen_at = ?", "status = 'active'"];
+      const params: Array<string | number | null> = [timestamp];
+      if (options.recordWait) {
+        sets.push("last_wait_at = ?");
+        params.push(timestamp);
+      }
+      if (hasIdentity) {
+        const room = this.requireRoom(roomId);
+        const merged = this.mergeMemberProcessMetadata(
+          room,
+          existing,
+          normalized
+        );
+        sets.push(
+          "host_id = ?",
+          "pid = ?",
+          "process_started_at = ?",
+          "session_kind = ?",
+          "display_name = ?",
+          "harness_name = ?",
+          "harness_session_id = ?",
+          "harness_host_id = ?",
+          "harness_pid = ?",
+          "harness_process_started_at = ?"
+        );
+        params.push(
+          merged.host_id,
+          merged.pid,
+          merged.process_started_at,
+          merged.session_kind,
+          merged.display_name,
+          merged.harness_name,
+          merged.harness_session_id,
+          merged.harness_host_id,
+          merged.harness_pid,
+          merged.harness_process_started_at
+        );
+      }
+      params.push(roomId, agentId);
       this.db
         .prepare(
-          `
-          UPDATE room_members
-          SET last_seen_at = ?,
-              last_wait_at = ?,
-              status = 'active',
-              host_id = ?,
-              pid = ?,
-              process_started_at = ?,
-              session_kind = ?,
-              display_name = ?,
-              harness_name = ?,
-              harness_session_id = ?,
-              harness_host_id = ?,
-              harness_pid = ?,
-              harness_process_started_at = ?
-          WHERE room_id = ? AND agent_id = ?
-        `
+          `UPDATE room_members SET ${sets.join(", ")} WHERE room_id = ? AND agent_id = ?`
         )
-        .run(
-          timestamp,
-          timestamp,
-          mergedMetadata.host_id,
-          mergedMetadata.pid,
-          mergedMetadata.process_started_at,
-          mergedMetadata.session_kind,
-          mergedMetadata.display_name,
-          mergedMetadata.harness_name,
-          mergedMetadata.harness_session_id,
-          mergedMetadata.harness_host_id,
-          mergedMetadata.harness_pid,
-          mergedMetadata.harness_process_started_at,
-          roomId,
-          agentId
-        );
+        .run(...params);
+      return;
+    }
+
+    if (options.requireMember) {
+      throw new ProtocolError(
+        "unknown_member",
+        "Agent must join the room before using this tool.",
+        { to_agent_id: agentId }
+      );
+    }
+
+    if (!options.allowCreate) {
       return;
     }
 
@@ -1666,18 +1844,38 @@ export class TalkingStickService {
         nextOrdinal,
         timestamp,
         timestamp,
-        timestamp,
-        normalizedMetadata.host_id,
-        normalizedMetadata.pid,
-        normalizedMetadata.process_started_at,
-        normalizedMetadata.session_kind,
-        normalizedMetadata.display_name,
-        normalizedMetadata.harness_name,
-        normalizedMetadata.harness_session_id,
-        normalizedMetadata.harness_host_id,
-        normalizedMetadata.harness_pid,
-        normalizedMetadata.harness_process_started_at
+        options.recordWait ? timestamp : null,
+        normalized.host_id,
+        normalized.pid,
+        normalized.process_started_at,
+        normalized.session_kind,
+        normalized.display_name,
+        normalized.harness_name,
+        normalized.harness_session_id,
+        normalized.harness_host_id,
+        normalized.harness_pid,
+        normalized.harness_process_started_at
       );
+  }
+
+  /**
+   * Presence for a sustained self-targeted event receiver (the §2 ambient
+   * receiver). Watching the room is the documented per-session presence
+   * primitive, so it refreshes — and, for a receiver that never ran `tt join`,
+   * registers — the member, but never records turn interest (last_wait_at).
+   */
+  private recordReceiverPresence(
+    roomId: string,
+    agentId: AgentId,
+    timestamp: string,
+    processMetadata?: ProcessMetadata
+  ): void {
+    this.applyPresence(roomId, agentId, timestamp, {
+      processMetadata,
+      recordWait: false,
+      allowCreate: true,
+      requireMember: false
+    });
   }
 
   private mergeMemberProcessMetadata(
@@ -1829,24 +2027,18 @@ export class TalkingStickService {
     );
   }
 
-  private touchMember(roomId: string, agentId: AgentId, timestamp: string): void {
-    const result = this.db
-      .prepare(
-        `
-        UPDATE room_members
-        SET last_seen_at = ?, status = 'active'
-        WHERE room_id = ? AND agent_id = ?
-      `
-      )
-      .run(timestamp, roomId, agentId);
-
-    if (result.changes === 0) {
-      throw new ProtocolError(
-        "unknown_member",
-        "Agent must join the room before using this tool.",
-        { to_agent_id: agentId }
-      );
-    }
+  private touchMember(
+    roomId: string,
+    agentId: AgentId,
+    timestamp: string,
+    processMetadata?: ProcessMetadata
+  ): void {
+    this.applyPresence(roomId, agentId, timestamp, {
+      processMetadata,
+      recordWait: false,
+      allowCreate: false,
+      requireMember: true
+    });
   }
 
   private recordParkHint(
@@ -1868,41 +2060,33 @@ export class TalkingStickService {
   private touchWaitingMember(
     roomId: string,
     agentId: AgentId,
-    timestamp: string
+    timestamp: string,
+    processMetadata?: ProcessMetadata
   ): void {
-    const result = this.db
-      .prepare(
-        `
-        UPDATE room_members
-        SET last_seen_at = ?, last_wait_at = ?, status = 'active'
-        WHERE room_id = ? AND agent_id = ?
-      `
-      )
-      .run(timestamp, timestamp, roomId, agentId);
-
-    if (result.changes === 0) {
-      throw new ProtocolError(
-        "unknown_member",
-        "Agent must join the room before using this tool.",
-        { to_agent_id: agentId }
-      );
-    }
+    this.applyPresence(roomId, agentId, timestamp, {
+      processMetadata,
+      recordWait: true,
+      allowCreate: false,
+      requireMember: true
+    });
   }
 
   private touchKnownMember(
     roomId: string,
     agentId: AgentId | undefined,
-    timestamp: string
+    timestamp: string,
+    processMetadata?: ProcessMetadata
   ): void {
     if (!agentId) {
       return;
     }
 
-    if (!this.getMember(roomId, agentId)) {
-      return;
-    }
-
-    this.touchMember(roomId, agentId, timestamp);
+    this.applyPresence(roomId, agentId, timestamp, {
+      processMetadata,
+      recordWait: false,
+      allowCreate: false,
+      requireMember: false
+    });
   }
 
   private assertOwnerMutation(
@@ -2035,6 +2219,18 @@ export class TalkingStickService {
         );
       }
       return "owner_timeout";
+    }
+
+    if (
+      room.owner &&
+      room.owner !== agentId &&
+      inspection.state === "owned" &&
+      this.isOwnerHarnessIdle(inspection.ownerMember, now)
+    ) {
+      // Tier-2: the owner's harness is alive but idle, and `agentId` is the
+      // waiting peer exercising the takeover it was offered. This is the peer
+      // gate — a takeover is only resolved here on behalf of an actual waiter.
+      return "owner_idle";
     }
 
     throw new ProtocolError(
@@ -2412,6 +2608,33 @@ export class TalkingStickService {
     return this.hasRecentPresence(member, now);
   }
 
+  /**
+   * Tier-2 stale-guardian detection: the owner's harness process is alive (so
+   * this is neither `owner_gone` nor a `stale_owner` lease timeout — the
+   * guardian is faithfully renewing), yet the harness itself has run no `tt`
+   * command for longer than `ownerActivityTtlMs`. Surfacing this as
+   * `takeover_available` is always peer-gated: it is only ever evaluated for a
+   * caller who is themselves waiting for the turn, so a long solo edit with no
+   * peers waiting is never disturbed.
+   */
+  private isOwnerHarnessIdle(
+    ownerMember: RoomMemberRow | null,
+    now: Date
+  ): boolean {
+    if (!ownerMember) {
+      return false;
+    }
+
+    if (this.getMemberProcessLiveness(ownerMember) === "gone") {
+      return false;
+    }
+
+    return (
+      now.getTime() - Date.parse(ownerMember.last_seen_at) >
+      this.policy.ownerActivityTtlMs
+    );
+  }
+
   private shouldRetainIdleRoom(member: RoomMemberRow, now: Date): boolean {
     const liveness = this.getMemberProcessLiveness(member);
     if (liveness === "alive") {
@@ -2644,6 +2867,28 @@ export class TalkingStickService {
   }
 
   private getMemberProcessLiveness(member: RoomMemberRow): ProcessLiveness {
+    // Prefer the durable harness identity over the bare pid. The bare pid is
+    // frequently the per-turn guardian process (sessionKind `human_guardian`),
+    // which the metadata merge pins onto the member row. Inspecting the bare
+    // pid would let a dead guardian mark a live harness `inactive`, and let a
+    // still-renewing guardian keep an abandoned harness looking `active`. The
+    // harness pid is what actually represents the participant. Fall back to the
+    // bare pid only when no harness identity was recorded (e.g. raw CLI use).
+    if (hasHarnessProcessIdentity(member)) {
+      return this.processLivenessChecker({
+        host_id: member.harness_host_id ?? member.host_id,
+        pid: member.harness_pid,
+        process_started_at: member.harness_process_started_at,
+        session_kind: member.session_kind,
+        display_name: member.display_name,
+        harness_name: member.harness_name,
+        harness_session_id: member.harness_session_id,
+        harness_host_id: member.harness_host_id,
+        harness_pid: member.harness_pid,
+        harness_process_started_at: member.harness_process_started_at
+      });
+    }
+
     return this.processLivenessChecker({
       host_id: member.host_id,
       pid: member.pid,
@@ -2871,6 +3116,18 @@ function hasExactProcessIdentity(
     metadata.process_started_at !== null &&
     metadata.process_started_at !== undefined &&
     metadata.process_started_at.trim() !== ""
+  );
+}
+
+function hasHarnessProcessIdentity(
+  metadata: Pick<RoomMemberRow, "harness_pid" | "harness_process_started_at">
+): boolean {
+  return (
+    metadata.harness_pid !== null &&
+    metadata.harness_pid !== undefined &&
+    metadata.harness_process_started_at !== null &&
+    metadata.harness_process_started_at !== undefined &&
+    metadata.harness_process_started_at.trim() !== ""
   );
 }
 

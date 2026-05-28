@@ -13,6 +13,7 @@ import type {
   ListRoomsResult,
   PassStickInput,
   PassStickResult,
+  RelinquishOwnershipResult,
   ReleaseStickInput,
   ReleaseStickResult,
   RoomEvent,
@@ -152,7 +153,8 @@ export class TalkingStickCommands {
       auto_claim: input.auto_claim,
       include_events: input.include_events,
       after_event_seq: input.after_event_seq,
-      target_agent_id: input.target_agent_id
+      target_agent_id: input.target_agent_id,
+      process_metadata: identity.process_metadata
     });
   }
 
@@ -161,6 +163,18 @@ export class TalkingStickCommands {
     input: HeartbeatCommandInput
   ): HeartbeatResult {
     return this.service.heartbeat({
+      agent_id: identity.agent_id,
+      room_id: input.room_id,
+      lease_id: input.lease_id,
+      expected_turn_id: input.expected_turn_id
+    });
+  }
+
+  relinquishOwnership(
+    identity: DerivedIdentity,
+    input: HeartbeatCommandInput
+  ): RelinquishOwnershipResult {
+    return this.service.relinquishOwnership({
       agent_id: identity.agent_id,
       room_id: input.room_id,
       lease_id: input.lease_id,
@@ -225,7 +239,8 @@ export class TalkingStickCommands {
       room_id: input.room_id,
       body: input.body,
       to_agent_id: input.to_agent_id,
-      delivery_hint: input.delivery_hint
+      delivery_hint: input.delivery_hint,
+      process_metadata: identity.process_metadata
     });
   }
 
@@ -245,7 +260,8 @@ export class TalkingStickCommands {
       agent_id: identity.agent_id,
       room_id: input.room_id,
       body: input.body,
-      turn_id: input.turn_id
+      turn_id: input.turn_id,
+      process_metadata: identity.process_metadata
     });
   }
 
@@ -258,7 +274,8 @@ export class TalkingStickCommands {
       agent_id: identity?.agent_id,
       after_note_id: input.after_note_id,
       include_resolved: input.include_resolved,
-      limit: input.limit
+      limit: input.limit,
+      process_metadata: identity?.process_metadata
     });
   }
 }

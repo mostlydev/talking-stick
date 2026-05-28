@@ -381,7 +381,8 @@ function resolveAssignmentTarget(
 
   const state = runtime.commands.getRoomState({
     room_id: session.room_id,
-    agent_id: identity.agent_id
+    agent_id: identity.agent_id,
+    process_metadata: identity.process_metadata
   });
   const normalizedSelector = selector.toLowerCase();
   const candidates = state.members.filter((member) => {
@@ -407,7 +408,8 @@ function resolveAssignmentTarget(
   const events = runtime.commands.getRoomEvents({
     room_id: session.room_id,
     agent_id: identity.agent_id,
-    limit: 500
+    limit: 500,
+    process_metadata: identity.process_metadata
   });
   return pickFairAssignmentCandidate(candidates, events).agent_id;
 }

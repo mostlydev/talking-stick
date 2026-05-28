@@ -6,6 +6,7 @@ export type RoomState =
   | StoredRoomState
   | "stale_owner"
   | "owner_gone"
+  | "owner_idle"
   | "recipient_gone"
   | "dormant";
 
@@ -53,6 +54,14 @@ export interface Handoff {
 
 export interface Policy {
   ownerLeaseTtlMs: number;
+  /**
+   * How long an owner's harness can go without any `tt` activity (last_seen_at)
+   * before a waiting peer may take over via `owner_idle`. The owner's harness
+   * process is still alive (so this is not `owner_gone`/`owner_timeout`); the
+   * takeover is gated on an actively-waiting peer, so a long solo edit with no
+   * peers waiting is never disturbed.
+   */
+  ownerActivityTtlMs: number;
   heartbeatIntervalMs: number;
   claimTtlMs: number;
   waitForTurnMaxWaitMs: number;
@@ -190,6 +199,7 @@ export interface WaitForTurnInput {
   include_events?: boolean;
   after_event_seq?: number;
   target_agent_id?: TargetAgentFilter;
+  process_metadata?: ProcessMetadata;
 }
 
 export type WaitWakeReason = "turn" | "event" | "timeout" | "closed";
@@ -230,11 +240,13 @@ export type WaitForTurnCoreResult =
         | "reserved"
         | "stale_owner"
         | "owner_gone"
+        | "owner_idle"
         | "recipient_gone";
       reason:
         | "claim_timeout"
         | "owner_timeout"
         | "owner_gone"
+        | "owner_idle"
         | "recipient_gone";
       current_owner?: AgentId;
       reserved_for?: AgentId;
@@ -261,6 +273,17 @@ export interface HeartbeatResult {
   lease_id: string;
   lease_expires_at: string;
 }
+
+export type RelinquishOwnershipResult =
+  | {
+      status: "relinquished";
+      room_id: string;
+      event_seq: number;
+    }
+  | {
+      status: "noop";
+      room_id: string;
+    };
 
 export interface ReleaseStickInput extends OwnerMutationInput {
   handoff: Handoff;
@@ -303,6 +326,7 @@ export interface TakeoverStickResult {
     | "claim_timeout"
     | "owner_timeout"
     | "owner_gone"
+    | "owner_idle"
     | "recipient_gone"
     | "operator_override";
 }
@@ -310,6 +334,7 @@ export interface TakeoverStickResult {
 export interface GetRoomStateInput {
   room_id: string;
   agent_id?: AgentId;
+  process_metadata?: ProcessMetadata;
 }
 
 export interface GetRoomStateResult {
@@ -322,6 +347,7 @@ export interface GetRoomEventsInput {
   agent_id?: AgentId;
   after_event_seq?: number;
   limit?: number;
+  process_metadata?: ProcessMetadata;
 }
 
 export interface SendMessageInput {
@@ -330,6 +356,7 @@ export interface SendMessageInput {
   body: string;
   to_agent_id?: AgentId | null;
   delivery_hint?: DeliveryHint;
+  process_metadata?: ProcessMetadata;
 }
 
 export interface SendMessageResult {
@@ -350,6 +377,7 @@ export interface WaitForEventsInput {
   target_agent_id?: TargetAgentFilter;
   from_agent_id?: AgentId;
   max_wait_ms?: number;
+  process_metadata?: ProcessMetadata;
 }
 
 export interface WaitForEventsResult {
@@ -381,6 +409,7 @@ export interface AddNoteInput {
   room_id: string;
   body: string;
   turn_id?: number;
+  process_metadata?: ProcessMetadata;
 }
 
 export interface AddNoteResult {
@@ -397,6 +426,7 @@ export interface ListNotesInput {
   after_note_id?: string;
   include_resolved?: boolean;
   limit?: number;
+  process_metadata?: ProcessMetadata;
 }
 
 export interface ListNotesResult {

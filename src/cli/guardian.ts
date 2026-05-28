@@ -27,11 +27,12 @@ export async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
     displayName: requireStringOption(parsed, "agent").replace(/^human:/, ""),
     sessionKind: "human_guardian"
   });
+  const harnessMetadata = parseHarnessMetadataOptions(parsed);
   const identity = {
     ...baseIdentity,
     process_metadata: {
       ...baseIdentity.process_metadata,
-      ...parseHarnessMetadataOptions(parsed)
+      ...harnessMetadata
     }
   };
   const runtime = createRuntime();
@@ -49,8 +50,29 @@ export async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
 
     const intervalMs = joined.policy.heartbeatIntervalMs;
 
+    const harnessRef = {
+      pid: harnessMetadata.harness_pid,
+      process_started_at: harnessMetadata.harness_process_started_at
+    };
+    const inspector = createSystemProcessInspector();
+
     process.stdout.write(`${GUARD_READY}\n`);
     const timer = setInterval(() => {
+      // Tier-1 stale-guardian purge: if our own harness process is provably
+      // gone, surrender the turn instead of renewing the lease forever. This is
+      // the definitive case (no timeout): an orphaned guardian must not pin the
+      // stick once the harness it represents has exited. `unknown`/`alive` both
+      // fall through to the normal heartbeat; we only act on a definite `gone`.
+      if (checkGuardianLiveness(harnessRef, inspector) === "gone") {
+        try {
+          runtime.commands.relinquishOwnership(identity, heartbeatInput);
+        } catch {
+          // Best effort: a takeover or graceful release may have already moved
+          // the turn on. Either way the harness is gone, so we exit.
+        }
+        process.exit(0);
+      }
+
       try {
         runtime.commands.heartbeat(identity, heartbeatInput);
       } catch (error) {
