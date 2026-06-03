@@ -105,7 +105,7 @@ tt msg send/recv   — out-of-band chat into the room event log
 tt instructions    — editable collaboration prompt loaded by the skill
 ```
 
-A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically.
+A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically. Marker files directly in your home directory are ignored for descendant paths, so scratch directories under `$HOME` do not collapse into one broad home-scoped room unless you explicitly join home itself.
 
 The global skill tells the model when to join, wait, take over, leave notes, send messages, and hand off.
 

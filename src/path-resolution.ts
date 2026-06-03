@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const workspaceMarkers = [
@@ -106,9 +107,14 @@ function resolveGitRoot(canonicalContextPath: string): string | null {
 }
 
 function findNearestWorkspaceMarker(startPath: string): string | null {
+  const homeMarkerBoundary = resolveHomeMarkerBoundary(startPath);
   let current = startPath;
 
   while (true) {
+    if (homeMarkerBoundary && samePath(current, homeMarkerBoundary)) {
+      return null;
+    }
+
     for (const marker of workspaceMarkers) {
       if (fs.existsSync(path.join(current, marker))) {
         return current;
@@ -120,6 +126,38 @@ function findNearestWorkspaceMarker(startPath: string): string | null {
       return null;
     }
     current = parent;
+  }
+}
+
+function resolveHomeMarkerBoundary(startPath: string): string | null {
+  const homeDir = os.homedir();
+  if (!homeDir) {
+    return null;
+  }
+
+  const resolvedHomeDir = path.resolve(homeDir);
+  const candidateHomes = [
+    canonicalizeDirectoryPath(resolvedHomeDir),
+    path.normalize(resolvedHomeDir)
+  ];
+
+  for (const candidateHome of candidateHomes) {
+    if (
+      !samePath(startPath, candidateHome) &&
+      isWithinOrSame(startPath, candidateHome)
+    ) {
+      return candidateHome;
+    }
+  }
+
+  return null;
+}
+
+function canonicalizeDirectoryPath(directoryPath: string): string {
+  try {
+    return fs.realpathSync.native(directoryPath);
+  } catch {
+    return path.normalize(directoryPath);
   }
 }
 

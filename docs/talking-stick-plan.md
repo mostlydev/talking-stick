@@ -54,7 +54,7 @@ This avoids the common monorepo failure mode where one agent starts in `/repo/pa
 Preferred workspace root resolution:
 
 1. If the request path is inside a git worktree, use the git top-level path.
-2. Otherwise, use the nearest ancestor containing a recognized workspace marker such as `CLAUDE.md`, `AGENTS.md`, `package.json`, `pyproject.toml`, `Cargo.toml`, or `go.mod`.
+2. Otherwise, use the nearest ancestor containing a recognized workspace marker such as `CLAUDE.md`, `AGENTS.md`, `package.json`, `pyproject.toml`, `Cargo.toml`, or `go.mod`. When the request path is a child of the user's home directory, marker files directly in home are ignored so incidental home-level files do not capture unrelated scratch workspaces.
 3. Otherwise, use the canonical request path.
 
 Canonicalization applied before room lookup:

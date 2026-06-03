@@ -11,6 +11,9 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+- **Home-level workspace markers no longer capture scratch directories.** `resolveContextPath` now treats the user's home directory as a marker boundary for descendant paths, so an incidental `~/package.json`, `~/AGENTS.md`, or similar marker does not make unrelated markerless paths under `$HOME` join a home-scoped room. Explicitly joining `$HOME` still resolves to home, and real project markers below home still win.
+
 ## [0.4.8] — 2026-05-21
 
 Full notes: [`docs/releases/0.4.8.md`](docs/releases/0.4.8.md).
