@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.9] — 2026-06-03
+
+Full notes: [`docs/releases/0.4.9.md`](docs/releases/0.4.9.md).
+
 ### Fixed
 - **Home-level workspace markers no longer capture scratch directories.** `resolveContextPath` now treats the user's home directory as a marker boundary for descendant paths, so an incidental `~/package.json`, `~/AGENTS.md`, or similar marker does not make unrelated markerless paths under `$HOME` join a home-scoped room. Explicitly joining `$HOME` still resolves to home, and real project markers below home still win.
 
@@ -239,6 +243,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.9]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.9
 [0.4.8]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.8
 [0.4.7]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.7
 [0.4.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.6
