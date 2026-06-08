@@ -249,7 +249,7 @@ describe("removeStaleMcpRegistrations", () => {
     expect(audit[0]).toMatchObject({ harness: "codex", action: "skipped" });
   });
 
-  test("processes all four supported harnesses when harnesses === 'all'", async () => {
+  test("processes all supported harnesses when harnesses === 'all'", async () => {
     const memory = memoryFs({}, ["/home/u/.config/opencode"]);
     const audit: AuditEntry[] = [];
     const results = await removeStaleMcpRegistrations({
@@ -267,9 +267,9 @@ describe("removeStaleMcpRegistrations", () => {
     });
 
     expect(results.map((r) => r.harness).sort()).toEqual(
-      ["claude-code", "codex", "gemini", "opencode"].sort()
+      ["claude-code", "codex", "gemini", "grok", "opencode"].sort()
     );
-    expect(audit).toHaveLength(4);
+    expect(audit).toHaveLength(5);
     for (const entry of audit) {
       expect(entry.reason).toBe("uninstall");
     }

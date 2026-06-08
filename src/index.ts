@@ -62,10 +62,17 @@ export {
 } from "./instructions.js";
 export {
   SUPPORTED_HARNESSES,
+  buildGrokSessionHookConfig,
+  DEFAULT_GROK_SESSION_HOOK_COMMAND,
+  GROK_SESSION_HOOK_EVENTS,
+  GROK_SESSION_HOOK_FILE,
   MissingHarnessError,
   detectHarness,
   parseHarnessList,
+  planGrokSessionHookInstall,
+  planGrokSessionHookUninstall,
   planUninstall,
+  resolveGrokSessionHookPath,
   resolveHarnessConfigDir,
   resolveOpencodeConfigDir,
   resolveOpencodeConfigPath,
@@ -82,6 +89,17 @@ export {
   type InstallerHooks,
   type SkipAction
 } from "./install.js";
+export {
+  DEFAULT_GROK_SESSION_RECORD_MAX_AGE_MS,
+  appendGrokSessionRecord,
+  findGrokSessionRecord,
+  isGrokSessionEndEvent,
+  readGrokSessionRecords,
+  resolveGrokSessionLogPath,
+  type AppendGrokSessionRecordOptions,
+  type FindGrokSessionRecordInput,
+  type GrokSessionRecord
+} from "./grok-session-store.js";
 export {
   DEFAULT_SKILL_NAME,
   planSkillInstall,

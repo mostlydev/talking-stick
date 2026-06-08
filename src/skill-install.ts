@@ -12,7 +12,7 @@ import {
 } from "./install.js";
 
 export const DEFAULT_SKILL_NAME = "talking-stick";
-const FILE_SKILL_HARNESSES = ["claude-code", "codex", "opencode"] as const;
+const FILE_SKILL_HARNESSES = ["claude-code", "codex", "grok", "opencode"] as const;
 
 export interface SkillInstallOptions extends InstallOptions {
   skillName?: string;
@@ -50,6 +50,12 @@ export function resolveSkillTargetPath(
       return path.join(homeDir, ".claude", "skills", options.skillName ?? DEFAULT_SKILL_NAME);
     case "codex":
       return path.join(homeDir, ".codex", "skills", options.skillName ?? DEFAULT_SKILL_NAME);
+    case "grok":
+      return path.join(
+        resolveHarnessConfigDir("grok", options),
+        "skills",
+        options.skillName ?? DEFAULT_SKILL_NAME
+      );
     case "opencode":
       return path.join(homeDir, ".opencode", "skills", options.skillName ?? DEFAULT_SKILL_NAME);
     default:

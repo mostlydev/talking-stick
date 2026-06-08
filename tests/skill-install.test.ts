@@ -38,6 +38,15 @@ describe("talking-stick skill install", () => {
     expect(resolveSkillTargetPath("codex", { homeDir: "/home/u" })).toBe(
       "/home/u/.codex/skills/talking-stick"
     );
+    expect(resolveSkillTargetPath("grok", { env: {}, homeDir: "/home/u" })).toBe(
+      "/home/u/.grok/skills/talking-stick"
+    );
+    expect(
+      resolveSkillTargetPath("grok", {
+        env: { GROK_HOME: "/custom/grok" },
+        homeDir: "/home/u"
+      })
+    ).toBe("/custom/grok/skills/talking-stick");
     expect(resolveSkillTargetPath("opencode", { homeDir: "/home/u" })).toBe(
       "/home/u/.opencode/skills/talking-stick"
     );

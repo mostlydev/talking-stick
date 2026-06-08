@@ -1,4 +1,5 @@
 import { runGuardCommand } from "./guardian.js";
+import { runGrokSessionHookCommand } from "./grok-session-hook.js";
 import {
   runInstallCommand,
   runMcpMigrationCommand,
@@ -53,6 +54,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt guard ...",
     description: "Run an internal lease heartbeat guardian.",
     handler: ({ parsed }) => runGuardCommand(parsed)
+  },
+  {
+    name: "grok-session-hook",
+    needsRuntime: false,
+    startupMaintenance: false,
+    internal: true,
+    usage: "tt grok-session-hook",
+    description: "Record Grok hook session context for identity resolution.",
+    handler: () => runGrokSessionHookCommand()
   },
   {
     name: "install",

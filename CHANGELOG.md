@@ -11,6 +11,9 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+- **Grok Build harness support.** `tt install grok` now installs the native `~/.grok/skills/talking-stick` skill and a trusted global `~/.grok/hooks/talking-stick-session.json` hook. Grok-launched `tt` calls work without cmux by detecting a `grok` root process in ancestry; `CMUX_AGENT_LAUNCH_KIND=grok` remains optional fast evidence when present. The hook records `GROK_SESSION_ID` context in `${TALKING_STICK_DATA_DIR}/grok-sessions.jsonl` so identity can upgrade from pid-root identity to the real Grok session id when the record matches the workspace and harness process.
+
 ## [0.4.9] — 2026-06-03
 
 Full notes: [`docs/releases/0.4.9.md`](docs/releases/0.4.9.md).

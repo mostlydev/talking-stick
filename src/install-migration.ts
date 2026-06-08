@@ -20,7 +20,7 @@ export interface RemoveStaleMcpOptions {
    * the canonical Talking Stick install shape. Hand-edited entries are preserved.
    * Exec harnesses (claude-code, codex, gemini) currently fall back to name-only
    * matching because their CLIs do not expose the registered command shape in a
-   * stable parsable form; this is documented as a known v1 limitation.
+   * stable parsable form; Grok has no MCP cleanup path and is skipped.
    */
   strict?: boolean;
   installOptions?: InstallOptions;

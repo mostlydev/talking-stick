@@ -3,6 +3,8 @@ import {
   SUPPORTED_HARNESSES,
   detectHarness,
   parseHarnessList,
+  planGrokSessionHookInstall,
+  planGrokSessionHookUninstall,
   planUninstall,
   runAction,
   type HarnessId,
@@ -223,7 +225,7 @@ function planInstallActions(
   harnesses: HarnessId[],
   installOptions: { link: boolean; skipMissing: boolean }
 ): InstallAction[] {
-  return harnesses.map((harness) => planSkillInstall(harness, installOptions));
+  return harnesses.flatMap((harness) => planInstallActionsForHarness(harness, installOptions));
 }
 
 function planUninstallActions(
@@ -235,6 +237,14 @@ function planUninstallActions(
       ...installOptions,
       skipMissing: false
     }),
+    ...(harness === "grok"
+      ? [
+          planGrokSessionHookUninstall({
+            ...installOptions,
+            skipMissing: false
+          })
+        ]
+      : []),
     planUninstall(harness, installOptions)
   ]);
 }
@@ -250,18 +260,39 @@ async function runSkillInstall(
   harness: HarnessId,
   installOptions: { link: boolean; skipMissing: boolean }
 ): Promise<InstallResult[]> {
-  const skillAction = planSkillInstall(harness, installOptions);
-  const skillResult = await runAction(skillAction, installOptions);
-  return [skillResult];
+  const actions = planInstallActionsForHarness(harness, installOptions);
+  return Promise.all(actions.map((action) => runAction(action, installOptions)));
 }
 
 async function runSkillUninstall(
   harness: HarnessId,
   installOptions: { skipMissing: boolean }
 ): Promise<InstallResult[]> {
-  const skillAction = planSkillUninstall(harness, installOptions);
-  const skillResult = await runAction(skillAction, installOptions);
-  return [skillResult];
+  const actions = [
+    planSkillUninstall(harness, {
+      ...installOptions,
+      skipMissing: false
+    }),
+    ...(harness === "grok"
+      ? [
+          planGrokSessionHookUninstall({
+            ...installOptions,
+            skipMissing: false
+          })
+        ]
+      : [])
+  ];
+  return Promise.all(actions.map((action) => runAction(action, installOptions)));
+}
+
+function planInstallActionsForHarness(
+  harness: HarnessId,
+  installOptions: { link: boolean; skipMissing: boolean }
+): InstallAction[] {
+  return [
+    planSkillInstall(harness, installOptions),
+    ...(harness === "grok" ? [planGrokSessionHookInstall(installOptions)] : [])
+  ];
 }
 
 async function runCleanup(

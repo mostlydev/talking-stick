@@ -1,9 +1,16 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  buildGrokSessionHookConfig,
   detectHarness,
   parseHarnessList,
+  planGrokSessionHookInstall,
+  planGrokSessionHookUninstall,
   resolveHarnessConfigDir,
   planUninstall,
+  resolveGrokSessionHookPath,
   resolveOpencodeConfigPath,
   runAction,
   SUPPORTED_HARNESSES,
@@ -83,9 +90,86 @@ describe("planUninstall", () => {
     expect(resolveHarnessConfigDir("claude-code", { homeDir: "/home/u" })).toBe("/home/u/.claude");
     expect(resolveHarnessConfigDir("codex", { homeDir: "/home/u" })).toBe("/home/u/.codex");
     expect(resolveHarnessConfigDir("gemini", { homeDir: "/home/u" })).toBe("/home/u/.gemini");
+    expect(resolveHarnessConfigDir("grok", { env: {}, homeDir: "/home/u" })).toBe("/home/u/.grok");
     expect(resolveHarnessConfigDir("opencode", { env: {}, homeDir: "/home/u" })).toBe(
       "/home/u/.config/opencode"
     );
+  });
+
+  test("honors GROK_HOME for Grok config and hook paths", () => {
+    const options = {
+      env: { GROK_HOME: "/custom/grok" },
+      homeDir: "/home/u"
+    };
+
+    expect(resolveHarnessConfigDir("grok", options)).toBe("/custom/grok");
+    expect(resolveGrokSessionHookPath(options)).toBe(
+      "/custom/grok/hooks/talking-stick-session.json"
+    );
+  });
+
+  test("plans no stale MCP cleanup for Grok", () => {
+    const action = planUninstall("grok");
+
+    expect(action.kind).toBe("skip");
+    if (action.kind !== "skip") {
+      throw new Error("unreachable");
+    }
+    expect(action.message).toBe("legacy Talking Stick cleanup is not applicable for grok");
+  });
+});
+
+describe("Grok hook install", () => {
+  test("writes the global Grok session hook manifest", () => {
+    const memory = memoryFs({}, ["/home/u/.grok"]);
+    const action = planGrokSessionHookInstall({
+      env: {},
+      homeDir: "/home/u",
+      skipMissing: true,
+      ...memory.hooks
+    });
+
+    expect(action.kind).toBe("file-patch");
+    if (action.kind !== "file-patch") {
+      throw new Error("unreachable");
+    }
+    action.apply();
+
+    const hookPath = "/home/u/.grok/hooks/talking-stick-session.json";
+    expect(memory.files.get(hookPath)).toBe(buildGrokSessionHookConfig());
+    expect(memory.dirs.has("/home/u/.grok/hooks")).toBe(true);
+  });
+
+  test("skips hook install when the Grok config root is missing", () => {
+    const memory = memoryFs();
+    const action = planGrokSessionHookInstall({
+      env: {},
+      homeDir: "/home/u",
+      skipMissing: true,
+      ...memory.hooks
+    });
+
+    expect(action.kind).toBe("skip");
+  });
+
+  test("removes the global Grok session hook manifest", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-hook-"));
+    const hookPath = path.join(tempRoot, ".grok", "hooks", "talking-stick-session.json");
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.writeFileSync(hookPath, buildGrokSessionHookConfig());
+
+    const action = planGrokSessionHookUninstall({
+      env: {},
+      homeDir: tempRoot
+    });
+    expect(action.kind).toBe("file-patch");
+    if (action.kind !== "file-patch") {
+      throw new Error("unreachable");
+    }
+    action.apply();
+
+    expect(fs.existsSync(hookPath)).toBe(false);
+    fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 });
 
@@ -469,7 +553,7 @@ describe("runAction", () => {
 });
 
 test("SUPPORTED_HARNESSES is the full expected set", () => {
-  expect([...SUPPORTED_HARNESSES].sort()).toEqual(["claude-code", "codex", "gemini", "opencode"].sort());
+  expect([...SUPPORTED_HARNESSES].sort()).toEqual(["claude-code", "codex", "gemini", "grok", "opencode"].sort());
 });
 
 interface MemoryFs {

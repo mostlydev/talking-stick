@@ -28,12 +28,18 @@ const ENV_KEYS = [
   "CLAUDECODE",
   "CLAUDE_CODE_EXECPATH",
   "CMUX_CLAUDE_PID",
+  "CMUX_AGENT_LAUNCH_KIND",
+  "CMUX_AGENT_LAUNCH_EXECUTABLE",
   "CODEX_MANAGED_BY_NPM",
   "CODEX_THREAD_ID",
   "GEMINI_CLI",
+  "GROK_HOME",
+  "GROK_SESSION_ID",
+  "GROK_WORKSPACE_ROOT",
   "OPENCODE",
   "OPENCODE_RUN_ID",
   "OPENCODE_PID",
+  "CLAUDE_PROJECT_DIR",
   "TALKING_STICK_DATA_DIR",
   "TALKING_STICK_DISABLE_MCP_MIGRATION",
   "TALKING_STICK_DISABLE_SKILL_SYNC",
@@ -158,6 +164,7 @@ describe("shouldUseJson", () => {
 
   test("returns true when invoked from a detected harness environment", () => {
     expect(shouldUseJson(emptyParsed, { CLAUDECODE: "1" })).toBe(true);
+    expect(shouldUseJson(emptyParsed, { CMUX_AGENT_LAUNCH_KIND: "grok" })).toBe(true);
   });
 
   test("returns true when TT_HARNESS_AGENT_ID is set", () => {
@@ -271,6 +278,11 @@ describe("shouldAutoSyncInstalledSkills", () => {
     expect(
       shouldAutoSyncInstalledSkills(parsed, {
         CLAUDECODE: "1"
+      })
+    ).toBe(false);
+    expect(
+      shouldAutoSyncInstalledSkills(parsed, {
+        CMUX_AGENT_LAUNCH_KIND: "grok"
       })
     ).toBe(false);
   });
@@ -1246,6 +1258,26 @@ describe("tt notes", () => {
     expect(result.text).not.toContain("## Claude");
   });
 
+  test("tt instructions show returns the bundled Grok prompt", async () => {
+    const out = await captureStdout([
+      "instructions",
+      "show",
+      "--harness",
+      "grok",
+      "--scope",
+      "bundled",
+      "--json"
+    ]);
+    const result = JSON.parse(out) as {
+      harness: string;
+      text: string;
+    };
+
+    expect(result.harness).toBe("grok");
+    expect(result.text).toContain("## Grok");
+    expect(result.text).not.toContain("## Codex");
+  });
+
   test("tt instructions show preserves a path after trailing --json", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     const out = await captureStdout([
@@ -1314,6 +1346,22 @@ describe("tt notes", () => {
     expect(out).not.toContain("mcp add");
     expect(out).toContain("[codex] copy ");
     expect(out).toContain(".codex/skills/talking-stick");
+  });
+
+  test("tt install grok --print includes native skill and session hook actions", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-grok-home-"));
+    tempDirs.push(home);
+    const grokHome = path.join(home, ".grok");
+    fs.mkdirSync(grokHome, { recursive: true });
+    process.env.GROK_HOME = grokHome;
+
+    const out = await captureStdout(["install", "grok", "--print"]);
+
+    expect(out).not.toContain("mcp add");
+    expect(out).toContain("[grok] link ");
+    expect(out).toContain(".grok/skills/talking-stick");
+    expect(out).toContain("[grok] write Grok session hook ");
+    expect(out).toContain(".grok/hooks/talking-stick-session.json");
   });
 
   test("tt install rejects conflicting skill link modes", async () => {

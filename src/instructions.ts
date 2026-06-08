@@ -5,7 +5,13 @@ import { resolveDataDir, type ResolveDataDirOptions } from "./config.js";
 import type { DerivedIdentity } from "./identity.js";
 import { resolveContextPath } from "./path-resolution.js";
 
-export type InstructionHarness = "claude" | "codex" | "gemini" | "opencode" | "all";
+export type InstructionHarness =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "grok"
+  | "opencode"
+  | "all";
 export type InstructionScope = "effective" | "bundled" | "user" | "project";
 export type EditableInstructionScope = "user" | "project";
 
@@ -77,6 +83,10 @@ Lean into adversarial review, convergence, precise implementation, edge-case swe
 
 Use broad context review and exploration conservatively until the project has stronger Gemini-specific dogfood. Keep handoffs concrete and do not assume responsibility that the operator assigned to another harness.
 
+## Grok
+
+Use Grok Build as a first-class local coding harness. Keep coordination safety ahead of speed, rely on the native Grok skill and session hook when installed, and keep handoffs concrete when another harness is better positioned to implement or review.
+
 ## OpenCode
 
 Use terminal-native local exploration and implementation conservatively until the project has stronger OpenCode-specific dogfood. Keep coordination safety ahead of speed.
@@ -89,6 +99,8 @@ const HARNESS_ALIASES: Record<string, InstructionHarness> = {
   "claude-code": "claude",
   codex: "codex",
   gemini: "gemini",
+  grok: "grok",
+  "grok-build": "grok",
   opencode: "opencode"
 };
 
@@ -187,7 +199,7 @@ export function normalizeInstructionHarness(value: string): InstructionHarness {
   const normalized = HARNESS_ALIASES[normalizeKey(value)];
   if (!normalized) {
     throw new Error(
-      `--harness must be one of claude, codex, gemini, opencode, all (got ${value}).`
+      `--harness must be one of claude, codex, gemini, grok, opencode, all (got ${value}).`
     );
   }
   return normalized;
@@ -328,6 +340,7 @@ function parseHarnessHeader(line: string): InstructionHarness | null {
   if (key.startsWith("claude")) return "claude";
   if (key.startsWith("codex")) return "codex";
   if (key.startsWith("gemini")) return "gemini";
+  if (key.startsWith("grok")) return "grok";
   if (key.startsWith("opencode")) return "opencode";
   return null;
 }

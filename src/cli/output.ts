@@ -201,7 +201,7 @@ Commands:
   tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
   tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]
   tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
-  tt instructions show [path] [--harness claude|codex|gemini|opencode|all] [--scope effective|bundled|user|project]
+  tt instructions show [path] [--harness claude|codex|gemini|grok|opencode|all] [--scope effective|bundled|user|project]
   tt instructions edit [path] [--user|--project]
   tt instructions reset [path] (--user|--project)
   tt release [path] (--status TEXT --next-action TEXT | --stdin)

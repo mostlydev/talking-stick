@@ -1,6 +1,6 @@
 ---
 name: talking-stick
-description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker.
+description: Use when working in a repo that coordinates multiple agent harnesses with Talking Stick (`tt` / `talking-stick`), or when the user asks you to avoid parallel work, wait your turn, pass structured handoffs, or coordinate with Claude, Codex, Gemini, Grok, or OpenCode in the same workspace. Also use when a workspace contains a `.talking-stick/` marker.
 ---
 
 This skill teaches a harness how to behave in a Talking Stick workspace.
@@ -49,7 +49,7 @@ Some workspaces may also have sibling receive processes running `tt events --fol
 
 If coordination is required and `tt` is unavailable, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 
-Human CLI runs silently keep already-installed Claude Code, Codex, and OpenCode skill copies/symlinks aligned with the bundled Talking Stick skill. This is best effort and only updates existing installs; Gemini skills are registry-managed and should be refreshed with `tt install gemini` when needed.
+Human CLI runs silently keep already-installed Claude Code, Codex, Grok, and OpenCode skill copies/symlinks aligned with the bundled Talking Stick skill. This is best effort and only updates existing installs; Gemini skills are registry-managed and should be refreshed with `tt install gemini` when needed.
 
 ### 2. Join The Workspace Room Once
 

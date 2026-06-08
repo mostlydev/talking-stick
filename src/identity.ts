@@ -2,6 +2,11 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import {
+  findGrokSessionRecord,
+  resolveGrokSessionLogPath
+} from "./grok-session-store.js";
+import { resolveContextPath } from "./path-resolution.js";
+import {
   createSystemProcessInspector,
   type ProcessInspection,
   type ProcessInspector
@@ -32,6 +37,9 @@ export interface DeriveMcpHarnessIdentityOptions {
   username?: string;
   inspector?: ProcessInspector;
   displayName?: string;
+  contextPath?: string;
+  grokSessionLogPath?: string;
+  now?: Date;
 }
 
 export interface DeriveHarnessCliIdentityOptions {
@@ -42,9 +50,12 @@ export interface DeriveHarnessCliIdentityOptions {
   hostId?: string;
   inspector?: ProcessInspector;
   displayName?: string;
+  contextPath?: string;
+  grokSessionLogPath?: string;
+  now?: Date;
 }
 
-export type HarnessCliHarness = "claude" | "codex" | "gemini" | "opencode";
+export type HarnessCliHarness = "claude" | "codex" | "gemini" | "grok" | "opencode";
 
 interface HarnessSignal {
   harness: HarnessCliHarness;
@@ -114,7 +125,12 @@ export function deriveMcpHarnessIdentity(
       processRef.inspection,
       username,
       hostId,
-      inspector
+      inspector,
+      {
+        contextPath: options.contextPath,
+        grokSessionLogPath: options.grokSessionLogPath,
+        now: options.now
+      }
     );
     const harnessProcess = resolveHarnessProcessRef(signal, processRef, inspector);
     const agentId =
@@ -186,7 +202,8 @@ export function deriveHarnessCliIdentity(
   let signal = detectHarnessSignal(env);
 
   if (!signal && !isHarnessCliExportEnabled(env)) {
-    return null;
+    signal = detectGrokViaAncestry(parentPid, parentInspection, inspector);
+    if (!signal) return null;
   }
 
   if (!signal) {
@@ -209,7 +226,12 @@ export function deriveHarnessCliIdentity(
     processRef.inspection,
     username,
     hostId,
-    inspector
+    inspector,
+    {
+      contextPath: options.contextPath,
+      grokSessionLogPath: options.grokSessionLogPath,
+      now: options.now
+    }
   );
 
   const agentId =
@@ -254,7 +276,12 @@ function resolveHarnessSessionId(
   parentInspection: ProcessInspection | null | undefined,
   username: string,
   hostId: string,
-  inspector: ProcessInspector
+  inspector: ProcessInspector,
+  options: {
+    contextPath?: string;
+    grokSessionLogPath?: string;
+    now?: Date;
+  } = {}
 ): string {
   if (signal.sessionId) return `harness:${signal.sessionId}`;
 
@@ -264,6 +291,17 @@ function resolveHarnessSessionId(
     parentInspection,
     inspector
   );
+  if (signal.harness === "grok") {
+    const grokSessionId = resolveGrokHookSessionId(
+      env,
+      harnessRoot,
+      options
+    );
+    if (grokSessionId) {
+      return `harness:${grokSessionId}`;
+    }
+  }
+
   if (harnessRoot) {
     return `pid:${harnessRoot.pid}@${harnessRoot.startTime}`;
   }
@@ -305,7 +343,7 @@ function resolveHarnessProcessRef(
 // process whose command matches the named harness. Anchoring session id to
 // that root keeps `tt` invocations stable whether they're spawned directly
 // by the harness (MCP subprocess) or through intermediate shells (CLI shell-out).
-function findHarnessRootInAncestry(
+export function findHarnessRootInAncestry(
   harness: HarnessCliHarness,
   startPid: number,
   startInspection: ProcessInspection | null | undefined,
@@ -370,6 +408,7 @@ const HARNESS_COMMAND_MAPPING: Record<string, HarnessCliHarness> = {
   "claude-code": "claude",
   codex: "codex",
   gemini: "gemini",
+  grok: "grok",
   opencode: "opencode"
 };
 
@@ -385,10 +424,14 @@ function detectHarnessViaAncestry(
     if (!inspection) break;
 
     const label = deriveCommandLabel(inspection.command);
-    if (HARNESS_COMMAND_MAPPING[label]) {
+    const harness = HARNESS_COMMAND_MAPPING[label];
+    if (harness) {
       return {
-        harness: HARNESS_COMMAND_MAPPING[label],
-        sessionId: `pid:${inspection.pid}@${inspection.startTime}`,
+        harness,
+        sessionId:
+          harness === "grok"
+            ? null
+            : `pid:${inspection.pid}@${inspection.startTime}`,
         pidHint: null
       };
     }
@@ -423,7 +466,76 @@ function detectHarnessSignal(env: NodeJS.ProcessEnv): HarnessSignal | null {
       pidHint: null
     };
   }
+  const cmuxHarness = resolveCmuxLaunchHarness(env);
+  if (cmuxHarness) {
+    return {
+      harness: cmuxHarness,
+      sessionId: null,
+      pidHint: null
+    };
+  }
   return null;
+}
+
+function detectGrokViaAncestry(
+  parentPid: number,
+  parentInspection: ProcessInspection | null | undefined,
+  inspector: ProcessInspector
+): HarnessSignal | null {
+  const grokRoot = findHarnessRootInAncestry(
+    "grok",
+    parentPid,
+    parentInspection,
+    inspector,
+    20
+  );
+  return grokRoot
+    ? { harness: "grok", sessionId: null, pidHint: null }
+    : null;
+}
+
+function resolveGrokHookSessionId(
+  env: NodeJS.ProcessEnv,
+  harnessRoot: { pid: number; startTime: string } | null,
+  options: {
+    contextPath?: string;
+    grokSessionLogPath?: string;
+    now?: Date;
+  }
+): string | null {
+  const workspaceRoot = resolveGrokWorkspaceRoot(env, options.contextPath);
+  const record = findGrokSessionRecord({
+    logPath:
+      options.grokSessionLogPath ??
+      resolveGrokSessionLogPath({ env }),
+    workspaceRoot,
+    grokPid: harnessRoot?.pid ?? null,
+    grokProcessStartedAt: harnessRoot?.startTime ?? null,
+    now: options.now
+  });
+  return record?.grok_session_id ?? null;
+}
+
+function resolveGrokWorkspaceRoot(
+  env: NodeJS.ProcessEnv,
+  contextPath: string | undefined
+): string | null {
+  const explicit =
+    nonEmpty(env.GROK_WORKSPACE_ROOT) ??
+    nonEmpty(env.CLAUDE_PROJECT_DIR);
+  if (explicit) return path.resolve(explicit);
+
+  const candidate = contextPath ?? nonEmpty(env.PWD) ?? process.cwd();
+  try {
+    return resolveContextPath(candidate).workspace_root;
+  } catch {
+    return path.resolve(candidate);
+  }
+}
+
+function resolveCmuxLaunchHarness(env: NodeJS.ProcessEnv): HarnessCliHarness | null {
+  const launchKind = normalizeEnvValue(env.CMUX_AGENT_LAUNCH_KIND);
+  return launchKind ? HARNESS_COMMAND_MAPPING[launchKind] ?? null : null;
 }
 
 function resolveSignalProcessRef(
@@ -462,6 +574,11 @@ function parsePositiveInteger(value: string | undefined): number | null {
 
 function nonEmpty(value: string | undefined): string | null {
   return value && value.trim().length > 0 ? value : null;
+}
+
+function normalizeEnvValue(value: string | undefined): string | null {
+  const nonBlank = nonEmpty(value);
+  return nonBlank ? nonBlank.toLowerCase() : null;
 }
 
 function deriveCommandLabel(command: string | null): string {

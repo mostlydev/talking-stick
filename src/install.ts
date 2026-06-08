@@ -3,11 +3,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const SUPPORTED_HARNESSES = ["claude-code", "codex", "gemini", "opencode"] as const;
+export const SUPPORTED_HARNESSES = ["claude-code", "codex", "gemini", "grok", "opencode"] as const;
 export type HarnessId = (typeof SUPPORTED_HARNESSES)[number];
 
 export const DEFAULT_SERVER_NAME = "talking-stick";
 export const DEFAULT_SERVER_COMMAND = ["tt", "mcp"] as const;
+export const GROK_SESSION_HOOK_FILE = "talking-stick-session.json";
+export const DEFAULT_GROK_SESSION_HOOK_COMMAND =
+  ": talking-stick-grok-session-hook; if command -v tt >/dev/null 2>&1; then tt grok-session-hook >/dev/null 2>/dev/null || true; fi";
+export const GROK_SESSION_HOOK_EVENTS = [
+  "SessionStart",
+  "UserPromptSubmit",
+  "PreToolUse",
+  "SessionEnd"
+] as const;
 
 export interface InstallEnv {
   env: NodeJS.ProcessEnv;
@@ -217,10 +226,26 @@ export function resolveHarnessConfigDir(
   return resolveHarnessConfigDirFromResolved(harness, resolved);
 }
 
+export function resolveGrokSessionHookPath(options: InstallOptions = {}): string {
+  const resolved = resolveOptions(options);
+  return path.join(
+    resolveGrokConfigDirFromResolved(resolved),
+    "hooks",
+    GROK_SESSION_HOOK_FILE
+  );
+}
+
 function resolveOpencodeConfigDirFromResolved(resolved: ResolvedOptions): string {
   const xdg = resolved.env.XDG_CONFIG_HOME?.trim();
   const base = xdg && xdg.length > 0 ? xdg : path.join(resolved.homeDir, ".config");
   return path.join(base, "opencode");
+}
+
+function resolveGrokConfigDirFromResolved(resolved: ResolvedOptions): string {
+  const grokHome = resolved.env.GROK_HOME?.trim();
+  return grokHome && grokHome.length > 0
+    ? grokHome
+    : path.join(resolved.homeDir, ".grok");
 }
 
 function resolveHarnessConfigDirFromResolved(
@@ -234,6 +259,8 @@ function resolveHarnessConfigDirFromResolved(
       return path.join(resolved.homeDir, ".codex");
     case "gemini":
       return path.join(resolved.homeDir, ".gemini");
+    case "grok":
+      return resolveGrokConfigDirFromResolved(resolved);
     case "opencode":
       return resolveOpencodeConfigDirFromResolved(resolved);
     default:
@@ -283,6 +310,8 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         operation: "uninstall",
         serverName: resolved.serverName
       };
+    case "grok":
+      return skipAction(harness, "legacy Talking Stick cleanup is not applicable for grok");
     case "opencode": {
       const filePath = resolveOpencodeConfigPath(options);
       const configDir = path.dirname(filePath);
@@ -315,6 +344,92 @@ export function skipAction(harness: HarnessId, message: string): SkipAction {
     description: message,
     message
   };
+}
+
+export function planGrokSessionHookInstall(
+  options: InstallOptions = {}
+): InstallAction {
+  const resolved = resolveOptions(options);
+  const grokConfigDir = resolveGrokConfigDirFromResolved(resolved);
+  const filePath = resolveGrokSessionHookPath(options);
+  if (resolved.skipMissing && !resolved.hooks.pathExists(grokConfigDir)) {
+    return skipAction("grok", `grok config directory not found: ${grokConfigDir}`);
+  }
+
+  return {
+    kind: "file-patch",
+    harness: "grok",
+    filePath,
+    description: `write Grok session hook ${filePath}`,
+    inspect: () => inspectGrokSessionHook(filePath, resolved),
+    apply: () => writeGrokSessionHook(filePath, resolved)
+  };
+}
+
+export function planGrokSessionHookUninstall(
+  options: InstallOptions = {}
+): InstallAction {
+  const resolved = resolveOptions(options);
+  const grokConfigDir = resolveGrokConfigDirFromResolved(resolved);
+  const filePath = resolveGrokSessionHookPath(options);
+  if (resolved.skipMissing && !resolved.hooks.pathExists(grokConfigDir)) {
+    return skipAction("grok", `grok config directory not found: ${grokConfigDir}`);
+  }
+
+  return {
+    kind: "file-patch",
+    harness: "grok",
+    filePath,
+    description: `remove Grok session hook ${filePath}`,
+    inspect: () =>
+      resolved.hooks.readFile(filePath) === null ? "absent" : "present",
+    apply: () => removeGrokSessionHook(filePath, resolved)
+  };
+}
+
+export function buildGrokSessionHookConfig(): string {
+  const hook = {
+    type: "command",
+    command: DEFAULT_GROK_SESSION_HOOK_COMMAND,
+    timeout: 5
+  };
+  const hooks = Object.fromEntries(
+    GROK_SESSION_HOOK_EVENTS.map((event) => [
+      event,
+      [
+        {
+          hooks: [hook]
+        }
+      ]
+    ])
+  );
+  return JSON.stringify({ hooks }, null, 2) + "\n";
+}
+
+function inspectGrokSessionHook(
+  filePath: string,
+  resolved: ResolvedOptions
+): InstallTargetState {
+  const existing = resolved.hooks.readFile(filePath);
+  if (existing === null) return "absent";
+  return existing === buildGrokSessionHookConfig() ? "present" : "different";
+}
+
+function writeGrokSessionHook(filePath: string, resolved: ResolvedOptions): void {
+  resolved.hooks.ensureDir(path.dirname(filePath));
+  resolved.hooks.writeFile(filePath, buildGrokSessionHookConfig());
+}
+
+function removeGrokSessionHook(filePath: string, resolved: ResolvedOptions): void {
+  void resolved;
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
 }
 
 function patchOpencodeConfig(filePath: string, resolved: ResolvedOptions, mode: "install" | "uninstall"): void {
@@ -442,6 +557,13 @@ export function detectHarness(harness: HarnessId, options: InstallOptions = {}):
       const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
       if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
       return { harness, detected: false, evidence: "gemini not on PATH and no config directory" };
+    }
+    case "grok": {
+      const bin = resolved.hooks.which("grok");
+      if (bin) return { harness, detected: true, evidence: bin };
+      const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
+      if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
+      return { harness, detected: false, evidence: "grok not on PATH and no config directory" };
     }
     case "opencode": {
       const bin = resolved.hooks.which("opencode");
@@ -705,6 +827,8 @@ function mcpConfigLocation(action: InstallAction): string {
       return "Codex global config";
     case "gemini":
       return "Gemini user config";
+    case "grok":
+      return "Grok config";
     case "opencode":
       return "OpenCode config";
     default:

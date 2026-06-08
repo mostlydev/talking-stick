@@ -2,7 +2,7 @@
 
 A CLI coordination tool that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.4.1. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv`.
+**Version:** 0.4.1. Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Gemini CLI, Grok Build, and OpenCode out of the box. Two agents in the same room can also chat out-of-band — without passing the stick — via `tt msg send/recv`.
 
 ## Quickstart
 
@@ -166,13 +166,14 @@ For harnesses that only notice completed subprocesses, run `tt events --wait --a
 - Claude Code: copied or linked into `~/.claude/skills/talking-stick`
 - Codex: copied or linked into `~/.codex/skills/talking-stick`
 - Gemini: installed with `gemini skills install ... --scope user` or linked with `gemini skills link ... --scope user`
+- Grok Build: copied or linked into `~/.grok/skills/talking-stick`, plus a trusted global session hook at `~/.grok/hooks/talking-stick-session.json`
 - OpenCode: copied or linked into `~/.opencode/skills/talking-stick`
 
 By default, `tt install` links the bundled skill into each harness so local updates are picked up immediately. Pass `--copy` if you want a standalone snapshot instead.
 
-Stale MCP cleanup is strict for OpenCode JSON entries: it removes only the canonical `mcp.talking-stick` value with `["tt", "mcp"]` and leaves hand-edited entries alone. Claude Code, Codex, and Gemini cleanup uses their own `mcp remove` commands when the old server name exists. Every cleanup run appends JSONL audit entries to `${TALKING_STICK_DATA_DIR}/update-migrations.log`.
+Stale MCP cleanup is strict for OpenCode JSON entries: it removes only the canonical `mcp.talking-stick` value with `["tt", "mcp"]` and leaves hand-edited entries alone. Claude Code, Codex, and Gemini cleanup uses their own `mcp remove` commands when the old server name exists. Grok Build has no Talking Stick MCP registration path; install is native skill plus hook only. Every cleanup run appends JSONL audit entries to `${TALKING_STICK_DATA_DIR}/update-migrations.log`.
 
-Human CLI invocations also perform a silent best-effort sync for already-installed file-based skills in Claude Code, Codex, and OpenCode. If the installed skill is a copy, it is refreshed from the bundled skill; if it is a stale symlink, it is relinked. Missing harness config directories and missing skill installs are skipped. Gemini skills are managed by Gemini's own registry, so use `tt install gemini` after updating when needed.
+Human CLI invocations also perform a silent best-effort sync for already-installed file-based skills in Claude Code, Codex, Grok Build, and OpenCode. If the installed skill is a copy, it is refreshed from the bundled skill; if it is a stale symlink, it is relinked. Missing harness config directories and missing skill installs are skipped. Gemini skills are managed by Gemini's own registry, so use `tt install gemini` after updating when needed.
 
 ## Human CLI
 
@@ -189,7 +190,7 @@ tt state [path]                                           # full room state
 tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # room event log; --wait/--follow long-polls
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
-tt instructions show [path] [--harness claude|codex|gemini|opencode|all] [--scope effective|bundled|user|project]  # show collaboration prompt
+tt instructions show [path] [--harness claude|codex|gemini|grok|opencode|all] [--scope effective|bundled|user|project]  # show collaboration prompt
 tt instructions edit [path] [--user|--project]             # edit user or project prompt
 tt instructions reset [path] (--user|--project)            # delete a user or project prompt
 tt release [path] --status TEXT --next-action TEXT        # normal handoff
@@ -216,7 +217,8 @@ By default, `tt` behaves like a human CLI and resolves to `human:<username>` onl
 
 Harness-aware CLI identity is resolved before the human fallback:
 
-- Known harness environment markers such as `CLAUDECODE=1`, `CODEX_THREAD_ID`, `GEMINI_CLI=1`, or `OPENCODE=1` make `tt` derive a harness-style identity automatically.
+- Known harness environment markers such as `CLAUDECODE=1`, `CODEX_THREAD_ID`, `GEMINI_CLI=1`, `CMUX_AGENT_LAUNCH_KIND=grok`, or `OPENCODE=1` make `tt` derive a harness-style identity automatically. The cmux Grok marker is optional; Grok Build also works without cmux by walking process ancestry for a `grok` root process.
+- Grok Build's installed hook records hook-only `GROK_SESSION_ID` context into `${TALKING_STICK_DATA_DIR}/grok-sessions.jsonl`, letting later Grok-launched `tt` calls upgrade from process identity to the real Grok session id. `GROK_SESSION_ID` by itself is not treated as a normal shell marker, and the hook is not required for basic Grok detection.
 - Set `TT_HARNESS_AGENT_ID=<agent-id>` if the harness wants to export the exact agent id directly.
 - Set `TT_HARNESS_EXPORT=1` only when you need ancestry-based harness detection without a known harness environment marker.
 
