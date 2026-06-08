@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.10] — 2026-06-08
+
+Full notes: [`docs/releases/0.4.10.md`](docs/releases/0.4.10.md).
+
 ### Added
 - **Grok Build harness support.** `tt install grok` now installs the native `~/.grok/skills/talking-stick` skill and a trusted global `~/.grok/hooks/talking-stick-session.json` hook. Grok-launched `tt` calls work without cmux by detecting a `grok` root process in ancestry; `CMUX_AGENT_LAUNCH_KIND=grok` remains optional fast evidence when present. The hook records `GROK_SESSION_ID` context in `${TALKING_STICK_DATA_DIR}/grok-sessions.jsonl` so identity can upgrade from pid-root identity to the real Grok session id when the record matches the workspace and harness process.
 
@@ -246,6 +250,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.10]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.10
 [0.4.9]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.9
 [0.4.8]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.8
 [0.4.7]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.7
