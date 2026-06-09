@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProtocolError } from "./index.js";
 import { parseCommand } from "./cli/parser.js";
-import { printHelp } from "./cli/output.js";
+import { printHelp, shouldUseJson } from "./cli/output.js";
 import { getCommand } from "./cli/registry.js";
 import { createRuntime } from "./cli/runtime.js";
 import { runStartupMaintenance } from "./cli/startup-maintenance.js";
@@ -65,12 +65,23 @@ function isDirectExecution(): boolean {
 
 if (isDirectExecution()) {
   await runCli().catch((error) => {
-    const message = isProtocolError(error)
-      ? JSON.stringify(error.toJSON(), null, 2)
-      : error instanceof Error
+    const parsed = parseCommand(process.argv.slice(2));
+    if (shouldUseJson(parsed)) {
+      const payload = isProtocolError(error)
+        ? error.toJSON()
+        : {
+            error: "cli_error",
+            message: error instanceof Error ? error.message : String(error)
+          };
+      process.stderr.write(`${JSON.stringify(payload, null, 2)}\n`);
+    } else {
+      const message = isProtocolError(error)
         ? error.message
-        : String(error);
-    process.stderr.write(`${message}\n`);
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      process.stderr.write(`${message}\n`);
+    }
     process.exit(1);
   });
 }

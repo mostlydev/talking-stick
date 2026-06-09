@@ -210,6 +210,20 @@ describe("shouldUseJson", () => {
   });
 });
 
+describe("JSON error output", () => {
+  test("plain CLI errors are structured in JSON mode", async () => {
+    const processState = spawnCliProcess(["unknown", "--json"]);
+    const close = await waitForProcessClose(processState.child);
+
+    expect(close.code).toBe(1);
+    expect(processState.stdout()).toBe("");
+    expect(JSON.parse(processState.stderr())).toEqual({
+      error: "cli_error",
+      message: "Unknown command: unknown"
+    });
+  });
+});
+
 describe("withCoordinationPrompt", () => {
   test("adds the short reminder to common command objects", () => {
     const prompted = withCoordinationPrompt(
