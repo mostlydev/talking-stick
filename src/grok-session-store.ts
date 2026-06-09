@@ -114,6 +114,10 @@ export function findGrokSessionRecord(
     }
   }
 
+  if (input.grokPid != null && input.grokProcessStartedAt != null) {
+    return null;
+  }
+
   const uniqueSessionIds = new Set(
     workspaceCandidates.map((record) => record.grok_session_id)
   );

@@ -87,6 +87,27 @@ describe("Grok session hook store", () => {
     ).toBeNull();
   });
 
+  test("does not inherit a same-workspace fallback when the Grok process identity mismatches", () => {
+    const { logPath, workspace } = makeTempLog();
+    appendGrokSessionRecord(
+      record("session-a", workspace, {
+        grok_pid: 100,
+        grok_process_started_at: "Mon Jun  8 12:00:00 2026"
+      }),
+      { logPath }
+    );
+
+    const matched = findGrokSessionRecord({
+      logPath,
+      workspaceRoot: workspace,
+      grokPid: 200,
+      grokProcessStartedAt: "Mon Jun  8 12:05:00 2026",
+      now
+    });
+
+    expect(matched).toBeNull();
+  });
+
   test("the hook command records env session context and Grok ancestry", async () => {
     const { logPath, workspace } = makeTempLog();
     const inspector = fakeInspector({
