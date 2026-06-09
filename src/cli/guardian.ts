@@ -136,8 +136,46 @@ export async function spawnGuardian(input: {
       const inspector = createSystemProcessInspector();
       let stdout = "";
       let stderr = "";
+      let settled = false;
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        child.stdout?.removeAllListeners();
+        child.stderr?.removeAllListeners();
+        child.removeAllListeners("exit");
+        child.removeAllListeners("error");
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      };
+      const killChild = () => {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // Best effort cleanup for a child that failed readiness.
+        }
+      };
+      const rejectOnce = (error: Error, kill = false) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (kill) {
+          killChild();
+        }
+        cleanup();
+        reject(error);
+      };
+      const resolveOnce = (value: { pid: number; process_started_at: string | null }) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        child.unref();
+        resolve(value);
+      };
       const timeout = setTimeout(() => {
-        reject(new Error("Guardian did not signal readiness in time."));
+        rejectOnce(new Error("Guardian did not signal readiness in time."), true);
       }, GUARD_READY_TIMEOUT_MS);
 
       child.stdout?.setEncoding("utf8");
@@ -149,15 +187,11 @@ export async function spawnGuardian(input: {
           return;
         }
 
-        clearTimeout(timeout);
-        child.stdout?.destroy();
-        child.stderr?.destroy();
-        child.unref();
         if (!child.pid) {
-          reject(new Error("Guardian started without a PID."));
+          rejectOnce(new Error("Guardian started without a PID."), true);
           return;
         }
-        resolve({
+        resolveOnce({
           pid: child.pid,
           process_started_at: inspector.inspect(child.pid)?.startTime ?? null
         });
@@ -168,12 +202,14 @@ export async function spawnGuardian(input: {
       });
 
       child.on("exit", (code) => {
-        clearTimeout(timeout);
-        reject(
+        rejectOnce(
           new Error(
             `Guardian exited before readiness (code ${code ?? "unknown"}): ${stderr.trim()}`
           )
         );
+      });
+      child.on("error", (error) => {
+        rejectOnce(error instanceof Error ? error : new Error(String(error)));
       });
     }
   );
