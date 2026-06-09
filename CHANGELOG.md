@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.11] — 2026-06-09
+
+Full notes: [`docs/releases/0.4.11.md`](docs/releases/0.4.11.md).
+
 ### Fixed
 - **Guardian no longer leaks when readiness times out.** `spawnGuardian`'s readiness timeout now kills the detached child and clears its listeners before rejecting. Previously the orphaned guardian survived, wrote `READY` to a stream nobody read, and held the lease indefinitely with no recorded PID for `stopGuardian` to reach. (#31)
 - **Fair-turn ordering survives member churn.** Round-robin distance is now computed from each member's rank within the current member list instead of raw join ordinals modulo member count, which inverted ordering once departures left sparse ordinals (e.g. `[0, 5, 7]`). (#32)
@@ -264,6 +268,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.11]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.11
 [0.4.10]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.10
 [0.4.9]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.9
 [0.4.8]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.8
