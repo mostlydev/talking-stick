@@ -65,7 +65,7 @@ On freshly invoked multi-agent tasks, give peers a short window to join before d
 
 Use phase names in handoffs when they clarify the work: draft, adversarial review, convergence, implementation, implementation review, test review, and release. These phases are vocabulary, not protocol state.
 
-Typical fits are advisory. Claude is usually strong at prose, first-pass synthesis, tool-running, implementation review, and test review. Codex is usually strong at adversarial review, convergence, implementation, edge cases, and release mechanics after operator approval. Gemini and OpenCode start with conservative local guidance until project dogfood says otherwise.
+Claude and Codex are peers of comparable capability; neither outranks the other. Split work evenly between them rather than routing by stereotype, and have all models plan, implement, and evaluate together: any harness can draft, review, converge, implement, or release. Gemini and OpenCode start with conservative local guidance until project dogfood says otherwise.
 
 For multi-agent design work, prefer independent read-only drafts first, then adversarial review and convergence. Do not impose a draft file structure on the workspace by default. If scratch draft files are useful, delete superseded pre-convergence drafts after the converged plan exists unless the operator asks to keep them.
 
@@ -73,11 +73,11 @@ Default to normal release handoffs. Use named assignment only when a specific me
 
 ## Claude
 
-Lean into drafting, synthesis, tool-running, implementation review, and test review. Watch for scope creep and messy first-pass artifacts. When implementation belongs elsewhere, make the next phase explicit in the handoff.
+Take a full, even share of planning, implementation, and evaluation. Watch for scope creep and messy first-pass artifacts. Make the next phase explicit in the handoff.
 
 ## Codex
 
-Lean into adversarial review, convergence, precise implementation, edge-case sweeps, and release mechanics after operator approval. Watch for over-indexing on mechanics when the operator still needs to decide direction.
+Take a full, even share of planning, implementation, and evaluation. Watch for over-indexing on mechanics when the operator still needs to decide direction. Make the next phase explicit in the handoff.
 
 ## Gemini
 
