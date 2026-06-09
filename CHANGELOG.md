@@ -11,6 +11,9 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+- **No-op `tt install` runs are quiet.** Legacy MCP cleanup lines are only printed when an entry was actually removed, preserved, or failed — `absent`/`skipped` no-ops stay silent. The Grok session hook and Gemini skill installs now inspect their targets and report `already_present` instead of rewriting (`ok: Updated ...`) or re-linking (`added: ok`) on every run, and the `tt instructions edit` hint only prints when an install actually changed something.
+
 ## [0.4.11] — 2026-06-09
 
 Full notes: [`docs/releases/0.4.11.md`](docs/releases/0.4.11.md).

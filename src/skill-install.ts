@@ -78,6 +78,11 @@ export function planSkillInstall(
   ensureSkillSourceExists(sourcePath);
 
   if (harness === "gemini") {
+    const geminiTargetPath = path.join(
+      resolveHarnessConfigDir("gemini", options),
+      "skills",
+      skillName
+    );
     return shouldLink
       ? {
           kind: "exec",
@@ -85,7 +90,8 @@ export function planSkillInstall(
           command: "gemini",
           args: ["skills", "link", sourcePath, "--scope", "user", "--consent"],
           description: `gemini skills link ${sourcePath} --scope user --consent`,
-          operation: "install"
+          operation: "install",
+          inspect: () => inspectInstalledSkill(sourcePath, geminiTargetPath, true)
         }
       : {
           kind: "exec",
@@ -93,7 +99,8 @@ export function planSkillInstall(
           command: "gemini",
           args: ["skills", "install", sourcePath, "--scope", "user", "--consent"],
           description: `gemini skills install ${sourcePath} --scope user --consent`,
-          operation: "install"
+          operation: "install",
+          inspect: () => inspectInstalledSkill(sourcePath, geminiTargetPath, false)
         };
   }
 

@@ -204,6 +204,26 @@ describe("Grok hook install", () => {
     expect(fs.existsSync(hookPath)).toBe(false);
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
+
+  test("reports already_present instead of rewriting an up-to-date hook", async () => {
+    const hookPath = "/home/u/.grok/hooks/talking-stick-session.json";
+    const memory = memoryFs(
+      { [hookPath]: buildGrokSessionHookConfig() },
+      ["/home/u/.grok"]
+    );
+    const writeSpy = vi.spyOn(memory.hooks, "writeFile");
+    const options: InstallOptions = {
+      env: {},
+      homeDir: "/home/u",
+      skipMissing: true,
+      ...memory.hooks
+    };
+
+    const result = await runAction(planGrokSessionHookInstall(options), options);
+
+    expect(result.status).toBe("already_present");
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe("detectHarness", () => {

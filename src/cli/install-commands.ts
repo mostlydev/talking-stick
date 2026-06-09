@@ -353,8 +353,9 @@ function reportInstallResults(
   }
 }
 
-function printInstructionHint(results: InstallResult[]): void {
-  if (!results.some((result) => result.ok && !result.skipped)) {
+export function printInstructionHint(results: InstallResult[]): void {
+  const changed = new Set<InstallStatus>(["added", "updated", "ok"]);
+  if (!results.some((result) => result.ok && changed.has(result.status))) {
     return;
   }
   process.stdout.write(
@@ -362,12 +363,15 @@ function printInstructionHint(results: InstallResult[]): void {
   );
 }
 
-function reportCleanupResults(
+export function reportCleanupResults(
   results: RemoveStaleMcpResult[],
   mode: "install" | "uninstall" | "self-update"
 ): void {
   let anyFailed = false;
   for (const result of results) {
+    if (result.action === "absent" || result.action === "skipped") {
+      continue;
+    }
     process.stdout.write(`[${result.harness}] mcp-cleanup ${result.action}: ${result.message}\n`);
     if (result.action === "failed") anyFailed = true;
   }

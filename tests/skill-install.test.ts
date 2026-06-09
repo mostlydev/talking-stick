@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_SKILL_NAME,
   planSkillInstall,
@@ -84,6 +84,28 @@ describe("talking-stick skill install", () => {
     expect(copyAction.description).toBe(
       `gemini skills install ${sourcePath} --scope user --consent`
     );
+  });
+
+  test("gemini install short-circuits to already_present when the linked skill matches", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+
+    const sourcePath = resolveBundledSkillPath();
+    const geminiTarget = path.join(tempRoot, ".gemini", "skills", "talking-stick");
+    fs.mkdirSync(path.dirname(geminiTarget), { recursive: true });
+    fs.symlinkSync(sourcePath, geminiTarget);
+
+    const run = vi.fn();
+    const options = {
+      homeDir: tempRoot,
+      which: () => "/usr/local/bin/gemini",
+      run
+    };
+
+    const result = await runAction(planSkillInstall("gemini", options), options);
+
+    expect(result.status).toBe("already_present");
+    expect(run).not.toHaveBeenCalled();
   });
 
   test("default install symlinks the skill into the codex global skill directory", () => {

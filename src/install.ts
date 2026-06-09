@@ -50,6 +50,7 @@ export interface ExecAction {
   operation?: InstallOperation;
   serverName?: string;
   serverCommand?: readonly string[];
+  inspect?: () => InstallTargetState;
 }
 
 export interface FilePatchAction {
@@ -363,6 +364,7 @@ export function planGrokSessionHookInstall(
     harness: "grok",
     filePath,
     description: `write Grok session hook ${filePath}`,
+    operation: "install",
     inspect: () => inspectGrokSessionHook(filePath, resolved),
     apply: () => writeGrokSessionHook(filePath, resolved)
   };
@@ -742,6 +744,7 @@ async function inspectExecAction(
   action: ExecAction,
   resolved: ResolvedOptions
 ): Promise<InstallTargetState> {
+  if (action.inspect) return action.inspect();
   if (!action.operation || !action.serverName) return "unknown";
 
   if (action.harness === "gemini") {
@@ -805,6 +808,9 @@ function formatMcpActionMessage(
         default:
           break;
       }
+    }
+    if (action.kind === "exec" && status === "already_present") {
+      return "skill is already installed.";
     }
     return fallback ?? "ok";
   }
