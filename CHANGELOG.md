@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.12] — 2026-06-09
+
+Full notes: [`docs/releases/0.4.12.md`](docs/releases/0.4.12.md).
+
 ### Fixed
 - **No-op `tt install` runs are quiet.** Legacy MCP cleanup lines are only printed when an entry was actually removed, preserved, or failed — `absent`/`skipped` no-ops stay silent. The Grok session hook and Gemini skill installs now inspect their targets and report `already_present` instead of rewriting (`ok: Updated ...`) or re-linking (`added: ok`) on every run, and the `tt instructions edit` hint only prints when an install actually changed something.
 
@@ -271,6 +275,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.12]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.12
 [0.4.11]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.11
 [0.4.10]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.10
 [0.4.9]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.9
