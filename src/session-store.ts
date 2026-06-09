@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 import { resolveDataDir } from "./config.js";
 import { ancestorPaths, resolveContextPath } from "./path-resolution.js";
 
@@ -45,8 +46,7 @@ export function writeCliSessions(
   sessionPath: string,
   sessions: CliSession[]
 ): void {
-  fs.mkdirSync(path.dirname(sessionPath), { recursive: true });
-  fs.writeFileSync(sessionPath, `${JSON.stringify(sessions, null, 2)}\n`);
+  writeFileAtomic(sessionPath, `${JSON.stringify(sessions, null, 2)}\n`);
 }
 
 export function upsertCliSession(

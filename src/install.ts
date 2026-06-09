@@ -2,11 +2,13 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 
 export const SUPPORTED_HARNESSES = ["claude-code", "codex", "gemini", "grok", "opencode"] as const;
 export type HarnessId = (typeof SUPPORTED_HARNESSES)[number];
 
 export const DEFAULT_SERVER_NAME = "talking-stick";
+// Legacy MCP command retained only to identify stale config entries for removal.
 export const DEFAULT_SERVER_COMMAND = ["tt", "mcp"] as const;
 export const GROK_SESSION_HOOK_FILE = "talking-stick-session.json";
 export const DEFAULT_GROK_SESSION_HOOK_COMMAND =
@@ -178,7 +180,7 @@ function defaultReadFile(filePath: string): string | null {
 }
 
 function defaultWriteFile(filePath: string, data: string): void {
-  fs.writeFileSync(filePath, data);
+  writeFileAtomic(filePath, data);
 }
 
 function defaultEnsureDir(dirPath: string): void {
@@ -329,7 +331,7 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         operation: "uninstall",
         serverName: resolved.serverName,
         inspect: () => inspectOpencodeConfig(filePath, resolved),
-        apply: () => patchOpencodeConfig(filePath, resolved, "uninstall")
+        apply: () => patchOpencodeConfig(filePath, resolved)
       };
     }
     default:
@@ -432,30 +434,21 @@ function removeGrokSessionHook(filePath: string, resolved: ResolvedOptions): voi
   }
 }
 
-function patchOpencodeConfig(filePath: string, resolved: ResolvedOptions, mode: "install" | "uninstall"): void {
+function patchOpencodeConfig(filePath: string, resolved: ResolvedOptions): void {
   const existing = resolved.hooks.readFile(filePath);
   if (resolved.skipMissing) {
     const configDir = path.dirname(filePath);
     if (!resolved.hooks.pathExists(configDir)) {
       throw new MissingHarnessError(`opencode config directory not found: ${configDir}`);
     }
-    if (mode === "uninstall" && existing === null) {
+    if (existing === null) {
       throw new MissingHarnessError(`opencode config not found: ${filePath}`);
     }
   }
 
   const config: Record<string, unknown> = existing ? parseJsonOrThrow(existing, filePath) : {};
   const mcp = isPlainObject(config.mcp) ? { ...config.mcp } : {};
-
-  if (mode === "install") {
-    mcp[resolved.serverName] = {
-      type: "local",
-      command: [...resolved.serverCommand],
-      enabled: true
-    };
-  } else {
-    delete mcp[resolved.serverName];
-  }
+  delete mcp[resolved.serverName];
 
   config.mcp = mcp;
   resolved.hooks.ensureDir(path.dirname(filePath));
@@ -797,6 +790,22 @@ function formatMcpActionMessage(
   fallback?: string
 ): string {
   if (!action.serverName || !action.operation) {
+    if (action.kind === "file-patch") {
+      switch (status) {
+        case "added":
+          return `Installed ${action.filePath}.`;
+        case "updated":
+          return `Updated ${action.filePath}.`;
+        case "already_present":
+          return `${action.filePath} is already installed.`;
+        case "removed":
+          return `Removed ${action.filePath}.`;
+        case "already_absent":
+          return `${action.filePath} is already absent.`;
+        default:
+          break;
+      }
+    }
     return fallback ?? "ok";
   }
 

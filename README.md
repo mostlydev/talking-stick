@@ -167,7 +167,7 @@ For harnesses that only notice completed subprocesses, run `tt events --wait --a
 - Codex: copied or linked into `~/.codex/skills/talking-stick`
 - Gemini: installed with `gemini skills install ... --scope user` or linked with `gemini skills link ... --scope user`
 - Grok Build: copied or linked into `~/.grok/skills/talking-stick`, plus a trusted global session hook at `~/.grok/hooks/talking-stick-session.json`
-- OpenCode: copied or linked into `~/.opencode/skills/talking-stick`
+- OpenCode: copied or linked into the resolved OpenCode config directory, normally `~/.config/opencode/skills/talking-stick` and honoring `XDG_CONFIG_HOME`
 
 By default, `tt install` links the bundled skill into each harness so local updates are picked up immediately. Pass `--copy` if you want a standalone snapshot instead.
 

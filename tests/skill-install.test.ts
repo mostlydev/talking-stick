@@ -48,7 +48,15 @@ describe("talking-stick skill install", () => {
       })
     ).toBe("/custom/grok/skills/talking-stick");
     expect(resolveSkillTargetPath("opencode", { homeDir: "/home/u" })).toBe(
-      "/home/u/.opencode/skills/talking-stick"
+      "/home/u/.config/opencode/skills/talking-stick"
+    );
+    expect(
+      resolveSkillTargetPath("opencode", {
+        env: { XDG_CONFIG_HOME: "/custom/config" },
+        homeDir: "/home/u"
+      })
+    ).toBe(
+      "/custom/config/opencode/skills/talking-stick"
     );
   });
 
@@ -153,6 +161,21 @@ describe("talking-stick skill install", () => {
     expect(result.ok).toBe(true);
     expect(result.skipped).toBeUndefined();
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
+  });
+
+  test("second file skill install reports already_present without re-copying", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const action = planSkillInstall("codex", {
+      homeDir: tempRoot
+    });
+    expect(action.kind).toBe("file-patch");
+
+    const first = await runAction(action);
+    const second = await runAction(action);
+
+    expect(first.status).toBe("added");
+    expect(second.status).toBe("already_present");
   });
 
   test("copy install remains available for claude global skill directory", () => {
@@ -266,7 +289,13 @@ describe("talking-stick skill install", () => {
     }
     install.apply();
 
-    const target = path.join(tempRoot, ".opencode", "skills", "talking-stick");
+    const target = path.join(
+      tempRoot,
+      ".config",
+      "opencode",
+      "skills",
+      "talking-stick"
+    );
     expect(fs.existsSync(target)).toBe(true);
 
     const uninstall = planSkillUninstall("opencode", { homeDir: tempRoot });

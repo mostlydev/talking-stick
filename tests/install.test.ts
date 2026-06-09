@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   buildGrokSessionHookConfig,
   detectHarness,
@@ -75,6 +75,39 @@ describe("planUninstall", () => {
     expect(config.theme).toBe("opendark");
     expect(config.mcp.other).toEqual({ type: "local", command: ["other", "run"], enabled: true });
     expect(config.mcp["talking-stick"]).toBeUndefined();
+  });
+
+  test("rewrites opencode config with an atomic rename", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-"));
+    const configPath = path.join(tempRoot, ".config", "opencode", "opencode.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        mcp: {
+          "talking-stick": { type: "local", command: ["tt", "mcp"], enabled: true }
+        }
+      })
+    );
+    const renameSpy = vi.spyOn(fs, "renameSync");
+
+    try {
+      const action = planUninstall("opencode", {
+        env: {},
+        platform: "linux",
+        homeDir: tempRoot
+      });
+      if (action.kind !== "file-patch") throw new Error("unreachable");
+      action.apply();
+
+      expect(renameSpy).toHaveBeenCalledWith(
+        expect.stringContaining(".opencode.json."),
+        configPath
+      );
+    } finally {
+      renameSpy.mockRestore();
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   test("honors XDG_CONFIG_HOME for opencode", () => {

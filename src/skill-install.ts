@@ -57,7 +57,11 @@ export function resolveSkillTargetPath(
         options.skillName ?? DEFAULT_SKILL_NAME
       );
     case "opencode":
-      return path.join(homeDir, ".opencode", "skills", options.skillName ?? DEFAULT_SKILL_NAME);
+      return path.join(
+        resolveHarnessConfigDir("opencode", options),
+        "skills",
+        options.skillName ?? DEFAULT_SKILL_NAME
+      );
     default:
       throw new Error(`Unknown skill-install harness: ${harness satisfies never}`);
   }
@@ -80,14 +84,16 @@ export function planSkillInstall(
           harness,
           command: "gemini",
           args: ["skills", "link", sourcePath, "--scope", "user", "--consent"],
-          description: `gemini skills link ${sourcePath} --scope user --consent`
+          description: `gemini skills link ${sourcePath} --scope user --consent`,
+          operation: "install"
         }
       : {
           kind: "exec",
           harness,
           command: "gemini",
           args: ["skills", "install", sourcePath, "--scope", "user", "--consent"],
-          description: `gemini skills install ${sourcePath} --scope user --consent`
+          description: `gemini skills install ${sourcePath} --scope user --consent`,
+          operation: "install"
         };
   }
 
@@ -106,6 +112,8 @@ export function planSkillInstall(
       shouldLink
         ? `link ${sourcePath} -> ${targetPath}`
         : `copy ${sourcePath} -> ${targetPath}`,
+    operation: "install",
+    inspect: () => inspectInstalledSkill(sourcePath, targetPath, shouldLink),
     apply: () =>
       installSkillDirectory(sourcePath, targetPath, harnessRootPath, shouldLink, options)
   };
@@ -270,6 +278,39 @@ function syncInstalledFileSkill(
       status: "failed",
       message: error instanceof Error ? error.message : String(error)
     };
+  }
+}
+
+function inspectInstalledSkill(
+  sourcePath: string,
+  targetPath: string,
+  link: boolean
+): "absent" | "present" | "different" {
+  try {
+    const stat = fs.lstatSync(targetPath);
+    if (link) {
+      if (!stat.isSymbolicLink()) {
+        return "different";
+      }
+      const currentTarget = fs.readlinkSync(targetPath);
+      const resolvedCurrentTarget = path.resolve(
+        path.dirname(targetPath),
+        currentTarget
+      );
+      return sameRealPath(resolvedCurrentTarget, sourcePath)
+        ? "present"
+        : "different";
+    }
+
+    if (stat.isDirectory() && digestDirectory(targetPath) === digestDirectory(sourcePath)) {
+      return "present";
+    }
+    return "different";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return "absent";
+    }
+    throw error;
   }
 }
 

@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   findCliSessionForContextPath,
   readCliSessions,
   resolveCliSessionPath,
   upsertCliSession,
-  upsertJoinedCliSession
+  upsertJoinedCliSession,
+  writeCliSessions
 } from "../src/session-store.js";
 
 const tempRoots: string[] = [];
@@ -16,6 +17,7 @@ afterEach(() => {
   for (const tempRoot of tempRoots.splice(0)) {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
+  vi.restoreAllMocks();
 });
 
 describe("CLI session store", () => {
@@ -129,6 +131,30 @@ describe("CLI session store", () => {
         updated_at: "2026-04-23T12:05:00.000Z"
       }
     ]);
+  });
+
+  test("writes session files with an atomic rename", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-cli-"));
+    tempRoots.push(tempRoot);
+
+    const sessionPath = path.join(tempRoot, "state", "cli-sessions.json");
+    const renameSpy = vi.spyOn(fs, "renameSync");
+
+    writeCliSessions(sessionPath, [
+      {
+        agent_id: "human:alice",
+        room_id: "room-1",
+        canonical_path: "/repo",
+        workspace_root: "/repo",
+        updated_at: "2026-04-23T12:00:00.000Z"
+      }
+    ]);
+
+    expect(renameSpy).toHaveBeenCalledWith(
+      expect.stringContaining(".cli-sessions.json."),
+      sessionPath
+    );
+    expect(readCliSessions(sessionPath)).toHaveLength(1);
   });
 });
 
