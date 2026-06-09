@@ -2316,8 +2316,10 @@ export class TalkingStickService {
     }
 
     const lastOwnership = this.getLastOwnershipByAgent(roomId);
-    const referenceOrdinal =
-      members.find((member) => member.agent_id === afterAgentId)?.ordinal ?? -1;
+    const ordinalRanks = ordinalRankByAgent(members);
+    const referenceRank = afterAgentId
+      ? ordinalRanks.get(afterAgentId) ?? -1
+      : -1;
 
     return candidates
       .slice()
@@ -2326,7 +2328,8 @@ export class TalkingStickService {
           left,
           right,
           lastOwnership,
-          referenceOrdinal,
+          ordinalRanks,
+          referenceRank,
           members.length
         )
       )[0];
@@ -2753,7 +2756,7 @@ export class TalkingStickService {
         : "gone";
       state =
         this.hasExpired(room.claim_expires_at, now) &&
-        reservedLiveness === "gone"
+        this.isGonePersistent(reservedMember, reservedLiveness, now)
           ? "recipient_gone"
           : "reserved";
     } else if (!members.some((member) => this.isMemberActive(member, now))) {
@@ -2800,7 +2803,7 @@ export class TalkingStickService {
         : "gone";
       state =
         this.hasExpired(room.claim_expires_at, now) &&
-        reservedLiveness === "gone"
+        this.isGonePersistent(reservedMember, reservedLiveness, now)
           ? "recipient_gone"
           : "reserved";
     } else if (!members.some((member) => this.hasRecentPresence(member, now))) {
@@ -2983,7 +2986,8 @@ function compareFairCandidates(
   left: RoomMemberRow,
   right: RoomMemberRow,
   lastOwnership: Map<AgentId, string>,
-  referenceOrdinal: number,
+  ordinalRanks: Map<AgentId, number>,
+  referenceRank: number,
   memberCount: number
 ): number {
   const leftLastOwned = lastOwnership.get(left.agent_id);
@@ -3000,13 +3004,13 @@ function compareFairCandidates(
   }
 
   const leftDistance = sequenceDistance(
-    left.ordinal,
-    referenceOrdinal,
+    ordinalRanks.get(left.agent_id) ?? left.ordinal,
+    referenceRank,
     memberCount
   );
   const rightDistance = sequenceDistance(
-    right.ordinal,
-    referenceOrdinal,
+    ordinalRanks.get(right.agent_id) ?? right.ordinal,
+    referenceRank,
     memberCount
   );
   if (leftDistance !== rightDistance) {
@@ -3016,16 +3020,25 @@ function compareFairCandidates(
   return left.ordinal - right.ordinal;
 }
 
+function ordinalRankByAgent(members: RoomMemberRow[]): Map<AgentId, number> {
+  return new Map(
+    members
+      .slice()
+      .sort((left, right) => left.ordinal - right.ordinal)
+      .map((member, index) => [member.agent_id, index])
+  );
+}
+
 function sequenceDistance(
-  ordinal: number,
-  referenceOrdinal: number,
+  ordinalRank: number,
+  referenceRank: number,
   memberCount: number
 ): number {
-  if (memberCount <= 0 || referenceOrdinal < 0) {
-    return ordinal;
+  if (memberCount <= 0 || referenceRank < 0) {
+    return ordinalRank;
   }
 
-  const distance = (ordinal - referenceOrdinal + memberCount) % memberCount;
+  const distance = (ordinalRank - referenceRank + memberCount) % memberCount;
   return distance === 0 ? memberCount : distance;
 }
 

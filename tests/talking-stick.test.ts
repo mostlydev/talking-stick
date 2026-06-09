@@ -142,6 +142,51 @@ describe("talking-stick vertical slice", () => {
     expect(release.reserved_for).toBe("agent:three");
   });
 
+  test("fair turn ordering uses current ordinal rank after member churn", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const joins = Array.from({ length: 8 }, (_, index) =>
+      harness.service.joinPath({
+        agent_id: `agent:${index}`,
+        context_path: project
+      })
+    );
+
+    for (const index of [1, 2, 3, 4, 6]) {
+      harness.service.leaveRoom({
+        agent_id: `agent:${index}`,
+        room_id: joins[0].room_id
+      });
+    }
+
+    const firstTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "agent:0",
+        room_id: joins[0].room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    for (const agentId of ["agent:5", "agent:7"]) {
+      const wait = await harness.service.waitForTurn({
+        agent_id: agentId,
+        room_id: joins[0].room_id,
+        max_wait_ms: 0
+      });
+      expect(wait.status).toBe("not_yet");
+    }
+
+    const release = harness.service.releaseStick({
+      room_id: joins[0].room_id,
+      agent_id: "agent:0",
+      lease_id: firstTurn.lease_id,
+      expected_turn_id: firstTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    expect(release.reserved_for).toBe("agent:5");
+  });
+
   test("idle handoff briefly defers a less-fair claimant for a stale best candidate", async () => {
     const harness = createHarness({
       policy: {
@@ -1455,9 +1500,10 @@ describe("talking-stick vertical slice", () => {
     expect(livenessChecks).toBe(0);
   });
 
-  test("recipient_gone becomes diagnostic only after claim timeout expires", async () => {
+  test("recipient_gone becomes diagnostic only after claim timeout and gone grace expire", async () => {
     const harness = createHarness({
       policy: {
+        heartbeatIntervalMs: 1_000,
         claimTtlMs: 1_000
       }
     });
@@ -1514,6 +1560,25 @@ describe("talking-stick vertical slice", () => {
 
     harness.clock.advance(1_001);
 
+    const afterClaimExpiry = harness.service.getRoomState({
+      room_id: codexJoin.room_id
+    });
+    expect(afterClaimExpiry.room.state).toBe("reserved");
+
+    const geminiDuringGoneGrace = await harness.service.waitForTurn({
+      agent_id: "gemini:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    expect(geminiDuringGoneGrace).toMatchObject({
+      status: "takeover_available",
+      room_state: "reserved",
+      reason: "claim_timeout",
+      reserved_for: "claude:test"
+    });
+
+    harness.clock.advance(1_001);
+
     const state = harness.service.getRoomState({ room_id: codexJoin.room_id });
     expect(state.room.state).toBe("recipient_gone");
 
@@ -1530,6 +1595,63 @@ describe("talking-stick vertical slice", () => {
       reason: "recipient_gone",
       reserved_for: "claude:test"
     });
+  });
+
+  test("reserved recipient can claim during gone grace after claim timeout", async () => {
+    const harness = createHarness({
+      policy: {
+        heartbeatIntervalMs: 1_000,
+        claimTtlMs: 1_000
+      }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexProcess = harness.processRegistry.create("codex");
+    const claudeProcess = harness.processRegistry.create("claude");
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project,
+      process_metadata: claudeProcess
+    });
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    harness.processRegistry.markGone(claudeProcess);
+    harness.clock.advance(1_001);
+
+    expect(
+      harness.service.getRoomState({ room_id: codexJoin.room_id }).room.state
+    ).toBe("reserved");
+
+    const claudeTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "claude:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    expect(claudeTurn.reason).toBe("sequence");
+    expect(claudeTurn.from_agent_id).toBe("codex:test");
   });
 
   test("one-shot human presence does not make a reserved turn immediately recipient_gone", async () => {
