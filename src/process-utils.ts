@@ -29,6 +29,7 @@ export interface ProcessInspectorOptions {
     options: {
       encoding: "utf8";
       stdio: ["ignore", "pipe", "ignore"];
+      env?: NodeJS.ProcessEnv;
     }
   ) => string;
   processExists?: (pid: number) => boolean;
@@ -126,7 +127,11 @@ function inspectSystemProcess(
       ["-o", "ppid=", "-o", "lstart=", "-o", "command=", "-p", String(pid)],
       {
         encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"]
+        stdio: ["ignore", "pipe", "ignore"],
+        env: {
+          ...process.env,
+          LC_ALL: "C"
+        }
       }
     ).trimEnd();
 
@@ -172,6 +177,7 @@ function defaultExecFile(
   options: {
     encoding: "utf8";
     stdio: ["ignore", "pipe", "ignore"];
+    env?: NodeJS.ProcessEnv;
   }
 ): string {
   return execFileSync(file, args, options) as string;

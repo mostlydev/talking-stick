@@ -112,7 +112,7 @@ describe("createSystemProcessInspector", () => {
     const inspector = createSystemProcessInspector({
       cacheTtlMs: 1_000,
       processExists: () => true,
-      execFile(_file, args) {
+      execFile(_file, args, options) {
         calls += 1;
         expect(args).toEqual([
           "-o",
@@ -124,6 +124,7 @@ describe("createSystemProcessInspector", () => {
           "-p",
           "4242"
         ]);
+        expect(options.env?.LC_ALL).toBe("C");
         return "  56919 Thu Apr 23 12:00:00 2026 node guardian\n";
       }
     });
