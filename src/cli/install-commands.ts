@@ -33,14 +33,10 @@ import { readPackageVersion, runStaleMcpCleanup } from "../update-migration.js";
 import {
   getStringOption,
   hasOption,
-  normalizeBooleanFlag,
   type ParsedCommand
 } from "./parser.js";
 
 export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
-  normalizeBooleanFlag(parsed, "print");
-  normalizeBooleanFlag(parsed, "copy");
-  normalizeBooleanFlag(parsed, "link");
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
   const installOptions = {
@@ -71,7 +67,6 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
 export async function runUninstallCommand(
   parsed: ParsedCommand
 ): Promise<void> {
-  normalizeBooleanFlag(parsed, "print");
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
   const installOptions = { skipMissing: true };
@@ -96,9 +91,6 @@ export async function runUninstallCommand(
 export async function runInstallSkillCommand(
   parsed: ParsedCommand
 ): Promise<void> {
-  normalizeBooleanFlag(parsed, "print");
-  normalizeBooleanFlag(parsed, "copy");
-  normalizeBooleanFlag(parsed, "link");
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
   const link = resolveSkillInstallLinkMode(parsed);
@@ -121,7 +113,6 @@ export async function runInstallSkillCommand(
 export async function runUninstallSkillCommand(
   parsed: ParsedCommand
 ): Promise<void> {
-  normalizeBooleanFlag(parsed, "print");
   const harnesses = selectHarnesses(parsed);
   const dryRun = hasOption(parsed, "print");
   const installOptions = { skipMissing: true };
@@ -142,7 +133,6 @@ export async function runSelfUpdateCommand(
   parsed: ParsedCommand,
   cliEntryUrl: string
 ): Promise<void> {
-  normalizeBooleanFlag(parsed, "print");
   const dryRun = hasOption(parsed, "print");
   const managerOverride = getStringOption(parsed, "manager");
 
@@ -192,7 +182,6 @@ export async function runSelfUpdateCommand(
 }
 
 export async function runMcpMigrationCommand(parsed: ParsedCommand): Promise<void> {
-  normalizeBooleanFlag(parsed, "quiet");
   const reason = parseAuditReason(getStringOption(parsed, "reason") ?? "manual");
   const quiet = hasOption(parsed, "quiet");
   const cleanup = await runStaleMcpCleanup({

@@ -23,7 +23,6 @@ import {
 import {
   getStringOption,
   hasOption,
-  normalizeBooleanFlag,
   parseRequiredInteger,
   parseWaitTimeout,
   type ParsedCommand
@@ -45,8 +44,6 @@ export async function handleWaitCommand(
   isTry: boolean,
   cliEntryUrl: string
 ): Promise<void> {
-  normalizeBooleanFlag(parsed, "park");
-  normalizeBooleanFlag(parsed, "events");
   const park = hasOption(parsed, "park");
   const includeEvents = hasOption(parsed, "events");
   const afterEventSeq = includeEvents

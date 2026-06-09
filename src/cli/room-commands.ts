@@ -8,7 +8,6 @@ import { stopGuardian } from "./guardian.js";
 import {
   getStringOption,
   hasOption,
-  normalizeBooleanFlag,
   parseOptionalInteger,
   type ParsedCommand
 } from "./parser.js";
@@ -194,8 +193,6 @@ export async function handleEventsCommand(
   runtime: Runtime,
   parsed: ParsedCommand
 ): Promise<void> {
-  normalizeBooleanFlag(parsed, "wait");
-  normalizeBooleanFlag(parsed, "follow");
   const identity = deriveCliIdentity(parsed);
   const session = resolveSessionForReads(runtime, parsed, identity);
   if (hasOption(parsed, "wait") || hasOption(parsed, "follow")) {

@@ -4,6 +4,30 @@ export interface ParsedCommand {
   options: Map<string, string | true>;
 }
 
+const BOOLEAN_FLAGS = new Set([
+  "all",
+  "copy",
+  "events",
+  "explain",
+  "follow",
+  "force",
+  "force-new",
+  "help",
+  "interrupt",
+  "json",
+  "link",
+  "operator-requested",
+  "park",
+  "print",
+  "project",
+  "quiet",
+  "room",
+  "stdin",
+  "text",
+  "user",
+  "wait"
+]);
+
 export function parseCommand(argv: string[]): ParsedCommand {
   const [name = "", ...rest] = argv;
   const options = new Map<string, string | true>();
@@ -17,6 +41,11 @@ export function parseCommand(argv: string[]): ParsedCommand {
     }
 
     const key = token.slice(2);
+    if (BOOLEAN_FLAGS.has(key)) {
+      options.set(key, true);
+      continue;
+    }
+
     const next = rest[index + 1];
     if (!next || next.startsWith("--")) {
       options.set(key, true);
@@ -53,17 +82,6 @@ export function requireStringOption(
   return value;
 }
 
-export function normalizeBooleanFlag(
-  parsed: ParsedCommand,
-  key: string
-): void {
-  const value = parsed.options.get(key);
-  if (typeof value === "string") {
-    parsed.positionals.unshift(value);
-    parsed.options.set(key, true);
-  }
-}
-
 export function parseOptionalInteger(
   parsed: ParsedCommand,
   key: string
@@ -71,6 +89,10 @@ export function parseOptionalInteger(
   const value = getStringOption(parsed, key);
   if (!value) {
     return undefined;
+  }
+
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`--${key} must be an integer.`);
   }
 
   const parsedValue = Number.parseInt(value, 10);

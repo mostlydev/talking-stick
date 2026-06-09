@@ -47,9 +47,6 @@ async function handleMsgSendCommand(
   const session = resolveSessionForNotes(runtime, parsed, identity);
   const usesRoomFlag = hasOption(parsed, "room");
 
-  repairBooleanFlag(parsed, "room", 0);
-  repairBooleanFlag(parsed, "interrupt", usesRoomFlag ? 0 : 1);
-
   const recipientSelector = usesRoomFlag ? "room" : parsed.positionals[0];
   if (!recipientSelector) {
     throw new Error(
@@ -107,18 +104,6 @@ async function handleMsgRecvCommand(
     default_target: "self",
     force_tail_cursor: false
   });
-}
-
-function repairBooleanFlag(
-  parsed: ParsedCommand,
-  key: string,
-  insertAt: number
-): void {
-  const value = parsed.options.get(key);
-  if (typeof value === "string") {
-    parsed.positionals.splice(insertAt, 0, value);
-    parsed.options.set(key, true);
-  }
 }
 
 function shortEventId(eventId: string): string {

@@ -39,8 +39,6 @@ export async function handleInstructionsCommand(
 }
 
 function handleInstructionsShowCommand(parsed: ParsedCommand): void {
-  repairBooleanFlag(parsed, "json", 0);
-  repairBooleanFlag(parsed, "text", 0);
   const contextPath = resolveContextPathArg(parsed);
   const scope = parseInstructionScope(getStringOption(parsed, "scope"));
   const identity = deriveCliIdentity(parsed);
@@ -64,10 +62,6 @@ function handleInstructionsShowCommand(parsed: ParsedCommand): void {
 async function handleInstructionsEditCommand(
   parsed: ParsedCommand
 ): Promise<void> {
-  repairBooleanFlag(parsed, "json", 0);
-  repairBooleanFlag(parsed, "text", 0);
-  repairBooleanFlag(parsed, "user", 0);
-  repairBooleanFlag(parsed, "project", 0);
   const contextPath = resolveContextPathArg(parsed);
   const scope = resolveEditableScope(parsed, false);
   const result = await editInstructions({
@@ -87,10 +81,6 @@ async function handleInstructionsEditCommand(
 }
 
 function handleInstructionsResetCommand(parsed: ParsedCommand): void {
-  repairBooleanFlag(parsed, "json", 0);
-  repairBooleanFlag(parsed, "text", 0);
-  repairBooleanFlag(parsed, "user", 0);
-  repairBooleanFlag(parsed, "project", 0);
   const contextPath = resolveContextPathArg(parsed);
   const scope = resolveEditableScope(parsed, true);
   const result = resetInstructions({
@@ -130,16 +120,4 @@ function resolveContextPathArg(parsed: ParsedCommand): string {
     throw new Error("--path requires a value.");
   }
   return pathOption ?? parsed.positionals[0] ?? process.cwd();
-}
-
-function repairBooleanFlag(
-  parsed: ParsedCommand,
-  key: string,
-  insertAt: number
-): void {
-  const value = parsed.options.get(key);
-  if (typeof value === "string") {
-    parsed.positionals.splice(insertAt, 0, value);
-    parsed.options.set(key, true);
-  }
 }
