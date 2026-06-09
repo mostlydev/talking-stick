@@ -86,6 +86,44 @@ describe("collaboration instructions", () => {
     expect(result.text).not.toContain("User claude guidance.");
   });
 
+  test("non-harness h2 sections after a harness section do not bleed into that harness", () => {
+    const { dataDir, project } = setupProject();
+    fs.writeFileSync(
+      path.join(dataDir, "instructions.md"),
+      [
+        "# User instructions",
+        "",
+        "Shared preamble.",
+        "",
+        "## Codex",
+        "",
+        "Codex-only guidance.",
+        "",
+        "## Troubleshooting",
+        "",
+        "Do not include this in Codex.",
+        "",
+        "## Claude",
+        "",
+        "Claude-only guidance."
+      ].join("\n")
+    );
+
+    const result = showInstructions({
+      harness: "codex",
+      scope: "user",
+      options: {
+        contextPath: project,
+        env: { TALKING_STICK_DATA_DIR: dataDir }
+      }
+    });
+
+    expect(result.text).toContain("Shared preamble.");
+    expect(result.text).toContain("Codex-only guidance.");
+    expect(result.text).not.toContain("Do not include this in Codex.");
+    expect(result.text).not.toContain("Claude-only guidance.");
+  });
+
   test("edit materializes a user file and reset removes it", async () => {
     const { dataDir, project } = setupProject();
     const result = await editInstructions({

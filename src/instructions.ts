@@ -249,6 +249,11 @@ export function extractHarnessInstructions(
       continue;
     }
 
+    if (sawSection && isMarkdownH2Header(line)) {
+      current = null;
+      continue;
+    }
+
     if (!sawSection) {
       shared.push(line);
       continue;
@@ -329,6 +334,10 @@ function ensureInstructionFile(filePath: string): boolean {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, DEFAULT_INSTRUCTIONS_MARKDOWN);
   return true;
+}
+
+function isMarkdownH2Header(line: string): boolean {
+  return /^##\s+.+?\s*$/.test(line);
 }
 
 function parseHarnessHeader(line: string): InstructionHarness | null {
