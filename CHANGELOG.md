@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.4.13] — 2026-06-14
+
+Full notes: [`docs/releases/0.4.13.md`](docs/releases/0.4.13.md).
+
 ### Added
 - **Antigravity CLI harness support.** `tt` now detects Antigravity from `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `ANTIGRAVITY_TRAJECTORY_ID`, or `agy` ancestry, using the conversation id as the preferred stable session anchor. `tt install antigravity` installs the bundled skill through the shared `~/.agents/skills/talking-stick` location.
 
@@ -286,6 +290,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.4.13]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.13
 [0.4.12]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.12
 [0.4.11]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.11
 [0.4.10]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.10
