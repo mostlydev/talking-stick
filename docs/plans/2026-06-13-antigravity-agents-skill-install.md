@@ -7,8 +7,10 @@
   (conversation-id + trajectory fallback) confirmed, real `tt install --all` dogfood migrated to shared
   `~/.agents/skills/talking-stick` + pruned codex/grok/opencode duplicates (claude proprietary & gemini
   symlink left intact), Option B uninstall confirmed (single-harness leaves shared + hint; `agents`/
-  `--shared`/`--all` remove shared). §13.2 resolved Option B. REMAINING: git commit + npm release
-  (operator-gated, outward-facing).
+  `--shared`/`--all` remove shared). §13.2 resolved Option B. SHIPPED to branch `antigravity-agents-skill`
+  (feature commit 0c2f3ca + version commit c0f82b1, tag v0.4.13 pushed; draft GitHub release created).
+  REMAINING (operator-gated): `npm publish` (2FA), publish the draft release, and land the branch on
+  master (prefer fast-forward/merge over squash to keep tag v0.4.13 valid).
 - **Phase:** draft -> adversarial review -> convergence (done) -> implementation
 - **Scope:** Planning only. No code changes in this turn beyond this document.
 - **Implementation entry point:** §12 (converged decisions) is authoritative; §1-11 are the
