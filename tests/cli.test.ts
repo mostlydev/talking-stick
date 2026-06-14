@@ -1332,6 +1332,8 @@ describe("tt notes", () => {
 
     expect(out).not.toContain("mcp add");
     expect(out).toContain("[codex] link ");
+    expect(out).toContain(".agents/skills/talking-stick");
+    expect(out).toContain("[codex] remove duplicate skill symlink ");
     expect(out).toContain(".codex/skills/talking-stick");
   });
 
@@ -1359,7 +1361,7 @@ describe("tt notes", () => {
 
     expect(out).not.toContain("mcp add");
     expect(out).toContain("[codex] copy ");
-    expect(out).toContain(".codex/skills/talking-stick");
+    expect(out).toContain(".agents/skills/talking-stick");
   });
 
   test("tt install grok --print includes native skill and session hook actions", async () => {
@@ -1373,9 +1375,21 @@ describe("tt notes", () => {
 
     expect(out).not.toContain("mcp add");
     expect(out).toContain("[grok] link ");
+    expect(out).toContain(".agents/skills/talking-stick");
+    expect(out).toContain("[grok] remove duplicate skill symlink ");
     expect(out).toContain(".grok/skills/talking-stick");
     expect(out).toContain("[grok] write Grok session hook ");
     expect(out).toContain(".grok/hooks/talking-stick-session.json");
+  });
+
+  test("tt install gemini --print is cleanup-only and points to Antigravity", async () => {
+    const out = await captureStdout(["install", "gemini", "--print"]);
+
+    expect(out).toContain("Gemini CLI skill install is deprecated");
+    expect(out).toContain("tt install antigravity");
+    expect(out).not.toContain("gemini skills link");
+    expect(out).not.toContain("gemini skills install");
+    expect(out).toContain(".gemini/skills/talking-stick");
   });
 
   test("tt install rejects conflicting skill link modes", async () => {
@@ -1389,6 +1403,42 @@ describe("tt notes", () => {
 
     expect(out).toContain("[codex] remove ");
     expect(out).toContain(".codex/skills/talking-stick");
+    expect(out).toContain("Left ~/.agents/skills/talking-stick");
+  });
+
+  test("tt uninstall agents --print removes the shared skill target", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-uninstall-home-"));
+    tempDirs.push(home);
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    let out = "";
+    try {
+      out = await captureStdout(["uninstall", "agents", "--print"]);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+    }
+
+    expect(out).toContain("remove shared agents skill");
+    expect(out).toContain(".agents/skills/talking-stick");
+    expect(out).not.toContain("Left ~/.agents/skills/talking-stick");
+  });
+
+  test("tt uninstall --shared --print removes the shared skill target", async () => {
+    const out = await captureStdout(["uninstall", "--shared", "--print"]);
+
+    expect(out).toContain("remove shared agents skill");
+    expect(out).toContain(".agents/skills/talking-stick");
+  });
+
+  test("tt uninstall antigravity --print leaves the shared skill", async () => {
+    const out = await captureStdout(["uninstall", "antigravity", "--print"]);
+
+    expect(out).not.toContain("remove shared agents skill");
+    expect(out).toContain("Left ~/.agents/skills/talking-stick");
   });
 
   test("tt notes with unknown subcommand surfaces an error", async () => {

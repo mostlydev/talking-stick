@@ -192,6 +192,18 @@ describe("collaboration instructions", () => {
     expect(resolveInstructionHarness(undefined, identity)).toBe("codex");
     expect(resolveInstructionHarness("claude", identity)).toBe("claude");
   });
+
+  test("bundled instructions include Antigravity and retain Gemini alias support", () => {
+    const antigravity = showInstructions({
+      harness: "agy",
+      scope: "bundled"
+    });
+    expect(antigravity.harness).toBe("antigravity");
+    expect(antigravity.text).toContain("## Antigravity");
+    expect(antigravity.text).not.toContain("## Gemini");
+
+    expect(resolveInstructionHarness("gemini")).toBe("gemini");
+  });
 });
 
 function setupProject(): {

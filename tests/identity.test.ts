@@ -282,6 +282,85 @@ describe("deriveHarnessCliIdentity", () => {
     expect(identity!.process_metadata.display_name).toBe("gemini");
   });
 
+  test("detects Antigravity and prefers conversation id over trajectory id", () => {
+    const first = deriveHarnessCliIdentity({
+      env: {
+        ANTIGRAVITY_AGENT: "1",
+        ANTIGRAVITY_CONVERSATION_ID: "conversation-a",
+        ANTIGRAVITY_TRAJECTORY_ID: "trajectory-a"
+      },
+      username: "alice",
+      parentPid: 9000,
+      hostId: "test-host",
+      inspector
+    });
+    const second = deriveHarnessCliIdentity({
+      env: {
+        ANTIGRAVITY_CONVERSATION_ID: "conversation-a",
+        ANTIGRAVITY_TRAJECTORY_ID: "trajectory-b"
+      },
+      username: "alice",
+      parentPid: 9001,
+      hostId: "test-host",
+      inspector
+    });
+
+    expect(first!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(first!.agent_id).toBe(second!.agent_id);
+    expect(first!.process_metadata).toMatchObject({
+      display_name: "antigravity",
+      harness_name: "antigravity",
+      harness_session_id: "harness:conversation-a"
+    });
+  });
+
+  test("detects Antigravity with trajectory id when no conversation id is present", () => {
+    const identity = deriveHarnessCliIdentity({
+      env: { ANTIGRAVITY_TRAJECTORY_ID: "trajectory-a" },
+      username: "alice",
+      parentPid: 9000,
+      hostId: "test-host",
+      inspector
+    });
+
+    expect(identity!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(identity!.process_metadata.harness_session_id).toBe(
+      "harness:trajectory-a"
+    );
+  });
+
+  test("detects Antigravity via agy ancestry when harness export is enabled", () => {
+    const agyInspector = fakeInspector({
+      100: {
+        startTime: "Sat Jun 13 14:00:00 2026",
+        command: "/usr/local/bin/agy",
+        ppid: 1
+      },
+      200: {
+        startTime: "Sat Jun 13 14:01:00 2026",
+        command: "zsh",
+        ppid: 100
+      }
+    });
+
+    const identity = deriveHarnessCliIdentity({
+      env: { TT_HARNESS_EXPORT: "1" },
+      username: "alice",
+      parentPid: 200,
+      hostId: "test-host",
+      inspector: agyInspector
+    });
+
+    expect(identity!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(identity!.process_metadata).toMatchObject({
+      display_name: "antigravity",
+      harness_name: "antigravity",
+      harness_session_id: "harness:pid:100@Sat Jun 13 14:00:00 2026",
+      harness_pid: 100,
+      harness_process_started_at: "Sat Jun 13 14:00:00 2026"
+    });
+  });
+
   test("detects Grok via cmux launch kind without TT_HARNESS_EXPORT", () => {
     const { workspace, logPath } = makeTempWorkspace();
     const grokInspector = fakeInspector({

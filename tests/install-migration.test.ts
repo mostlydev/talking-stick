@@ -267,9 +267,9 @@ describe("removeStaleMcpRegistrations", () => {
     });
 
     expect(results.map((r) => r.harness).sort()).toEqual(
-      ["claude-code", "codex", "gemini", "grok", "opencode"].sort()
+      ["claude-code", "codex", "antigravity", "gemini", "grok", "opencode"].sort()
     );
-    expect(audit).toHaveLength(5);
+    expect(audit).toHaveLength(6);
     for (const entry of audit) {
       expect(entry.reason).toBe("uninstall");
     }

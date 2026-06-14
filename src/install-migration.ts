@@ -30,6 +30,7 @@ export interface RemoveStaleMcpResult {
   harness: HarnessId;
   action: AuditAction;
   message: string;
+  target_type?: "mcp" | "skill";
 }
 
 export async function removeStaleMcpRegistrations(
@@ -56,12 +57,18 @@ export async function removeStaleMcpRegistrations(
       package_version_to: options.packageVersionTo,
       harness,
       config_path: result.configPath,
+      target_type: "mcp",
       action: result.action,
       server_name: result.serverName,
       detail: result.message
     });
   }
-  return results.map(({ harness, action, message }) => ({ harness, action, message }));
+  return results.map(({ harness, action, message }) => ({
+    harness,
+    action,
+    message,
+    target_type: "mcp"
+  }));
 }
 
 interface InternalResult extends RemoveStaleMcpResult {

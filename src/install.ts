@@ -3,9 +3,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
+import {
+  SUPPORTED_HARNESSES,
+  isDeprecatedHarness,
+  type HarnessId
+} from "./harness-model.js";
 
-export const SUPPORTED_HARNESSES = ["claude-code", "codex", "gemini", "grok", "opencode"] as const;
-export type HarnessId = (typeof SUPPORTED_HARNESSES)[number];
+export {
+  SUPPORTED_HARNESSES,
+  isDeprecatedHarness,
+  type HarnessId
+} from "./harness-model.js";
 
 export const DEFAULT_SERVER_NAME = "talking-stick";
 // Legacy MCP command retained only to identify stale config entries for removal.
@@ -260,6 +268,8 @@ function resolveHarnessConfigDirFromResolved(
       return path.join(resolved.homeDir, ".claude");
     case "codex":
       return path.join(resolved.homeDir, ".codex");
+    case "antigravity":
+      return path.join(resolved.homeDir, ".agents");
     case "gemini":
       return path.join(resolved.homeDir, ".gemini");
     case "grok":
@@ -300,6 +310,8 @@ export function planUninstall(harness: HarnessId, options: InstallOptions = {}):
         operation: "uninstall",
         serverName: resolved.serverName
       };
+    case "antigravity":
+      return skipAction(harness, "legacy Talking Stick cleanup is not applicable for antigravity");
     case "gemini":
       if (resolved.skipMissing && !resolved.hooks.which("gemini")) {
         return skipAction(harness, "gemini not on PATH");
@@ -545,6 +557,11 @@ export function detectHarness(harness: HarnessId, options: InstallOptions = {}):
       const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
       if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
       return { harness, detected: false, evidence: "codex not on PATH and no config directory" };
+    }
+    case "antigravity": {
+      const bin = resolved.hooks.which("agy");
+      if (bin) return { harness, detected: true, evidence: bin };
+      return { harness, detected: false, evidence: "agy not on PATH" };
     }
     case "gemini": {
       const bin = resolved.hooks.which("gemini");
@@ -840,6 +857,8 @@ function mcpConfigLocation(action: InstallAction): string {
       return "Claude Code user config";
     case "codex":
       return "Codex global config";
+    case "antigravity":
+      return "Antigravity shared config";
     case "gemini":
       return "Gemini user config";
     case "grok":

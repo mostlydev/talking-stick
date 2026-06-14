@@ -77,6 +77,7 @@ describe("update MCP migration state", () => {
 
   test("failed cleanup does not mark the package version migrated", async () => {
     const dataDir = makeTempDataDir();
+    const homeDir = makeTempDataDir();
 
     const run = await runStaleMcpCleanup({
       harnesses: ["codex"],
@@ -85,6 +86,7 @@ describe("update MCP migration state", () => {
       dataDir,
       installOptions: {
         skipMissing: true,
+        homeDir,
         which: () => "/usr/local/bin/codex",
         run: async (_command, args) => {
           if (args[1] === "get") {
@@ -96,7 +98,8 @@ describe("update MCP migration state", () => {
     });
 
     expect(run.results).toEqual([
-      expect.objectContaining({ harness: "codex", action: "failed" })
+      expect.objectContaining({ harness: "codex", action: "failed", target_type: "mcp" }),
+      expect.objectContaining({ harness: "codex", action: "absent", target_type: "skill" })
     ]);
     expect(readUpdateMigrationState(resolveUpdateMigrationStatePath(dataDir))).toEqual({});
   });

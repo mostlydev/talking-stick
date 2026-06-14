@@ -122,6 +122,7 @@ describe("planUninstall", () => {
   test("resolves expected harness config directories", () => {
     expect(resolveHarnessConfigDir("claude-code", { homeDir: "/home/u" })).toBe("/home/u/.claude");
     expect(resolveHarnessConfigDir("codex", { homeDir: "/home/u" })).toBe("/home/u/.codex");
+    expect(resolveHarnessConfigDir("antigravity", { homeDir: "/home/u" })).toBe("/home/u/.agents");
     expect(resolveHarnessConfigDir("gemini", { homeDir: "/home/u" })).toBe("/home/u/.gemini");
     expect(resolveHarnessConfigDir("grok", { env: {}, homeDir: "/home/u" })).toBe("/home/u/.grok");
     expect(resolveHarnessConfigDir("opencode", { env: {}, homeDir: "/home/u" })).toBe(
@@ -149,6 +150,16 @@ describe("planUninstall", () => {
       throw new Error("unreachable");
     }
     expect(action.message).toBe("legacy Talking Stick cleanup is not applicable for grok");
+  });
+
+  test("plans no stale MCP cleanup for Antigravity", () => {
+    const action = planUninstall("antigravity");
+
+    expect(action.kind).toBe("skip");
+    if (action.kind !== "skip") {
+      throw new Error("unreachable");
+    }
+    expect(action.message).toBe("legacy Talking Stick cleanup is not applicable for antigravity");
   });
 });
 
@@ -236,6 +247,25 @@ describe("detectHarness", () => {
     expect(result.evidence).toBe("/usr/local/bin/claude");
   });
 
+  test("detects Antigravity only from agy on PATH", () => {
+    const detected = detectHarness("antigravity", {
+      ...memoryFs({}, ["/home/u/.agents/skills"]).hooks,
+      which: (binary) => (binary === "agy" ? "/usr/local/bin/agy" : null)
+    });
+    expect(detected).toEqual({
+      harness: "antigravity",
+      detected: true,
+      evidence: "/usr/local/bin/agy"
+    });
+
+    const missing = detectHarness("antigravity", {
+      ...memoryFs({}, ["/home/u/.agents/skills"]).hooks,
+      which: () => null
+    });
+    expect(missing.detected).toBe(false);
+    expect(missing.evidence).toBe("agy not on PATH");
+  });
+
   test("opencode falls back to existing config file when binary missing", () => {
     const memory = memoryFs({
       "/home/u/.config/opencode/opencode.json": "{}"
@@ -280,6 +310,10 @@ describe("parseHarnessList", () => {
 
   test("dedupes while preserving order", () => {
     expect(parseHarnessList(["codex", "gemini", "codex"])).toEqual(["codex", "gemini"]);
+    expect(parseHarnessList(["antigravity", "codex", "antigravity"])).toEqual([
+      "antigravity",
+      "codex"
+    ]);
   });
 });
 
@@ -606,7 +640,9 @@ describe("runAction", () => {
 });
 
 test("SUPPORTED_HARNESSES is the full expected set", () => {
-  expect([...SUPPORTED_HARNESSES].sort()).toEqual(["claude-code", "codex", "gemini", "grok", "opencode"].sort());
+  expect([...SUPPORTED_HARNESSES].sort()).toEqual(
+    ["claude-code", "codex", "antigravity", "gemini", "grok", "opencode"].sort()
+  );
 });
 
 interface MemoryFs {

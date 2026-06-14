@@ -13,6 +13,7 @@ import {
   removeStaleMcpRegistrations,
   type RemoveStaleMcpResult
 } from "./install-migration.js";
+import { removeDuplicateSkillInstalls } from "./skill-install.js";
 import type { HarnessId, InstallOptions } from "./install.js";
 
 export const UPDATE_MIGRATION_STATE_FILE = "update-migrations-state.json";
@@ -65,7 +66,7 @@ export async function runStaleMcpCleanup(
   const auditPath = defaultAuditLogPath(dataDir);
   const audit = options.audit ?? new FileAuditLog(auditPath);
 
-  const results = await removeStaleMcpRegistrations({
+  const mcpResults = await removeStaleMcpRegistrations({
     harnesses: options.harnesses ?? "all",
     reason: options.reason,
     packageVersionFrom: options.packageVersionFrom,
@@ -73,6 +74,15 @@ export async function runStaleMcpCleanup(
     audit,
     installOptions: options.installOptions
   });
+  const skillResults = removeDuplicateSkillInstalls({
+    harnesses: options.harnesses ?? "all",
+    reason: options.reason,
+    packageVersionFrom: options.packageVersionFrom,
+    packageVersionTo,
+    audit,
+    ...(options.installOptions ?? {})
+  });
+  const results = [...mcpResults, ...skillResults];
 
   if (options.updateState !== false && !results.some((result) => result.action === "failed")) {
     writeUpdateMigrationState(statePath, {

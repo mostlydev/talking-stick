@@ -11,6 +11,17 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+- **Antigravity CLI harness support.** `tt` now detects Antigravity from `ANTIGRAVITY_AGENT`, `ANTIGRAVITY_CONVERSATION_ID`, `ANTIGRAVITY_TRAJECTORY_ID`, or `agy` ancestry, using the conversation id as the preferred stable session anchor. `tt install antigravity` installs the bundled skill through the shared `~/.agents/skills/talking-stick` location.
+
+### Changed
+- **Shared `.agents` skills are now primary for shared-reading harnesses.** Codex, Antigravity, Grok Build, and OpenCode install the Talking Stick skill once at `~/.agents/skills/talking-stick`; Claude Code remains at `~/.claude/skills/talking-stick`. Grok still gets its global session hook. Install planning deduplicates same-path skill actions before running them.
+- **Gemini CLI skill installation is deprecated.** Gemini identity detection and `## Gemini` instruction aliases remain for existing sessions, but `tt install gemini` is cleanup-only and points users to `tt install antigravity`.
+- **Shared skill uninstall is explicit.** `tt uninstall codex`, `tt uninstall grok`, `tt uninstall opencode`, and `tt uninstall antigravity` leave `~/.agents/skills/talking-stick` in place and print the explicit removal command. Use `tt uninstall agents`, `tt uninstall --shared`, or `tt uninstall --all` to remove the shared skill target.
+
+### Fixed
+- **Duplicate skill entries are pruned conservatively.** Installs, update cleanup, and first-run migration remove only proprietary `talking-stick` symlinks that resolve to the bundled skill, including both OpenCode roots (`~/.config/opencode/skills` and `~/.opencode/skills`). Copies, foreign symlinks, and hand-authored directories are preserved and audited.
+
 ## [0.4.12] — 2026-06-09
 
 Full notes: [`docs/releases/0.4.12.md`](docs/releases/0.4.12.md).

@@ -4,11 +4,19 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_SKILL_NAME,
+  HARNESS_SKILL_MODELS,
+  removeDuplicateSkillInstalls,
   planSkillInstall,
   planSkillUninstall,
+  planSharedSkillUninstall,
   resolveBundledSkillPath,
+  resolveDuplicateSkillTargetPaths,
+  resolvePrimarySkillTargetPath,
+  resolveSharedAgentsSkillsDir,
+  resolveSharedSkillTargetPath,
   resolveSkillTargetPath,
   runAction,
+  skillLoadingModel,
   syncInstalledSkills
 } from "../src/index.js";
 
@@ -32,11 +40,20 @@ describe("talking-stick skill install", () => {
   });
 
   test("resolves harness skill targets in the expected global directories", () => {
+    expect(resolveSharedAgentsSkillsDir({ homeDir: "/home/u" })).toBe(
+      "/home/u/.agents/skills"
+    );
+    expect(resolveSharedSkillTargetPath({ homeDir: "/home/u" })).toBe(
+      "/home/u/.agents/skills/talking-stick"
+    );
     expect(
       resolveSkillTargetPath("claude-code", { homeDir: "/home/u" })
     ).toBe("/home/u/.claude/skills/talking-stick");
     expect(resolveSkillTargetPath("codex", { homeDir: "/home/u" })).toBe(
       "/home/u/.codex/skills/talking-stick"
+    );
+    expect(resolvePrimarySkillTargetPath("codex", { homeDir: "/home/u" })).toBe(
+      "/home/u/.agents/skills/talking-stick"
     );
     expect(resolveSkillTargetPath("grok", { env: {}, homeDir: "/home/u" })).toBe(
       "/home/u/.grok/skills/talking-stick"
@@ -58,39 +75,48 @@ describe("talking-stick skill install", () => {
     ).toBe(
       "/custom/config/opencode/skills/talking-stick"
     );
+    expect(resolveSkillTargetPath("antigravity", { homeDir: "/home/u" })).toBe(
+      "/home/u/.agents/skills/talking-stick"
+    );
   });
 
-  test("gemini links skills by default and can be forced to copy", () => {
-    const sourcePath = resolveBundledSkillPath();
+  test("declares the converged skill loading model per harness", () => {
+    expect(skillLoadingModel("claude-code")).toBe("proprietary");
+    expect(skillLoadingModel("codex")).toBe("shared+proprietary");
+    expect(skillLoadingModel("antigravity")).toBe("shared");
+    expect(skillLoadingModel("grok")).toBe("shared+proprietary");
+    expect(skillLoadingModel("opencode")).toBe("shared+proprietary");
+    expect(skillLoadingModel("gemini")).toBe("deprecated");
+    expect(HARNESS_SKILL_MODELS.gemini.deprecated).toBe(true);
+  });
+
+  test("resolves proprietary duplicate cleanup targets", () => {
+    expect(resolveDuplicateSkillTargetPaths("codex", { homeDir: "/home/u" })).toEqual([
+      "/home/u/.codex/skills/talking-stick"
+    ]);
+    expect(resolveDuplicateSkillTargetPaths("opencode", { homeDir: "/home/u" })).toEqual([
+      "/home/u/.config/opencode/skills/talking-stick",
+      "/home/u/.opencode/skills/talking-stick"
+    ]);
+    expect(resolveDuplicateSkillTargetPaths("antigravity", { homeDir: "/home/u" })).toEqual([]);
+  });
+
+  test("gemini skill install is deprecated and cleanup-only", () => {
     const linkAction = planSkillInstall("gemini", {
-      sourcePath
+      homeDir: "/home/u"
     });
-    expect(linkAction.kind).toBe("exec");
-    if (linkAction.kind !== "exec") {
-      throw new Error("unreachable");
-    }
-    expect(linkAction.description).toBe(
-      `gemini skills link ${sourcePath} --scope user --consent`
-    );
-
-    const copyAction = planSkillInstall("gemini", {
-      sourcePath,
-      link: false
-    });
-    expect(copyAction.kind).toBe("exec");
-    if (copyAction.kind !== "exec") {
-      throw new Error("unreachable");
-    }
-    expect(copyAction.description).toBe(
-      `gemini skills install ${sourcePath} --scope user --consent`
-    );
+    expect(linkAction.kind).toBe("skip");
+    expect(linkAction.description).toContain("Gemini CLI skill install is deprecated");
+    expect(linkAction.description).toContain("/home/u/.gemini/skills/talking-stick");
   });
 
-  test("gemini install short-circuits to already_present when the linked skill matches", async () => {
+  test("gemini install does not spawn the deprecated skills CLI", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
 
-    const sourcePath = resolveBundledSkillPath();
+    const sourcePath = path.join(tempRoot, "source-skill");
+    fs.mkdirSync(sourcePath, { recursive: true });
+    fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "source\n");
     const geminiTarget = path.join(tempRoot, ".gemini", "skills", "talking-stick");
     fs.mkdirSync(path.dirname(geminiTarget), { recursive: true });
     fs.symlinkSync(sourcePath, geminiTarget);
@@ -104,11 +130,11 @@ describe("talking-stick skill install", () => {
 
     const result = await runAction(planSkillInstall("gemini", options), options);
 
-    expect(result.status).toBe("already_present");
+    expect(result.status).toBe("skipped");
     expect(run).not.toHaveBeenCalled();
   });
 
-  test("default install symlinks the skill into the codex global skill directory", () => {
+  test("default install symlinks the skill into the shared agents skill directory for Codex", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
 
@@ -122,12 +148,12 @@ describe("talking-stick skill install", () => {
 
     action.apply();
 
-    const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     expect(fs.readlinkSync(target)).toBe(resolveBundledSkillPath());
   });
 
-  test("linked install exposes out-of-band messaging guidance", () => {
+  test("linked shared install exposes out-of-band messaging guidance", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
 
@@ -141,7 +167,7 @@ describe("talking-stick skill install", () => {
 
     action.apply();
 
-    const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("tt instructions show --json");
@@ -149,7 +175,7 @@ describe("talking-stick skill install", () => {
     expect(skill).toContain("tt events --follow --json");
   });
 
-  test("skips skill install when the harness config directory is missing", async () => {
+  test("shared skill install does not require a proprietary harness config directory", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
 
@@ -157,12 +183,13 @@ describe("talking-stick skill install", () => {
       homeDir: tempRoot,
       skipMissing: true
     });
-    expect(action.kind).toBe("skip");
+    expect(action.kind).toBe("file-patch");
 
     const result = await runAction(action, { skipMissing: true });
 
     expect(result.ok).toBe(true);
-    expect(result.skipped).toBe(true);
+    expect(result.skipped).toBeUndefined();
+    expect(fs.existsSync(path.join(tempRoot, ".agents", "skills", "talking-stick"))).toBe(true);
     expect(fs.existsSync(path.join(tempRoot, ".codex"))).toBe(false);
   });
 
@@ -179,7 +206,7 @@ describe("talking-stick skill install", () => {
 
     const result = await runAction(action, { skipMissing: true });
 
-    const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
     expect(result.ok).toBe(true);
     expect(result.skipped).toBeUndefined();
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
@@ -244,14 +271,14 @@ describe("talking-stick skill install", () => {
     expect(skill).toContain("tt events --follow --json");
   });
 
-  test("syncInstalledSkills updates an existing copied skill without installing missing harnesses", () => {
+  test("syncInstalledSkills updates an existing copied shared skill without installing missing proprietary harnesses", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
     const sourcePath = path.join(tempRoot, "source-skill");
     fs.mkdirSync(sourcePath, { recursive: true });
     fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "new skill\n");
 
-    const target = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
     fs.mkdirSync(target, { recursive: true });
     fs.writeFileSync(path.join(target, "SKILL.md"), "old skill\n");
 
@@ -267,6 +294,7 @@ describe("talking-stick skill install", () => {
       status: "updated"
     });
     expect(fs.existsSync(path.join(tempRoot, ".claude"))).toBe(false);
+    expect(fs.existsSync(path.join(tempRoot, ".codex"))).toBe(false);
   });
 
   test("syncInstalledSkills leaves current symlinks alone and relinks stale ones", () => {
@@ -279,7 +307,7 @@ describe("talking-stick skill install", () => {
     fs.mkdirSync(staleSourcePath, { recursive: true });
     fs.writeFileSync(path.join(staleSourcePath, "SKILL.md"), "stale\n");
 
-    const codexTarget = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    const codexTarget = path.join(tempRoot, ".agents", "skills", "talking-stick");
     fs.mkdirSync(path.dirname(codexTarget), { recursive: true });
     fs.symlinkSync(sourcePath, codexTarget, "dir");
     const claudeTarget = path.join(tempRoot, ".claude", "skills", "talking-stick");
@@ -301,15 +329,9 @@ describe("talking-stick skill install", () => {
     });
   });
 
-  test("uninstall removes an installed opencode skill directory", () => {
+  test("uninstall removes an installed opencode proprietary duplicate directory", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
-
-    const install = planSkillInstall("opencode", { homeDir: tempRoot });
-    if (install.kind !== "file-patch") {
-      throw new Error("expected file-patch install");
-    }
-    install.apply();
 
     const target = path.join(
       tempRoot,
@@ -318,9 +340,14 @@ describe("talking-stick skill install", () => {
       "skills",
       "talking-stick"
     );
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, "SKILL.md"), "old\n");
     expect(fs.existsSync(target)).toBe(true);
 
-    const uninstall = planSkillUninstall("opencode", { homeDir: tempRoot });
+    const uninstall = planSkillUninstall("opencode", {
+      env: { XDG_CONFIG_HOME: path.join(tempRoot, ".config") },
+      homeDir: tempRoot
+    });
     expect(uninstall.kind).toBe("file-patch");
     if (uninstall.kind !== "file-patch") {
       throw new Error("unreachable");
@@ -328,5 +355,73 @@ describe("talking-stick skill install", () => {
     uninstall.apply();
 
     expect(fs.existsSync(target)).toBe(false);
+  });
+
+  test("shared uninstall removes only the talking-stick skill subdirectory", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const sharedSkill = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const otherSkill = path.join(tempRoot, ".agents", "skills", "other-skill");
+    fs.mkdirSync(sharedSkill, { recursive: true });
+    fs.mkdirSync(otherSkill, { recursive: true });
+    fs.writeFileSync(path.join(sharedSkill, "SKILL.md"), "old\n");
+    fs.writeFileSync(path.join(otherSkill, "SKILL.md"), "keep\n");
+
+    const uninstall = planSharedSkillUninstall({ homeDir: tempRoot });
+    expect(uninstall.kind).toBe("file-patch");
+    if (uninstall.kind !== "file-patch") {
+      throw new Error("unreachable");
+    }
+    uninstall.apply();
+
+    expect(fs.existsSync(sharedSkill)).toBe(false);
+    expect(fs.existsSync(otherSkill)).toBe(true);
+    expect(fs.existsSync(path.join(tempRoot, ".agents", "skills"))).toBe(true);
+  });
+
+  test("duplicate cleanup removes only symlinks pointing at the bundled skill", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const sourcePath = resolveBundledSkillPath();
+    const codexDuplicate = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    fs.mkdirSync(path.dirname(codexDuplicate), { recursive: true });
+    fs.symlinkSync(sourcePath, codexDuplicate, "dir");
+    const unknownDuplicate = path.join(
+      tempRoot,
+      ".config",
+      "opencode",
+      "skills",
+      "talking-stick"
+    );
+    fs.mkdirSync(unknownDuplicate, { recursive: true });
+    fs.writeFileSync(path.join(unknownDuplicate, "SKILL.md"), "custom\n");
+    const legacyOpencodeDuplicate = path.join(
+      tempRoot,
+      ".opencode",
+      "skills",
+      "talking-stick"
+    );
+    fs.mkdirSync(path.dirname(legacyOpencodeDuplicate), { recursive: true });
+    fs.symlinkSync(sourcePath, legacyOpencodeDuplicate, "dir");
+
+    const audit: unknown[] = [];
+    const results = removeDuplicateSkillInstalls({
+      harnesses: ["codex", "opencode"],
+      reason: "manual",
+      env: { XDG_CONFIG_HOME: path.join(tempRoot, ".config") },
+      homeDir: tempRoot,
+      sourcePath,
+      audit: { append: (entry) => audit.push(entry) }
+    });
+
+    expect(fs.existsSync(codexDuplicate)).toBe(false);
+    expect(fs.existsSync(legacyOpencodeDuplicate)).toBe(false);
+    expect(fs.existsSync(unknownDuplicate)).toBe(true);
+    expect(results).toEqual([
+      expect.objectContaining({ harness: "codex", action: "removed" }),
+      expect.objectContaining({ harness: "opencode", action: "preserved" }),
+      expect.objectContaining({ harness: "opencode", action: "removed" })
+    ]);
+    expect(audit).toHaveLength(3);
   });
 });

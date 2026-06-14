@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import {
   SUPPORTED_HARNESSES,
   detectHarness,
+  isDeprecatedHarness,
   parseHarnessList,
   planGrokSessionHookInstall,
   planGrokSessionHookUninstall,
@@ -13,8 +14,11 @@ import {
   type InstallStatus
 } from "../install.js";
 import {
+  removeDuplicateSkillInstalls,
   planSkillInstall,
-  planSkillUninstall
+  planSkillUninstall,
+  planSharedSkillUninstall,
+  resolveDuplicateSkillTargetPaths
 } from "../skill-install.js";
 import { resolveDataDir } from "../config.js";
 import { FileAuditLog, defaultAuditLogPath, type AuditReason } from "../install-audit.js";
@@ -45,20 +49,22 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
   };
 
   if (dryRun) {
-    for (const action of planInstallActions(harnesses, installOptions)) {
+    printDeprecatedHarnessNotices(harnesses);
+    for (const action of dedupeInstallActions(planInstallActions(harnesses, installOptions))) {
       printActionPlan(action);
     }
     for (const action of planCleanupActions(harnesses, installOptions)) {
       printActionPlan(action);
     }
+    printDuplicateSkillCleanupPlan(harnesses, installOptions);
     return;
   }
 
-  const results = (
-    await Promise.all(
-      harnesses.map((harness) => runSkillInstall(harness, installOptions))
-    )
-  ).flat();
+  printDeprecatedHarnessNotices(harnesses);
+  const results = await runSkillInstallActions(
+    dedupeInstallActions(planInstallActions(harnesses, installOptions)),
+    installOptions
+  );
   reportInstallResults(results, "install");
   reportCleanupResults(await runCleanup(harnesses, "manual", installOptions), "install");
   printInstructionHint(results);
@@ -67,15 +73,20 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
 export async function runUninstallCommand(
   parsed: ParsedCommand
 ): Promise<void> {
-  const harnesses = selectHarnesses(parsed);
+  const { harnesses, removeShared } = selectUninstallTargets(parsed);
   const dryRun = hasOption(parsed, "print");
   const installOptions = { skipMissing: true };
-  const actions = planUninstallActions(harnesses, installOptions);
+  const actions = [
+    ...planUninstallActions(harnesses, installOptions),
+    ...(removeShared ? [planSharedSkillUninstall(installOptions)] : [])
+  ];
 
   if (dryRun) {
+    printDeprecatedHarnessNotices(harnesses);
     for (const action of actions) {
       printActionPlan(action);
     }
+    printSharedSkillLeftHint(harnesses, removeShared);
     return;
   }
 
@@ -84,7 +95,11 @@ export async function runUninstallCommand(
       harnesses.map((harness) => runSkillUninstall(harness, installOptions))
     )
   ).flat();
+  if (removeShared) {
+    results.push(await runAction(planSharedSkillUninstall(installOptions), installOptions));
+  }
   reportInstallResults(results, "uninstall");
+  printSharedSkillLeftHint(harnesses, removeShared);
   reportCleanupResults(await runCleanup(harnesses, "uninstall", installOptions), "uninstall");
 }
 
@@ -95,8 +110,8 @@ export async function runInstallSkillCommand(
   const dryRun = hasOption(parsed, "print");
   const link = resolveSkillInstallLinkMode(parsed);
   const installOptions = { link, skipMissing: true };
-  const actions = harnesses.map((harness) =>
-    planSkillInstall(harness, installOptions)
+  const actions = dedupeInstallActions(
+    harnesses.map((harness) => planSkillInstall(harness, installOptions))
   );
 
   if (dryRun) {
@@ -106,6 +121,7 @@ export async function runInstallSkillCommand(
     return;
   }
 
+  printDeprecatedHarnessNotices(harnesses);
   const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
   reportInstallResults(results, "install");
 }
@@ -113,10 +129,13 @@ export async function runInstallSkillCommand(
 export async function runUninstallSkillCommand(
   parsed: ParsedCommand
 ): Promise<void> {
-  const harnesses = selectHarnesses(parsed);
+  const { harnesses, removeShared } = selectUninstallTargets(parsed);
   const dryRun = hasOption(parsed, "print");
   const installOptions = { skipMissing: true };
-  const actions = harnesses.map((harness) => planSkillUninstall(harness, installOptions));
+  const actions = [
+    ...harnesses.map((harness) => planSkillUninstall(harness, installOptions)),
+    ...(removeShared ? [planSharedSkillUninstall(installOptions)] : [])
+  ];
 
   if (dryRun) {
     for (const action of actions) {
@@ -127,6 +146,7 @@ export async function runUninstallSkillCommand(
 
   const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
   reportInstallResults(results, "uninstall");
+  printSharedSkillLeftHint(harnesses, removeShared);
 }
 
 export async function runSelfUpdateCommand(
@@ -217,6 +237,28 @@ function planInstallActions(
   return harnesses.flatMap((harness) => planInstallActionsForHarness(harness, installOptions));
 }
 
+function dedupeInstallActions(actions: InstallAction[]): InstallAction[] {
+  const seen = new Set<string>();
+  const result: InstallAction[] = [];
+  for (const action of actions) {
+    const key = installActionDedupeKey(action);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(action);
+  }
+  return result;
+}
+
+function installActionDedupeKey(action: InstallAction): string {
+  if (action.kind === "file-patch") {
+    return `${action.kind}:${action.operation ?? "op"}:${action.filePath}`;
+  }
+  if (action.kind === "exec") {
+    return `${action.kind}:${action.operation ?? "op"}:${action.command}:${action.args.join("\0")}`;
+  }
+  return `${action.kind}:${action.harness}:${action.message}`;
+}
+
 function planUninstallActions(
   harnesses: HarnessId[],
   installOptions: { skipMissing: boolean }
@@ -245,11 +287,10 @@ function planCleanupActions(
   return harnesses.map((harness) => planUninstall(harness, installOptions));
 }
 
-async function runSkillInstall(
-  harness: HarnessId,
+async function runSkillInstallActions(
+  actions: InstallAction[],
   installOptions: { link: boolean; skipMissing: boolean }
 ): Promise<InstallResult[]> {
-  const actions = planInstallActionsForHarness(harness, installOptions);
   return Promise.all(actions.map((action) => runAction(action, installOptions)));
 }
 
@@ -290,17 +331,27 @@ async function runCleanup(
   installOptions: { skipMissing: boolean }
 ): Promise<RemoveStaleMcpResult[]> {
   const dataDir = resolveDataDir();
-  return removeStaleMcpRegistrations({
+  const audit = new FileAuditLog(defaultAuditLogPath(dataDir));
+  const mcpResults = await removeStaleMcpRegistrations({
     harnesses,
     reason,
-    audit: new FileAuditLog(defaultAuditLogPath(dataDir)),
+    audit,
     installOptions
   });
+  const skillResults = removeDuplicateSkillInstalls({
+    harnesses,
+    reason,
+    audit,
+    ...installOptions
+  });
+  return [...mcpResults, ...skillResults];
 }
 
 function selectHarnesses(parsed: ParsedCommand): HarnessId[] {
   if (hasOption(parsed, "all")) {
-    const detected = SUPPORTED_HARNESSES.filter((harness) => detectHarness(harness).detected);
+    const detected = SUPPORTED_HARNESSES.filter(
+      (harness) => !isDeprecatedHarness(harness) && detectHarness(harness).detected
+    );
     return [...detected];
   }
 
@@ -313,6 +364,58 @@ function selectHarnesses(parsed: ParsedCommand): HarnessId[] {
   return parseHarnessList(parsed.positionals);
 }
 
+function selectUninstallTargets(parsed: ParsedCommand): {
+  harnesses: HarnessId[];
+  removeShared: boolean;
+} {
+  if (hasOption(parsed, "all")) {
+    return { harnesses: [...SUPPORTED_HARNESSES], removeShared: true };
+  }
+
+  const removeShared =
+    hasOption(parsed, "shared") || parsed.positionals.includes("agents");
+  const harnessTokens = parsed.positionals.filter((value) => value !== "agents");
+
+  if (harnessTokens.length === 0) {
+    if (removeShared) return { harnesses: [], removeShared: true };
+    throw new Error(
+      `Specify at least one harness (${SUPPORTED_HARNESSES.join(", ")}, agents) or pass --all to target every installed one.`
+    );
+  }
+
+  return {
+    harnesses: parseHarnessList(harnessTokens),
+    removeShared
+  };
+}
+
+function printDeprecatedHarnessNotices(harnesses: HarnessId[]): void {
+  if (!harnesses.includes("gemini")) return;
+  process.stdout.write(
+    "[gemini] deprecated: Gemini CLI skill install is deprecated; use `tt install antigravity`.\n"
+  );
+}
+
+function printSharedSkillLeftHint(
+  harnesses: HarnessId[],
+  removeShared: boolean
+): void {
+  if (removeShared) return;
+  if (
+    !harnesses.some((harness) =>
+      harness === "codex" ||
+      harness === "grok" ||
+      harness === "opencode" ||
+      harness === "antigravity"
+    )
+  ) {
+    return;
+  }
+  process.stdout.write(
+    "Left ~/.agents/skills/talking-stick (shared with other agents). Run `tt uninstall --all` or `tt uninstall agents` to remove the shared skill.\n"
+  );
+}
+
 function printActionPlan(action: InstallAction): void {
   if (action.kind === "skip") {
     return;
@@ -322,6 +425,19 @@ function printActionPlan(action: InstallAction): void {
     return;
   }
   process.stdout.write(`[${action.harness}] ${action.description}\n`);
+}
+
+function printDuplicateSkillCleanupPlan(
+  harnesses: HarnessId[],
+  installOptions: { skipMissing: boolean }
+): void {
+  for (const harness of harnesses) {
+    for (const targetPath of resolveDuplicateSkillTargetPaths(harness, installOptions)) {
+      process.stdout.write(
+        `[${harness}] remove duplicate skill symlink ${targetPath} if it points at bundled skill\n`
+      );
+    }
+  }
 }
 
 function runInheritIo(command: string, args: string[]): Promise<void> {
@@ -372,11 +488,12 @@ export function reportCleanupResults(
     if (result.action === "absent" || result.action === "skipped") {
       continue;
     }
-    process.stdout.write(`[${result.harness}] mcp-cleanup ${result.action}: ${result.message}\n`);
+    const label = result.target_type === "skill" ? "skill-cleanup" : "mcp-cleanup";
+    process.stdout.write(`[${result.harness}] ${label} ${result.action}: ${result.message}\n`);
     if (result.action === "failed") anyFailed = true;
   }
   if (anyFailed) {
-    throw new Error(`${mode} completed with MCP cleanup failures.`);
+    throw new Error(`${mode} completed with cleanup failures.`);
   }
 }
 

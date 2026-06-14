@@ -11,6 +11,7 @@ export interface AuditEntry {
   package_version_from?: string;
   package_version_to?: string;
   harness: HarnessId;
+  target_type?: "mcp" | "skill";
   config_path?: string;
   action: AuditAction;
   server_name: string;

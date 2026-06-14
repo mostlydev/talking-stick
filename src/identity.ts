@@ -5,6 +5,10 @@ import {
   findGrokSessionRecord,
   resolveGrokSessionLogPath
 } from "./grok-session-store.js";
+import {
+  HARNESS_COMMAND_MAPPING,
+  type HarnessCliHarness
+} from "./harness-model.js";
 import { resolveContextPath } from "./path-resolution.js";
 import {
   createSystemProcessInspector,
@@ -12,6 +16,8 @@ import {
   type ProcessInspector
 } from "./process-utils.js";
 import type { ProcessMetadata, SessionKind } from "./types.js";
+
+export type { HarnessCliHarness } from "./harness-model.js";
 
 export interface DerivedIdentity {
   agent_id: string;
@@ -54,8 +60,6 @@ export interface DeriveHarnessCliIdentityOptions {
   grokSessionLogPath?: string;
   now?: Date;
 }
-
-export type HarnessCliHarness = "claude" | "codex" | "gemini" | "grok" | "opencode";
 
 interface HarnessSignal {
   harness: HarnessCliHarness;
@@ -403,15 +407,6 @@ function deriveHarnessDisplayName(agentId: string): string {
   return prefix && prefix.length > 0 ? prefix : "harness";
 }
 
-const HARNESS_COMMAND_MAPPING: Record<string, HarnessCliHarness> = {
-  claude: "claude",
-  "claude-code": "claude",
-  codex: "codex",
-  gemini: "gemini",
-  grok: "grok",
-  opencode: "opencode"
-};
-
 function detectHarnessViaAncestry(
   pid: number,
   inspector: ProcessInspector,
@@ -453,6 +448,19 @@ function detectHarnessSignal(env: NodeJS.ProcessEnv): HarnessSignal | null {
     return {
       harness: "codex",
       sessionId: nonEmpty(env.CODEX_THREAD_ID),
+      pidHint: null
+    };
+  }
+  if (
+    env.ANTIGRAVITY_AGENT === "1" ||
+    nonEmpty(env.ANTIGRAVITY_CONVERSATION_ID) ||
+    nonEmpty(env.ANTIGRAVITY_TRAJECTORY_ID)
+  ) {
+    return {
+      harness: "antigravity",
+      sessionId:
+        nonEmpty(env.ANTIGRAVITY_CONVERSATION_ID) ??
+        nonEmpty(env.ANTIGRAVITY_TRAJECTORY_ID),
       pidHint: null
     };
   }

@@ -61,7 +61,7 @@ describe("reportCleanupResults", () => {
     ];
 
     expect(() => reportCleanupResults(results, "install")).toThrow(
-      /install completed with MCP cleanup failures/
+      /install completed with cleanup failures/
     );
     expect(stdout.lines()).toEqual([
       "[codex] mcp-cleanup removed: Removed MCP server 'talking-stick'.",

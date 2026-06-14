@@ -2,15 +2,12 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveDataDir, type ResolveDataDirOptions } from "./config.js";
+import { HARNESS_CLI_HARNESSES, type HarnessCliHarness } from "./harness-model.js";
 import type { DerivedIdentity } from "./identity.js";
 import { resolveContextPath } from "./path-resolution.js";
 
 export type InstructionHarness =
-  | "claude"
-  | "codex"
-  | "gemini"
-  | "grok"
-  | "opencode"
+  | HarnessCliHarness
   | "all";
 export type InstructionScope = "effective" | "bundled" | "user" | "project";
 export type EditableInstructionScope = "user" | "project";
@@ -65,7 +62,7 @@ On freshly invoked multi-agent tasks, give peers a short window to join before d
 
 Use phase names in handoffs when they clarify the work: draft, adversarial review, convergence, implementation, implementation review, test review, and release. These phases are vocabulary, not protocol state.
 
-Claude and Codex are peers of comparable capability; neither outranks the other. Split work evenly between them rather than routing by stereotype, and have all models plan, implement, and evaluate together: any harness can draft, review, converge, implement, or release. Gemini and OpenCode start with conservative local guidance until project dogfood says otherwise.
+Claude and Codex are peers of comparable capability; neither outranks the other. Split work evenly between them rather than routing by stereotype, and have all models plan, implement, and evaluate together: any harness can draft, review, converge, implement, or release. Antigravity and OpenCode start with conservative local guidance until project dogfood says otherwise.
 
 For multi-agent design work, prefer independent read-only drafts first, then adversarial review and convergence. Do not impose a draft file structure on the workspace by default. If scratch draft files are useful, delete superseded pre-convergence drafts after the converged plan exists unless the operator asks to keep them.
 
@@ -79,9 +76,9 @@ Take a full, even share of planning, implementation, and evaluation. Watch for s
 
 Take a full, even share of planning, implementation, and evaluation. Watch for over-indexing on mechanics when the operator still needs to decide direction. Make the next phase explicit in the handoff.
 
-## Gemini
+## Antigravity
 
-Use broad context review and exploration conservatively until the project has stronger Gemini-specific dogfood. Keep handoffs concrete and do not assume responsibility that the operator assigned to another harness.
+Use broad context review and exploration conservatively until the project has stronger Antigravity-specific dogfood. Keep handoffs concrete and do not assume responsibility that the operator assigned to another harness.
 
 ## Grok
 
@@ -92,11 +89,18 @@ Use Grok Build as a first-class local coding harness. Keep coordination safety a
 Use terminal-native local exploration and implementation conservatively until the project has stronger OpenCode-specific dogfood. Keep coordination safety ahead of speed.
 `;
 
-const HARNESS_ALIASES: Record<string, InstructionHarness> = {
+export const INSTRUCTION_HARNESSES = [
+  ...HARNESS_CLI_HARNESSES,
+  "all"
+] as const satisfies readonly InstructionHarness[];
+
+export const HARNESS_ALIASES: Record<string, InstructionHarness> = {
   all: "all",
   base: "all",
   claude: "claude",
   "claude-code": "claude",
+  antigravity: "antigravity",
+  agy: "antigravity",
   codex: "codex",
   gemini: "gemini",
   grok: "grok",
@@ -199,7 +203,7 @@ export function normalizeInstructionHarness(value: string): InstructionHarness {
   const normalized = HARNESS_ALIASES[normalizeKey(value)];
   if (!normalized) {
     throw new Error(
-      `--harness must be one of claude, codex, gemini, grok, opencode, all (got ${value}).`
+      `--harness must be one of claude, codex, antigravity, gemini, grok, opencode, all (got ${value}).`
     );
   }
   return normalized;
@@ -348,6 +352,7 @@ function parseHarnessHeader(line: string): InstructionHarness | null {
   const key = normalizeKey(match[1]);
   if (key.startsWith("claude")) return "claude";
   if (key.startsWith("codex")) return "codex";
+  if (key.startsWith("antigravity") || key === "agy") return "antigravity";
   if (key.startsWith("gemini")) return "gemini";
   if (key.startsWith("grok")) return "grok";
   if (key.startsWith("opencode")) return "opencode";

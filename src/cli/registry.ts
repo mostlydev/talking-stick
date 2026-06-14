@@ -78,7 +78,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: false,
     startupMaintenance: false,
     internal: false,
-    usage: "tt uninstall <harness...> | --all [--print]",
+    usage: "tt uninstall <harness...|agents> | --all | --shared [--print]",
     description: "Remove the Talking Stick skill and stale MCP registrations.",
     handler: ({ parsed }) => runUninstallCommand(parsed)
   },

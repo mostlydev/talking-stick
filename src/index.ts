@@ -42,6 +42,8 @@ export {
 export {
   DEFAULT_MAX_INSTRUCTION_FILE_BYTES,
   DEFAULT_INSTRUCTIONS_MARKDOWN,
+  HARNESS_ALIASES,
+  INSTRUCTION_HARNESSES,
   editInstructions,
   extractHarnessInstructions,
   normalizeInstructionHarness,
@@ -101,17 +103,34 @@ export {
   type GrokSessionRecord
 } from "./grok-session-store.js";
 export {
+  FILE_SKILL_HARNESSES,
   DEFAULT_SKILL_NAME,
+  removeDuplicateSkillInstalls,
   planSkillInstall,
   planSkillUninstall,
+  planSharedSkillUninstall,
   resolveBundledSkillPath,
+  resolveDuplicateSkillTargetPaths,
+  resolveLegacyOpencodeSkillTargetPath,
+  resolvePrimarySkillTargetPath,
+  resolveSharedAgentsSkillsDir,
+  resolveSharedSkillTargetPath,
   resolveSkillTargetPath,
+  skillLoadingModel,
   syncInstalledSkills,
   type FileSkillHarness,
+  type RemoveDuplicateSkillOptions,
   type SkillSyncResult,
   type SkillSyncTargetResult,
   type SkillInstallOptions
 } from "./skill-install.js";
+export {
+  HARNESS_CLI_HARNESSES,
+  HARNESS_COMMAND_MAPPING,
+  HARNESS_SKILL_MODELS,
+  isDeprecatedHarness,
+  type SkillLoadingModel
+} from "./harness-model.js";
 export {
   readPackageVersion,
   readUpdateMigrationState,

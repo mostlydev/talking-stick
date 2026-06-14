@@ -201,7 +201,7 @@ Commands:
   tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
   tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]
   tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
-  tt instructions show [path] [--harness claude|codex|gemini|grok|opencode|all] [--scope effective|bundled|user|project]
+  tt instructions show [path] [--harness claude|codex|antigravity|gemini|grok|opencode|all] [--scope effective|bundled|user|project]
   tt instructions edit [path] [--user|--project]
   tt instructions reset [path] (--user|--project)
   tt release [path] (--status TEXT --next-action TEXT | --stdin)
@@ -212,7 +212,7 @@ Commands:
   tt notes add <body> [--turn N] [--path DIR] [--stdin]
   tt notes list [--all] [--after NOTE_ID] [--limit N] [--path DIR]
   tt install <harness...> | --all [--print] [--copy] [--link]
-  tt uninstall <harness...> | --all [--print]
+  tt uninstall <harness...|agents> | --all | --shared [--print]
   tt self-update [--print] [--manager npm|pnpm|yarn|bun]
 
 Harnesses: ${SUPPORTED_HARNESSES.join(", ")}
