@@ -11,6 +11,9 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+- **README modernized for the CLI-only workflow.** Documentation only — no code changes. The quickstart now shows a single shared `/goal … /talking-stick $talking-stick` prompt for both panes instead of two long per-harness scripts; stale MCP-era RPC names (`add_note`, `list_notes`, `release_stick`, `pass_stick`, `wait_for_events`, `get_room_events`, `leave_room`, `wait_for_turn`) are replaced with their `tt` CLI equivalents; the version pin was removed from the intro (it belongs in this changelog and on npm); and the post-turn closeout section now points to the bundled skill instead of duplicating it.
+
 ## [0.5.0] — 2026-06-15
 
 Full notes: [`docs/releases/0.5.0.md`](docs/releases/0.5.0.md).
