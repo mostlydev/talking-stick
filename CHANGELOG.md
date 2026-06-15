@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.5.0] — 2026-06-15
+
+Full notes: [`docs/releases/0.5.0.md`](docs/releases/0.5.0.md).
+
 ### Added
 - **`tt health` / `tt status` room health view.** A read-only diagnostic that combines room truth (owner, reservation, turn, lease/claim expiry, pending handoff, takeover availability), member liveness, local process truth (the current `cli-session`, guardian liveness and whether it protects the current turn, and duplicate/stale receiver detection), and an advisory `git status`. Available as text and JSON. It never claims, releases, refreshes wait state, spawns guardians, kicks members, or mutates handoffs.
 - **`cursor_event_seq` on `tt join` and `tt state`.** Harnesses can seed the canonical wait loop from a returned event cursor instead of replaying history from `--after 0`.
@@ -302,6 +306,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.5.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.5.0
 [0.4.13]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.13
 [0.4.12]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.12
 [0.4.11]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.11
