@@ -94,14 +94,14 @@ Once installed, each agent harness has a skill that tells it to coordinate throu
 tt list            — which rooms exist under a path
 tt join            — join the room for this workspace
 tt leave           — explicitly leave a room; deletes it when no active members remain
-tt wait            — block until the stick is available, with takeover signals
-tt wait --park     — stay coordinated without auto-claiming idle rooms
+tt wait --events   — canonical listen/wait loop for ownership and room events
+tt wait --park --events — stay coordinated without auto-claiming idle rooms
 tt release         — normal handoff to the next fair waiter, with structured Handoff
 tt assign          — explicit handoff to a named agent
 tt take            — deliberate claim when the prior holder is gone/stuck
 tt kick            — evict an idle member whose process is gone
 tt state           — authoritative state projection
-tt events          — audit log and long-poll stream of turn transitions/messages
+tt events          — audit/debug log and lower-level event stream
 tt notes add/list  — durable async observations for the room
 tt msg send/recv   — out-of-band chat into the room event log
 tt instructions    — editable collaboration prompt loaded by the skill
@@ -139,17 +139,16 @@ The stick guarantees single-writer authority over shared workspace state. It is 
 
 ```bash
 tt msg send <recipient|room> "<body>" [--interrupt] [--stdin]
-tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent]
-tt events --wait|--follow [--event TYPE[,TYPE]] [--target self|any|agent]
+tt wait --events --after <cursor_event_seq> --json
 ```
 
 - `<recipient>` is a full `agent_id`, an unambiguous active display name (`codex`, `claude`), or the literal `room` for broadcast.
 - `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
-- `tt msg recv --follow` is a long-running tail (one JSON line per event) suited to harnesses that can monitor child stdout (Claude Code Monitor, terminals).
-- `tt msg recv --wait` exits on the next matching batch — ideal for harnesses that can launch a background command and notice when it completes; restart with `--after <last_event_seq>` to resume.
-- `tt events --wait` and `tt events --follow` default to `--target self`; pass `--target any` only for audit/debug views.
+- `tt join --json` and `tt state --json` return `cursor_event_seq`; use that as the initial `--after` cursor, or use `--after 0` when you intentionally want to replay history.
+- `tt wait --events --after <cursor>` returns ownership state, `events[]`, an updated `cursor_event_seq`, and `wake_reason`. Restart it with the returned cursor.
+- `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for audit/debug or legacy fallback consumers. They are not the recommended harness loop.
 - `wait_for_events` is observer-safe: it never mutates room state, so non-holders can use it freely without disturbing turn-fairness bookkeeping.
-- Event receive does not grant the stick. Agents must still use `tt wait` for ownership before editing shared files.
+- Event receive does not grant the stick. Only a `tt wait --events` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
 
 **When to message vs note vs handoff.**
 
@@ -159,7 +158,7 @@ tt events --wait|--follow [--event TYPE[,TYPE]] [--target self|any|agent]
 
 **`to_agent_id` is routing, not ACL.** Any room member can read any message via `get_room_events` or `tt events --follow --target any`. Messages are not private. They also do not grant the stick — a non-holder paging the holder gets attention, not write authority.
 
-For harnesses that only notice completed subprocesses, run `tt events --wait --after <cursor> --json` as a wake process alongside the normal `tt wait --json` loop. A message, pass, release, or assignment event should make the agent read/reply/retry `tt wait`; it is not permission to mutate the workspace.
+For harnesses that only notice completed subprocesses, `tt wait --events --after <cursor> --json` is still the normal loop: it exits on each wake, the harness processes the result, updates the cursor, and launches it again.
 
 ## How installation works per harness
 
@@ -187,10 +186,10 @@ tt whoami [--explain]                                      # show the resolved C
 tt list [path]                                            # list rooms
 tt join [path] [--force-new]                              # join the room for path
 tt leave [path]                                           # leave the room for path
-tt wait [path] [--timeout 110s] [--park]                  # block until your turn; --park disables idle auto-claim
-tt try [path] [--park]                                    # non-blocking claim attempt
+tt wait [path] [--timeout 110s] [--park] [--events --after N] # canonical listen/wait loop; --park disables idle auto-claim
+tt try [path] [--park] [--events --after N]               # non-blocking claim/event check
 tt state [path]                                           # full room state
-tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # room event log; --wait/--follow long-polls
+tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # audit/debug event log; --wait/--follow lower-level streams
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
 tt instructions show [path] [--harness claude|codex|antigravity|gemini|grok|opencode|all] [--scope effective|bundled|user|project]  # show collaboration prompt

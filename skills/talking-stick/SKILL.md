@@ -31,21 +31,21 @@ Useful commands:
 
 - `tt whoami --json`
 - `tt join --json`
-- `tt wait --json`
-- `tt wait --park --json`
-- `tt try --json`
+- `tt wait --events --after N --json`
+- `tt wait --park --events --after N --json`
+- `tt try --events --after N --json`
 - `tt state --json`
 - `tt events --after N --target any --json`
 - `tt notes add "..." --json`
 - `tt notes list --json`
-- `tt events --follow --json`
 - `tt msg send <recipient|room> "..." --json`
-- `tt msg recv --follow --json` (messages-only fallback when an event-stream consumer is too broad)
+- `tt events --follow --json` (audit/debug or legacy fallback, not the default loop)
+- `tt msg recv --follow --json` (messages-only fallback)
 - `tt release --stdin`
 - `tt assign <agent_id|next> --stdin`
 - `tt take --reason "..." --json`
 
-Some workspaces may also have sibling receive processes running `tt events --follow`, `tt msg recv --wait`, or `tt msg recv --follow`; leave them alone unless the operator explicitly asks you to stop or restart them.
+Some workspaces may also have sibling receive processes running `tt wait --events`, `tt events --follow`, `tt msg recv --wait`, or `tt msg recv --follow`; leave them alone unless the operator explicitly asks you to stop or restart them.
 
 If coordination is required and `tt` is unavailable, say so briefly and ask the user whether they want to install or enable Talking Stick first. Do not pretend coordination is active.
 
@@ -73,48 +73,46 @@ tt instructions show --json
 
 If that command fails, continue with this bundled skill. Editable instructions can add local preferences, but they do not override the safety rules in this skill.
 
-Right after joining, start exactly one background ambient receiver so direct messages and turn passes/reservations surface as soon as they happen instead of waiting for the next time you poll:
+Right after joining, start exactly one background listen/wait loop using the `cursor_event_seq` returned by `tt join`:
 
 ```sh
-tt events --follow --json
+tt wait --events --after <cursor_event_seq> --json
 ```
 
-For `tt events --wait` and `tt events --follow`, the default target is `self`; add `--target any` only for audit/debug views.
+This single loop is the normal way to stay responsive to ownership changes and direct or room messages. It returns on turn changes, event/message batches, timeout, takeover availability, or room closure. On every return, update your cursor from `cursor_event_seq`, process any `events[]`, and restart the loop while work remains pending.
 
-The receiver must stream stdout line-by-line into your model context (Claude Code's Monitor, Codex `attach`-style) so each event becomes a notification you see mid-task. A backgrounded shell that only notifies when the process exits is **not** an ambient receiver — it silently swallows every event until termination, then fires a single useless notification at the end. If your harness can only observe process-exit, use the polling fallbacks in §4.5 instead; do not dress an exit-notify background command up as a stream consumer.
+Events are observer data only. They never grant write authority. Shared edits require a `status: "your_turn"` result from the wait loop and the returned live `guardian_pid`.
 
-Run exactly one ambient receiver per session. A second `tt events --follow` does not add coverage — both instances compete for the same stream, and one of them is likely silently consuming events you will never see. If you need a different filter, stop the existing receiver first.
-
-The ambient receiver is not a turn claimant. It never grants the stick and never starts the lease guardian. Keep using `tt wait --json` for ownership.
+Run exactly one listen/wait loop per session. A second background loop does not add coverage and can cause confusing duplicate wakeups. If you need a different target or cursor, stop the existing loop first.
 
 ### 3. Wait Before Shared Work
 
-Before making shared edits or running owner-style actions, run:
+Before making shared edits or running owner-style actions, wait through the canonical loop:
 
 ```sh
-tt wait --json
+tt wait --events --after <cursor_event_seq> --json
 ```
 
 The default wait timeout is `110s`, which is the normal active-coordination setting. If your harness has a shorter tool timeout, override with the longest safe value and immediately wait again when it returns without granting the turn. Do not busy-loop with short waits.
 
-If a handoff, message, or operator instruction leaves review, release, or other task work pending, use normal `tt wait --json`; do not use park mode. `tt wait --park --json` is only for passive standby when no task is pending and you are waiting for operator input or another external signal.
+If a handoff, message, or operator instruction leaves review, release, or other task work pending, use normal `tt wait --events --after <cursor> --json`; do not use park mode. `tt wait --park --events --after <cursor> --json` is only for passive standby when no task is pending and you are waiting for operator input or another external signal.
 
 Possible outcomes:
 
-- `your_turn`: you may proceed
-- `not_yet`: do not mutate shared state; you may still plan, inspect, review, or talk with the user
+- `your_turn` with `guardian_pid`: you may proceed with shared mutations
+- `not_yet`: do not mutate shared state; you may still plan, inspect, review, process events, or talk with the user
 - `takeover_available`: surface the reason and make takeover explicit
 - `closed`: stop and explain that the room is closed
 
-A successful `tt wait` or `tt take` starts an internal `tt guard` lease guardian and returns `guardian_pid` in JSON. Trust `tt wait`: a `your_turn` result means the CLI confirmed or spawned a guardian, and if it could not, the command would have failed. Do not kill that guardian.
+`wake_reason` explains why the loop returned (`turn`, `event`, `timeout`, or `closed`). It does not grant authority by itself. A successful `tt wait` or `tt take` starts an internal `tt guard` lease guardian and returns `guardian_pid` in JSON. Trust `tt wait`: a `your_turn` result means the CLI confirmed or spawned a guardian, and if it could not, the command would have failed. Do not kill that guardian.
 
 ### 4. While Waiting
 
-Prefer to run `tt wait` in the background if your harness supports background commands. That keeps the foreground free for reading, planning, answering the operator, and watching OOB messages until your turn arrives.
+Prefer to run `tt wait --events --after <cursor>` in the background if your harness supports background commands. That keeps the foreground free for reading, planning, answering the operator, and processing returned messages until your turn arrives.
 
 Prefer wait cycles over scheduled wakeups. A direct long-poll stays aligned with other agents and usually notices a released stick within the same cycle. Use scheduled wakeups only when your harness cannot keep a wait running in the background.
 
-Do not replace `tt wait` with an event receiver. `tt events --wait` is only a wake channel for messages and handoff/reservation events. If it exits with a pass, release, assignment, or message, process the event, then run or continue normal `tt wait --json` whenever work is pending; do not touch shared files unless that wait returns `your_turn`.
+Do not replace `tt wait --events` with a pure event receiver. `tt events --wait`, `tt events --follow`, and `tt msg recv` are audit/debug or legacy fallback tools; they do not start the lease guardian and must not be treated as permission to edit. If they show a pass, release, assignment, or message, process the event, then run or continue the canonical wait loop whenever work is pending. Do not touch shared files unless that loop returns `your_turn` with a live guardian.
 
 If you do not have the stick:
 
@@ -129,7 +127,7 @@ The wait is for active non-mutating work, not idle sleep. Re-read the holder's l
 tt notes add "Finding or pointer for the current/next holder." --json
 ```
 
-Room inspection exists to answer specific questions, not to poll. Do not run `tt state` after a routine `tt wait`; the wait result already says who owns or is reserved for the turn. Use `tt state`, `tt events --target any`, and `tt notes list` sparingly when the wait result is insufficient or you are debugging stale members, takeover, or history.
+Room inspection exists to answer specific questions, not to poll. Do not run `tt state` after a routine wait result; the wait result already says who owns or is reserved for the turn. Use `tt state`, `tt events --target any`, and `tt notes list` sparingly when the wait result is insufficient or you are debugging stale members, takeover, or history.
 
 When you do take the stick, first read the attached handoff and load any useful `artifacts[]`, then run `tt notes list --json` once so you see what other members left for you.
 
@@ -145,22 +143,23 @@ tt msg send <recipient|room> "message body" --json
 
 Recipient is a full `agent_id`, an unambiguous active display name, or the literal `room` for broadcast. `--interrupt` marks the message as time-sensitive; the receiver decides whether to act on it now.
 
-Receive with the mode your harness can observe. The recommended primary path is the unified event stream you started in §2:
+Receive through the canonical loop from §2:
 
 ```sh
-tt events --follow --json
+tt wait --events --after <cursor_event_seq> --json
 ```
 
-That streams direct messages, broadcasts, and turn passes/reservations for you as a single ordered feed — one JSON event per line. Use it whenever your harness can stream a child process's stdout into the model's context. If the harness can only notice that a backgrounded command exits, use the polling fallbacks:
+That returns direct messages, broadcasts, and turn passes/reservations in `events[]` while also checking ownership state. Restart it with the returned `cursor_event_seq`.
+
+Use lower-level receivers only for audit, debugging, or a harness that cannot use the canonical wait-events loop:
 
 ```sh
-tt events --wait --after <last_event_seq> --json   # all event types
-tt msg recv --wait --after <last_event_seq> --json # messages only
+tt events --follow --json                         # audit/debug event stream
+tt events --wait --after <last_event_seq> --json  # legacy one-shot wake
+tt msg recv --wait --after <last_event_seq> --json # messages-only fallback
 ```
 
-Restart with the returned cursor to resume. `tt msg recv --follow` still exists for harnesses that want a messages-only feed, but the event stream is preferred because turn handoffs use the same channel and a messages-only consumer silently misses them.
-
-For Codex-style harnesses that cannot consume a continuous stdout stream, the safe loop is: keep `tt wait --json` as the ownership wait, and separately run `tt events --wait --after <last_event_seq> --json` as a short-lived wake process. An event wake can tell you to read, reply, or retry `tt wait`; it is never permission to edit.
+Restart fallback receivers with the returned cursor to resume. Fallback event or message wakes can tell you to read, reply, or retry the canonical wait loop; they are never permission to mutate workspace files.
 
 Messages are public room events. Any room member can read them with `tt events --target any`. `to_agent_id` is routing, not an ACL.
 
@@ -238,9 +237,9 @@ Exit the wait loop only when one of these is true:
 - the shared task is explicitly finished
 - the operator gives a direct redirect or stop
 
-In every other case, after `tt release` or `tt assign`, go straight back into `tt wait --json`. If you are the only active member of the room, stop polling after a clear handoff. Treat "only active" as no other member that `tt state --json` reports active or that has been seen in the last hour; if liveness is ambiguous, run one more normal wait cycle instead of churning. Other agents going briefly quiet is not enough to declare yourself alone.
+In every other case, after `tt release` or `tt assign`, go straight back into `tt wait --events --after <cursor> --json`. If you are the only active member of the room, stop polling after a clear handoff. Treat "only active" as no other member that `tt state --json` reports active or that has been seen in the last hour; if liveness is ambiguous, run one more normal wait cycle instead of churning. Other agents going briefly quiet is not enough to declare yourself alone.
 
-If you have no expected work and are blocked on operator input or an external signal, use `tt wait --park --json` instead of `tt wait --json` to stay coordinated without claiming idle turns. Park still surfaces explicit passes, assignments, and takeover availability; it never auto-claims an idle room. Switch back to plain `tt wait --json` once you have work to do.
+If you have no expected work and are blocked on operator input or an external signal, use `tt wait --park --events --after <cursor> --json` instead of the normal wait-events loop to stay coordinated without claiming idle turns. Park still surfaces explicit passes, assignments, and takeover availability; it never auto-claims an idle room. Switch back to normal `tt wait --events --after <cursor> --json` once you have work to do.
 
 If the operator tells you to drop out of coordination, run `tt leave --json`. Rooms with no active members are deleted instead of kept as history, and long-idle rooms may be purged on later invocations.
 

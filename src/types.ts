@@ -155,6 +155,7 @@ export interface JoinPathResult {
   requested_path: string;
   workspace_root: string;
   joined_existing_room: boolean;
+  cursor_event_seq: number;
   warning?: string;
   policy: Policy;
   room_state: PathRoom;
@@ -340,6 +341,7 @@ export interface GetRoomStateInput {
 export interface GetRoomStateResult {
   room: PathRoom;
   members: RoomMember[];
+  cursor_event_seq: number;
 }
 
 export interface GetRoomEventsInput {

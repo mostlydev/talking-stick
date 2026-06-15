@@ -280,6 +280,7 @@ export class TalkingStickService {
         requested_path: resolved.requested_path,
         workspace_root: resolved.workspace_root,
         joined_existing_room: roomSelection.joinedExistingRoom,
+        cursor_event_seq: this.latestEventSeq(freshRoom.room_id),
         warning,
         policy: { ...this.policy },
         room_state: this.mapRoom(this.inspectRoom(freshRoom, now), now),
@@ -949,7 +950,8 @@ export class TalkingStickService {
       room: this.mapRoom(inspection, now),
       members: inspection.members.map((member) =>
         this.mapMember(member, now)
-      )
+      ),
+      cursor_event_seq: this.latestEventSeq(input.room_id)
     };
   }
 
@@ -1126,12 +1128,16 @@ export class TalkingStickService {
   getLatestEventSeq(input: { room_id: string }): number {
     assertNonEmpty(input.room_id, "room_id");
     this.requireRoom(input.room_id);
+    return this.latestEventSeq(input.room_id);
+  }
+
+  private latestEventSeq(roomId: string): number {
     return (
       this.db
         .prepare<[string], { event_seq: number | null }>(
           "SELECT MAX(event_seq) AS event_seq FROM room_events WHERE room_id = ?"
         )
-        .get(input.room_id)?.event_seq ?? 0
+        .get(roomId)?.event_seq ?? 0
     );
   }
 

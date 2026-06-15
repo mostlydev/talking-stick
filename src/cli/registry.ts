@@ -169,7 +169,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: true,
     internal: false,
     usage: "tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]",
-    description: "Show room events.",
+    description: "Show or follow room events for audit/debug and legacy receive loops.",
     handler: ({ runtime, parsed }) => handleEventsCommand(requireRuntime(runtime), parsed)
   },
   {
@@ -187,7 +187,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: true,
     internal: false,
     usage: "tt wait [path] [--timeout 110s] [--park] [--events --after N] [--target self|any|agent]",
-    description: "Wait until this agent can claim the stick.",
+    description: "Run the canonical listen/wait loop for ownership and room events.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, false, cliEntryUrl)
   },
@@ -197,7 +197,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: true,
     internal: false,
     usage: "tt try [path] [--park] [--events --after N] [--target self|any|agent]",
-    description: "Check turn availability without waiting.",
+    description: "Check turn and event availability without waiting.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, true, cliEntryUrl)
   },

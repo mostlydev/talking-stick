@@ -149,7 +149,7 @@ export function handleStateCommand(
     process_metadata: identity.process_metadata
   });
 
-  printResult(parsed, { room: state.room, members: state.members }, () => {
+  printResult(parsed, state, () => {
     const lines: string[] = [
       `Room: ${session.canonical_path} (${state.room.state})`
     ];

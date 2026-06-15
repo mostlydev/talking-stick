@@ -89,6 +89,45 @@ describe("talking-stick vertical slice", () => {
     expect(claudeTurn.turn_id).toBe(codexTurn.turn_id + 1);
   });
 
+  test("join_path and get_room_state expose the current event cursor", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    expect(codexJoin.cursor_event_seq).toBe(0);
+
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    const stateAfterClaim = harness.service.getRoomState({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test"
+    });
+    expect(stateAfterClaim.cursor_event_seq).toBe(1);
+
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    const claudeJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    expect(claudeJoin.cursor_event_seq).toBe(2);
+  });
+
   test("release_stick prefers a new waiter over the next join-order member", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);

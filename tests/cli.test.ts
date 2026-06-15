@@ -1204,6 +1204,48 @@ describe("tt notes", () => {
     expect(parsed).toHaveProperty("members");
   });
 
+  test("tt join and tt state JSON expose cursor_event_seq", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let guardianPid: number | undefined;
+
+    try {
+      const joinOut = await captureStdout([
+        "join",
+        project,
+        "--agent",
+        "human:cursor-test",
+        "--json"
+      ]);
+      const joined = JSON.parse(joinOut) as { cursor_event_seq: number };
+      expect(joined.cursor_event_seq).toBe(0);
+
+      const waitOut = await captureStdout([
+        "wait",
+        project,
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:cursor-test",
+        "--json"
+      ]);
+      const waitResult = JSON.parse(waitOut) as { guardian_pid: number };
+      guardianPid = waitResult.guardian_pid;
+
+      const stateOut = await captureStdout([
+        "state",
+        project,
+        "--agent",
+        "human:cursor-test",
+        "--json"
+      ]);
+      const state = JSON.parse(stateOut) as { cursor_event_seq: number };
+      expect(state.cursor_event_seq).toBe(1);
+    } finally {
+      await releaseIfHeld(project, "human:cursor-test");
+      killPidIfAlive(guardianPid);
+    }
+  });
+
   test("TT_HARNESS_EXPORT auto-switches state to JSON; --text overrides", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     await captureStdout(["join", project, "--agent", "human:auto-test"]);
