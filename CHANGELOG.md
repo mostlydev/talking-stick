@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.5.1] — 2026-06-15
+
+Full notes: [`docs/releases/0.5.1.md`](docs/releases/0.5.1.md).
+
 ### Changed
 - **README modernized for the CLI-only workflow.** Documentation only — no code changes. The quickstart now shows a single shared `/goal … /talking-stick $talking-stick` prompt for both panes instead of two long per-harness scripts; stale MCP-era RPC names (`add_note`, `list_notes`, `release_stick`, `pass_stick`, `wait_for_events`, `get_room_events`, `leave_room`, `wait_for_turn`) are replaced with their `tt` CLI equivalents; the version pin was removed from the intro (it belongs in this changelog and on npm); and the post-turn closeout section now points to the bundled skill instead of duplicating it.
 
@@ -309,6 +313,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.5.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.5.0
 [0.4.13]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.13
 [0.4.12]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.12
