@@ -2,7 +2,7 @@
 
 A CLI coordination tool that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-**Version:** 0.5.0 (see [`CHANGELOG.md`](CHANGELOG.md) for what's new). Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Antigravity CLI (`agy`), Grok Build, and OpenCode out of the box. Gemini CLI identity is retained for existing sessions, but Gemini skill installation is deprecated in favor of Antigravity and the shared agents skill directory. Harnesses stay responsive through one canonical listen/wait loop (`tt wait --events`), diagnose coordination and local process state with the read-only `tt health`, and can chat out-of-band — without passing the stick — via `tt msg send/recv`.
+Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Antigravity CLI (`agy`), Grok Build, and OpenCode out of the box. Gemini CLI identity is retained for existing sessions, but Gemini skill installation is deprecated in favor of Antigravity and the shared agents skill directory. Harnesses stay responsive through one canonical listen/wait loop (`tt wait --events`), diagnose coordination and local process state with the read-only `tt health`, and can chat out-of-band — without passing the stick — via `tt msg send/recv`.
 
 ## Quickstart
 
