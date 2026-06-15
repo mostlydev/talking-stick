@@ -12,6 +12,7 @@ import { handleNotesCommand } from "./notes-commands.js";
 import type { ParsedCommand } from "./parser.js";
 import {
   handleEventsCommand,
+  handleHealthCommand,
   handleJoinCommand,
   handleKickCommand,
   handleLeaveCommand,
@@ -159,16 +160,26 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt state [path]",
-    description: "Show room state.",
+    usage: "tt state [path] [--all]",
+    description: "Show compact room state.",
     handler: ({ runtime, parsed }) => handleStateCommand(requireRuntime(runtime), parsed)
+  },
+  {
+    name: "health",
+    aliases: ["status"],
+    needsRuntime: true,
+    startupMaintenance: true,
+    internal: false,
+    usage: "tt health [path] [--all]",
+    description: "Show a read-only room health report.",
+    handler: ({ runtime, parsed }) => handleHealthCommand(requireRuntime(runtime), parsed)
   },
   {
     name: "events",
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]",
+    usage: "tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]",
     description: "Show or follow room events for audit/debug and legacy receive loops.",
     handler: ({ runtime, parsed }) => handleEventsCommand(requireRuntime(runtime), parsed)
   },

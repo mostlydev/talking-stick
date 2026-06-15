@@ -101,6 +101,7 @@ tt assign          — explicit handoff to a named agent
 tt take            — deliberate claim when the prior holder is gone/stuck
 tt kick            — evict an idle member whose process is gone
 tt state           — authoritative state projection
+tt health/status   — read-only room, local session, receiver, and git advisory
 tt events          — audit/debug log and lower-level event stream
 tt notes add/list  — durable async observations for the room
 tt msg send/recv   — out-of-band chat into the room event log
@@ -149,6 +150,7 @@ tt wait --events --after <cursor_event_seq> --json
 - `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for audit/debug or legacy fallback consumers. They are not the recommended harness loop.
 - `wait_for_events` is observer-safe: it never mutates room state, so non-holders can use it freely without disturbing turn-fairness bookkeeping.
 - Event receive does not grant the stick. Only a `tt wait --events` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
+- Default `tt state`, non-streaming `tt events`, `tt notes list`, and `tt health` hide much-older ghost rows behind a structured `hidden.older_count` summary. Use `--all` for the full room history.
 
 **When to message vs note vs handoff.**
 
@@ -188,8 +190,10 @@ tt join [path] [--force-new]                              # join the room for pa
 tt leave [path]                                           # leave the room for path
 tt wait [path] [--timeout 110s] [--park] [--events --after N] # canonical listen/wait loop; --park disables idle auto-claim
 tt try [path] [--park] [--events --after N]               # non-blocking claim/event check
-tt state [path]                                           # full room state
-tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # audit/debug event log; --wait/--follow lower-level streams
+tt state [path] [--all]                                  # compact room state; --all shows older rows
+tt health [path] [--all]                                 # read-only room/local/git health report
+tt status [path] [--all]                                 # alias for health
+tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # audit/debug event log; --wait/--follow lower-level streams
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
 tt instructions show [path] [--harness claude|codex|antigravity|gemini|grok|opencode|all] [--scope effective|bundled|user|project]  # show collaboration prompt
@@ -242,6 +246,7 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 - **Ephemeral rooms.** `leave_room`/`tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.
+- **Readable default projections.** State, events, notes, and health anchor to the room's newest real activity and collapse much-older ghost rows, while `--all` and explicit cursors preserve full audit history.
 - **Multi-process safe.** Shared SQLite with WAL mode, `BEGIN IMMEDIATE` writes, 250 ms polling for `wait_for_turn`. No daemon required.
 - **Per-call identity derivation.** Harness-launched CLI calls derive identity from harness environment or ancestry. Human CLI callers get a stable `human:<username>` identity.
 

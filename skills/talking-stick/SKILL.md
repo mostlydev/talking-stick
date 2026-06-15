@@ -35,6 +35,7 @@ Useful commands:
 - `tt wait --park --events --after N --json`
 - `tt try --events --after N --json`
 - `tt state --json`
+- `tt health --json`
 - `tt events --after N --target any --json`
 - `tt notes add "..." --json`
 - `tt notes list --json`
@@ -251,6 +252,7 @@ Use these reads when you need context:
 
 - `tt list --json`: discover active rooms under the current path
 - `tt state --json`: authoritative current room projection
+- `tt health --json`: read-only room, local session, receiver, and git advisory
 - `tt events --target any --json`: replay recent claims, releases, assignments, messages, and takeovers
 - `tt notes list --json`: list durable notes
 - `tt whoami --explain`: inspect identity resolution

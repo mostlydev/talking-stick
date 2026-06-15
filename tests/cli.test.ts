@@ -1246,6 +1246,53 @@ describe("tt notes", () => {
     }
   });
 
+  test("tt health is read-only and tt status aliases it", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await captureStdout(["join", project, "--agent", "human:health-test"]);
+
+    const before = snapshotCliState();
+    const healthOut = await captureStdout([
+      "health",
+      project,
+      "--agent",
+      "human:health-test",
+      "--json"
+    ]);
+    const health = JSON.parse(healthOut) as {
+      room: { canonical_path: string };
+      local: {
+        identity: { agent_id: string };
+        session: { found: boolean };
+        guardian: { liveness: string };
+      };
+      workspace: { git: { status: string } };
+      coordination_prompt?: string;
+    };
+
+    expect(snapshotCliState()).toEqual(before);
+    expect(health.room.canonical_path).toBe(project);
+    expect(health.local.identity.agent_id).toBe("human:health-test");
+    expect(health.local.session.found).toBe(true);
+    expect(health.local.guardian.liveness).toBe("not_recorded");
+    expect(health.workspace.git.status).toBe("unavailable");
+    expect(health.coordination_prompt).toBe(COORDINATION_PROMPT);
+
+    const statusOut = await captureStdout([
+      "status",
+      project,
+      "--agent",
+      "human:health-test",
+      "--json"
+    ]);
+    const status = JSON.parse(statusOut) as {
+      room: { canonical_path: string };
+      coordination_prompt?: string;
+    };
+    expect(snapshotCliState()).toEqual(before);
+    expect(status.room.canonical_path).toBe(project);
+    expect(status.coordination_prompt).toBe(COORDINATION_PROMPT);
+  });
+
   test("TT_HARNESS_EXPORT auto-switches state to JSON; --text overrides", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     await captureStdout(["join", project, "--agent", "human:auto-test"]);
@@ -1311,6 +1358,8 @@ describe("tt notes", () => {
       },
       { argv: ["join", project, "--help"], usage: "Usage: tt join" },
       { argv: ["leave", project, "--help"], usage: "Usage: tt leave" },
+      { argv: ["health", project, "--help"], usage: "Usage: tt health" },
+      { argv: ["status", project, "--help"], usage: "Usage: tt health" },
       {
         argv: ["kick", "human:next", project, "--help"],
         usage: "Usage: tt kick"

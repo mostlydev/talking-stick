@@ -336,12 +336,16 @@ export interface GetRoomStateInput {
   room_id: string;
   agent_id?: AgentId;
   process_metadata?: ProcessMetadata;
+  include_all?: boolean;
 }
 
 export interface GetRoomStateResult {
   room: PathRoom;
   members: RoomMember[];
   cursor_event_seq: number;
+  hidden?: {
+    members: HiddenRowsSummary;
+  };
 }
 
 export interface GetRoomEventsInput {
@@ -350,6 +354,44 @@ export interface GetRoomEventsInput {
   after_event_seq?: number;
   limit?: number;
   process_metadata?: ProcessMetadata;
+  include_all?: boolean;
+}
+
+export interface GetRoomEventsViewResult {
+  events: RoomEvent[];
+  hidden?: {
+    events: HiddenRowsSummary;
+  };
+}
+
+export interface GetRoomHealthInput {
+  context_path: string;
+  agent_id?: AgentId;
+  include_all?: boolean;
+}
+
+export interface GetRoomHealthResult {
+  room: PathRoom;
+  members: RoomMember[];
+  cursor_event_seq: number;
+  pending_handoff: RoomEvent | null;
+  takeover: RoomHealthTakeover;
+  hidden?: {
+    members: HiddenRowsSummary;
+  };
+}
+
+export interface RoomHealthTakeover {
+  available: boolean;
+  reason?:
+    | "claim_timeout"
+    | "owner_timeout"
+    | "owner_gone"
+    | "owner_idle"
+    | "recipient_gone";
+  room_state?: RoomState;
+  current_owner?: AgentId;
+  reserved_for?: AgentId;
 }
 
 export interface SendMessageInput {
@@ -427,10 +469,22 @@ export interface ListNotesInput {
   agent_id?: AgentId;
   after_note_id?: string;
   include_resolved?: boolean;
+  include_all?: boolean;
   limit?: number;
   process_metadata?: ProcessMetadata;
 }
 
 export interface ListNotesResult {
   notes: Note[];
+  hidden?: {
+    notes: HiddenRowsSummary;
+  };
+}
+
+export interface HiddenRowsSummary {
+  older_count: number;
+  shown_count: number;
+  total_count: number;
+  latest_activity_at: string | null;
+  horizon_start_at: string | null;
 }

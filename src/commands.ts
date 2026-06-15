@@ -2,6 +2,9 @@ import { TalkingStickService } from "./service.js";
 import type {
   AddNoteResult,
   GetRoomEventsInput,
+  GetRoomEventsViewResult,
+  GetRoomHealthInput,
+  GetRoomHealthResult,
   GetRoomStateInput,
   GetRoomStateResult,
   HeartbeatResult,
@@ -84,6 +87,7 @@ export interface ListNotesCommandInput {
   room_id: string;
   after_note_id?: string;
   include_resolved?: boolean;
+  include_all?: boolean;
   limit?: number;
 }
 
@@ -230,6 +234,14 @@ export class TalkingStickCommands {
     return this.service.getRoomEvents(input);
   }
 
+  getRoomEventsView(input: GetRoomEventsInput): GetRoomEventsViewResult {
+    return this.service.getRoomEventsView(input);
+  }
+
+  getRoomHealth(input: GetRoomHealthInput): GetRoomHealthResult {
+    return this.service.getRoomHealth(input);
+  }
+
   sendMessage(
     identity: DerivedIdentity,
     input: SendMessageCommandInput
@@ -274,6 +286,7 @@ export class TalkingStickCommands {
       agent_id: identity?.agent_id,
       after_note_id: input.after_note_id,
       include_resolved: input.include_resolved,
+      include_all: input.include_all,
       limit: input.limit,
       process_metadata: identity?.process_metadata
     });

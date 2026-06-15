@@ -26,9 +26,13 @@ import type {
   EventType,
   EventTypeFilter,
   GetRoomEventsInput,
+  GetRoomEventsViewResult,
+  GetRoomHealthInput,
+  GetRoomHealthResult,
   GetRoomStateInput,
   GetRoomStateResult,
   Handoff,
+  HiddenRowsSummary,
   HeartbeatResult,
   JoinPathInput,
   JoinPathResult,
@@ -52,6 +56,7 @@ import type {
   ReleaseStickResult,
   RelinquishOwnershipResult,
   RoomEvent,
+  RoomHealthTakeover,
   RoomMember,
   RoomState,
   SendMessageInput,
@@ -148,6 +153,11 @@ interface RoomInspection {
   ownerMember: RoomMemberRow | null;
   reservedMember: RoomMemberRow | null;
   state: RoomState;
+}
+
+interface ReadHorizon {
+  latest_activity_at: string | null;
+  horizon_start_at: string | null;
 }
 
 type TakeoverKind =
@@ -946,12 +956,87 @@ export class TalkingStickService {
     );
     const inspection = this.inspectRoom(room, now);
 
+    const mappedMembers = inspection.members.map((member) =>
+      this.mapMember(member, now)
+    );
+    const horizon = this.getRoomReadHorizon(
+      input.room_id,
+      room,
+      inspection.members
+    );
+    const memberView =
+      input.include_all === false
+        ? this.applyMemberHorizon(
+            mappedMembers,
+            horizon,
+            new Set(
+              [room.owner, room.reserved_for, input.agent_id].filter(
+                (item): item is AgentId => Boolean(item)
+              )
+            )
+          )
+        : { rows: mappedMembers, hidden: undefined };
+
     return {
       room: this.mapRoom(inspection, now),
-      members: inspection.members.map((member) =>
-        this.mapMember(member, now)
+      members: memberView.rows,
+      cursor_event_seq: this.latestEventSeq(input.room_id),
+      ...(memberView.hidden ? { hidden: { members: memberView.hidden } } : {})
+    };
+  }
+
+  getRoomHealth(input: GetRoomHealthInput): GetRoomHealthResult {
+    assertNonEmpty(input.context_path, "context_path");
+
+    const resolved = resolveContextPath(input.context_path);
+    const room = this.findDeepestRoom(
+      ancestorPaths(resolved.canonical_context_path, resolved.workspace_root)
+    );
+    if (!room) {
+      throw new ProtocolError(
+        "room_not_found",
+        "No room found for this path. Run `tt join` first."
+      );
+    }
+
+    const now = this.now();
+    const inspection = this.inspectRoom(room, now);
+    const mappedMembers = inspection.members.map((member) =>
+      this.mapMember(member, now)
+    );
+    const horizon = this.getRoomReadHorizon(
+      room.room_id,
+      room,
+      inspection.members
+    );
+    const memberView =
+      input.include_all === true
+        ? { rows: mappedMembers, hidden: undefined }
+        : this.applyMemberHorizon(
+            mappedMembers,
+            horizon,
+            new Set(
+              [room.owner, room.reserved_for, input.agent_id].filter(
+                (item): item is AgentId => Boolean(item)
+              )
+            )
+          );
+    const pendingHandoff = room.pending_handoff_event_seq
+      ? this.getEventBySeq(room.pending_handoff_event_seq)
+      : null;
+
+    return {
+      room: this.mapRoom(inspection, now),
+      members: memberView.rows,
+      cursor_event_seq: this.latestEventSeq(room.room_id),
+      pending_handoff: pendingHandoff ? this.mapEvent(pendingHandoff) : null,
+      takeover: this.describeTakeoverAvailability(
+        room,
+        input.agent_id,
+        now,
+        inspection
       ),
-      cursor_event_seq: this.latestEventSeq(input.room_id)
+      ...(memberView.hidden ? { hidden: { members: memberView.hidden } } : {})
     };
   }
 
@@ -978,6 +1063,56 @@ export class TalkingStickService {
       )
       .all(input.room_id, afterEventSeq, limit)
       .map((row) => this.mapEvent(row));
+  }
+
+  getRoomEventsView(input: GetRoomEventsInput): GetRoomEventsViewResult {
+    if (
+      input.include_all !== false ||
+      input.after_event_seq !== undefined ||
+      input.limit !== undefined
+    ) {
+      return { events: this.getRoomEvents(input) };
+    }
+
+    this.purgeExpiredIdleRooms(this.now());
+    this.touchKnownMember(
+      input.room_id,
+      input.agent_id,
+      this.now().toISOString(),
+      input.process_metadata
+    );
+    const room = this.requireRoom(input.room_id);
+    const members = this.getMembers(input.room_id);
+    const horizon = this.getRoomReadHorizon(input.room_id, room, members);
+    const totalCount = this.countRoomEvents(input.room_id);
+    const olderCount = this.countRoomEventsBefore(
+      input.room_id,
+      horizon.horizon_start_at
+    );
+    const rows = this.db
+      .prepare<[string, string, number], RoomEventRow>(
+        `
+        SELECT *
+        FROM room_events
+        WHERE room_id = ? AND created_at >= ?
+        ORDER BY event_seq
+        LIMIT ?
+      `
+      )
+      .all(input.room_id, horizon.horizon_start_at ?? "", 500);
+    const events = rows.map((row) => this.mapEvent(row));
+
+    return {
+      events,
+      hidden: {
+        events: this.hiddenSummary(
+          totalCount,
+          events.length,
+          horizon,
+          olderCount
+        )
+      }
+    };
   }
 
   sendMessage(input: SendMessageInput): SendMessageResult {
@@ -1248,7 +1383,33 @@ export class TalkingStickService {
     }
 
     const resolvedFilter = includeResolved ? "" : "AND resolved_at IS NULL";
+    const useHorizon =
+      input.include_all === false &&
+      input.after_note_id === undefined &&
+      input.limit === undefined;
+
     const rows = (() => {
+      if (useHorizon) {
+        const room = this.requireRoom(input.room_id);
+        const horizon = this.getRoomReadHorizon(
+          input.room_id,
+          room,
+          this.getMembers(input.room_id)
+        );
+        return this.db
+          .prepare<[string, string, number], NoteRow>(
+            `
+            SELECT *
+            FROM notes
+            WHERE room_id = ?
+              ${resolvedFilter}
+              AND created_at >= ?
+            ORDER BY created_at ASC, note_id ASC
+            LIMIT ?
+          `
+          )
+          .all(input.room_id, horizon.horizon_start_at ?? "", limit);
+      }
       if (anchorCreatedAt !== null && anchorNoteId !== null) {
         return this.db
           .prepare<
@@ -1289,7 +1450,190 @@ export class TalkingStickService {
 
     const notes = rows.map((row) => mapNoteRow(row));
 
-    return { notes };
+    if (!useHorizon) {
+      return { notes };
+    }
+
+    const room = this.requireRoom(input.room_id);
+    const horizon = this.getRoomReadHorizon(
+      input.room_id,
+      room,
+      this.getMembers(input.room_id)
+    );
+    const totalCount = this.countNotes(input.room_id, includeResolved);
+    const olderCount = this.countNotesBefore(
+      input.room_id,
+      includeResolved,
+      horizon.horizon_start_at
+    );
+
+    return {
+      notes,
+      hidden: {
+        notes: this.hiddenSummary(totalCount, notes.length, horizon, olderCount)
+      }
+    };
+  }
+
+  private getRoomReadHorizon(
+    roomId: string,
+    room: PathRoomRow,
+    members: RoomMemberRow[]
+  ): ReadHorizon {
+    const now = this.now();
+    const candidates: string[] = [room.updated_at];
+    const latestEventAt = this.latestRoomEventCreatedAt(roomId);
+    const latestNoteAt = this.latestNoteCreatedAt(roomId);
+    if (latestEventAt) {
+      candidates.push(latestEventAt);
+    }
+    if (latestNoteAt) {
+      candidates.push(latestNoteAt);
+    }
+
+    const activeMembers = members.filter((member) =>
+      this.isMemberActive(member, now)
+    );
+    const memberAnchors = activeMembers.length > 0 ? activeMembers : members;
+    for (const member of memberAnchors) {
+      candidates.push(member.last_seen_at);
+    }
+
+    const latestActivityAt = maxIsoTimestamp(candidates);
+    return {
+      latest_activity_at: latestActivityAt,
+      horizon_start_at: latestActivityAt
+        ? startOfUtcDayIso(latestActivityAt)
+        : null
+    };
+  }
+
+  private latestRoomEventCreatedAt(roomId: string): string | null {
+    return (
+      this.db
+        .prepare<[string], { created_at: string | null }>(
+          "SELECT MAX(created_at) AS created_at FROM room_events WHERE room_id = ?"
+        )
+        .get(roomId)?.created_at ?? null
+    );
+  }
+
+  private latestNoteCreatedAt(roomId: string): string | null {
+    return (
+      this.db
+        .prepare<[string], { created_at: string | null }>(
+          "SELECT MAX(created_at) AS created_at FROM notes WHERE room_id = ?"
+        )
+        .get(roomId)?.created_at ?? null
+    );
+  }
+
+  private countRoomEvents(roomId: string): number {
+    return (
+      this.db
+        .prepare<[string], { count: number }>(
+          "SELECT COUNT(*) AS count FROM room_events WHERE room_id = ?"
+        )
+        .get(roomId)?.count ?? 0
+    );
+  }
+
+  private countRoomEventsBefore(
+    roomId: string,
+    horizonStartAt: string | null
+  ): number {
+    if (!horizonStartAt) {
+      return 0;
+    }
+
+    return (
+      this.db
+        .prepare<[string, string], { count: number }>(
+          "SELECT COUNT(*) AS count FROM room_events WHERE room_id = ? AND created_at < ?"
+        )
+        .get(roomId, horizonStartAt)?.count ?? 0
+    );
+  }
+
+  private countNotes(roomId: string, includeResolved: boolean): number {
+    const resolvedFilter = includeResolved ? "" : "AND resolved_at IS NULL";
+    return (
+      this.db
+        .prepare<[string], { count: number }>(
+          `
+          SELECT COUNT(*) AS count
+          FROM notes
+          WHERE room_id = ?
+            ${resolvedFilter}
+        `
+        )
+        .get(roomId)?.count ?? 0
+    );
+  }
+
+  private countNotesBefore(
+    roomId: string,
+    includeResolved: boolean,
+    horizonStartAt: string | null
+  ): number {
+    if (!horizonStartAt) {
+      return 0;
+    }
+
+    const resolvedFilter = includeResolved ? "" : "AND resolved_at IS NULL";
+    return (
+      this.db
+        .prepare<[string, string], { count: number }>(
+          `
+          SELECT COUNT(*) AS count
+          FROM notes
+          WHERE room_id = ?
+            ${resolvedFilter}
+            AND created_at < ?
+        `
+        )
+        .get(roomId, horizonStartAt)?.count ?? 0
+    );
+  }
+
+  private applyMemberHorizon(
+    members: RoomMember[],
+    horizon: ReadHorizon,
+    protectedAgentIds: Set<AgentId>
+  ): { rows: RoomMember[]; hidden?: HiddenRowsSummary } {
+    if (!horizon.horizon_start_at) {
+      return { rows: members };
+    }
+
+    const horizonStartAt = horizon.horizon_start_at;
+    const rows = members.filter(
+      (member) =>
+        protectedAgentIds.has(member.agent_id) ||
+        Date.parse(member.last_seen_at) >= Date.parse(horizonStartAt)
+    );
+    const hidden = this.hiddenSummary(
+      members.length,
+      rows.length,
+      horizon,
+      members.length - rows.length
+    );
+
+    return { rows, hidden };
+  }
+
+  private hiddenSummary(
+    totalCount: number,
+    shownCount: number,
+    horizon: ReadHorizon,
+    olderCount = Math.max(0, totalCount - shownCount)
+  ): HiddenRowsSummary {
+    return {
+      older_count: Math.max(0, olderCount),
+      shown_count: shownCount,
+      total_count: totalCount,
+      latest_activity_at: horizon.latest_activity_at,
+      horizon_start_at: horizon.horizon_start_at
+    };
   }
 
   private waitForTurnOnce(input: WaitForTurnInput): WaitForTurnResult {
@@ -2246,6 +2590,94 @@ export class TalkingStickService {
     );
   }
 
+  private describeTakeoverAvailability(
+    room: PathRoomRow,
+    agentId: AgentId | undefined,
+    now: Date,
+    inspection: RoomInspection
+  ): RoomHealthTakeover {
+    if (!agentId || room.state === "closed") {
+      return { available: false, room_state: inspection.state };
+    }
+
+    if (inspection.state === "recipient_gone") {
+      if (
+        room.reserved_for !== agentId &&
+        this.isClaimTakeoverEligible(room, agentId, now, inspection)
+      ) {
+        return {
+          available: true,
+          reason: "recipient_gone",
+          room_state: "recipient_gone",
+          reserved_for: room.reserved_for ?? undefined
+        };
+      }
+
+      return {
+        available: false,
+        room_state: "recipient_gone",
+        reserved_for: room.reserved_for ?? undefined
+      };
+    }
+
+    if (
+      room.reserved_for &&
+      room.reserved_for !== agentId &&
+      this.hasExpired(room.claim_expires_at, now) &&
+      this.isClaimTakeoverEligible(room, agentId, now, inspection)
+    ) {
+      return {
+        available: true,
+        reason: "claim_timeout",
+        room_state: "reserved",
+        reserved_for: room.reserved_for
+      };
+    }
+
+    if (inspection.state === "owner_gone" && room.owner !== agentId) {
+      return {
+        available: true,
+        reason: "owner_gone",
+        room_state: "owner_gone",
+        current_owner: room.owner ?? undefined
+      };
+    }
+
+    if (
+      room.owner &&
+      room.owner !== agentId &&
+      inspection.state === "stale_owner"
+    ) {
+      return {
+        available: true,
+        reason: "owner_timeout",
+        room_state: "stale_owner",
+        current_owner: room.owner
+      };
+    }
+
+    if (
+      room.owner &&
+      room.owner !== agentId &&
+      inspection.state === "owned" &&
+      this.isOwnerHarnessIdle(inspection.ownerMember, now)
+    ) {
+      return {
+        available: true,
+        reason: "owner_idle",
+        room_state: "owner_idle",
+        current_owner: room.owner
+      };
+    }
+
+    return {
+      available: false,
+      room_state: inspection.state,
+      current_owner: room.owner ?? undefined,
+      reserved_for: room.reserved_for ?? undefined
+    };
+  }
+
   private isClaimTakeoverEligible(
     room: PathRoomRow,
     agentId: AgentId,
@@ -3055,6 +3487,40 @@ function parseTimestampMs(timestamp: string | null): number {
 
   const parsed = Date.parse(timestamp);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function maxIsoTimestamp(timestamps: string[]): string | null {
+  let maxMs = Number.NEGATIVE_INFINITY;
+  let maxTimestamp: string | null = null;
+
+  for (const timestamp of timestamps) {
+    const parsed = Date.parse(timestamp);
+    if (!Number.isFinite(parsed)) {
+      continue;
+    }
+    if (parsed > maxMs) {
+      maxMs = parsed;
+      maxTimestamp = timestamp;
+    }
+  }
+
+  return maxTimestamp;
+}
+
+function startOfUtcDayIso(timestamp: string): string | null {
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  const date = new Date(parsed);
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate()
+    )
+  ).toISOString();
 }
 
 function normalizeProcessMetadata(

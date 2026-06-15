@@ -128,6 +128,206 @@ describe("talking-stick vertical slice", () => {
     expect(claudeJoin.cursor_event_seq).toBe(2);
   });
 
+  test("getRoomHealth is read-only and reports room health by path", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    const codexTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.releaseStick({
+      room_id: codexJoin.room_id,
+      agent_id: "codex:test",
+      lease_id: codexTurn.lease_id,
+      expected_turn_id: codexTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    const before = snapshotServiceState(harness.service);
+    const health = harness.service.getRoomHealth({
+      context_path: project,
+      agent_id: "human:observer"
+    });
+    const after = snapshotServiceState(harness.service);
+
+    expect(after).toEqual(before);
+    expect(health.room.room_id).toBe(codexJoin.room_id);
+    expect(health.pending_handoff?.event_type).toBe("release");
+    expect(health.takeover.available).toBe(false);
+    expect(health.cursor_event_seq).toBe(2);
+  });
+
+  test("read horizon hides old ghost members but keeps reserved and caller visible", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const ownerJoin = harness.service.joinPath({
+      agent_id: "codex:owner",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:reserved",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "grok:ghost",
+      context_path: project
+    });
+    const ownerTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:owner",
+        room_id: ownerJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    harness.service.passStick({
+      room_id: ownerJoin.room_id,
+      agent_id: "codex:owner",
+      lease_id: ownerTurn.lease_id,
+      expected_turn_id: ownerTurn.turn_id,
+      to_agent_id: "claude:reserved",
+      handoff: validHandoff()
+    });
+
+    harness.clock.advance(2 * 24 * 60 * 60 * 1000);
+    harness.service.joinPath({
+      agent_id: "codex:caller",
+      context_path: project
+    });
+
+    const compact = harness.service.getRoomState({
+      room_id: ownerJoin.room_id,
+      agent_id: "codex:caller",
+      include_all: false
+    });
+    expect(compact.members.map((member) => member.agent_id).sort()).toEqual([
+      "claude:reserved",
+      "codex:caller"
+    ]);
+    expect(compact.hidden?.members.older_count).toBe(2);
+
+    const full = harness.service.getRoomState({
+      room_id: ownerJoin.room_id,
+      agent_id: "codex:caller",
+      include_all: true
+    });
+    expect(full.members.map((member) => member.agent_id).sort()).toEqual([
+      "claude:reserved",
+      "codex:caller",
+      "codex:owner",
+      "grok:ghost"
+    ]);
+  });
+
+  test("all-old horizon still shows the most recent activity day", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+
+    const join = harness.service.joinPath({
+      agent_id: "codex:first",
+      context_path: project
+    });
+    harness.clock.advance(26 * 60 * 60 * 1000);
+    harness.service.joinPath({
+      agent_id: "claude:second",
+      context_path: project
+    });
+    harness.clock.advance(2 * 24 * 60 * 60 * 1000);
+
+    const compact = harness.service.getRoomHealth({
+      context_path: project,
+      agent_id: "human:observer"
+    });
+
+    expect(compact.members.map((member) => member.agent_id)).toEqual([
+      "claude:second"
+    ]);
+    expect(compact.hidden?.members.older_count).toBe(1);
+    expect(compact.room.room_id).toBe(join.room_id);
+  });
+
+  test("events and notes default views hide older activity behind summaries", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+
+    harness.service.sendMessage({
+      agent_id: "codex:test",
+      room_id: join.room_id,
+      body: "old event"
+    });
+    harness.service.addNote({
+      agent_id: "codex:test",
+      room_id: join.room_id,
+      body: "old note"
+    });
+
+    harness.clock.advance(2 * 24 * 60 * 60 * 1000);
+    harness.service.sendMessage({
+      agent_id: "claude:test",
+      room_id: join.room_id,
+      body: "new event"
+    });
+    harness.service.addNote({
+      agent_id: "claude:test",
+      room_id: join.room_id,
+      body: "new note"
+    });
+
+    const compactEvents = harness.service.getRoomEventsView({
+      room_id: join.room_id,
+      include_all: false
+    });
+    expect(compactEvents.events.map((event) => event.payload?.body)).toEqual([
+      "new event"
+    ]);
+    expect(compactEvents.hidden?.events.older_count).toBe(1);
+
+    const allEvents = harness.service.getRoomEventsView({
+      room_id: join.room_id,
+      include_all: true
+    });
+    expect(allEvents.events.map((event) => event.payload?.body)).toEqual([
+      "old event",
+      "new event"
+    ]);
+
+    const compactNotes = harness.service.listNotes({
+      room_id: join.room_id,
+      include_all: false
+    });
+    expect(compactNotes.notes.map((note) => note.body)).toEqual(["new note"]);
+    expect(compactNotes.hidden?.notes.older_count).toBe(1);
+
+    const allNotes = harness.service.listNotes({
+      room_id: join.room_id,
+      include_all: true
+    });
+    expect(allNotes.notes.map((note) => note.body)).toEqual([
+      "old note",
+      "new note"
+    ]);
+  });
+
   test("release_stick prefers a new waiter over the next join-order member", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
@@ -3505,6 +3705,23 @@ function countRows(
   return service.db
     .prepare<[], { count: number }>(`SELECT COUNT(*) AS count FROM ${tableName}`)
     .get()?.count ?? 0;
+}
+
+function snapshotServiceState(service: TalkingStickService): unknown {
+  return {
+    rooms: service.db
+      .prepare("SELECT * FROM path_rooms ORDER BY room_id")
+      .all(),
+    members: service.db
+      .prepare("SELECT * FROM room_members ORDER BY room_id, agent_id")
+      .all(),
+    events: service.db
+      .prepare("SELECT * FROM room_events ORDER BY event_seq")
+      .all(),
+    notes: service.db
+      .prepare("SELECT * FROM notes ORDER BY room_id, created_at, note_id")
+      .all()
+  };
 }
 
 function asYourTurn(result: WaitForTurnResult) {

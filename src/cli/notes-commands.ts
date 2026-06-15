@@ -88,12 +88,20 @@ function handleNotesListCommand(
   const result = runtime.commands.listNotes(identity, {
     room_id: session.room_id,
     include_resolved: includeResolved,
+    include_all:
+      includeResolved ||
+      hasOption(parsed, "after") ||
+      hasOption(parsed, "limit"),
     after_note_id: getStringOption(parsed, "after"),
     limit: parseOptionalInteger(parsed, "limit")
   });
 
   printResult(parsed, result, () => {
     if (result.notes.length === 0) {
+      const hidden = result.hidden?.notes;
+      if (hidden && hidden.older_count > 0) {
+        return `No recent notes. ${hidden.older_count} older note${hidden.older_count === 1 ? "" : "s"} hidden; use --all.`;
+      }
       return "No notes.";
     }
 
@@ -105,7 +113,12 @@ function handleNotesListCommand(
         firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
       return `- ${shortNoteId(note.note_id)} ${note.author_agent_id} · ${formatRelativeTime(note.created_at)} · ${scope}\n  ${preview}`;
     });
-    return [header, ...lines].join("\n");
+    const hidden = result.hidden?.notes;
+    const hiddenLine =
+      hidden && hidden.older_count > 0
+        ? `${hidden.older_count} older note${hidden.older_count === 1 ? "" : "s"} hidden; use --all.`
+        : null;
+    return [header, ...lines, ...(hiddenLine ? [hiddenLine] : [])].join("\n");
   });
 }
 

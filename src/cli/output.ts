@@ -9,6 +9,8 @@ export const COORDINATION_PROMPT =
 const COORDINATION_PROMPT_COMMANDS = new Set([
   "join",
   "state",
+  "health",
+  "status",
   "events",
   "wait",
   "try",
@@ -197,8 +199,10 @@ Commands:
   tt kick <agent_id> [path] [--reason TEXT] [--force]
   tt wait [path] [--timeout 110s] [--park] [--events --after N]
   tt try [path] [--park] [--events --after N]
-  tt state [path]
-  tt events [path] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
+  tt state [path] [--all]
+  tt health [path] [--all]
+  tt status [path] [--all]
+  tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
   tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]
   tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
   tt instructions show [path] [--harness claude|codex|antigravity|gemini|grok|opencode|all] [--scope effective|bundled|user|project]
