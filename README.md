@@ -30,17 +30,11 @@ Open two terminal panes side by side — tmux split, iTerm split, two windows, w
 |---|---|
 | `cd ~/myrepo && claude [--dangerously-skip-permissions]` | `cd ~/myrepo && codex` |
 
-Then prompt them.
+Then give **both** panes the same prompt — a shared goal plus the skill trigger:
 
-**Pane A (Claude Code):**
+> `/goal Work together to implement OAuth login. Use the /talking-stick $talking-stick skill for coordination`
 
-> Draft a plan to add OAuth login. When it's solid, pass the stick to Codex for critique. After Codex hands it back with revisions, finalize, then pass to Codex to implement — you'll test and review. `/talking-stick`
-
-**Pane B (Codex):**
-
-> Join the room and wait for the stick. When Claude passes you a plan, critique it sharply and pass it back with revisions. Later, when Claude hands you the implementation turn, build it and pass back for review. `$talking-stick`
-
-That's the whole workflow. They negotiate turns automatically, hand off structured context (status, next action, artifacts) at each transition, and never edit the repo at the same time.
+`/talking-stick $talking-stick` triggers the skill in either harness, and the goal keeps each agent driving toward the shared objective. You don't script the turn-taking — the skill teaches each agent how to join, wait, hand off, and review. They negotiate turns automatically, carry structured handoffs (status, next action, artifacts) across transitions, and never edit the repo at the same time.
 
 ### Install options
 
@@ -130,8 +124,8 @@ Effective instructions are layered in this order: bundled defaults, user default
 
 While you wait your turn you may still need to flag something to the current owner: a subtle invariant, a related bug, a pointer to a doc. Non-owner notes give you a durable channel without interrupting the turn.
 
-- Any joined member (owner or not) can `add_note` with a short plain-text body (≤ 16 KB). An optional `turn_id` scopes the note to a specific turn; omitted, the note is room-scoped and survives turn transitions.
-- `list_notes` returns notes for the room; readers can paginate with `after_note_id` and opt into resolved entries with `include_resolved`.
+- Any joined member (owner or not) can `tt notes add` a short plain-text body (≤ 16 KB). An optional `--turn N` scopes the note to a specific turn; omitted, the note is room-scoped and survives turn transitions.
+- `tt notes list` returns notes for the room; readers can paginate with `--after` and see the full history (older and resolved entries) with `--all`.
 - Notes are for observations and pointers, not for coordinating shared edits. Shared workspace changes still require holding the stick.
 
 ## Out-of-band messaging
@@ -148,7 +142,7 @@ tt wait --events --after <cursor_event_seq> --json
 - `tt join --json` and `tt state --json` return `cursor_event_seq`; use that as the initial `--after` cursor, or use `--after 0` when you intentionally want to replay history.
 - `tt wait --events --after <cursor>` returns ownership state, `events[]`, an updated `cursor_event_seq`, and `wake_reason`. Restart it with the returned cursor.
 - `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for audit/debug or legacy fallback consumers. They are not the recommended harness loop.
-- `wait_for_events` is observer-safe: it never mutates room state, so non-holders can use it freely without disturbing turn-fairness bookkeeping.
+- The wait-events loop is observer-safe for non-holders: it never mutates room state, so you can run it freely without disturbing turn-fairness bookkeeping.
 - Event receive does not grant the stick. Only a `tt wait --events` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
 - Default `tt state`, non-streaming `tt events`, `tt notes list`, and `tt health` hide much-older ghost rows behind a structured `hidden.older_count` summary. Use `--all` for the full room history.
 
@@ -156,21 +150,13 @@ tt wait --events --after <cursor_event_seq> --json
 
 - **Message** — conversational, ephemeral, between live processes. Six round-trips of "what about line 84?" cost about as much as one structured handoff and zero stick churn.
 - **Note** (`tt notes add`) — durable, resolvable artifacts. Leave a note when the next holder should consider something at handoff, or when the observation should outlive the conversation.
-- **Handoff** (`release_stick` / `pass_stick`) — transfer of work. Messages do not replace handoffs; they live alongside them.
+- **Handoff** (`tt release` / `tt pass`) — transfer of work. Messages do not replace handoffs; they live alongside them.
 
-**`to_agent_id` is routing, not ACL.** Any room member can read any message via `get_room_events` or `tt events --follow --target any`. Messages are not private. They also do not grant the stick — a non-holder paging the holder gets attention, not write authority.
-
-For harnesses that only notice completed subprocesses, `tt wait --events --after <cursor> --json` is still the normal loop: it exits on each wake, the harness processes the result, updates the cursor, and launches it again.
+**`to_agent_id` is routing, not ACL.** Any room member can read any message via `tt events --target any`. Messages are not private. They also do not grant the stick — a non-holder paging the holder gets attention, not write authority.
 
 ## Post-turn closeout
 
-After a release or assignment, agents choose one of three branches:
-
-- Active work pending: continue `tt wait --events --after <cursor> --json`.
-- Passive or external wait: use `tt wait --park --events --after <cursor> --json`.
-- Shared task complete: stop the local loop and send the final user-facing closeout.
-
-The complete branch requires clear evidence: final review/handoff, no `next_action` for another agent, no pending assignment or reservation, closed open questions, recorded test/runtime/release checks, no CI/publish/human gate left, and the user objective actually satisfied. If that is ambiguous, the agent keeps listening or parks. A protocol terminal marker is deferred until room archive/reopen behavior is designed.
+After a handoff, an agent keeps the wait loop alive while work is pending, parks when it is only waiting on an external signal, or — when the shared task is genuinely complete — stops and sends a final closeout instead of churning the room. The exact completion evidence an agent must see before declaring done lives in the skill ([`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md)).
 
 ## How installation works per harness
 
@@ -250,14 +236,14 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 ## Design highlights
 
 - **Workspace-root room resolution.** An agent at any depth under `/repo/` joins the `/repo/` room automatically. Nested rooms require explicit `force_new`.
-- **Structured handoffs.** `release_stick` and `pass_stick` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
+- **Structured handoffs.** `tt release` and `tt pass` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
 - **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest without holding the stick; if the best-known candidate is between wait polls, a short grace window prevents immediate recycling to a less-fair claimant.
 - **No immediate take-backs.** If release leaves a handoff idle, the prior owner waits through the short grace window before reclaiming while another member exists.
-- **Ephemeral rooms.** `leave_room`/`tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
+- **Ephemeral rooms.** `tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.
 - **Readable default projections.** State, events, notes, and health anchor to the room's newest real activity and collapse much-older ghost rows, while `--all` and explicit cursors preserve full audit history.
-- **Multi-process safe.** Shared SQLite with WAL mode, `BEGIN IMMEDIATE` writes, 250 ms polling for `wait_for_turn`. No daemon required.
+- **Multi-process safe.** Shared SQLite with WAL mode, `BEGIN IMMEDIATE` writes, 250 ms polling for the wait loop. No daemon required.
 - **Per-call identity derivation.** Harness-launched CLI calls derive identity from harness environment or ancestry. Human CLI callers get a stable `human:<username>` identity.
 
 ## Storage
