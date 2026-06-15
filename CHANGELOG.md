@@ -11,6 +11,18 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+- **`tt health` / `tt status` room health view.** A read-only diagnostic that combines room truth (owner, reservation, turn, lease/claim expiry, pending handoff, takeover availability), member liveness, local process truth (the current `cli-session`, guardian liveness and whether it protects the current turn, and duplicate/stale receiver detection), and an advisory `git status`. Available as text and JSON. It never claims, releases, refreshes wait state, spawns guardians, kicks members, or mutates handoffs.
+- **`cursor_event_seq` on `tt join` and `tt state`.** Harnesses can seed the canonical wait loop from a returned event cursor instead of replaying history from `--after 0`.
+- **Automatic recency horizon for default reads.** `tt state`, non-streaming `tt events`, `tt notes list`, and `tt health` anchor to the room's most recent activity and collapse older ghost rows behind a summary; `--all` and explicit `--after`/`--limit`/streaming restore full history. The owner, reserved member, and calling agent are never hidden, and JSON exposes the hidden counts.
+
+### Changed
+- **One canonical listen/wait loop.** The bundled skill, README, and command help now teach `tt wait --events --after <cursor> --json` as the single harness loop for both ownership changes and room events; `tt events --follow` and `tt msg recv` are documented as audit/debug or legacy fallbacks. Events remain observer-only — shared mutation still requires a `your_turn` grant with a live guardian.
+- **Explicit terminal closeout guidance.** Skill §8 now defines three post-turn branches (active work pending, passive/external wait, shared task complete) with a completion-evidence checklist and worked examples, so a finished shared task closes out cleanly without an operator prompt. A protocol-level terminal marker is deferred to a follow-up issue pending room archive/reopen design.
+
+### Fixed
+- **Command help is side-effect-free.** `tt <command> --help`/`-h` (including `tt --json wait --help`, `tt wait . --help`, and `tt help <command>`) now print help and exit without resolving or claiming a room, spawning a guardian, or writing any events, leases, handoffs, member rows, or wait state. Help short-circuits before startup maintenance and runtime, and the parser recognizes leading global options and normalizes `-h`.
+
 ## [0.4.13] — 2026-06-14
 
 Full notes: [`docs/releases/0.4.13.md`](docs/releases/0.4.13.md).
