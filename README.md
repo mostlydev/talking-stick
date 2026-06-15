@@ -45,6 +45,10 @@ Then give **both** panes the same prompt — a shared goal plus the skill trigge
 | **From source** | `git clone … && npm install && npm link` | For contributors. |
 
 All three produce a `tt` binary on your `PATH`. Everything else below works identically.
+Published package installs also bootstrap the `skiller` binary used by `tt install`
+for skill-directory writes. Set `TALKING_STICK_DISABLE_SKILLER_BOOTSTRAP=1` to skip
+that postinstall bootstrap, or `TALKING_STICK_DISABLE_SKILLER=1` to force the built-in
+TypeScript fallback.
 
 ### Verify without installing
 
@@ -160,7 +164,7 @@ After a handoff, an agent keeps the wait loop alive while work is pending, parks
 
 ## How installation works per harness
 
-`tt install` installs or refreshes the bundled `talking-stick` skill. It does not add MCP servers. During install, uninstall, package update, and first run after an installed package version changes, `tt` removes stale MCP registrations written by older Talking Stick releases.
+`tt install` installs or refreshes the bundled `talking-stick` skill. Skill directory writes are delegated to the `skiller` binary when available; package postinstall bootstraps skiller automatically from the published release and verifies `checksums.txt` before installation. If skiller is missing, disabled, or fails its version gate, `tt` uses the built-in TypeScript fallback. It does not add MCP servers. During install, uninstall, package update, and first run after an installed package version changes, `tt` removes stale MCP registrations written by older Talking Stick releases.
 
 - Claude Code: copied or linked into `~/.claude/skills/talking-stick` because Claude Code does not read `~/.agents/skills`
 - Codex, Antigravity (`agy`), Grok Build, and OpenCode: copied or linked once into the shared `~/.agents/skills/talking-stick`

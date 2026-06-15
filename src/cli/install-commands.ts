@@ -20,6 +20,12 @@ import {
   planSharedSkillUninstall,
   resolveDuplicateSkillTargetPaths
 } from "../skill-install.js";
+import {
+  runSkillerCleanupDuplicates,
+  runSkillerDryRun,
+  runSkillerInstall,
+  runSkillerUninstall
+} from "../skiller-adapter.js";
 import { resolveDataDir } from "../config.js";
 import { FileAuditLog, defaultAuditLogPath, type AuditReason } from "../install-audit.js";
 import {
@@ -50,6 +56,31 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
 
   if (dryRun) {
     printDeprecatedHarnessNotices(harnesses);
+    const skillerLines = await runSkillerDryRun("install", {
+      harnesses,
+      ...installOptions
+    });
+    if (skillerLines) {
+      for (const line of skillerLines) {
+        process.stdout.write(`${line}\n`);
+      }
+      for (const action of harnesses.includes("grok")
+        ? [planGrokSessionHookInstall(installOptions)]
+        : []) {
+        printActionPlan(action);
+      }
+      for (const action of planCleanupActions(harnesses, installOptions)) {
+        printActionPlan(action);
+      }
+      const cleanupLines = await runSkillerDryRun("cleanup-duplicates", {
+        harnesses,
+        ...installOptions
+      });
+      for (const line of cleanupLines ?? []) {
+        process.stdout.write(`${line}\n`);
+      }
+      return;
+    }
     for (const action of dedupeInstallActions(planInstallActions(harnesses, installOptions))) {
       printActionPlan(action);
     }
@@ -61,10 +92,21 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
   }
 
   printDeprecatedHarnessNotices(harnesses);
-  const results = await runSkillInstallActions(
-    dedupeInstallActions(planInstallActions(harnesses, installOptions)),
-    installOptions
-  );
+  const skillerResults = await runSkillerInstall({
+    harnesses,
+    ...installOptions
+  });
+  const results = skillerResults
+    ? [
+        ...skillerResults,
+        ...(harnesses.includes("grok")
+          ? await runSkillInstallActions([planGrokSessionHookInstall(installOptions)], installOptions)
+          : [])
+      ]
+    : await runSkillInstallActions(
+        dedupeInstallActions(planInstallActions(harnesses, installOptions)),
+        installOptions
+      );
   reportInstallResults(results, "install");
   reportCleanupResults(await runCleanup(harnesses, "manual", installOptions), "install");
   printInstructionHint(results);
@@ -83,6 +125,32 @@ export async function runUninstallCommand(
 
   if (dryRun) {
     printDeprecatedHarnessNotices(harnesses);
+    const skillerLines = await runSkillerDryRun("uninstall", {
+      harnesses,
+      removeShared,
+      removeAll: hasOption(parsed, "all"),
+      ...installOptions
+    });
+    if (skillerLines) {
+      for (const line of skillerLines) {
+        process.stdout.write(`${line}\n`);
+      }
+      for (const action of harnesses.includes("grok")
+        ? [
+            planGrokSessionHookUninstall({
+              ...installOptions,
+              skipMissing: false
+            })
+          ]
+        : []) {
+        printActionPlan(action);
+      }
+      for (const action of planCleanupActions(harnesses, installOptions)) {
+        printActionPlan(action);
+      }
+      printSharedSkillLeftHint(harnesses, removeShared);
+      return;
+    }
     for (const action of actions) {
       printActionPlan(action);
     }
@@ -90,12 +158,33 @@ export async function runUninstallCommand(
     return;
   }
 
-  const results = (
-    await Promise.all(
-      harnesses.map((harness) => runSkillUninstall(harness, installOptions))
-    )
-  ).flat();
-  if (removeShared) {
+  const skillerResults = await runSkillerUninstall({
+    harnesses,
+    removeShared,
+    removeAll: hasOption(parsed, "all"),
+    ...installOptions
+  });
+  const results = skillerResults
+    ? [
+        ...skillerResults,
+        ...(harnesses.includes("grok")
+          ? [
+              await runAction(
+                planGrokSessionHookUninstall({
+                  ...installOptions,
+                  skipMissing: false
+                }),
+                installOptions
+              )
+            ]
+          : [])
+      ]
+    : (
+        await Promise.all(
+          harnesses.map((harness) => runSkillUninstall(harness, installOptions))
+        )
+      ).flat();
+  if (!skillerResults && removeShared) {
     results.push(await runAction(planSharedSkillUninstall(installOptions), installOptions));
   }
   reportInstallResults(results, "uninstall");
@@ -338,7 +427,12 @@ async function runCleanup(
     audit,
     installOptions
   });
-  const skillResults = removeDuplicateSkillInstalls({
+  const skillResults = await runSkillerCleanupDuplicates({
+    harnesses,
+    reason,
+    audit,
+    ...installOptions
+  }) ?? removeDuplicateSkillInstalls({
     harnesses,
     reason,
     audit,

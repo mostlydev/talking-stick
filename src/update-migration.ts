@@ -13,6 +13,7 @@ import {
   removeStaleMcpRegistrations,
   type RemoveStaleMcpResult
 } from "./install-migration.js";
+import { runSkillerCleanupDuplicates } from "./skiller-adapter.js";
 import { removeDuplicateSkillInstalls } from "./skill-install.js";
 import type { HarnessId, InstallOptions } from "./install.js";
 
@@ -74,7 +75,14 @@ export async function runStaleMcpCleanup(
     audit,
     installOptions: options.installOptions
   });
-  const skillResults = removeDuplicateSkillInstalls({
+  const skillResults = await runSkillerCleanupDuplicates({
+    harnesses: options.harnesses ?? "all",
+    reason: options.reason,
+    packageVersionFrom: options.packageVersionFrom,
+    packageVersionTo,
+    audit,
+    ...(options.installOptions ?? {})
+  }) ?? removeDuplicateSkillInstalls({
     harnesses: options.harnesses ?? "all",
     reason: options.reason,
     packageVersionFrom: options.packageVersionFrom,

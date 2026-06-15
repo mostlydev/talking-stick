@@ -132,6 +132,15 @@ export {
   type SkillLoadingModel
 } from "./harness-model.js";
 export {
+  DEFAULT_SKILLER_MIN_VERSION,
+  resolveSkiller,
+  runSkillerCleanupDuplicates,
+  runSkillerDryRun,
+  runSkillerInstall,
+  runSkillerSyncInstalledSkills,
+  runSkillerUninstall
+} from "./skiller-adapter.js";
+export {
   readPackageVersion,
   readUpdateMigrationState,
   resolveUpdateMigrationStatePath,

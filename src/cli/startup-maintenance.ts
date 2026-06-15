@@ -29,7 +29,7 @@ export async function runStartupMaintenance(
   }
 
   try {
-    syncInstalledSkills({ skipMissing: true });
+    syncInstalledSkills({ skipMissing: true, env });
   } catch {
     // Skill sync is a best-effort human CLI convenience. It must not make an
     // unrelated tt command fail.

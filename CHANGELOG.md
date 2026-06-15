@@ -10,6 +10,8 @@ make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
 ## Unreleased
+### Added
+- **Skiller-backed skill installation.** Talking Stick now bootstraps the `skiller` binary during package postinstall, verifying release checksums before installing to `~/.local/bin`, and uses skiller for skill directory install, uninstall, sync, and duplicate cleanup whenever a compatible binary is available. The existing TypeScript installer remains as fallback, while MCP cleanup and the Grok session hook stay Talking Stick-owned.
 
 ## [0.5.1] — 2026-06-15
 

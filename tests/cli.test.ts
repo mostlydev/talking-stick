@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { runStartupMaintenance } from "../src/cli/startup-maintenance.js";
 import {
   checkGuardianLiveness,
   COORDINATION_PROMPT,
@@ -41,6 +42,11 @@ const ENV_KEYS = [
   "OPENCODE_PID",
   "CLAUDE_PROJECT_DIR",
   "TALKING_STICK_DATA_DIR",
+  "SKILLER_BIN",
+  "TALKING_STICK_DISABLE_SKILLER",
+  "TALKING_STICK_USE_SKILLER",
+  "TALKING_STICK_REQUIRE_SKILLER",
+  "TALKING_STICK_SKILLER_MIN_VERSION",
   "TALKING_STICK_DISABLE_MCP_MIGRATION",
   "TALKING_STICK_DISABLE_SKILL_SYNC",
   "VISUAL",
@@ -58,6 +64,7 @@ beforeEach(() => {
   for (const key of ENV_KEYS) {
     delete process.env[key];
   }
+  process.env.TALKING_STICK_DISABLE_SKILLER = "1";
 });
 
 afterEach(() => {
@@ -319,6 +326,41 @@ describe("shouldAutoSyncInstalledSkills", () => {
         name: "uninstall"
       }, {})
     ).toBe(false);
+  });
+
+  test("does not invoke skiller during startup skill sync", async () => {
+    delete process.env.TALKING_STICK_DISABLE_SKILLER;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-startup-skiller-"));
+    const logPath = path.join(root, "skiller.log");
+    const fakeSkiller = path.join(root, "skiller");
+    fs.writeFileSync(
+      fakeSkiller,
+      `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(logPath)}, process.argv.slice(2).join(" ") + "\\n");
+if (process.argv[2] === "version") {
+  console.log(JSON.stringify({ schema: "skiller-version.v1", version: "v0.1.0" }));
+} else {
+  console.log(JSON.stringify({ schema: "skiller-plan.v1", actions: [] }));
+}
+`,
+      "utf8"
+    );
+    fs.chmodSync(fakeSkiller, 0o755);
+
+    await runStartupMaintenance(
+      parsed,
+      "file:///Users/alice/dev/ai/talking-stick/src/cli.ts",
+      {
+        HOME: root,
+        PATH: process.env.PATH ?? "",
+        SKILLER_BIN: fakeSkiller,
+        TALKING_STICK_USE_SKILLER: "1",
+        TALKING_STICK_DISABLE_MCP_MIGRATION: "1"
+      }
+    );
+
+    expect(fs.existsSync(logPath)).toBe(false);
   });
 });
 
