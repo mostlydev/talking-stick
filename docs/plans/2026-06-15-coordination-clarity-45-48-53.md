@@ -289,9 +289,9 @@ A terminal marker (`tt release --complete` / `tt close`) is deferred to a
 
 ### Tests + dogfood
 
-Unit: `release --complete` closes the room / emits the terminal marker; ordinary
-release does not. Dogfood: two harnesses complete a shared task and both stop
-without an operator prompt deciding the room is done.
+No unit test lands in this release because the protocol terminal marker is
+deferred. Dogfood: two harnesses complete a shared task and both stop without an
+operator prompt deciding the room is done.
 
 ---
 

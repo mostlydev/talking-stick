@@ -162,6 +162,16 @@ tt wait --events --after <cursor_event_seq> --json
 
 For harnesses that only notice completed subprocesses, `tt wait --events --after <cursor> --json` is still the normal loop: it exits on each wake, the harness processes the result, updates the cursor, and launches it again.
 
+## Post-turn closeout
+
+After a release or assignment, agents choose one of three branches:
+
+- Active work pending: continue `tt wait --events --after <cursor> --json`.
+- Passive or external wait: use `tt wait --park --events --after <cursor> --json`.
+- Shared task complete: stop the local loop and send the final user-facing closeout.
+
+The complete branch requires clear evidence: final review/handoff, no `next_action` for another agent, no pending assignment or reservation, closed open questions, recorded test/runtime/release checks, no CI/publish/human gate left, and the user objective actually satisfied. If that is ambiguous, the agent keeps listening or parks. A protocol terminal marker is deferred until room archive/reopen behavior is designed.
+
 ## How installation works per harness
 
 `tt install` installs or refreshes the bundled `talking-stick` skill. It does not add MCP servers. During install, uninstall, package update, and first run after an installed package version changes, `tt` removes stale MCP registrations written by older Talking Stick releases.

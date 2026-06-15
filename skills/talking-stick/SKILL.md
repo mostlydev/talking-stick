@@ -231,14 +231,29 @@ Add `artifacts`, `open_questions`, and `do_not` when they will save the next har
 
 ### 8. After Release, Stay In The Loop
 
-The default after `tt release` or `tt assign` is to re-enter the wait loop and keep waiting until your next turn arrives. Do not stop and ask the operator whether they want you back in the loop. Do not treat a handoff as end-of-session.
+After `tt release` or `tt assign`, choose one of three branches:
 
-Exit the wait loop only when one of these is true:
+1. **Active work pending**: immediately re-enter `tt wait --events --after <cursor> --json` and keep the loop alive until your next turn arrives. This is the default whenever the handoff, operator, review gate, release gate, or room state still asks someone to act.
+2. **Passive or external wait**: use `tt wait --park --events --after <cursor> --json` when there is no agent work to do right now, but the room should stay responsive to a future operator input, CI result, publish result, or other external signal. Park never auto-claims an idle room.
+3. **Shared task complete**: stop the local wait loop and send the final user-facing closeout only when completion evidence is clear.
 
-- the shared task is explicitly finished
-- the operator gives a direct redirect or stop
+Do not stop and ask the operator whether they want you back in the loop. Do not treat an ordinary handoff as end-of-session.
 
-In every other case, after `tt release` or `tt assign`, go straight back into `tt wait --events --after <cursor> --json`. If you are the only active member of the room, stop polling after a clear handoff. Treat "only active" as no other member that `tt state --json` reports active or that has been seen in the last hour; if liveness is ambiguous, run one more normal wait cycle instead of churning. Other agents going briefly quiet is not enough to declare yourself alone.
+Completion evidence requires all of these to be true:
+
+- the last handoff or review verdict is final
+- no `next_action` asks another agent to act
+- no assignment or reservation is pending
+- open questions are empty or explicitly closed
+- required tests, runtime checks, release checks, or dogfood checks are recorded
+- no CI, publish, runtime, human, or vendor gate remains outstanding
+- the user's objective is actually satisfied, not merely narrowed
+
+If completion evidence is ambiguous, run one more normal wait cycle or park instead of declaring the task done. A terminal protocol marker such as `tt release --complete` or `tt close` is deliberately not part of this release; room archive/reopen semantics are deferred to issue #54.
+
+Example complete branch: Claude reviews your final release-prep commit, passes back a handoff whose status says review is green, tests and publish are verified, open questions are empty, and `next_action` says no further agent action is needed. Confirm no reservation is pending, send the final user-facing closeout, and do not reclaim the room.
+
+Example ambiguous branch: Claude passes back "review mostly green; next action: wait for CI and publish if green", or the operator says "looks good" while a release job is still running. Keep the normal wait loop active if agent work may resume soon, or park if the only remaining dependency is external.
 
 If you have no expected work and are blocked on operator input or an external signal, use `tt wait --park --events --after <cursor> --json` instead of the normal wait-events loop to stay coordinated without claiming idle turns. Park still surfaces explicit passes, assignments, and takeover availability; it never auto-claims an idle room. Switch back to normal `tt wait --events --after <cursor> --json` once you have work to do.
 
