@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProtocolError } from "./index.js";
-import { parseCommand } from "./cli/parser.js";
-import { printHelp, shouldUseJson } from "./cli/output.js";
+import { hasOption, parseCommand } from "./cli/parser.js";
+import { printCommandHelp, printHelp, shouldUseJson } from "./cli/output.js";
 import { getCommand } from "./cli/registry.js";
 import { createRuntime } from "./cli/runtime.js";
 import { runStartupMaintenance } from "./cli/startup-maintenance.js";
@@ -25,10 +25,14 @@ export {
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const parsed = parseCommand(argv);
 
-  await runStartupMaintenance(parsed, import.meta.url);
-
-  if (!parsed.name || parsed.name === "help" || parsed.name === "--help") {
-    printHelp();
+  if (!parsed.name || parsed.name === "help" || hasOption(parsed, "help")) {
+    const targetName = parsed.name === "help" ? parsed.positionals[0] : parsed.name;
+    const command = targetName ? getCommand(targetName) : undefined;
+    if (command) {
+      printCommandHelp(command);
+    } else {
+      printHelp();
+    }
     return;
   }
 
@@ -36,6 +40,8 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   if (!command) {
     throw new Error(`Unknown command: ${parsed.name}`);
   }
+
+  await runStartupMaintenance(parsed, import.meta.url);
 
   if (!command.needsRuntime) {
     await command.handler({ parsed, cliEntryUrl: import.meta.url });

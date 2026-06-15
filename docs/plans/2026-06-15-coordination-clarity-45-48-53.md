@@ -69,14 +69,13 @@ guardian, no events, no member/lease/handoff/`last_wait_at` writes). Covers
   strings are required. Unknown/missing `name` → existing `printHelp()`.
 - Help wins over JSON: when `--json` is present, still emit help and exit 0.
   Recommendation: keep help **text** for now (issue treats JSON help as
-  "if supported later"). Optional: emit a small read-only `{command, usage,
-  description}` JSON object under `--json`. **Open question O1.**
+  "if supported later"). Structured JSON help is deferred.
 - `internal` commands (`guard`, `grok-session-hook`, `migrate-mcp`) keep working;
   help for them can print a one-line usage or be treated as general help.
 
-`detectHelpRequest` runs on raw `argv` so it does not depend on parser changes.
-We may *also* add `-h` normalization to the parser for cleanliness, but the
-short-circuit must not rely on it.
+The short-circuit relies on parsed structure after `parseCommand` recognizes
+leading global options and normalizes `-h`, so it does not misclassify ordinary
+positional text such as `tt msg send room help`.
 
 ### Tests (`tests/cli.test.ts`, `tests/parser.test.ts`)
 

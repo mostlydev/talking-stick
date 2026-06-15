@@ -13,6 +13,37 @@ describe("parseCommand", () => {
     expect(parsed.positionals).toEqual(["/repo"]);
   });
 
+  test("leading global boolean flags do not become the command name", () => {
+    const parsed = parseCommand(["--json", "wait", "--help"]);
+
+    expect(parsed.name).toBe("wait");
+    expect(parsed.options.get("json")).toBe(true);
+    expect(parsed.options.get("help")).toBe(true);
+  });
+
+  test("leading global value options preserve the following command", () => {
+    const parsed = parseCommand([
+      "--agent",
+      "human:helper",
+      "wait",
+      "/repo",
+      "--help"
+    ]);
+
+    expect(parsed.name).toBe("wait");
+    expect(parsed.options.get("agent")).toBe("human:helper");
+    expect(parsed.options.get("help")).toBe(true);
+    expect(parsed.positionals).toEqual(["/repo"]);
+  });
+
+  test("-h is normalized as command help without becoming a positional", () => {
+    const parsed = parseCommand(["wait", "/repo", "-h"]);
+
+    expect(parsed.name).toBe("wait");
+    expect(parsed.options.get("help")).toBe(true);
+    expect(parsed.positionals).toEqual(["/repo"]);
+  });
+
   test("boolean flags in subcommands leave message text positional", () => {
     const parsed = parseCommand([
       "msg",
@@ -24,6 +55,14 @@ describe("parseCommand", () => {
 
     expect(parsed.options.get("interrupt")).toBe(true);
     expect(parsed.positionals).toEqual(["send", "codex:test", "hello"]);
+  });
+
+  test("literal help remains message text when it is not a help flag", () => {
+    const parsed = parseCommand(["msg", "send", "room", "help"]);
+
+    expect(parsed.name).toBe("msg");
+    expect(parsed.options.has("help")).toBe(false);
+    expect(parsed.positionals).toEqual(["send", "room", "help"]);
   });
 });
 

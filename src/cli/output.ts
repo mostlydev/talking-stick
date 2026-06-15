@@ -222,5 +222,29 @@ Common options:
   --agent ID   Override the default human identity
   --json       Force JSON output (also default when invoked from a harness)
   --text       Force human-readable text even when invoked from a harness
+  --help, -h   Show help without running the command or changing room state
+`);
+}
+
+export function printCommandHelp(command: {
+  name: string;
+  aliases?: string[];
+  usage: string;
+  description: string;
+}): void {
+  const aliases =
+    command.aliases && command.aliases.length > 0
+      ? `\nAliases: ${command.aliases.join(", ")}`
+      : "";
+  process.stdout.write(`Usage: ${command.usage}
+
+${command.description}${aliases}
+
+Common options:
+  [path]     Defaults to the current working directory when omitted
+  --agent ID   Override the default human identity
+  --json       Force JSON output (also default when invoked from a harness)
+  --text       Force human-readable text even when invoked from a harness
+  --help, -h   Show help without running the command or changing room state
 `);
 }

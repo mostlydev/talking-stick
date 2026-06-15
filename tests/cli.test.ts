@@ -1234,6 +1234,65 @@ describe("tt notes", () => {
     }
   });
 
+  test("stateful command help is side-effect-free", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await seedCliLease(project, "human:owner", ["human:next"]);
+    await captureStdout([
+      "release",
+      project,
+      "--agent",
+      "human:owner",
+      "--status",
+      "Owner left a pending handoff.",
+      "--next-action",
+      "Next agent should claim.",
+      "--json"
+    ]);
+
+    const helpCases: Array<{ argv: string[]; usage: string }> = [
+      { argv: ["wait", project, "--help"], usage: "Usage: tt wait" },
+      { argv: ["wait", project, "-h"], usage: "Usage: tt wait" },
+      { argv: ["--json", "wait", project, "--help"], usage: "Usage: tt wait" },
+      {
+        argv: ["--agent", "human:helper", "wait", project, "--help"],
+        usage: "Usage: tt wait"
+      },
+      { argv: ["help", "wait"], usage: "Usage: tt wait" },
+      { argv: ["try", project, "--help"], usage: "Usage: tt try" },
+      { argv: ["take", project, "--help"], usage: "Usage: tt take" },
+      { argv: ["takeover", project, "--help"], usage: "Usage: tt take" },
+      { argv: ["release", project, "--help"], usage: "Usage: tt release" },
+      { argv: ["pass", project, "--help"], usage: "Usage: tt pass" },
+      {
+        argv: ["assign", "human:next", project, "--help"],
+        usage: "Usage: tt assign"
+      },
+      { argv: ["join", project, "--help"], usage: "Usage: tt join" },
+      { argv: ["leave", project, "--help"], usage: "Usage: tt leave" },
+      {
+        argv: ["kick", "human:next", project, "--help"],
+        usage: "Usage: tt kick"
+      },
+      {
+        argv: ["notes", "add", "note body", "--path", project, "--help"],
+        usage: "Usage: tt notes"
+      },
+      {
+        argv: ["msg", "send", "room", "body", "--path", project, "--help"],
+        usage: "Usage: tt msg"
+      }
+    ];
+
+    for (const item of helpCases) {
+      const before = snapshotCliState();
+      const out = await captureStdout(item.argv);
+
+      expect(out).toContain(item.usage);
+      expect(out).toContain("--help, -h");
+      expect(snapshotCliState()).toEqual(before);
+    }
+  });
+
   test("tt self-update --print emits the inferred command without running it", async () => {
     const out = await captureStdout([
       "self-update",
@@ -2363,6 +2422,29 @@ interface SpawnedCliProcess {
   child: ChildProcessWithoutNullStreams;
   stdout: () => string;
   stderr: () => string;
+}
+
+function snapshotCliState(): unknown {
+  const service = new TalkingStickService();
+  try {
+    return {
+      rooms: service.db
+        .prepare("SELECT * FROM path_rooms ORDER BY room_id")
+        .all(),
+      members: service.db
+        .prepare("SELECT * FROM room_members ORDER BY room_id, agent_id")
+        .all(),
+      events: service.db
+        .prepare("SELECT * FROM room_events ORDER BY event_seq")
+        .all(),
+      notes: service.db
+        .prepare("SELECT * FROM notes ORDER BY room_id, created_at, note_id")
+        .all(),
+      sessions: readCliSessions(resolveCliSessionPath())
+    };
+  } finally {
+    service.close();
+  }
 }
 
 function spawnCliProcess(

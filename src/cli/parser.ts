@@ -30,34 +30,58 @@ const BOOLEAN_FLAGS = new Set([
 ]);
 
 export function parseCommand(argv: string[]): ParsedCommand {
-  const [name = "", ...rest] = argv;
+  let name = "";
   const options = new Map<string, string | true>();
   const positionals: string[] = [];
 
-  for (let index = 0; index < rest.length; index += 1) {
-    const token = rest[index];
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (token === "-h") {
+      options.set("help", true);
+      continue;
+    }
+
+    if (!name && token.startsWith("--")) {
+      index = consumeLongOption(argv, index, options);
+      continue;
+    }
+
+    if (!name) {
+      name = token;
+      continue;
+    }
+
     if (!token.startsWith("--")) {
       positionals.push(token);
       continue;
     }
 
-    const key = token.slice(2);
-    if (BOOLEAN_FLAGS.has(key)) {
-      options.set(key, true);
-      continue;
-    }
-
-    const next = rest[index + 1];
-    if (!next || next.startsWith("--")) {
-      options.set(key, true);
-      continue;
-    }
-
-    options.set(key, next);
-    index += 1;
+    index = consumeLongOption(argv, index, options);
   }
 
   return { name, positionals, options };
+}
+
+function consumeLongOption(
+  argv: string[],
+  index: number,
+  options: Map<string, string | true>
+): number {
+  const token = argv[index];
+  const key = token.slice(2);
+  if (BOOLEAN_FLAGS.has(key)) {
+    options.set(key, true);
+    return index;
+  }
+
+  const next = argv[index + 1];
+  if (!next || next === "-h" || next.startsWith("--")) {
+    options.set(key, true);
+    return index;
+  }
+
+  options.set(key, next);
+  return index + 1;
 }
 
 export function hasOption(parsed: ParsedCommand, key: string): boolean {
