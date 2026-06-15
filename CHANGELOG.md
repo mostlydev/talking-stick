@@ -10,6 +10,11 @@ make protocol-level breaking changes across alpha bumps; any future breaking
 changes will be called out under **Breaking changes**.
 
 ## Unreleased
+
+## [0.6.0] — 2026-06-15
+
+Full notes: [`docs/releases/0.6.0.md`](docs/releases/0.6.0.md).
+
 ### Added
 - **Skiller-backed skill installation.** Talking Stick now bootstraps the `skiller` binary during package postinstall, verifying release checksums before installing to `~/.local/bin`, and uses skiller for skill directory install, uninstall, sync, and duplicate cleanup whenever a compatible binary is available. The existing TypeScript installer remains as fallback, while MCP cleanup and the Grok session hook stay Talking Stick-owned.
 
@@ -315,6 +320,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.6.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.6.0
 [0.5.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.5.0
 [0.4.13]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.13
