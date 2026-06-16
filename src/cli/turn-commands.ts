@@ -37,6 +37,7 @@ import {
   upsertSessionFromJoin
 } from "./session.js";
 import type { Runtime } from "./runtime.js";
+import { scanReceiverProcesses } from "./room-commands.js";
 
 export async function handleWaitCommand(
   runtime: Runtime,
@@ -73,6 +74,15 @@ export async function handleWaitCommand(
     after_event_seq: afterEventSeq,
     target_agent_id: targetAgentId
   });
+
+  const receivers = scanReceiverProcesses(joined.room_state, {
+    root_pid: identity.process_metadata.harness_pid ?? identity.process_metadata.pid
+  });
+  const hasDuplicates =
+    receivers.status === "scanned" && receivers.duplicate_count > 0;
+  const nextReminder = hasDuplicates
+    ? "Remember to restart your listener, and keep only one active. WARNING: Duplicate active listeners detected! Stop extras."
+    : "Remember to restart your listener, and keep only one active.";
 
   if (waitResult.status === "your_turn") {
     if (waitResult.reason === "already_owner") {
@@ -118,12 +128,13 @@ export async function handleWaitCommand(
 
         printResult(
           parsed,
-          { ...waitResult, guardian_pid: replacement.pid },
+          { ...waitResult, guardian_pid: replacement.pid, next: nextReminder },
           () => {
             const reason = existing?.guardian_pid
               ? "Prior guardian was gone"
               : "No guardian was recorded";
-            return `Already holding the stick (turn ${waitResult.turn_id}). ${reason}; spawned replacement ${replacement.pid}.`;
+            const body = `Already holding the stick (turn ${waitResult.turn_id}). ${reason}; spawned replacement ${replacement.pid}.`;
+            return `${body}\n\nnext: ${nextReminder}`;
           }
         );
         return;
@@ -132,13 +143,16 @@ export async function handleWaitCommand(
       const guardianPid = existing?.guardian_pid;
       printResult(
         parsed,
-        { ...waitResult, guardian_pid: guardianPid ?? null },
+        { ...waitResult, guardian_pid: guardianPid ?? null, next: nextReminder },
         () => {
+          let body = "";
           if (!guardianPid) {
-            return `Already holding the stick (turn ${waitResult.turn_id}).`;
+            body = `Already holding the stick (turn ${waitResult.turn_id}).`;
+          } else {
+            const descriptor = liveness === "alive" ? "still active" : "liveness unknown";
+            body = `Already holding the stick (turn ${waitResult.turn_id}). Guardian ${guardianPid} (${descriptor}).`;
           }
-          const descriptor = liveness === "alive" ? "still active" : "liveness unknown";
-          return `Already holding the stick (turn ${waitResult.turn_id}). Guardian ${guardianPid} (${descriptor}).`;
+          return `${body}\n\nnext: ${nextReminder}`;
         }
       );
       return;
@@ -168,16 +182,23 @@ export async function handleWaitCommand(
 
     printResult(
       parsed,
-      { ...waitResult, guardian_pid: guardianPid.pid },
+      { ...waitResult, guardian_pid: guardianPid.pid, next: nextReminder },
       () => {
         const body = formatWaitResult(waitResult);
-        return `${body}\n\nGuardian ${guardianPid.pid} is holding the lease.`;
+        return `${body}\n\nGuardian ${guardianPid.pid} is holding the lease.\n\nnext: ${nextReminder}`;
       }
     );
     return;
   }
 
-  printResult(parsed, waitResult, () => formatWaitResult(waitResult));
+  printResult(
+    parsed,
+    { ...waitResult, next: nextReminder },
+    () => {
+      const body = formatWaitResult(waitResult);
+      return `${body}\n\nnext: ${nextReminder}`;
+    }
+  );
 }
 
 export async function handleTakeCommand(

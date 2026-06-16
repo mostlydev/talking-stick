@@ -170,8 +170,8 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt health [path] [--all]",
-    description: "Show a read-only room health report.",
+    usage: "tt health [path] [--verbose|--all]",
+    description: "Show a concise room health action card.",
     handler: ({ runtime, parsed }) => handleHealthCommand(requireRuntime(runtime), parsed)
   },
   {

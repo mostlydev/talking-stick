@@ -3273,12 +3273,56 @@ describe("issue #29: presence and liveness track the harness, not the guardian",
     expect(seenAfter).toBe(seenBefore);
   });
 
-  test("relinquishOwnership surrenders the turn straight to idle (Tier-1 guardian purge)", async () => {
+  test("getRoomHealth refreshes caller presence without renewing the lease", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
+    const oldCodexProcess = harness.processRegistry.create("codex", "harness_cli");
+    const newCodexProcess = harness.processRegistry.create("codex", "harness_cli");
     const codexJoin = harness.service.joinPath({
       agent_id: "codex:test",
-      context_path: project
+      context_path: project,
+      process_metadata: oldCodexProcess
+    });
+    const turn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const before = harness.service.getRoomState({ room_id: codexJoin.room_id });
+    const leaseBefore = before.room.lease_expires_at;
+    const cursorBefore = before.cursor_event_seq;
+
+    harness.processRegistry.markGone(oldCodexProcess);
+    harness.clock.advance(60_000);
+    const health = harness.service.getRoomHealth({
+      context_path: project,
+      agent_id: "codex:test",
+      process_metadata: newCodexProcess
+    });
+
+    expect(health.room.owner).toBe("codex:test");
+    expect(health.room.turn_id).toBe(turn.turn_id);
+    expect(health.room.lease_expires_at).toBe(leaseBefore);
+    expect(health.cursor_event_seq).toBe(cursorBefore);
+
+    const member = health.members.find((m) => m.agent_id === "codex:test");
+    expect(member?.last_seen_at).toBe(harness.clock.now().toISOString());
+    expect(member?.pid).toBe(newCodexProcess.pid);
+    expect(member?.process_started_at).toBe(newCodexProcess.process_started_at);
+  });
+
+  test("relinquishOwnership retains a fresh owner and only surrenders after gone grace", async () => {
+    const harness = createHarness({
+      policy: { heartbeatIntervalMs: 1_000 }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexProcess = harness.processRegistry.create("codex", "harness_cli");
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexProcess
     });
     const turn = asYourTurn(
       await harness.service.waitForTurn({
@@ -3301,8 +3345,26 @@ describe("issue #29: presence and liveness track the harness, not the guardian",
       harness.service.getRoomState({ room_id: codexJoin.room_id }).room.owner
     ).toBe("codex:test");
 
-    // With the matching lease, the harness-dead guardian surrenders the turn
-    // straight to idle so a waiter can claim immediately (no lease-TTL wait).
+    harness.processRegistry.markGone(codexProcess);
+
+    // A single gone process reading is not enough while this member's tt
+    // activity is still fresh. The guardian must keep heartbeating.
+    const retained = harness.service.relinquishOwnership({
+      agent_id: "codex:test",
+      room_id: codexJoin.room_id,
+      lease_id: turn.lease_id,
+      expected_turn_id: turn.turn_id
+    });
+    expect(retained.status).toBe("retained");
+    expect(
+      harness.service.getRoomState({ room_id: codexJoin.room_id }).room.owner
+    ).toBe("codex:test");
+
+    harness.clock.advance(2_001);
+
+    // Once the exact process is gone and the member has been silent past the
+    // grace window, surrender straight to idle so a waiter can claim
+    // immediately instead of waiting for the full lease TTL.
     const result = harness.service.relinquishOwnership({
       agent_id: "codex:test",
       room_id: codexJoin.room_id,
@@ -3316,7 +3378,7 @@ describe("issue #29: presence and liveness track the harness, not the guardian",
     }).room;
     expect(room.owner).toBeNull();
     expect(room.reserved_for).toBeNull();
-    expect(room.state).toBe("idle");
+    expect(room.state).toBe("dormant");
 
     const events = harness.service.getRoomEvents({ room_id: codexJoin.room_id });
     expect(

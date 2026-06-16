@@ -195,7 +195,8 @@ export class TalkingStickCommands {
       room_id: input.room_id,
       lease_id: input.lease_id,
       expected_turn_id: input.expected_turn_id,
-      handoff: input.handoff
+      handoff: input.handoff,
+      process_metadata: identity.process_metadata
     });
   }
 
@@ -209,7 +210,8 @@ export class TalkingStickCommands {
       lease_id: input.lease_id,
       expected_turn_id: input.expected_turn_id,
       to_agent_id: input.to_agent_id,
-      handoff: input.handoff
+      handoff: input.handoff,
+      process_metadata: identity.process_metadata
     });
   }
 
@@ -222,7 +224,8 @@ export class TalkingStickCommands {
       room_id: input.room_id,
       expected_turn_id: input.expected_turn_id,
       reason: input.reason,
-      operator_override: input.operator_override
+      operator_override: input.operator_override,
+      process_metadata: identity.process_metadata
     });
   }
 
@@ -238,8 +241,15 @@ export class TalkingStickCommands {
     return this.service.getRoomEventsView(input);
   }
 
-  getRoomHealth(input: GetRoomHealthInput): GetRoomHealthResult {
-    return this.service.getRoomHealth(input);
+  getRoomHealth(
+    identity: DerivedIdentity | null,
+    input: GetRoomHealthInput
+  ): GetRoomHealthResult {
+    return this.service.getRoomHealth({
+      ...input,
+      agent_id: identity?.agent_id ?? input.agent_id,
+      process_metadata: identity?.process_metadata ?? input.process_metadata
+    });
   }
 
   sendMessage(

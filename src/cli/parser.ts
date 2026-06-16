@@ -26,6 +26,7 @@ const BOOLEAN_FLAGS = new Set([
   "stdin",
   "text",
   "user",
+  "verbose",
   "wait"
 ]);
 

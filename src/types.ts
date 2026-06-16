@@ -265,6 +265,7 @@ export interface OwnerMutationInput {
   agent_id: AgentId;
   lease_id: string;
   expected_turn_id: number;
+  process_metadata?: ProcessMetadata;
 }
 
 export interface HeartbeatResult {
@@ -280,6 +281,10 @@ export type RelinquishOwnershipResult =
       status: "relinquished";
       room_id: string;
       event_seq: number;
+    }
+  | {
+      status: "retained";
+      room_id: string;
     }
   | {
       status: "noop";
@@ -315,6 +320,7 @@ export interface TakeoverStickInput {
   expected_turn_id: number;
   reason: string;
   operator_override?: boolean;
+  process_metadata?: ProcessMetadata;
 }
 
 export interface TakeoverStickResult {
@@ -367,6 +373,7 @@ export interface GetRoomEventsViewResult {
 export interface GetRoomHealthInput {
   context_path: string;
   agent_id?: AgentId;
+  process_metadata?: ProcessMetadata;
   include_all?: boolean;
 }
 

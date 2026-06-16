@@ -41,6 +41,9 @@ const ENV_KEYS = [
   "OPENCODE_RUN_ID",
   "OPENCODE_PID",
   "CLAUDE_PROJECT_DIR",
+  "ANTIGRAVITY_AGENT",
+  "ANTIGRAVITY_CONVERSATION_ID",
+  "ANTIGRAVITY_TRAJECTORY_ID",
   "TALKING_STICK_DATA_DIR",
   "SKILLER_BIN",
   "TALKING_STICK_DISABLE_SKILLER",
@@ -1288,7 +1291,7 @@ describe("tt notes", () => {
     }
   });
 
-  test("tt health is read-only and tt status aliases it", async () => {
+  test("tt health is non-authoritative and tt status aliases it", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     await captureStdout(["join", project, "--agent", "human:health-test"]);
 
@@ -1302,21 +1305,39 @@ describe("tt notes", () => {
     ]);
     const health = JSON.parse(healthOut) as {
       room: { canonical_path: string };
-      local: {
-        identity: { agent_id: string };
-        session: { found: boolean };
-        guardian: { liveness: string };
-      };
-      workspace: { git: { status: string } };
+      owner: string | null;
+      you_own: boolean;
+      guardian: { status: string };
+      listener: { active: boolean; duplicates: number };
+      git: { dirty: boolean; summary: string };
+      next_action: string;
       coordination_prompt?: string;
     };
 
-    expect(snapshotCliState()).toEqual(before);
+    const afterHealth = snapshotCliState() as {
+      rooms: unknown;
+      events: unknown;
+      notes: unknown;
+      sessions: unknown;
+    };
+    const beforeState = before as {
+      rooms: unknown;
+      events: unknown;
+      notes: unknown;
+      sessions: unknown;
+    };
+    expect(afterHealth.rooms).toEqual(beforeState.rooms);
+    expect(afterHealth.events).toEqual(beforeState.events);
+    expect(afterHealth.notes).toEqual(beforeState.notes);
+    expect(afterHealth.sessions).toEqual(beforeState.sessions);
     expect(health.room.canonical_path).toBe(project);
-    expect(health.local.identity.agent_id).toBe("human:health-test");
-    expect(health.local.session.found).toBe(true);
-    expect(health.local.guardian.liveness).toBe("not_recorded");
-    expect(health.workspace.git.status).toBe("unavailable");
+    expect(health.owner).toBeNull();
+    expect(health.you_own).toBe(false);
+    expect(health.guardian.status).toBe("not_recorded");
+    expect(health.listener.active).toBe(false);
+    expect(health.listener.duplicates).toBe(0);
+    expect(health.git.dirty).toBe(false);
+    expect(health.next_action).toContain("tt wait");
     expect(health.coordination_prompt).toBe(COORDINATION_PROMPT);
 
     const statusOut = await captureStdout([
@@ -1330,7 +1351,16 @@ describe("tt notes", () => {
       room: { canonical_path: string };
       coordination_prompt?: string;
     };
-    expect(snapshotCliState()).toEqual(before);
+    const afterStatus = snapshotCliState() as {
+      rooms: unknown;
+      events: unknown;
+      notes: unknown;
+      sessions: unknown;
+    };
+    expect(afterStatus.rooms).toEqual(beforeState.rooms);
+    expect(afterStatus.events).toEqual(beforeState.events);
+    expect(afterStatus.notes).toEqual(beforeState.notes);
+    expect(afterStatus.sessions).toEqual(beforeState.sessions);
     expect(status.room.canonical_path).toBe(project);
     expect(status.coordination_prompt).toBe(COORDINATION_PROMPT);
   });
@@ -2391,6 +2421,208 @@ describe("tt msg", () => {
       }
     });
   });
+});
+
+describe("harness heartbeat and health output hardening", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("harness heartbeat updates last_seen_at and metadata on runtime commands", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    process.env.TT_HARNESS_AGENT_ID = "codex:harness-test";
+
+    // 1. Join room
+    const joinOut = await captureStdout(["join", project, "--json"]);
+    const joined = JSON.parse(joinOut);
+    const roomId = joined.room_id;
+
+    // Capture DB state
+    const service = new TalkingStickService();
+    let initialMember;
+    try {
+      initialMember = service.getRoomState({ room_id: roomId, agent_id: "codex:harness-test" }).members[0];
+    } finally {
+      service.close();
+    }
+
+    await delay(100);
+
+    // 2. Run a command (e.g. state)
+    await captureStdout(["state", project, "--json"]);
+
+    // Assert last_seen_at is updated
+    const service2 = new TalkingStickService();
+    try {
+      const updatedMember = service2.getRoomState({ room_id: roomId, agent_id: "codex:harness-test" }).members[0];
+      expect(new Date(updatedMember.last_seen_at).getTime()).toBeGreaterThan(new Date(initialMember.last_seen_at).getTime());
+    } finally {
+      service2.close();
+    }
+  });
+
+  test("concise health output by default and verbose with --verbose/--all", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await captureStdout(["join", project, "--agent", "human:health-concise"]);
+
+    const healthOut = await captureStdout([
+      "health",
+      project,
+      "--agent",
+      "human:health-concise"
+    ]);
+
+    expect(healthOut).toContain("Room:");
+    expect(healthOut).toContain("Owner:");
+    expect(healthOut).toContain("Guardian:");
+    expect(healthOut).toContain("Listener:");
+    expect(healthOut).toContain("Git:");
+    expect(healthOut).toContain("Next:");
+    expect(healthOut).not.toContain("Local:");
+    expect(healthOut).not.toContain("Workspace:");
+    expect(healthOut).not.toContain("Members:");
+
+    const healthVerboseOut = await captureStdout([
+      "health",
+      project,
+      "--agent",
+      "human:health-concise",
+      "--verbose"
+    ]);
+
+    expect(healthVerboseOut).toContain("Local:");
+    expect(healthVerboseOut).toContain("Workspace:");
+    expect(healthVerboseOut).toContain("Members:");
+  });
+
+  test("wait output contains next reminder and duplicate listener warning", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const joinOut = await captureStdout(["join", project, "--agent", "human:wait-reminder", "--json"]);
+    const joined = JSON.parse(joinOut);
+
+    // Mock scanReceiverProcesses to return no duplicates
+    const roomCommands = await import("../src/cli/room-commands.js");
+    const spy = vi.spyOn(roomCommands, "scanReceiverProcesses").mockReturnValue({
+      status: "scanned",
+      processes: [
+        { pid: 123, ppid: null, started_at: "now", cwd: project, kind: "wait-events", command: "tt wait" }
+      ],
+      duplicate_count: 0,
+      stale_count: 0
+    });
+
+    try {
+      const waitOut = await captureStdout([
+        "try",
+        project,
+        "--agent",
+        "human:wait-reminder"
+      ]);
+      expect(waitOut).toContain("next: Remember to restart your listener, and keep only one active.");
+      expect(waitOut).not.toContain("WARNING: Duplicate active listeners detected!");
+
+      // Mock scanReceiverProcesses to return duplicates
+      spy.mockReturnValue({
+        status: "scanned",
+        processes: [
+          { pid: 123, ppid: null, started_at: "now", cwd: project, kind: "wait-events", command: "tt wait" },
+          { pid: 456, ppid: null, started_at: "now", cwd: project, kind: "wait-events", command: "tt wait" }
+        ],
+        duplicate_count: 1,
+        stale_count: 0
+      });
+
+      const waitDupOut = await captureStdout([
+        "try",
+        project,
+        "--agent",
+        "human:wait-reminder"
+      ]);
+      expect(waitDupOut).toContain("next: Remember to restart your listener, and keep only one active. WARNING: Duplicate active listeners detected! Stop extras.");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("receiver scan scopes to caller root and dedupes wrapper processes", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const { scanReceiverProcesses } = await import("../src/cli/room-commands.js");
+    const room = {
+      room_id: "room-1",
+      canonical_path: project,
+      sequence_index: 0,
+      owner: null,
+      reserved_for: null,
+      pending_handoff_event_seq: null,
+      turn_id: 0,
+      lease_id: null,
+      lease_expires_at: null,
+      claim_expires_at: null,
+      state: "idle",
+      updated_at: new Date().toISOString()
+    } as const;
+
+    const result = scanReceiverProcesses(room, {
+      root_pid: 100,
+      read_cwd: () => project,
+      process_rows: [
+        { pid: 100, ppid: 1, started_at: "root", command: "codex" },
+        {
+          pid: 200,
+          ppid: 100,
+          started_at: "wrapper",
+          command: "zsh -c 'tt wait --events --after 1 --json'"
+        },
+        {
+          pid: 201,
+          ppid: 200,
+          started_at: "child",
+          command: "node /bin/tt wait --events --after 1 --json"
+        },
+        {
+          pid: 301,
+          ppid: 300,
+          started_at: "peer",
+          command: "node /bin/tt wait --events --after 1 --json"
+        }
+      ]
+    });
+
+    expect(result.status).toBe("scanned");
+    expect(result.processes.map((process) => process.pid)).toEqual([201]);
+    expect(result.duplicate_count).toBe(0);
+
+    const duplicate = scanReceiverProcesses(room, {
+      root_pid: 100,
+      read_cwd: () => project,
+      process_rows: [
+        { pid: 100, ppid: 1, started_at: "root", command: "codex" },
+        {
+          pid: 201,
+          ppid: 100,
+          started_at: "first",
+          command: "node /bin/tt wait --events --after 1 --json"
+        },
+        {
+          pid: 202,
+          ppid: 100,
+          started_at: "second",
+          command: "node /bin/tt wait --events --after 1 --json"
+        }
+      ]
+    });
+    expect(duplicate.status).toBe("scanned");
+    expect(duplicate.processes.map((process) => process.pid)).toEqual([
+      201,
+      202
+    ]);
+    expect(duplicate.duplicate_count).toBe(1);
+  });
+
 });
 
 function setupIsolatedCli(registry: string[]): { dataDir: string; project: string } {

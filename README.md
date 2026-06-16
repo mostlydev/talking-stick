@@ -2,7 +2,7 @@
 
 A CLI coordination tool that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Antigravity CLI (`agy`), Grok Build, and OpenCode out of the box. Gemini CLI identity is retained for existing sessions, but Gemini skill installation is deprecated in favor of Antigravity and the shared agents skill directory. Harnesses stay responsive through one canonical listen/wait loop (`tt wait --events`), diagnose coordination and local process state with the read-only `tt health`, and can chat out-of-band — without passing the stick — via `tt msg send/recv`.
+Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Antigravity CLI (`agy`), Grok Build, and OpenCode out of the box. Gemini CLI identity is retained for existing sessions, but Gemini skill installation is deprecated in favor of Antigravity and the shared agents skill directory. Harnesses stay responsive through one canonical listen/wait loop (`tt wait --events`), diagnose coordination and local process state with `tt health`, and can chat out-of-band — without passing the stick — via `tt msg send/recv`.
 
 ## Quickstart
 
@@ -99,7 +99,7 @@ tt assign          — explicit handoff to a named agent
 tt take            — deliberate claim when the prior holder is gone/stuck
 tt kick            — evict an idle member whose process is gone
 tt state           — authoritative state projection
-tt health/status   — read-only room, local session, receiver, and git advisory
+tt health/status   — concise local safety/action check; --verbose shows diagnostics
 tt events          — audit/debug log and lower-level event stream
 tt notes add/list  — durable async observations for the room
 tt msg send/recv   — out-of-band chat into the room event log
@@ -144,11 +144,12 @@ tt wait --events --after <cursor_event_seq> --json
 - `<recipient>` is a full `agent_id`, an unambiguous active display name (`codex`, `claude`), or the literal `room` for broadcast.
 - `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
 - `tt join --json` and `tt state --json` return `cursor_event_seq`; use that as the initial `--after` cursor, or use `--after 0` when you intentionally want to replay history.
-- `tt wait --events --after <cursor>` returns ownership state, `events[]`, an updated `cursor_event_seq`, and `wake_reason`. Restart it with the returned cursor.
+- `tt wait --events --after <cursor>` returns ownership state, `events[]`, an updated `cursor_event_seq`, `wake_reason`, and a `next` reminder. It is a bounded long-poll, not durable background coverage; restart exactly one listener with the returned cursor.
 - `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for audit/debug or legacy fallback consumers. They are not the recommended harness loop.
-- The wait-events loop is observer-safe for non-holders: it never mutates room state, so you can run it freely without disturbing turn-fairness bookkeeping.
+- The wait-events loop is owner-safe for non-holders: it does not grant or renew authority. It refreshes the caller's presence/wait interest so active harnesses stay visible.
 - Event receive does not grant the stick. Only a `tt wait --events` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
-- Default `tt state`, non-streaming `tt events`, `tt notes list`, and `tt health` hide much-older ghost rows behind a structured `hidden.older_count` summary. Use `--all` for the full room history.
+- Ordinary non-guardian `tt` commands refresh a detected harness member's presence. Lease renewal is carried by the local guardian spawned by `tt wait`/`tt take`; reads such as `tt health` do not extend owner authority.
+- Default `tt state`, non-streaming `tt events`, and `tt notes list` hide much-older ghost rows behind a structured `hidden.older_count` summary. Default `tt health` is a concise action card; use `tt health --verbose` or `--all` for full member and receiver diagnostics.
 
 **When to message vs note vs handoff.**
 
@@ -191,8 +192,8 @@ tt leave [path]                                           # leave the room for p
 tt wait [path] [--timeout 110s] [--park] [--events --after N] # canonical listen/wait loop; --park disables idle auto-claim
 tt try [path] [--park] [--events --after N]               # non-blocking claim/event check
 tt state [path] [--all]                                  # compact room state; --all shows older rows
-tt health [path] [--all]                                 # read-only room/local/git health report
-tt status [path] [--all]                                 # alias for health
+tt health [path] [--verbose|--all]                       # concise safety/action check; verbose shows diagnostics
+tt status [path] [--verbose|--all]                       # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # audit/debug event log; --wait/--follow lower-level streams
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
@@ -220,7 +221,7 @@ guardians, write events, or update local session state.
 
 `tt self-update` detects how `tt` was installed (npm / pnpm / yarn / bun, including npm-via-Homebrew/mise/asdf/nvm), runs the right global-update command, then removes stale MCP registrations from older Talking Stick installs. Pass `--print` to see the inferred command without running it; pass `--manager` to override detection. Running `tt self-update` from a development checkout (where `tt` resolves outside `node_modules/talking-stick`) refuses and tells you to `git pull && npm install && npm run build` instead.
 
-Human CLI commands use a stable identity like `human:<username>`. When `tt wait`, `tt take`, or `tt takeover` wins the turn, a small background guardian keeps the lease alive on your behalf until you release, pass, or assign it. Human CLI `take` intentionally works without a required reason so an operator can step into a stuck room quickly; harness-aware CLI takeovers still require `--reason` unless the command includes `--operator-requested`.
+Human CLI commands use a stable identity like `human:<username>`. When `tt wait`, `tt take`, or `tt takeover` wins the turn, a small background guardian keeps the lease alive on your behalf until you release, pass, or assign it. If that guardian's captured harness process appears gone but the harness has recent `tt` activity, Talking Stick retains the lease and keeps heartbeating; a process-gone and silent owner is surrendered as `harness_gone`. Human CLI `take` intentionally works without a required reason so an operator can step into a stuck room quickly; harness-aware CLI takeovers still require `--reason` unless the command includes `--operator-requested`.
 
 ### CLI identity
 

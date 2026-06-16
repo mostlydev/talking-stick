@@ -7,7 +7,11 @@ import {
   deriveHumanCliIdentity,
   isProtocolError,
   terminateKnownProcess,
-  type ProcessMetadata
+  type DerivedIdentity,
+  type ExactProcessRef,
+  type HeartbeatCommandInput,
+  type ProcessMetadata,
+  type ProcessInspector
 } from "../index.js";
 import {
   getStringOption,
@@ -16,10 +20,45 @@ import {
   type ParsedCommand
 } from "./parser.js";
 import { createRuntime } from "./runtime.js";
+import type { Runtime } from "./runtime.js";
 
 const GUARD_READY = "READY";
 const GUARD_READY_TIMEOUT_MS = 10_000;
 const STALE_GUARD_ERRORS = new Set(["stale_lease", "turn_mismatch", "room_not_found"]);
+
+export type GuardTickResult = "continue" | "exit_clean" | "exit_error";
+
+export function runGuardTick(input: {
+  runtime: Runtime;
+  identity: DerivedIdentity;
+  heartbeatInput: HeartbeatCommandInput;
+  harnessRef: ExactProcessRef;
+  inspector: ProcessInspector;
+}): GuardTickResult {
+  if (checkGuardianLiveness(input.harnessRef, input.inspector) === "gone") {
+    try {
+      const result = input.runtime.commands.relinquishOwnership(
+        input.identity,
+        input.heartbeatInput
+      );
+      if (result.status !== "retained") {
+        return "exit_clean";
+      }
+    } catch {
+      return "exit_clean";
+    }
+  }
+
+  try {
+    input.runtime.commands.heartbeat(input.identity, input.heartbeatInput);
+    return "continue";
+  } catch (error) {
+    if (isProtocolError(error) && STALE_GUARD_ERRORS.has(error.code)) {
+      return "exit_clean";
+    }
+    return "exit_error";
+  }
+}
 
 export async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
   const baseIdentity = deriveHumanCliIdentity({
@@ -58,27 +97,17 @@ export async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
 
     process.stdout.write(`${GUARD_READY}\n`);
     const timer = setInterval(() => {
-      // Tier-1 stale-guardian purge: if our own harness process is provably
-      // gone, surrender the turn instead of renewing the lease forever. This is
-      // the definitive case (no timeout): an orphaned guardian must not pin the
-      // stick once the harness it represents has exited. `unknown`/`alive` both
-      // fall through to the normal heartbeat; we only act on a definite `gone`.
-      if (checkGuardianLiveness(harnessRef, inspector) === "gone") {
-        try {
-          runtime.commands.relinquishOwnership(identity, heartbeatInput);
-        } catch {
-          // Best effort: a takeover or graceful release may have already moved
-          // the turn on. Either way the harness is gone, so we exit.
-        }
+      const result = runGuardTick({
+        runtime,
+        identity,
+        heartbeatInput,
+        harnessRef,
+        inspector
+      });
+      if (result === "exit_clean") {
         process.exit(0);
       }
-
-      try {
-        runtime.commands.heartbeat(identity, heartbeatInput);
-      } catch (error) {
-        if (isProtocolError(error) && STALE_GUARD_ERRORS.has(error.code)) {
-          process.exit(0);
-        }
+      if (result === "exit_error") {
         process.exit(1);
       }
     }, intervalMs);

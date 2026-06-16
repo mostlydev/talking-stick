@@ -11,6 +11,18 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+- **Concise `tt health` / `tt status` action card.** Default health output is now a short, action-oriented summary — owner, whether you own it, lease + renewal status, guardian, listener (with duplicate count), git, and the next recommended command. Full member/receiver/process diagnostics moved behind `--verbose` (the existing `--all` still works). JSON exposes `hidden.{members_omitted,receivers_omitted}` so consumers know detail is available. (#55)
+- **Listener restart reminder on every `tt wait` / `tt try`.** Each return now carries a dedicated `next` reminder (JSON field and human line) to restart exactly one listener, and warns when duplicate active listeners are detected for your own harness. (#56)
+
+### Changed
+- **Stable leases across harness process rotation.** The lease guardian no longer surrenders a live owner's turn the instant its captured harness pid leaves the process table. It now confirms persistent absence through the same `isGonePersistent` grace the service layer already enforces — process gone *and* no `tt` activity past the gone-grace window — before relinquishing as `harness_gone`. Harnesses whose OS process identity rotates per turn keep their lease as long as they keep issuing `tt` commands. (#55)
+- **Presence refresh on ordinary commands.** Reads such as `tt health`/`tt state` and owner mutations (`release`/`pass`/`takeover`) refresh the calling harness member's `last_seen` and process metadata. This is presence only — reads never renew owner authority or extend the lease. (#55)
+- **Duplicate-listener detection is harness-scoped.** Receiver scanning is now scoped to the caller's own process tree and ancestor-deduped (a wrapper shell plus its child `node … wait` count once), so an unrelated room or peer's listeners no longer trigger false duplicate warnings. (#56)
+
+### Fixed
+- **`harness_gone` false positive.** A live harness that kept running `tt` commands could be marked gone and have its lease taken over mid-task. The guardian/service parity above closes that path. (#55)
+
 ## [0.6.0] — 2026-06-15
 
 Full notes: [`docs/releases/0.6.0.md`](docs/releases/0.6.0.md).

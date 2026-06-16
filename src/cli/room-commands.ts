@@ -10,6 +10,7 @@ import {
   type GetRoomHealthResult,
   type HiddenRowsSummary,
   type PathRoom,
+  type ProcessMetadata,
   type RoomEvent
 } from "../index.js";
 import { checkGuardianLiveness, stopGuardian } from "./guardian.js";
@@ -241,20 +242,33 @@ export function handleHealthCommand(
 ): void {
   const identity = deriveCliIdentity(parsed);
   const contextPath = parsed.positionals[0] ?? process.cwd();
-  const health = runtime.commands.getRoomHealth({
+  const verbose = hasOption(parsed, "verbose") || hasOption(parsed, "all");
+  const health = runtime.commands.getRoomHealth(identity, {
     context_path: contextPath,
-    agent_id: identity.agent_id,
     include_all: hasOption(parsed, "all")
   });
   const result = {
     ...health,
-    local: buildLocalHealth(identity.agent_id, contextPath, health),
+    local: buildLocalHealth(
+      identity.agent_id,
+      contextPath,
+      health,
+      identity.process_metadata
+    ),
     workspace: {
       git: buildGitAdvisory(contextPath)
     }
   };
 
-  printResult(parsed, result, () => renderHealthText(result, identity.agent_id));
+  if (verbose) {
+    printResult(parsed, result, () =>
+      renderHealthText(result, identity.agent_id)
+    );
+    return;
+  }
+
+  const summary = buildHealthSummary(result, identity.agent_id);
+  printResult(parsed, summary, () => renderHealthSummaryText(summary));
 }
 
 type HealthCliResult = GetRoomHealthResult & {
@@ -295,6 +309,7 @@ interface ReceiverHealth {
   status: "scanned" | "unsupported" | "error";
   processes: Array<{
     pid: number;
+    ppid: number | null;
     started_at: string | null;
     cwd: string | null;
     kind: "wait-events" | "events-follow" | "msg-recv";
@@ -317,6 +332,41 @@ type GitAdvisory =
       status: "unavailable";
       reason: string;
     };
+
+interface HealthSummaryResult {
+  room: {
+    room_id: string;
+    canonical_path: string;
+    state: string;
+    turn_id: number;
+  };
+  owner: string | null;
+  reserved_for: string | null;
+  you_own: boolean;
+  lease: {
+    expires_at: string | null;
+    renewing: boolean;
+    status: "active" | "expired" | "none";
+  };
+  guardian: {
+    status: LocalHealth["guardian"]["liveness"];
+    protects_current_turn: boolean;
+  };
+  listener: {
+    status: ReceiverHealth["status"];
+    active: boolean;
+    duplicates: number;
+  };
+  git: {
+    dirty: boolean;
+    summary: string;
+  };
+  next_action: string;
+  hidden: {
+    members_omitted: number;
+    receivers_omitted: number;
+  };
+}
 
 function renderEventsText(
   events: RoomEvent[],
@@ -351,6 +401,96 @@ function renderEventsText(
   if (hiddenLine) {
     lines.push("", `Hidden: ${hiddenLine}`);
   }
+  return lines.join("\n");
+}
+
+function buildHealthSummary(
+  result: HealthCliResult,
+  callerAgentId: string
+): HealthSummaryResult {
+  const leaseExpiresAt =
+    result.room.owner !== null
+      ? result.room.lease_expires_at
+      : result.room.claim_expires_at;
+  const leaseStatus =
+    leaseExpiresAt === null
+      ? "none"
+      : Date.parse(leaseExpiresAt) <= Date.now()
+        ? "expired"
+        : "active";
+  const listenerActive =
+    result.local.receivers.status === "scanned" &&
+    result.local.receivers.processes.length > 0;
+
+  return {
+    room: {
+      room_id: result.room.room_id,
+      canonical_path: result.room.canonical_path,
+      state: result.room.state,
+      turn_id: result.room.turn_id
+    },
+    owner: result.room.owner,
+    reserved_for: result.room.reserved_for,
+    you_own: result.room.owner === callerAgentId,
+    lease: {
+      expires_at: leaseExpiresAt,
+      renewing:
+        result.local.guardian.liveness === "alive" &&
+        result.local.guardian.protects_current_turn,
+      status: leaseStatus
+    },
+    guardian: {
+      status: result.local.guardian.liveness,
+      protects_current_turn: result.local.guardian.protects_current_turn
+    },
+    listener: {
+      status: result.local.receivers.status,
+      active: listenerActive,
+      duplicates: result.local.receivers.duplicate_count
+    },
+    git: {
+      dirty:
+        result.workspace.git.status === "available" &&
+        (result.workspace.git.tracked_changed_count > 0 ||
+          result.workspace.git.untracked_count > 0),
+      summary: formatGitAdvisoryConcise(result.workspace.git)
+    },
+    next_action: getNextAction(result, callerAgentId),
+    hidden: {
+      members_omitted: result.hidden?.members.older_count ?? 0,
+      receivers_omitted: result.local.receivers.processes.length
+    }
+  };
+}
+
+function renderHealthSummaryText(summary: HealthSummaryResult): string {
+  const lines: string[] = [
+    `Room:     ${summary.room.canonical_path} (${summary.room.state})`
+  ];
+  if (summary.owner) {
+    lines.push(
+      `Owner:    ${summary.owner}${summary.you_own ? " (you)" : " (someone else)"}`
+    );
+  } else if (summary.reserved_for) {
+    lines.push(`Reserved: ${summary.reserved_for}`);
+  } else {
+    lines.push("Owner:    -");
+  }
+
+  const leaseExpiry = summary.lease.expires_at
+    ? `, expires ${formatRelativeTime(summary.lease.expires_at)}`
+    : "";
+  lines.push(
+    `Lease:    ${summary.lease.status}${summary.lease.renewing ? ", renewing" : ""}${leaseExpiry}`
+  );
+  lines.push(
+    `Guardian: ${summary.guardian.status}${summary.guardian.protects_current_turn ? ", protects current turn" : ""}`
+  );
+  lines.push(
+    `Listener: ${formatListenerSummary(summary.listener)}`
+  );
+  lines.push(`Git:      ${summary.git.summary}`);
+  lines.push(`Next:     ${summary.next_action}`);
   return lines.join("\n");
 }
 
@@ -418,10 +558,68 @@ function renderHealthText(result: HealthCliResult, callerAgentId: string): strin
   return lines.join("\n");
 }
 
+function formatGitAdvisoryConcise(git: GitAdvisory): string {
+  if (git.status !== "available") {
+    return git.reason;
+  }
+  if (git.tracked_changed_count === 0 && git.untracked_count === 0) {
+    return "clean";
+  }
+  return `dirty (${git.tracked_changed_count} tracked changed, ${git.untracked_count} untracked)`;
+}
+
+function formatListenerSummary(
+  listener: HealthSummaryResult["listener"]
+): string {
+  if (listener.status !== "scanned") {
+    return listener.status;
+  }
+  if (!listener.active) {
+    return "not running";
+  }
+  return listener.duplicates > 0
+    ? `running, ${listener.duplicates} duplicate(s)`
+    : "running";
+}
+
+function getNextAction(result: HealthCliResult, callerAgentId: string): string {
+  const isOwner = result.room.owner === callerAgentId;
+  const isReserved = result.room.reserved_for === callerAgentId;
+  const state = result.room.state;
+
+  if (isOwner && state === "owned") {
+    const liveness = result.local.guardian.liveness;
+    if (liveness === "alive") {
+      return "You hold the stick. Do work, then release/assign.";
+    } else {
+      return "Run 'tt wait' to restart the lease guardian and ownership.";
+    }
+  }
+
+  if (isReserved) {
+    return "Run 'tt wait' to claim your reservation.";
+  }
+
+  if (state === "idle") {
+    return "Run 'tt wait' to claim the stick.";
+  }
+
+  if (result.room.owner) {
+    return "Run 'tt wait' to queue or wait for your turn.";
+  }
+
+  if (result.room.reserved_for) {
+    return "Run 'tt wait' to wait for your turn.";
+  }
+
+  return "Run 'tt wait' to queue or wait for your turn.";
+}
+
 function buildLocalHealth(
   agentId: string,
   contextPath: string,
-  health: GetRoomHealthResult
+  health: GetRoomHealthResult,
+  processMetadata?: ProcessMetadata
 ): LocalHealth {
   const session = findCliSessionForContextPath(
     resolveCliSessionPath(),
@@ -468,11 +666,20 @@ function buildLocalHealth(
       process_started_at: session?.guardian_process_started_at ?? null,
       protects_current_turn: protectsCurrentTurn && guardianLiveness !== "gone"
     },
-    receivers: scanReceiverProcesses(health.room)
+    receivers: scanReceiverProcesses(health.room, {
+      root_pid: receiverRootPid(processMetadata)
+    })
   };
 }
 
-function scanReceiverProcesses(room: PathRoom): ReceiverHealth {
+export function scanReceiverProcesses(
+  room: PathRoom,
+  options: {
+    root_pid?: number | null;
+    process_rows?: ProcessTableRow[];
+    read_cwd?: (pid: number) => string | null;
+  } = {}
+): ReceiverHealth {
   if (process.platform === "win32") {
     return {
       status: "unsupported",
@@ -483,35 +690,29 @@ function scanReceiverProcesses(room: PathRoom): ReceiverHealth {
   }
 
   try {
-    const output = execFileSync(
-      "ps",
-      ["-axo", "pid=,lstart=,command="],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        env: {
-          ...process.env,
-          LC_ALL: "C"
-        }
-      }
-    ) as string;
-    const processes = output
-      .split("\n")
-      .map(parseProcessLine)
-      .filter((row): row is NonNullable<ReturnType<typeof parseProcessLine>> =>
-        Boolean(row)
-      )
+    const rows = options.process_rows ?? readProcessTable();
+    const processIndex = new Map(rows.map((row) => [row.pid, row]));
+    const cwdForPid = options.read_cwd ?? readProcessCwd;
+    const candidates = rows
       .map((row) => {
         const kind = receiverKind(row.command);
         if (!kind) {
           return null;
         }
-        const cwd = readProcessCwd(row.pid);
+        if (
+          options.root_pid &&
+          row.pid !== options.root_pid &&
+          !hasAncestor(row.pid, options.root_pid, processIndex)
+        ) {
+          return null;
+        }
+        const cwd = cwdForPid(row.pid);
         if (!processMatchesRoom(row.command, cwd, room)) {
           return null;
         }
         return {
           pid: row.pid,
+          ppid: row.ppid,
           started_at: row.started_at,
           cwd,
           kind,
@@ -523,12 +724,14 @@ function scanReceiverProcesses(room: PathRoom): ReceiverHealth {
           row
         ): row is {
           pid: number;
+          ppid: number | null;
           started_at: string | null;
           cwd: string | null;
           kind: "wait-events" | "events-follow" | "msg-recv";
           command: string;
         } => Boolean(row)
       );
+    const processes = removeAncestorReceiverWrappers(candidates, processIndex);
 
     return {
       status: "scanned",
@@ -547,19 +750,79 @@ function scanReceiverProcesses(room: PathRoom): ReceiverHealth {
   }
 }
 
-function parseProcessLine(
-  line: string
-): { pid: number; started_at: string | null; command: string } | null {
-  const match = line.trimStart().match(/^(\d+)\s+(.{24})\s+(.*)$/);
+interface ProcessTableRow {
+  pid: number;
+  ppid: number | null;
+  started_at: string | null;
+  command: string;
+}
+
+function readProcessTable(): ProcessTableRow[] {
+  const output = execFileSync(
+    "ps",
+    ["-axo", "pid=,ppid=,lstart=,command="],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: {
+        ...process.env,
+        LC_ALL: "C"
+      }
+    }
+  ) as string;
+  return output
+    .split("\n")
+    .map(parseProcessLine)
+    .filter((row): row is ProcessTableRow => Boolean(row));
+}
+
+function parseProcessLine(line: string): ProcessTableRow | null {
+  const match = line.trimStart().match(/^(\d+)\s+(\d+)\s+(.{24})\s+(.*)$/);
   if (!match) {
     return null;
   }
 
   return {
     pid: Number.parseInt(match[1], 10),
-    started_at: match[2].trim() || null,
-    command: match[3].trim()
+    ppid: Number.parseInt(match[2], 10) || null,
+    started_at: match[3].trim() || null,
+    command: match[4].trim()
   };
+}
+
+function receiverRootPid(metadata?: ProcessMetadata): number | null {
+  return metadata?.harness_pid ?? metadata?.pid ?? null;
+}
+
+function hasAncestor(
+  pid: number,
+  ancestorPid: number,
+  processIndex: Map<number, ProcessTableRow>
+): boolean {
+  const seen = new Set<number>();
+  let current = processIndex.get(pid);
+  while (current?.ppid && !seen.has(current.ppid)) {
+    if (current.ppid === ancestorPid) {
+      return true;
+    }
+    seen.add(current.ppid);
+    current = processIndex.get(current.ppid);
+  }
+  return false;
+}
+
+function removeAncestorReceiverWrappers(
+  candidates: ReceiverHealth["processes"],
+  processIndex: Map<number, ProcessTableRow>
+): ReceiverHealth["processes"] {
+  return candidates.filter(
+    (candidate) =>
+      !candidates.some(
+        (other) =>
+          other.pid !== candidate.pid &&
+          hasAncestor(other.pid, candidate.pid, processIndex)
+      )
+  );
 }
 
 function receiverKind(

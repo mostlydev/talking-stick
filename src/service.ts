@@ -668,7 +668,12 @@ export class TalkingStickService {
     return withImmediateTransaction(this.db, () => {
       const room = this.requireRoom(input.room_id);
       this.assertOwnerMutation(room, input, now);
-      this.touchMember(input.room_id, input.agent_id, timestamp);
+      this.touchMember(
+        input.room_id,
+        input.agent_id,
+        timestamp,
+        input.process_metadata
+      );
 
       const eventSeq = this.appendEvent({
         room_id: input.room_id,
@@ -727,12 +732,11 @@ export class TalkingStickService {
   }
 
   /**
-   * Tier-1 stale-guardian purge: the lease guardian discovered that its own
-   * harness process is provably gone, so it surrenders the turn before exiting.
-   * Unlike `releaseStick` this carries no handoff and is a no-op unless this
-   * agent still owns this exact turn/lease (the guardian may race a takeover or
-   * a graceful release). The room drops straight to `idle` so any waiter can
-   * claim it immediately, instead of waiting out the full lease TTL.
+   * Tier-1 stale-guardian purge: the lease guardian saw its captured harness
+   * process as gone, so it asks the service to confirm that the owner is
+   * persistently gone before surrendering the turn. This keeps the service's
+   * owner_gone grace semantics authoritative for harnesses whose OS process
+   * anchor may rotate while the logical harness keeps issuing tt commands.
    */
   relinquishOwnership(input: OwnerMutationInput): RelinquishOwnershipResult {
     const now = this.now();
@@ -747,6 +751,14 @@ export class TalkingStickService {
         room.lease_id !== input.lease_id
       ) {
         return { status: "noop", room_id: input.room_id };
+      }
+
+      const ownerMember = this.getMember(input.room_id, input.agent_id);
+      const ownerLiveness = ownerMember
+        ? this.getMemberProcessLiveness(ownerMember)
+        : "gone";
+      if (!this.isGonePersistent(ownerMember, ownerLiveness, now)) {
+        return { status: "retained", room_id: input.room_id };
       }
 
       const eventSeq = this.appendEvent({
@@ -797,7 +809,12 @@ export class TalkingStickService {
     return withImmediateTransaction(this.db, () => {
       const room = this.requireRoom(input.room_id);
       this.assertOwnerMutation(room, input, now);
-      this.touchMember(input.room_id, input.agent_id, timestamp);
+      this.touchMember(
+        input.room_id,
+        input.agent_id,
+        timestamp,
+        input.process_metadata
+      );
 
       const target = this.getMember(input.room_id, input.to_agent_id);
       if (!target || !this.isMemberActive(target, now)) {
@@ -878,7 +895,12 @@ export class TalkingStickService {
         );
       }
 
-      this.touchMember(input.room_id, input.agent_id, timestamp);
+      this.touchMember(
+        input.room_id,
+        input.agent_id,
+        timestamp,
+        input.process_metadata
+      );
 
       const takeoverKind = this.resolveTakeoverKind(
         room,
@@ -1000,13 +1022,21 @@ export class TalkingStickService {
     }
 
     const now = this.now();
-    const inspection = this.inspectRoom(room, now);
+    const timestamp = now.toISOString();
+    this.touchKnownMember(
+      room.room_id,
+      input.agent_id,
+      timestamp,
+      input.process_metadata
+    );
+    const refreshedRoom = this.requireRoom(room.room_id);
+    const inspection = this.inspectRoom(refreshedRoom, now);
     const mappedMembers = inspection.members.map((member) =>
       this.mapMember(member, now)
     );
     const horizon = this.getRoomReadHorizon(
-      room.room_id,
-      room,
+      refreshedRoom.room_id,
+      refreshedRoom,
       inspection.members
     );
     const memberView =
@@ -1016,22 +1046,26 @@ export class TalkingStickService {
             mappedMembers,
             horizon,
             new Set(
-              [room.owner, room.reserved_for, input.agent_id].filter(
+              [
+                refreshedRoom.owner,
+                refreshedRoom.reserved_for,
+                input.agent_id
+              ].filter(
                 (item): item is AgentId => Boolean(item)
               )
             )
           );
-    const pendingHandoff = room.pending_handoff_event_seq
-      ? this.getEventBySeq(room.pending_handoff_event_seq)
+    const pendingHandoff = refreshedRoom.pending_handoff_event_seq
+      ? this.getEventBySeq(refreshedRoom.pending_handoff_event_seq)
       : null;
 
     return {
       room: this.mapRoom(inspection, now),
       members: memberView.rows,
-      cursor_event_seq: this.latestEventSeq(room.room_id),
+      cursor_event_seq: this.latestEventSeq(refreshedRoom.room_id),
       pending_handoff: pendingHandoff ? this.mapEvent(pendingHandoff) : null,
       takeover: this.describeTakeoverAvailability(
-        room,
+        refreshedRoom,
         input.agent_id,
         now,
         inspection

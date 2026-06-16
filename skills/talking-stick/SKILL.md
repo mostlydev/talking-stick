@@ -80,11 +80,11 @@ Right after joining, start exactly one background listen/wait loop using the `cu
 tt wait --events --after <cursor_event_seq> --json
 ```
 
-This single loop is the normal way to stay responsive to ownership changes and direct or room messages. It returns on turn changes, event/message batches, timeout, takeover availability, or room closure. On every return, update your cursor from `cursor_event_seq`, process any `events[]`, and restart the loop while work remains pending.
+This single loop is the normal way to stay responsive to ownership changes and direct or room messages. It returns on turn changes, event/message batches, timeout, takeover availability, or room closure. On every return, update your cursor from `cursor_event_seq`, process any `events[]`, and restart the loop while work remains pending. Remember: the wait loop is a bounded long-poll, and you must restart exactly one listener loop on every return.
 
 Events are observer data only. They never grant write authority. Shared edits require a `status: "your_turn"` result from the wait loop and the returned live `guardian_pid`.
 
-Run exactly one listen/wait loop per session. A second background loop does not add coverage and can cause confusing duplicate wakeups. If you need a different target or cursor, stop the existing loop first.
+Run exactly one listen/wait loop per session. A second background loop does not add coverage and can cause confusing duplicate wakeups. If you need a different target or cursor, stop the existing loop first. If Talking Stick warns about duplicate active listeners, stop any extra processes.
 
 ### 3. Wait Before Shared Work
 
@@ -106,6 +106,8 @@ Possible outcomes:
 - `closed`: stop and explain that the room is closed
 
 `wake_reason` explains why the loop returned (`turn`, `event`, `timeout`, or `closed`). It does not grant authority by itself. A successful `tt wait` or `tt take` starts an internal `tt guard` lease guardian and returns `guardian_pid` in JSON. Trust `tt wait`: a `your_turn` result means the CLI confirmed or spawned a guardian, and if it could not, the command would have failed. Do not kill that guardian.
+
+**Presence and Lease Renewal:** Any non-guardian `tt` command from a detected harness refreshes that member's `last_seen_at` and session metadata. This is presence only. Reads such as `tt health`, `tt state`, and `tt events` do not renew authority or extend the owner lease. A successful `tt wait` / `tt take` starts the local guardian, and that guardian carries lease renewal while owner mutations validate the lease before changing room state. If the guardian's captured harness process looks gone but the harness has recent `tt` activity, Talking Stick retains the lease and the guardian keeps heartbeating; only a process-gone and silent owner is surrendered as `harness_gone`.
 
 ### 4. While Waiting
 

@@ -11,7 +11,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-const { spawnGuardian } = await import("../src/cli/guardian.js");
+const { runGuardTick, spawnGuardian } = await import("../src/cli/guardian.js");
 
 class FakeStream extends EventEmitter {
   setEncoding = vi.fn();
@@ -69,3 +69,88 @@ describe("spawnGuardian", () => {
     expect(child.stderr.destroy).toHaveBeenCalled();
   });
 });
+
+describe("runGuardTick", () => {
+  test("keeps heartbeating when service retains a fresh gone harness", () => {
+    const relinquishOwnership = vi.fn(() => ({
+      status: "retained",
+      room_id: "room-1"
+    }));
+    const heartbeat = vi.fn(() => ({
+      status: "ok",
+      room_id: "room-1",
+      turn_id: 1,
+      lease_id: "lease-1",
+      lease_expires_at: "2026-04-22T12:10:00.000Z"
+    }));
+
+    const result = runGuardTick({
+      runtime: fakeRuntime({ relinquishOwnership, heartbeat }),
+      identity: fakeIdentity(),
+      heartbeatInput: fakeHeartbeatInput(),
+      harnessRef: {
+        pid: 12345,
+        process_started_at: "missing"
+      },
+      inspector: { inspect: () => null }
+    });
+
+    expect(result).toBe("continue");
+    expect(relinquishOwnership).toHaveBeenCalledOnce();
+    expect(heartbeat).toHaveBeenCalledOnce();
+  });
+
+  test("exits cleanly after service relinquishes a persistently gone harness", () => {
+    const relinquishOwnership = vi.fn(() => ({
+      status: "relinquished",
+      room_id: "room-1",
+      event_seq: 1
+    }));
+    const heartbeat = vi.fn();
+
+    const result = runGuardTick({
+      runtime: fakeRuntime({ relinquishOwnership, heartbeat }),
+      identity: fakeIdentity(),
+      heartbeatInput: fakeHeartbeatInput(),
+      harnessRef: {
+        pid: 12345,
+        process_started_at: "missing"
+      },
+      inspector: { inspect: () => null }
+    });
+
+    expect(result).toBe("exit_clean");
+    expect(relinquishOwnership).toHaveBeenCalledOnce();
+    expect(heartbeat).not.toHaveBeenCalled();
+  });
+});
+
+function fakeRuntime(methods: {
+  relinquishOwnership: ReturnType<typeof vi.fn>;
+  heartbeat: ReturnType<typeof vi.fn>;
+}) {
+  return {
+    commands: {
+      relinquishOwnership: methods.relinquishOwnership,
+      heartbeat: methods.heartbeat
+    }
+  } as never;
+}
+
+function fakeIdentity() {
+  return {
+    agent_id: "codex:test",
+    process_metadata: {
+      session_kind: "harness_cli",
+      display_name: "codex"
+    }
+  } as never;
+}
+
+function fakeHeartbeatInput() {
+  return {
+    room_id: "room-1",
+    lease_id: "lease-1",
+    expected_turn_id: 1
+  };
+}
