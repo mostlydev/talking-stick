@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.7.0] — 2026-06-16
+
+Full notes: [`docs/releases/0.7.0.md`](docs/releases/0.7.0.md).
+
 ### Added
 - **Concise `tt health` / `tt status` action card.** Default health output is now a short, action-oriented summary — owner, whether you own it, lease + renewal status, guardian, listener (with duplicate count), git, and the next recommended command. Full member/receiver/process diagnostics moved behind `--verbose` (the existing `--all` still works). JSON exposes `hidden.{members_omitted,receivers_omitted}` so consumers know detail is available. (#55)
 - **Listener restart reminder on every `tt wait` / `tt try`.** Each return now carries a dedicated `next` reminder (JSON field and human line) to restart exactly one listener, and warns when duplicate active listeners are detected for your own harness. (#56)
@@ -332,6 +336,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.7.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.6.0
 [0.5.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.5.1
 [0.5.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.5.0
