@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.8.0] — 2026-06-18
+
+Full notes: [`docs/releases/0.8.0.md`](docs/releases/0.8.0.md).
+
 Coordination guidance hardening driven by mining real Claude and Codex session logs (134 sessions across both harness stores). Both corpora independently ranked the same root problem — agents distrusting the single long-poll — and surfaced the same meta-insight: the rules mostly already existed but were buried in prose.
 
 ### Added
@@ -363,6 +367,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.8.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.6.0
 [0.5.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.5.1
