@@ -9,7 +9,25 @@ This skill teaches a harness how to behave in a Talking Stick workspace.
 
 Do not perform shared workspace edits, commits, migrations, or other owner-style work until you hold the stick.
 
+Coordination is mandatory whenever this skill applies. Agents should take turns whenever the work can be sequenced. Parallel read-only analysis is fine, but shared workspace mutation is single-writer only.
+
 If you only need status, read status. If you need to work, join and wait.
+
+Testing is required before final handoff unless the task is genuinely untestable. If no meaningful test or runtime check exists, say why in the handoff.
+
+## Coordination Quick Reference
+
+These rules prevent the mistakes that waste the most time in practice. Keep them in view; the rest of this skill explains each one.
+
+- **One loop, always `tt wait --events --after <cursor> --json`.** Never bare `tt wait` — bare wait wakes only on a turn change and silently misses messages and events. `--events` wakes on turns, messages, and events in a single long-poll.
+- **That loop is your only poll and your only listener.** Do not also run `tt events --follow`, `tt events --wait`, `tt msg recv`, or a separate monitor loop. A second listener adds no coverage and triggers duplicate-wakeup warnings.
+- **Every return: advance the cursor, then re-arm exactly one loop.** Set `--after` to the returned `cursor_event_seq`, then restart a single `tt wait --events`. Never re-fire faster than the long-poll, and never run two at once.
+- **Trust the wait payload.** It already reports owner, turn, and events. Do not reflexively run `tt state` / `tt events` / `tt health` after a routine wait return.
+- **Bound `tt events`.** Always pass `--after <cursor>` (and `--limit`); a bare `tt events --target any` can dump the whole log (tens of thousands of tokens).
+- **No shared mutation without a fresh `your_turn` and a live `guardian_pid`.** Reading, planning, and reviewing are always fine; editing shared files is not, until the wait grants the turn.
+- **Do not idle-hold during long verification.** Run quick checks while holding the stick. For a multi-minute suite, build, CI, or publish, hand off with that check called out as pending and keep the room alive; final closeout still needs the result recorded.
+- **On a long peer-held turn, don't spin.** Let the long-poll block (or schedule one wakeup) and do read-only investigation; do not re-fire short polls back to back.
+- **Test before the final handoff** unless the change is genuinely untestable, and then say why.
 
 ## When To Use
 
@@ -80,11 +98,11 @@ Right after joining, start exactly one background listen/wait loop using the `cu
 tt wait --events --after <cursor_event_seq> --json
 ```
 
-This single loop is the normal way to stay responsive to ownership changes and direct or room messages. It returns on turn changes, event/message batches, timeout, takeover availability, or room closure. On every return, update your cursor from `cursor_event_seq`, process any `events[]`, and restart the loop while work remains pending. Remember: the wait loop is a bounded long-poll, and you must restart exactly one listener loop on every return.
+This single loop is the normal way to stay responsive to ownership changes and direct or room messages. It returns on turn changes, event/message batches, timeout, takeover availability, or room closure. Always include `--events --after <cursor>`: bare `tt wait` wakes only on a turn change and silently misses messages and events. On every return, advance your cursor to the returned `cursor_event_seq`, process any `events[]`, and restart exactly one listener loop while work remains pending. Remember: the wait loop is a bounded long-poll, and you must restart exactly one listener loop on every return.
 
 Events are observer data only. They never grant write authority. Shared edits require a `status: "your_turn"` result from the wait loop and the returned live `guardian_pid`.
 
-Run exactly one listen/wait loop per session. A second background loop does not add coverage and can cause confusing duplicate wakeups. If you need a different target or cursor, stop the existing loop first. If Talking Stick warns about duplicate active listeners, stop any extra processes.
+Keep exactly one receive path active while shared work remains pending whenever your harness can keep a background command alive. The preferred receive path is always `tt wait --events --after <cursor> --json`, including while you hold the stick. A second background loop does not add coverage and can cause confusing duplicate wakeups. If you need a different target or cursor, stop the existing loop first. If Talking Stick warns about duplicate active listeners, stop any extra processes.
 
 ### 3. Wait Before Shared Work
 
@@ -174,6 +192,14 @@ Holding the stick is for active work. The moment you stop actively editing, reas
 
 The `tt guard` process spawned by `tt wait` keeps the lease alive during active work. Later owner commands such as `tt release`, `tt assign`, and `tt take` must run under the same harness identity. If identity is ambiguous, use the exact active id with `TT_HARNESS_AGENT_ID=<agent_id>`.
 
+Keep one receive path active while you hold the stick when your harness can keep a background command alive. Your receive path is the same canonical command, run from the latest cursor:
+
+```sh
+tt wait --events --after <cursor_event_seq> --json
+```
+
+As the owner, this long-polls for messages/events until an event arrives or the wait times out. On timeout it returns `your_turn` with `reason: "already_owner"`; that is normal. Process any returned events, advance the cursor, and re-arm exactly one wait if work remains pending. Do not use tiny timeouts, do not create a second listener such as `tt events --follow`, and do not run a separate monitor loop while you hold the stick. If your harness cannot keep a background wait alive while editing, run one foreground `tt wait --events --after <cursor> --timeout <safe value> --json` between work chunks and again right before handoff. Only if your harness cannot run `tt wait` at all, fall back to a single one-shot `tt events --wait --after <cursor> --target self --json`, and stop it before starting any other listener.
+
 ### 6. Takeover Is Explicit
 
 If `tt wait` reports `takeover_available`:
@@ -194,6 +220,8 @@ tt take --operator-requested --reason "operator requested takeover" --json
 Do not invent this override yourself; it is for direct operator intervention.
 
 ### 7. Finish With A Real Handoff
+
+Before handing off, run the tests, build, runtime checks, release checks, or dogfood checks that match the change. If the task is docs-only, a focused docs or packaging check may be enough. If the task is not testable, write that explicitly in the handoff. For install, release, or publishing work, prefer proof from the installed package, registry, release, or isolated environment over repo-local intent.
 
 When you are done with your turn, default to releasing:
 
@@ -228,6 +256,7 @@ Minimum handoff quality:
 
 - `status`: what you finished, what changed, and what remains true
 - `next_action`: the concrete next step for the next owner
+- verification in `status` or `artifacts`: tests/checks run, or why no useful test exists
 
 Add `artifacts`, `open_questions`, and `do_not` when they will save the next harness real time or prevent rework.
 
@@ -235,7 +264,7 @@ Add `artifacts`, `open_questions`, and `do_not` when they will save the next har
 
 After `tt release` or `tt assign`, choose one of three branches:
 
-1. **Active work pending**: immediately re-enter `tt wait --events --after <cursor> --json` and keep the loop alive until your next turn arrives. This is the default whenever the handoff, operator, review gate, release gate, or room state still asks someone to act.
+1. **Active work pending**: stop any fallback event follower, immediately re-enter `tt wait --events --after <cursor> --json`, and keep the loop alive until your next turn arrives. This is the default whenever the handoff, operator, review gate, release gate, or room state still asks someone to act.
 2. **Passive or external wait**: use `tt wait --park --events --after <cursor> --json` when there is no agent work to do right now, but the room should stay responsive to a future operator input, CI result, publish result, or other external signal. Park never auto-claims an idle room.
 3. **Shared task complete**: stop the local wait loop and send the final user-facing closeout only when completion evidence is clear.
 
@@ -247,7 +276,7 @@ Completion evidence requires all of these to be true:
 - no `next_action` asks another agent to act
 - no assignment or reservation is pending
 - open questions are empty or explicitly closed
-- required tests, runtime checks, release checks, or dogfood checks are recorded
+- required tests, runtime checks, release checks, dogfood checks, or the reason the task is untestable are recorded
 - no CI, publish, runtime, human, or vendor gate remains outstanding
 - the user's objective is actually satisfied, not merely narrowed
 
@@ -270,7 +299,7 @@ Use these reads when you need context:
 - `tt list --json`: discover active rooms under the current path
 - `tt state --json`: authoritative current room projection
 - `tt health --json`: read-only room, local session, receiver, and git advisory
-- `tt events --target any --json`: replay recent claims, releases, assignments, messages, and takeovers
+- `tt events --after <cursor> --target any --json`: replay recent claims, releases, assignments, messages, and takeovers — always bound with `--after` (and `--limit`); a bare `tt events --target any` can dump the entire log
 - `tt notes list --json`: list durable notes
 - `tt whoami --explain`: inspect identity resolution
 
@@ -282,7 +311,8 @@ In a Talking Stick workspace, prefer these properties in order:
 
 1. no accidental parallel work
 2. clear ownership
-3. good handoffs
-4. explicit recovery when someone stalls
+3. one active receive path
+4. tested handoffs
+5. explicit recovery when someone stalls
 
 Do not optimize for speed by cutting around the coordination protocol. The point of the protocol is to make multi-agent work predictable.

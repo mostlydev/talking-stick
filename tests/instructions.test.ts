@@ -28,6 +28,11 @@ describe("collaboration instructions", () => {
 
     expect(result.harness).toBe("codex");
     expect(result.text).toContain("Keep using Talking Stick until the shared task is done.");
+    expect(result.text).toContain("Coordination is mandatory");
+    expect(result.text).toContain("tt wait --events --after <cursor> --json");
+    expect(result.text).toContain("Keep exactly one receive path active");
+    expect(result.text).toContain("reason: \"already_owner\"");
+    expect(result.text).toContain("Testing is required prior to final handoff");
     expect(result.text).toContain("draft, adversarial review, convergence");
     expect(result.text).toContain("## Codex");
     expect(result.text).not.toContain("## Claude");

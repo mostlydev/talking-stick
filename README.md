@@ -34,7 +34,7 @@ Then give **both** panes the same prompt — a shared goal plus the skill trigge
 
 > `/goal Work together to implement OAuth login. Use the /talking-stick $talking-stick skill for coordination`
 
-`/talking-stick $talking-stick` triggers the skill in either harness, and the goal keeps each agent driving toward the shared objective. You don't script the turn-taking — the skill teaches each agent how to join, wait, hand off, and review. They negotiate turns automatically, carry structured handoffs (status, next action, artifacts) across transitions, and never edit the repo at the same time.
+`/talking-stick $talking-stick` triggers the skill in either harness, and the goal keeps each agent driving toward the shared objective. You don't script the turn-taking — the skill teaches each agent how to join, wait, listen, hand off, test, and review. Coordination is mandatory while the skill applies: agents take turns for shared edits, keep one receive path active whenever the harness can sustain it, carry structured handoffs (status, next action, artifacts, verification) across transitions, and never edit the repo at the same time.
 
 ### Install options
 
@@ -144,8 +144,8 @@ tt wait --events --after <cursor_event_seq> --json
 - `<recipient>` is a full `agent_id`, an unambiguous active display name (`codex`, `claude`), or the literal `room` for broadcast.
 - `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
 - `tt join --json` and `tt state --json` return `cursor_event_seq`; use that as the initial `--after` cursor, or use `--after 0` when you intentionally want to replay history.
-- `tt wait --events --after <cursor>` returns ownership state, `events[]`, an updated `cursor_event_seq`, `wake_reason`, and a `next` reminder. It is a bounded long-poll, not durable background coverage; restart exactly one listener with the returned cursor.
-- `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for audit/debug or legacy fallback consumers. They are not the recommended harness loop.
+- `tt wait --events --after <cursor>` returns ownership state, `events[]`, an updated `cursor_event_seq`, `wake_reason`, and a `next` reminder. It is a bounded long-poll, not durable background coverage; restart exactly one listener with the returned cursor while shared work remains pending. Never bare `tt wait`, which wakes only on a turn change. Holders can use the same command as the receive path; for an owner it long-polls until an event arrives or the wait times out, then returns `your_turn` with `reason: "already_owner"` on timeout.
+- `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for audit/debug or legacy fallback consumers. They are not the recommended harness loop. Use one-shot `tt events --wait --after <cursor> --target self --json` only when a harness cannot run the canonical wait-events loop, and stop it before starting another wait or event listener.
 - The wait-events loop is owner-safe for non-holders: it does not grant or renew authority. It refreshes the caller's presence/wait interest so active harnesses stay visible.
 - Event receive does not grant the stick. Only a `tt wait --events` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
 - Ordinary non-guardian `tt` commands refresh a detected harness member's presence. Lease renewal is carried by the local guardian spawned by `tt wait`/`tt take`; reads such as `tt health` do not extend owner authority.
@@ -161,7 +161,7 @@ tt wait --events --after <cursor_event_seq> --json
 
 ## Post-turn closeout
 
-After a handoff, an agent keeps the wait loop alive while work is pending, parks when it is only waiting on an external signal, or — when the shared task is genuinely complete — stops and sends a final closeout instead of churning the room. The exact completion evidence an agent must see before declaring done lives in the skill ([`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md)).
+After a handoff, an agent keeps the wait loop alive while work is pending, parks when it is only waiting on an external signal, or — when the shared task is genuinely complete — stops and sends a final closeout instead of churning the room. Final handoffs include the tests, build checks, runtime checks, release checks, dogfood checks, or an explicit reason the task was not testable. The exact completion evidence an agent must see before declaring done lives in the skill ([`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md)).
 
 ## How installation works per harness
 
@@ -287,4 +287,4 @@ adds the GitHub release link before npm commits and tags the version.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE.md](LICENSE.md).

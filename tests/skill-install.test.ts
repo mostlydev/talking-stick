@@ -173,6 +173,12 @@ describe("talking-stick skill install", () => {
     expect(skill).toContain("tt instructions show --json");
     expect(skill).toContain("### 4.5 Out-Of-Band Messaging");
     expect(skill).toContain("tt events --follow --json");
+    expect(skill).toContain("Coordination is mandatory");
+    expect(skill).toContain("Testing is required before final handoff");
+    expect(skill).toContain("Coordination Quick Reference");
+    expect(skill).toContain("Never bare `tt wait`");
+    expect(skill).toContain("Keep one receive path active while you hold the stick");
+    expect(skill).toContain("reason: \"already_owner\"");
   });
 
   test("shared skill install does not require a proprietary harness config directory", async () => {
@@ -269,6 +275,12 @@ describe("talking-stick skill install", () => {
     expect(skill).toContain("tt instructions show --json");
     expect(skill).toContain("### 4.5 Out-Of-Band Messaging");
     expect(skill).toContain("tt events --follow --json");
+    expect(skill).toContain("Coordination is mandatory");
+    expect(skill).toContain("Testing is required before final handoff");
+    expect(skill).toContain("Coordination Quick Reference");
+    expect(skill).toContain("Never bare `tt wait`");
+    expect(skill).toContain("Keep one receive path active while you hold the stick");
+    expect(skill).toContain("reason: \"already_owner\"");
   });
 
   test("syncInstalledSkills updates an existing copied shared skill without installing missing proprietary harnesses", () => {

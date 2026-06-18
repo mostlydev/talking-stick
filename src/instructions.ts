@@ -56,7 +56,11 @@ export const DEFAULT_MAX_INSTRUCTION_FILE_BYTES = 256 * 1024;
 
 export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration instructions
 
-Keep using Talking Stick until the shared task is done. After releasing or handing off, re-enter the wait loop by default. Prefer continued action unless the task is complete or the operator explicitly redirects or stops the room. If a handoff, message, or operator instruction leaves review, release, or other work pending, use normal \`tt wait --json\`; do not park. Use \`tt wait --park --json\` only for passive standby when no task is pending and you are blocked on operator input or an external signal.
+Keep using Talking Stick until the shared task is done. Coordination is mandatory whenever this prompt applies, and agents should take turns whenever the work can be sequenced. After releasing or handing off, re-enter \`tt wait --events --after <cursor> --json\` by default. Prefer continued action unless the task is complete or the operator explicitly redirects or stops the room. If a handoff, message, or operator instruction leaves review, release, or other work pending, use normal \`tt wait --events --after <cursor> --json\`; do not park. Use \`tt wait --park --events --after <cursor> --json\` only for passive standby when no task is pending and you are blocked on operator input or an external signal.
+
+Keep exactly one receive path active while shared work remains pending: a single \`tt wait --events --after <cursor> --json\` long-poll. Never bare \`tt wait\` (it wakes only on a turn change and misses messages and events), and never a second \`tt events --follow\` or monitor loop alongside it. The same command is your receive path while you hold the stick; as the owner it long-polls for messages/events until an event arrives or the wait times out, then returns \`your_turn\` with \`reason: "already_owner"\` on timeout. Advance \`--after\` to the returned \`cursor_event_seq\` each return, re-arm one wait if work remains pending, and do not reflexively read \`tt state\`/\`tt events\` in between.
+
+Testing is required prior to final handoff unless the task is genuinely untestable. Run the focused tests, build checks, runtime checks, release checks, or dogfood checks that match the change, and record them in the handoff. If no useful test exists, say why.
 
 On freshly invoked multi-agent tasks, give peers a short window to join before deciding you are alone. Use a normal wait timeout or spend about a minute on read-only repo orientation while other harnesses appear.
 
@@ -64,9 +68,9 @@ Use phase names in handoffs when they clarify the work: draft, adversarial revie
 
 Claude and Codex are peers of comparable capability; neither outranks the other. Split work evenly between them rather than routing by stereotype, and have all models plan, implement, and evaluate together: any harness can draft, review, converge, implement, or release. Antigravity and OpenCode start with conservative local guidance until project dogfood says otherwise.
 
-For multi-agent design work, prefer independent read-only drafts first, then adversarial review and convergence. Do not impose a draft file structure on the workspace by default. If scratch draft files are useful, delete superseded pre-convergence drafts after the converged plan exists unless the operator asks to keep them.
+When you kick off a multi-agent task, lead with one room broadcast of the goal and a proposed work split so peers converge in a single round-trip instead of negotiating piecemeal. For multi-agent design work, prefer independent read-only drafts first, then adversarial review and convergence. Do not impose a draft file structure on the workspace by default. If scratch draft files are useful, delete superseded pre-convergence drafts after the converged plan exists unless the operator asks to keep them.
 
-Default to normal release handoffs. Use named assignment only when a specific member must go next because of unique context, credentials, capability, or direct operator routing.
+Default to normal release handoffs. Use named assignment only when a specific member must go next because of unique context, credentials, capability, direct operator routing, or a concrete review/test request.
 
 ## Claude
 

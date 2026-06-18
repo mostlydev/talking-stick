@@ -10,7 +10,9 @@
     ".": "./dist/index.js"
   },
   "files": [
+    "CHANGELOG.md",
     "dist",
+    "LICENSE.md",
     "scripts",
     "skills",
     "docs",

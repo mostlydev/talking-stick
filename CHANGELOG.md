@@ -11,6 +11,18 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+Coordination guidance hardening driven by mining real Claude and Codex session logs (134 sessions across both harness stores). Both corpora independently ranked the same root problem — agents distrusting the single long-poll — and surfaced the same meta-insight: the rules mostly already existed but were buried in prose.
+
+### Added
+- **Coordination Quick Reference in the skill.** A short, mechanical checklist at the top of the `talking-stick` skill front-loads the highest-leverage rules: one `tt wait --events --after <cursor>` loop as the only poll *and* the only listener, never bare `tt wait`, advance the returned `cursor_event_seq` and re-arm exactly one loop, bound `tt events`, no shared mutation without a fresh `your_turn` and a live `guardian_pid`, and test before the final handoff.
+- **Coordination is mandatory and testing-before-final-handoff are now explicit** in both the bundled skill and the editable collaboration instructions, plus a "lead a multi-agent kickoff with one room broadcast of the goal and a proposed split" optimization.
+- **`LICENSE.md` (MIT) added** and both `LICENSE.md` and `CHANGELOG.md` now ship in the published package `files`.
+
+### Changed
+- **Corrected owner-side receive-path guidance.** An owner's `tt wait --events` is a genuine long-poll: `isTurnWake` suppresses `already_owner` as a turn wake, so the loop blocks until an event arrives or the wait times out, then returns `your_turn` with `reason: "already_owner"`. The same single loop now serves owner and waiter alike and doubles as guardian keepalive. This replaces prior owner-side `tt events --follow` listener advice — a recurring leaked-duplicate-listener footgun seen in the logs; the only documented fallback for harnesses that cannot run `tt wait` is now a single one-shot `tt events --wait`.
+- **Never bare `tt wait`.** The skill, instructions, and README now require the standby loop to always be `tt wait --events --after <cursor>`; bare `tt wait` wakes only on a turn change and silently misses messages and events.
+- **Bound `tt events`.** Guidance to always pass `--after` (and `--limit`); a bare `tt events --target any` can dump the entire log (tens of thousands of tokens).
+
 ## [0.7.0] — 2026-06-16
 
 Full notes: [`docs/releases/0.7.0.md`](docs/releases/0.7.0.md).
@@ -191,6 +203,21 @@ Full notes: [`docs/releases/0.4.0.md`](docs/releases/0.4.0.md).
 ### Added
 - **Editable collaboration instructions.** Added `tt instructions show|edit|reset` so bundled safety guidance can stay package-managed while user and project collaboration prompts live in editable Markdown. The bundled skill now loads the effective prompt after join.
 
+## [0.3.0] — 2026-05-05
+
+Full notes: [`docs/releases/0.3.0.md`](docs/releases/0.3.0.md).
+
+### Breaking changes
+- **MCP server surface removed.** Removed the MCP stdio server implementation, `tt mcp` command registration, MCP-specific tests, and the `@modelcontextprotocol/sdk` dependency. `tt --help` no longer advertises MCP startup, and `tt install` no longer writes MCP server config.
+- **`tt install` is skill-only.** `tt install <harness>` now installs or refreshes the bundled `talking-stick` skill for Claude Code, Codex, Gemini, and OpenCode. The older `tt install-skill` / `tt uninstall-skill` command surface was removed.
+
+### Changed
+- **CLI-only runtime.** Harnesses now coordinate by running `tt` subprocesses for join, wait, handoff, notes, messages, and event receive. The bundled skill teaches `tt events --follow --json` as the ambient receiver, `tt wait --json` for ownership, and `tt events --wait --after <cursor> --json` as an observer-only fallback for harnesses that cannot consume long-running stdout.
+- **Stable CLI identity preference.** CLI identity resolution now prefers stable harness ancestry over transient terminal ids when no explicit harness session id exists, keeping repeated shell-outs from one harness attached to the same room member.
+
+### Migration
+- **Stale MCP cleanup.** Updates remove stale Talking Stick MCP registrations during package postinstall, self-update, first installed-package invocation after a version change, and explicit install/uninstall. Cleanup records JSONL audit entries in `${TALKING_STICK_DATA_DIR}/update-migrations.log`.
+
 ## [0.2.0] — 2026-04-30
 
 Full notes: [`docs/releases/0.2.0.md`](docs/releases/0.2.0.md).
@@ -350,8 +377,13 @@ installers, and the portable `talking-stick` skill.
 [0.4.6]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.6
 [0.4.5]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.5
 [0.4.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.4
+[0.4.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.3
+[0.4.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.2
 [0.4.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.1
 [0.4.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.0
+[0.3.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.3.0
+[0.2.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.2.0
+[0.1.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.4
 [0.1.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.3
 [0.1.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.2
 [0.1.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.1.1
