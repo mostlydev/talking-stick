@@ -11,6 +11,20 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- **CLI-managed wait cursor.** Plain `tt wait --json` now receives room events by default and persists `event_cursor_seq` in `cli-sessions.json`. Normal agent loops no longer manage `--events` or `--after`, eliminating stale-cursor replay loops that made nominal long-polls return immediately.
+- **Safe instruction updates.** Generated editable defaults and recorded unedited skill copies update automatically. Customized files are preserved and offered explicit `tt instructions update --replace` or `tt install --replace` commands.
+
+### Changed
+
+- **Coordination guidance rewritten from session evidence.** The bundled default and shipped skill now explain the actual subprocess lifecycle: a yielded tool handle is still one running wait, poll that handle, do not add short CLI timeouts, and start a successor only after the subprocess exits. The skill is substantially shorter and no longer repeats harness stereotypes, phase taxonomies, or legacy receive alternatives.
+- **Editable files are local overrides.** New editable instruction files contain only a small override template instead of copying the bundled default into a second effective layer.
+
+### Removed
+
+- **Legacy integration cleanup and identity code.** Removed the old postinstall/startup/update cleanup lifecycle, internal migration command, installer adapters, obsolete identity API/session naming, tests, and stale design documents. Install and uninstall now manage skills and the Grok session hook only.
+
 ## [0.8.0] — 2026-06-18
 
 Full notes: [`docs/releases/0.8.0.md`](docs/releases/0.8.0.md).
@@ -23,7 +37,7 @@ Coordination guidance hardening driven by mining real Claude and Codex session l
 - **`LICENSE.md` (MIT) added** and both `LICENSE.md` and `CHANGELOG.md` now ship in the published package `files`.
 
 ### Changed
-- **Corrected owner-side receive-path guidance.** An owner's `tt wait --events` is a genuine long-poll: `isTurnWake` suppresses `already_owner` as a turn wake, so the loop blocks until an event arrives or the wait times out, then returns `your_turn` with `reason: "already_owner"`. The same single loop now serves owner and waiter alike and doubles as guardian keepalive. This replaces prior owner-side `tt events --follow` listener advice — a recurring leaked-duplicate-listener footgun seen in the logs; the only documented fallback for harnesses that cannot run `tt wait` is now a single one-shot `tt events --wait`.
+- **Corrected owner-side receive-path guidance.** An owner's `tt wait --events` is a genuine long-poll: `isTurnWake` suppresses `already_owner` as a turn wake, so the loop blocks until an event arrives or the wait times out, then returns `your_turn` with `reason: "already_owner"`. The same single loop serves owner and waiter alike while the separate guardian renews the lease. This replaces prior owner-side `tt events --follow` listener advice — a recurring leaked-duplicate-listener footgun seen in the logs; the only documented fallback for harnesses that cannot run `tt wait` is now a single one-shot `tt events --wait`.
 - **Never bare `tt wait`.** The skill, instructions, and README now require the standby loop to always be `tt wait --events --after <cursor>`; bare `tt wait` wakes only on a turn change and silently misses messages and events.
 - **Bound `tt events`.** Guidance to always pass `--after` (and `--limit`); a bare `tt events --target any` can dump the entire log (tens of thousands of tokens).
 

@@ -3,6 +3,7 @@ import {
   parseInstructionScope,
   resetInstructions,
   showInstructions,
+  updateInstructions,
   type EditableInstructionScope
 } from "../instructions.js";
 import { deriveCliIdentity } from "./identity.js";
@@ -33,27 +34,67 @@ export async function handleInstructionsCommand(
     case "reset":
       handleInstructionsResetCommand(subParsed);
       return;
+    case "update":
+      handleInstructionsUpdateCommand(subParsed);
+      return;
     default:
       throw new Error(`Unknown instructions subcommand: ${subcommand}`);
   }
+}
+
+function handleInstructionsUpdateCommand(parsed: ParsedCommand): void {
+  const contextPath = resolveContextPathArg(parsed);
+  const wantsUser = hasOption(parsed, "user");
+  const wantsProject = hasOption(parsed, "project");
+  if (wantsUser && wantsProject) {
+    throw new Error("Pass only one of --user or --project.");
+  }
+  const scopes = wantsUser ? ["user" as const] : wantsProject ? ["project" as const] : undefined;
+  const results = updateInstructions({
+    scopes,
+    replaceEdited: hasOption(parsed, "replace"),
+    options: { contextPath }
+  });
+
+  printResult(parsed, { results }, () =>
+    results.map((result) => `[${result.scope}] ${result.status}: ${result.message} (${result.path})`).join("\n")
+  );
 }
 
 function handleInstructionsShowCommand(parsed: ParsedCommand): void {
   const contextPath = resolveContextPathArg(parsed);
   const scope = parseInstructionScope(getStringOption(parsed, "scope"));
   const identity = deriveCliIdentity(parsed);
-  const result = showInstructions({
-    harness: getStringOption(parsed, "harness"),
-    scope,
-    options: {
-      contextPath,
-      identity
-    }
-  });
+  const updates = scope === "bundled"
+    ? []
+    : updateInstructions({
+        scopes:
+          scope === "user" || scope === "project"
+            ? [scope]
+            : undefined,
+        options: { contextPath }
+      });
+  const result = {
+    ...showInstructions({
+      harness: getStringOption(parsed, "harness"),
+      scope,
+      options: {
+        contextPath,
+        identity
+      }
+    }),
+    updates
+  };
 
   printResult(parsed, result, () => {
+    const pending = updates.filter(
+      (update) => update.status === "update_available"
+    );
     if (result.text.trim().length > 0) {
-      return result.text;
+      return [
+        result.text,
+        ...pending.map((update) => `Update available: ${update.message}`)
+      ].join("\n\n");
     }
     return `No ${result.scope} instructions found for ${result.harness}.`;
   });

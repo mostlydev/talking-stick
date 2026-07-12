@@ -11,7 +11,6 @@ import {
   parseHandoffJson,
   runCli,
   shouldAutoSyncInstalledSkills,
-  shouldRunFirstRunMcpMigration,
   shouldUseJson,
   withCoordinationPrompt
 } from "../src/cli.js";
@@ -50,7 +49,6 @@ const ENV_KEYS = [
   "TALKING_STICK_USE_SKILLER",
   "TALKING_STICK_REQUIRE_SKILLER",
   "TALKING_STICK_SKILLER_MIN_VERSION",
-  "TALKING_STICK_DISABLE_MCP_MIGRATION",
   "TALKING_STICK_DISABLE_SKILL_SYNC",
   "VISUAL",
   "EDITOR",
@@ -293,22 +291,22 @@ describe("shouldAutoSyncInstalledSkills", () => {
     expect(shouldAutoSyncInstalledSkills(parsed, {})).toBe(true);
   });
 
-  test("skips harness-aware CLI invocations", () => {
+  test("runs safely for harness-aware CLI invocations", () => {
     expect(
       shouldAutoSyncInstalledSkills(parsed, {
         TT_HARNESS_AGENT_ID: "codex:harness"
       })
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldAutoSyncInstalledSkills(parsed, {
         CLAUDECODE: "1"
       })
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldAutoSyncInstalledSkills(parsed, {
         CMUX_AGENT_LAUNCH_KIND: "grok"
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   test("can be disabled by env and skips installer commands", () => {
@@ -358,42 +356,11 @@ if (process.argv[2] === "version") {
         HOME: root,
         PATH: process.env.PATH ?? "",
         SKILLER_BIN: fakeSkiller,
-        TALKING_STICK_USE_SKILLER: "1",
-        TALKING_STICK_DISABLE_MCP_MIGRATION: "1"
+        TALKING_STICK_USE_SKILLER: "1"
       }
     );
 
     expect(fs.existsSync(logPath)).toBe(false);
-  });
-});
-
-describe("shouldRunFirstRunMcpMigration", () => {
-  const parsed = {
-    name: "state",
-    positionals: [],
-    options: new Map<string, string | true>()
-  };
-  const installedUrl =
-    "file:///Users/alice/.local/share/mise/installs/node/lts/lib/node_modules/talking-stick/dist/cli.js";
-  const devUrl = "file:///Users/alice/dev/ai/talking-stick/src/cli.ts";
-
-  test("runs for installed package commands with startup maintenance", () => {
-    expect(shouldRunFirstRunMcpMigration(parsed, installedUrl, {})).toBe(true);
-  });
-
-  test("skips dev checkouts, disabled env, and installer commands", () => {
-    expect(shouldRunFirstRunMcpMigration(parsed, devUrl, {})).toBe(false);
-    expect(
-      shouldRunFirstRunMcpMigration(parsed, installedUrl, {
-        TALKING_STICK_DISABLE_MCP_MIGRATION: "1"
-      })
-    ).toBe(false);
-    expect(
-      shouldRunFirstRunMcpMigration({
-        ...parsed,
-        name: "install"
-      }, installedUrl, {})
-    ).toBe(false);
   });
 });
 
@@ -654,7 +621,24 @@ describe("tt turn commands", () => {
     }
   });
 
-  test("tt wait --events --after returns event fields and a live guardian pid", async () => {
+  test("tt wait rejects audit targets so they cannot skip self events", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await expect(
+      captureStdout([
+        "wait",
+        project,
+        "--target",
+        "any",
+        "--timeout",
+        "0ms",
+        "--agent",
+        "human:worker",
+        "--json"
+      ])
+    ).rejects.toThrow(/manages the self cursor only/);
+  });
+
+  test("tt wait accepts an explicit replay cursor and returns events with a live guardian", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     let guardianPid: number | undefined;
 
@@ -691,42 +675,96 @@ describe("tt turn commands", () => {
       );
       expect(guardianPid).toEqual(expect.any(Number));
       expect(isPidAlive(guardianPid as number)).toBe(true);
+      expect(
+        readCliSessions(resolveCliSessionPath()).find(
+          (session) => session.agent_id === "human:worker"
+        )?.event_cursor_seq
+      ).toBe(0);
     } finally {
       await releaseIfHeld(project, "human:worker");
       killPidIfAlive(guardianPid);
     }
   });
 
-  test("tt wait validates wait-events cursor usage", async () => {
+  test("tt wait includes events and manages its cursor without flags", async () => {
     const { project } = setupIsolatedCli(tempDirs);
-    await captureStdout(["join", project, "--agent", "human:worker"]);
+    let guardianPid: number | undefined;
+    try {
+      await captureStdout(["join", project, "--agent", "human:worker"]);
+      const first = JSON.parse(await captureStdout([
+        "wait", project, "--timeout", "0ms", "--agent", "human:worker", "--json"
+      ])) as {
+        cursor_event_seq: number;
+        events: Array<{ event_type: string }>;
+        guardian_pid: number;
+      };
+      guardianPid = first.guardian_pid;
+      expect(first.events.map((event) => event.event_type)).toContain("claim");
 
-    await expect(
-      captureStdout([
-        "wait",
-        project,
-        "--events",
-        "--timeout",
-        "0ms",
-        "--agent",
-        "human:worker",
-        "--json"
-      ])
-    ).rejects.toThrow(/Missing required option --after/);
+      const second = JSON.parse(await captureStdout([
+        "try", project, "--agent", "human:worker", "--json"
+      ])) as { cursor_event_seq: number; events: unknown[] };
+      expect(second.events).toEqual([]);
+      expect(second.cursor_event_seq).toBe(first.cursor_event_seq);
 
-    await expect(
-      captureStdout([
-        "wait",
-        project,
-        "--after",
-        "0",
-        "--timeout",
-        "0ms",
-        "--agent",
-        "human:worker",
-        "--json"
-      ])
-    ).rejects.toThrow(/Pass --after only with --events/);
+      await captureStdout([
+        "try", project, "--after", "0", "--agent", "human:worker", "--json"
+      ]);
+      await captureStdout([
+        "try", project, "--after", "999999", "--agent", "human:worker", "--json"
+      ]);
+
+      const session = readCliSessions(resolveCliSessionPath()).find(
+        (candidate) => candidate.agent_id === "human:worker"
+      );
+      expect(session?.event_cursor_seq).toBe(first.cursor_event_seq);
+    } finally {
+      await releaseIfHeld(project, "human:worker");
+      killPidIfAlive(guardianPid);
+    }
+  });
+
+  test("one long-running wait process stays open and exits on an OOB message", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let guardianPid: number | undefined;
+    try {
+      const first = JSON.parse(await captureStdout([
+        "wait", project, "--timeout", "0ms", "--agent", "human:a", "--json"
+      ])) as { guardian_pid: number };
+      guardianPid = first.guardian_pid;
+
+      const listener = spawnCliProcess([
+        "wait", project, "--timeout", "5s", "--agent", "human:a", "--json"
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(listener.child.exitCode).toBeNull();
+
+      await captureStdout(["join", project, "--agent", "human:b", "--json"]);
+      await captureStdout([
+        "msg", "send", "human:a", "hello", "--path", project,
+        "--agent", "human:b", "--json"
+      ]);
+
+      const close = await waitForProcessClose(listener.child, 5_000);
+      expect(close.code).toBe(0);
+      const result = JSON.parse(listener.stdout()) as {
+        events: Array<{ event_type: string; payload?: { body?: string } }>;
+      };
+      expect(result.events).toContainEqual(
+        expect.objectContaining({
+          event_type: "message_sent",
+          payload: expect.objectContaining({ body: "hello" })
+        })
+      );
+    } finally {
+      await releaseIfHeld(project, "human:a");
+      killPidIfAlive(guardianPid);
+      try {
+        await captureStdout(["leave", project, "--agent", "human:b", "--json"]);
+      } catch {
+        // best-effort fixture cleanup
+      }
+    }
   });
 
   test("tt wait repairs a missing guardian for an existing owner", async () => {
@@ -1490,8 +1528,7 @@ describe("tt notes", () => {
 
     expect(result.harness).toBe("codex");
     expect(result.scope).toBe("bundled");
-    expect(result.text).toContain("## Codex");
-    expect(result.text).not.toContain("## Claude");
+    expect(result.text).toContain("tt wait --json");
   });
 
   test("tt instructions show returns the bundled Grok prompt", async () => {
@@ -1510,8 +1547,7 @@ describe("tt notes", () => {
     };
 
     expect(result.harness).toBe("grok");
-    expect(result.text).toContain("## Grok");
-    expect(result.text).not.toContain("## Codex");
+    expect(result.text).toContain("tt wait --json");
   });
 
   test("tt instructions show preserves a path after trailing --json", async () => {
@@ -1535,7 +1571,7 @@ describe("tt notes", () => {
     );
   });
 
-  test("tt install --print includes skill actions and no MCP add", async () => {
+  test("tt install --print includes skill actions", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
     tempDirs.push(home);
     fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
@@ -1552,7 +1588,6 @@ describe("tt notes", () => {
       }
     }
 
-    expect(out).not.toContain("mcp add");
     expect(out).toContain("[codex] link ");
     expect(out).toContain(".agents/skills/talking-stick");
     expect(out).toContain("[codex] remove duplicate skill symlink ");
@@ -1581,7 +1616,6 @@ describe("tt notes", () => {
       }
     }
 
-    expect(out).not.toContain("mcp add");
     expect(out).toContain("[codex] copy ");
     expect(out).toContain(".agents/skills/talking-stick");
   });
@@ -1595,7 +1629,6 @@ describe("tt notes", () => {
 
     const out = await captureStdout(["install", "grok", "--print"]);
 
-    expect(out).not.toContain("mcp add");
     expect(out).toContain("[grok] link ");
     expect(out).toContain(".agents/skills/talking-stick");
     expect(out).toContain("[grok] remove duplicate skill symlink ");
@@ -1618,6 +1651,17 @@ describe("tt notes", () => {
     await expect(
       captureStdout(["install", "codex", "--print", "--copy", "--link"])
     ).rejects.toThrow(/Pass only one of --copy or --link/);
+  });
+
+  test("tt install --replace exposes an explicit replacement plan", async () => {
+    const out = await captureStdout([
+      "install",
+      "codex",
+      "--replace",
+      "--print"
+    ]);
+    expect(out).toContain("talking-stick");
+    expect(out).toContain("link");
   });
 
   test("tt uninstall --print includes skill removal", async () => {
@@ -2522,7 +2566,7 @@ describe("harness heartbeat and health output hardening", () => {
         "--agent",
         "human:wait-reminder"
       ]);
-      expect(waitOut).toContain("next: Remember to restart your listener, and keep only one active.");
+      expect(waitOut).toContain("next: Keep one `tt wait --json` running; it resumes from the saved event cursor.");
       expect(waitOut).not.toContain("WARNING: Duplicate active listeners detected!");
 
       // Mock scanReceiverProcesses to return duplicates
@@ -2542,7 +2586,7 @@ describe("harness heartbeat and health output hardening", () => {
         "--agent",
         "human:wait-reminder"
       ]);
-      expect(waitDupOut).toContain("next: Remember to restart your listener, and keep only one active. WARNING: Duplicate active listeners detected! Stop extras.");
+      expect(waitDupOut).toContain("next: Keep one `tt wait --json` running. WARNING: duplicate listeners detected; stop only the extra processes you started.");
     } finally {
       spy.mockRestore();
     }
@@ -2709,7 +2753,7 @@ function seedCliRoomMembers(project: string, members: SeedCliMember[]): string {
         process_metadata: {
           session_kind: member.agent_id.startsWith("human:")
             ? "human_cli"
-            : "mcp_harness",
+            : "harness_cli",
           display_name: member.display_name
         }
       });

@@ -2,7 +2,7 @@
 
 A CLI coordination tool that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Antigravity CLI (`agy`), Grok Build, and OpenCode out of the box. Gemini CLI identity is retained for existing sessions, but Gemini skill installation is deprecated in favor of Antigravity and the shared agents skill directory. Harnesses stay responsive through one canonical listen/wait loop (`tt wait --events`), diagnose coordination and local process state with `tt health`, and can chat out-of-band — without passing the stick — via `tt msg send/recv`.
+Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Antigravity CLI (`agy`), Grok Build, and OpenCode out of the box. Gemini CLI identity is retained for existing sessions, but Gemini skill installation is deprecated in favor of Antigravity and the shared agents skill directory. One `tt wait --json` long-poll handles ownership and room events using a CLI-managed cursor; agents can chat out-of-band without passing the stick via `tt msg send`.
 
 ## Quickstart
 
@@ -74,7 +74,7 @@ Uses the right npm/pnpm/yarn by default:
 tt self-update
 ```
 
-`tt self-update` also removes stale Talking Stick MCP registrations left by older installs. The first normal `tt` invocation after a package-version change runs the same cleanup if the package manager skipped lifecycle scripts.
+The package refreshes unedited generated instructions automatically. Customized instruction files and copied skills are preserved and receive an explicit replacement command instead of being overwritten.
 
 ### Remove
 
@@ -92,8 +92,8 @@ Once installed, each agent harness has a skill that tells it to coordinate throu
 tt list            — which rooms exist under a path
 tt join            — join the room for this workspace
 tt leave           — explicitly leave a room; deletes it when no active members remain
-tt wait --events   — canonical listen/wait loop for ownership and room events
-tt wait --park --events — stay coordinated without auto-claiming idle rooms
+tt wait            — long-poll for ownership and room events; cursor is saved automatically
+tt wait --park      — stay coordinated without auto-claiming idle rooms
 tt release         — normal handoff to the next fair waiter, with structured Handoff
 tt assign          — explicit handoff to a named agent
 tt take            — deliberate claim when the prior holder is gone/stuck
@@ -102,8 +102,8 @@ tt state           — authoritative state projection
 tt health/status   — concise local safety/action check; --verbose shows diagnostics
 tt events          — audit/debug log and lower-level event stream
 tt notes add/list  — durable async observations for the room
-tt msg send/recv   — out-of-band chat into the room event log
-tt instructions    — editable collaboration prompt loaded by the skill
+tt msg send        — out-of-band chat into the room event log
+tt instructions    — show, edit, safely update, or reset local instruction overrides
 ```
 
 A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically. Marker files directly in your home directory are ignored for descendant paths, so scratch directories under `$HOME` do not collapse into one broad home-scoped room unless you explicitly join home itself.
@@ -119,10 +119,12 @@ tt instructions show                     # effective prompt for the detected har
 tt instructions show --harness codex     # view one harness's effective prompt
 tt instructions edit                     # edit user defaults
 tt instructions edit --project           # edit this repo's overrides
+tt instructions update --user            # auto-refresh generated defaults; preserve custom content
+tt instructions update --user --replace  # explicitly replace customized user instructions
 tt instructions reset --project          # remove this repo's override
 ```
 
-Effective instructions are layered in this order: bundled defaults, user defaults at `${TALKING_STICK_DATA_DIR}/instructions.md` (normally `~/.local/share/talking-stick/instructions.md`), then project overrides at `.talking-stick/instructions.md` in the workspace root. User and project files are created lazily on first edit, so installing `tt` does not litter repositories or harness config directories.
+Effective instructions are layered in this order: bundled defaults, user overrides at `${TALKING_STICK_DATA_DIR}/instructions.md` (normally `~/.local/share/talking-stick/instructions.md`), then project overrides at `.talking-stick/instructions.md` in the workspace root. Generated, unedited files update automatically. Customized files are preserved and appear as `update_available` in `tt instructions show` until explicitly replaced. User and project files are created lazily on first edit, so installing `tt` does not litter repositories or harness config directories.
 
 ## Non-owner notes
 
@@ -138,16 +140,16 @@ The stick guarantees single-writer authority over shared workspace state. It is 
 
 ```bash
 tt msg send <recipient|room> "<body>" [--interrupt] [--stdin]
-tt wait --events --after <cursor_event_seq> --json
+tt wait --json
 ```
 
 - `<recipient>` is a full `agent_id`, an unambiguous active display name (`codex`, `claude`), or the literal `room` for broadcast.
 - `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
-- `tt join --json` and `tt state --json` return `cursor_event_seq`; use that as the initial `--after` cursor, or use `--after 0` when you intentionally want to replay history.
-- `tt wait --events --after <cursor>` returns ownership state, `events[]`, an updated `cursor_event_seq`, `wake_reason`, and a `next` reminder. It is a bounded long-poll, not durable background coverage; restart exactly one listener with the returned cursor while shared work remains pending. Never bare `tt wait`, which wakes only on a turn change. Holders can use the same command as the receive path; for an owner it long-polls until an event arrives or the wait times out, then returns `your_turn` with `reason: "already_owner"` on timeout.
-- `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for audit/debug or legacy fallback consumers. They are not the recommended harness loop. Use one-shot `tt events --wait --after <cursor> --target self --json` only when a harness cannot run the canonical wait-events loop, and stop it before starting another wait or event listener.
-- The wait-events loop is owner-safe for non-holders: it does not grant or renew authority. It refreshes the caller's presence/wait interest so active harnesses stay visible.
-- Event receive does not grant the stick. Only a `tt wait --events` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
+- `tt wait` includes ownership and room events by default. It reads and advances `event_cursor_seq` in `cli-sessions.json`, so normal agents do not pass `--events` or manage `--after`.
+- A tool yield is not a wait timeout. If the harness returns a running process handle, poll that same process instead of starting another wait. When the process actually exits, start one successor if shared work remains. Do not add short explicit timeouts.
+- `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for human audit and debugging. Agents should not run them beside `tt wait` as a second receive loop.
+- The wait loop can claim or receive a turn. An event wake by itself grants no authority.
+- A successful `tt wait` or `tt take` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
 - Ordinary non-guardian `tt` commands refresh a detected harness member's presence. Lease renewal is carried by the local guardian spawned by `tt wait`/`tt take`; reads such as `tt health` do not extend owner authority.
 - Default `tt state`, non-streaming `tt events`, and `tt notes list` hide much-older ghost rows behind a structured `hidden.older_count` summary. Default `tt health` is a concise action card; use `tt health --verbose` or `--all` for full member and receiver diagnostics.
 
@@ -165,7 +167,7 @@ After a handoff, an agent keeps the wait loop alive while work is pending, parks
 
 ## How installation works per harness
 
-`tt install` installs or refreshes the bundled `talking-stick` skill. Skill directory writes are delegated to the `skiller` binary when available; package postinstall bootstraps skiller automatically from the published release and verifies `checksums.txt` before installation. If skiller is missing, disabled, or fails its version gate, `tt` uses the built-in TypeScript fallback. It does not add MCP servers. During install, uninstall, package update, and first run after an installed package version changes, `tt` removes stale MCP registrations written by older Talking Stick releases.
+`tt install` installs or refreshes the bundled `talking-stick` skill. Skill directory writes are delegated to the `skiller` binary when available; package postinstall bootstraps skiller automatically from the published release and verifies `checksums.txt` before installation. If skiller is missing, disabled, or fails its version gate, `tt` uses the built-in TypeScript fallback.
 
 - Claude Code: copied or linked into `~/.claude/skills/talking-stick` because Claude Code does not read `~/.agents/skills`
 - Codex, Antigravity (`agy`), Grok Build, and OpenCode: copied or linked once into the shared `~/.agents/skills/talking-stick`
@@ -176,7 +178,7 @@ By default, `tt install` links the bundled skill so local updates are picked up 
 
 For harnesses that previously had proprietary skill copies, `tt` prunes duplicate `talking-stick` entries conservatively: it removes only symlinks that resolve to the bundled Talking Stick skill, and preserves copied directories, foreign symlinks, or hand-authored entries. OpenCode cleanup checks both `~/.config/opencode/skills/talking-stick` (honoring `XDG_CONFIG_HOME`) and the older `~/.opencode/skills/talking-stick` location.
 
-Stale MCP cleanup is strict for OpenCode JSON entries: it removes only the canonical `mcp.talking-stick` value with `["tt", "mcp"]` and leaves hand-edited entries alone. Claude Code, Codex, and Gemini cleanup uses their own `mcp remove` commands when the old server name exists. Grok Build and Antigravity have no Talking Stick MCP registration path; install is native skill plus hook/shared skill only. Every cleanup run appends JSONL audit entries to `${TALKING_STICK_DATA_DIR}/update-migrations.log`.
+Automatic skill sync records the digest of managed copied skills. A known unedited copy updates automatically; an unknown or edited copy is preserved and the CLI offers `tt install <harness> --replace`. Managed symlinks continue to follow the bundled skill directly.
 
 Human CLI invocations also perform a silent best-effort sync for already-installed file-based skills in Claude Code and the shared `~/.agents/skills/talking-stick` target. If the installed skill is a copy, it is refreshed from the bundled skill; if it is a stale symlink, it is relinked. Missing skill installs are skipped. Gemini skill sync is deprecated; use Antigravity/shared install instead.
 
@@ -189,8 +191,8 @@ tt whoami [--explain]                                      # show the resolved C
 tt list [path]                                            # list rooms
 tt join [path] [--force-new]                              # join the room for path
 tt leave [path]                                           # leave the room for path
-tt wait [path] [--timeout 110s] [--park] [--events --after N] # canonical listen/wait loop; --park disables idle auto-claim
-tt try [path] [--park] [--events --after N]               # non-blocking claim/event check
+tt wait [path] [--timeout 110s] [--park] [--after N]          # ownership + events; saved cursor by default
+tt try [path] [--park] [--after N]                        # non-blocking claim/event check
 tt state [path] [--all]                                  # compact room state; --all shows older rows
 tt health [path] [--verbose|--all]                       # concise safety/action check; verbose shows diagnostics
 tt status [path] [--verbose|--all]                       # alias for health
@@ -207,8 +209,8 @@ tt take [path] [--reason TEXT]                            # human-friendly take/
 tt takeover [path] [--reason TEXT]                        # alias for take
 tt notes add <body> [--turn N] [--path DIR] [--stdin]     # leave an async note
 tt notes list [--all] [--after ID] [--limit N] [--path DIR] # read notes
-tt install <harness...> | --all [--print] [--copy] [--link]  # install skill and clean stale MCP entries
-tt uninstall <harness...|agents> | --all | --shared [--print] # remove skill and stale MCP entries
+tt install <harness...> | --all [--print] [--copy] [--link] [--replace] # install or explicitly replace skill
+tt uninstall <harness...|agents> | --all | --shared [--print]            # remove skill
 tt self-update [--print] [--manager npm|pnpm|yarn|bun]    # update to the latest published tt
 ```
 
@@ -219,7 +221,7 @@ execution, even for stateful commands such as `wait`, `release`, `assign`,
 `notes add`, or `msg send`; they do not join rooms, claim turns, spawn
 guardians, write events, or update local session state.
 
-`tt self-update` detects how `tt` was installed (npm / pnpm / yarn / bun, including npm-via-Homebrew/mise/asdf/nvm), runs the right global-update command, then removes stale MCP registrations from older Talking Stick installs. Pass `--print` to see the inferred command without running it; pass `--manager` to override detection. Running `tt self-update` from a development checkout (where `tt` resolves outside `node_modules/talking-stick`) refuses and tells you to `git pull && npm install && npm run build` instead.
+`tt self-update` detects how `tt` was installed (npm / pnpm / yarn / bun, including npm-via-Homebrew/mise/asdf/nvm) and runs the right global-update command. Pass `--print` to see the inferred command without running it; pass `--manager` to override detection. Running `tt self-update` from a development checkout (where `tt` resolves outside `node_modules/talking-stick`) refuses and tells you to `git pull && npm install && npm run build` instead.
 
 Human CLI commands use a stable identity like `human:<username>`. When `tt wait`, `tt take`, or `tt takeover` wins the turn, a small background guardian keeps the lease alive on your behalf until you release, pass, or assign it. If that guardian's captured harness process appears gone but the harness has recent `tt` activity, Talking Stick retains the lease and keeps heartbeating; a process-gone and silent owner is surrendered as `harness_gone`. Human CLI `take` intentionally works without a required reason so an operator can step into a stuck room quickly; harness-aware CLI takeovers still require `--reason` unless the command includes `--operator-requested`.
 
@@ -280,9 +282,7 @@ adds the GitHub release link before npm commits and tags the version.
 
 ## Read next
 
-- [`docs/talking-stick-plan.md`](docs/talking-stick-plan.md) — full protocol, state transitions, persistence model, design rationale, and open questions.
-- [`docs/ambient-presence.md`](docs/ambient-presence.md) — design sketch for shell-prompt awareness, event streaming, and agent skills that make room state ambient rather than appointment-only.
-- [`docs/non-owner-notes.md`](docs/non-owner-notes.md) — design backing the v1 notes feature; documents what shipped, what was deferred (`resolve_note`, wait_for_turn unread hints), and the rationale.
+- [`docs/receive-consumer-contract.md`](docs/receive-consumer-contract.md) — cursor ownership, subprocess lifecycle, filtering, and authority rules for the unified wait loop.
 - [`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md) — the portable skill installed into global harness skill directories.
 
 ## License

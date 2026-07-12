@@ -19,7 +19,7 @@ describe("createDefaultProcessLivenessChecker", () => {
         host_id: HOST,
         pid: 22150,
         process_started_at: "Thu Apr 23 18:10:55 2026",
-        session_kind: "mcp_harness",
+        session_kind: "harness_cli",
         display_name: "claude"
       })
     ).toBe("alive");
@@ -36,14 +36,14 @@ describe("createDefaultProcessLivenessChecker", () => {
         host_id: HOST,
         pid: 22150,
         process_started_at: "  Thu Apr 23 18:10:55 2026",
-        session_kind: "mcp_harness",
+        session_kind: "harness_cli",
         display_name: "claude"
       })
     ).toBe("alive");
   });
 
   test("returns unknown (not gone) when pid is alive but startTime strings mismatch — format-drift regression", () => {
-    // Reproduces the observed bug: one MCP server wrote the truncated form
+    // Reproduces the observed bug: one harness process wrote the truncated form
     // "u Apr 23 18:10:55 2026" (pre-fix slice), another server reads the same
     // pid and inspects a freshly parsed "Thu Apr 23 18:10:55 2026". The pid is
     // the same live process; the verdict must not be "gone".
@@ -57,7 +57,7 @@ describe("createDefaultProcessLivenessChecker", () => {
         host_id: HOST,
         pid: 22150,
         process_started_at: "u Apr 23 18:10:55 2026",
-        session_kind: "mcp_harness",
+        session_kind: "harness_cli",
         display_name: "claude"
       })
     ).toBe("unknown");
@@ -72,7 +72,7 @@ describe("createDefaultProcessLivenessChecker", () => {
         host_id: HOST,
         pid: 999999,
         process_started_at: "Thu Apr 23 18:10:55 2026",
-        session_kind: "mcp_harness",
+        session_kind: "harness_cli",
         display_name: "claude"
       })
     ).toBe("gone");
@@ -89,7 +89,7 @@ describe("createDefaultProcessLivenessChecker", () => {
         host_id: "other-host",
         pid: 22150,
         process_started_at: "Thu Apr 23 18:10:55 2026",
-        session_kind: "mcp_harness",
+        session_kind: "harness_cli",
         display_name: "claude"
       })
     ).toBe("unknown");
@@ -104,7 +104,7 @@ describe("createDefaultProcessLivenessChecker", () => {
         host_id: HOST,
         pid: 22150,
         process_started_at: null,
-        session_kind: "mcp_harness",
+        session_kind: "harness_cli",
         display_name: "claude"
       })
     ).toBe("unknown");

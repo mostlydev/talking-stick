@@ -2,7 +2,6 @@ import { runGuardCommand } from "./guardian.js";
 import { runGrokSessionHookCommand } from "./grok-session-hook.js";
 import {
   runInstallCommand,
-  runMcpMigrationCommand,
   runSelfUpdateCommand,
   runUninstallCommand
 } from "./install-commands.js";
@@ -70,8 +69,8 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: false,
     startupMaintenance: false,
     internal: false,
-    usage: "tt install <harness...> | --all [--print] [--copy] [--link]",
-    description: "Install the Talking Stick skill and remove stale MCP registrations.",
+    usage: "tt install <harness...> | --all [--print] [--copy] [--link] [--replace]",
+    description: "Install or explicitly replace the Talking Stick skill.",
     handler: ({ parsed }) => runInstallCommand(parsed)
   },
   {
@@ -80,7 +79,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: "tt uninstall <harness...|agents> | --all | --shared [--print]",
-    description: "Remove the Talking Stick skill and stale MCP registrations.",
+    description: "Remove the Talking Stick skill.",
     handler: ({ parsed }) => runUninstallCommand(parsed)
   },
   {
@@ -93,21 +92,12 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     handler: ({ parsed, cliEntryUrl }) => runSelfUpdateCommand(parsed, cliEntryUrl)
   },
   {
-    name: "migrate-mcp",
-    needsRuntime: false,
-    startupMaintenance: false,
-    internal: true,
-    usage: "tt migrate-mcp [--reason update|first-run|uninstall|manual] [--quiet]",
-    description: "Remove stale Talking Stick MCP registrations.",
-    handler: ({ parsed }) => runMcpMigrationCommand(parsed)
-  },
-  {
     name: "instructions",
     needsRuntime: false,
     startupMaintenance: true,
     internal: false,
-    usage: "tt instructions [show|edit|reset] [--harness NAME] [--scope SCOPE]",
-    description: "Show, edit, or reset editable collaboration instructions.",
+    usage: "tt instructions [show|edit|update|reset] [--harness NAME] [--scope SCOPE] [--replace]",
+    description: "Show, edit, safely update, or reset collaboration instructions.",
     handler: ({ parsed }) => handleInstructionsCommand(parsed)
   },
   {
@@ -197,8 +187,8 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt wait [path] [--timeout 110s] [--park] [--events --after N] [--target self|any|agent]",
-    description: "Run the canonical listen/wait loop for ownership and room events.",
+    usage: "tt wait [path] [--timeout 110s] [--park] [--after N]",
+    description: "Long-poll for ownership and room events using the saved cursor.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, false, cliEntryUrl)
   },
@@ -207,7 +197,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt try [path] [--park] [--events --after N] [--target self|any|agent]",
+    usage: "tt try [path] [--park] [--after N] [--target self|any|agent]",
     description: "Check turn and event availability without waiting.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, true, cliEntryUrl)

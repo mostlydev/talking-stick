@@ -28,7 +28,6 @@ export { ProtocolError, isProtocolError } from "./errors.js";
 export {
   deriveHarnessCliIdentity,
   deriveHumanCliIdentity,
-  deriveMcpHarnessIdentity,
   type DeriveHarnessCliIdentityOptions,
   type DerivedIdentity,
   type HarnessCliHarness
@@ -42,6 +41,7 @@ export {
 export {
   DEFAULT_MAX_INSTRUCTION_FILE_BYTES,
   DEFAULT_INSTRUCTIONS_MARKDOWN,
+  EDITABLE_INSTRUCTIONS_TEMPLATE,
   HARNESS_ALIASES,
   INSTRUCTION_HARNESSES,
   editInstructions,
@@ -49,6 +49,7 @@ export {
   normalizeInstructionHarness,
   parseInstructionScope,
   resetInstructions,
+  updateInstructions,
   resolveInstructionHarness,
   resolveInstructionPaths,
   showInstructions,
@@ -60,6 +61,7 @@ export {
   type InstructionScope,
   type InstructionSource,
   type ResetInstructionsResult,
+  type UpdateInstructionsResult,
   type ShowInstructionsResult
 } from "./instructions.js";
 export {
@@ -73,7 +75,6 @@ export {
   parseHarnessList,
   planGrokSessionHookInstall,
   planGrokSessionHookUninstall,
-  planUninstall,
   resolveGrokSessionHookPath,
   resolveHarnessConfigDir,
   resolveOpencodeConfigDir,
@@ -140,17 +141,6 @@ export {
   runSkillerSyncInstalledSkills,
   runSkillerUninstall
 } from "./skiller-adapter.js";
-export {
-  readPackageVersion,
-  readUpdateMigrationState,
-  resolveUpdateMigrationStatePath,
-  runFirstRunMcpMigration,
-  runStaleMcpCleanup,
-  writeUpdateMigrationState,
-  type FirstRunMcpMigrationRun,
-  type StaleMcpCleanupRun,
-  type UpdateMigrationState
-} from "./update-migration.js";
 export {
   createSystemProcessInspector,
   terminateKnownProcess,

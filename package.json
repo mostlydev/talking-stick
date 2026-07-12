@@ -19,9 +19,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
-    "postinstall": "node scripts/postinstall-mcp-cleanup.cjs",
-    "prepare": "tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "build": "node scripts/clean-dist.cjs && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "postinstall": "node scripts/postinstall.cjs",
+    "prepare": "node scripts/clean-dist.cjs && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
     "test": "vitest run",
     "version": "node scripts/prepare-release.mjs --from-package",
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -6,7 +6,6 @@ import {
   appendGrokSessionRecord,
   deriveHarnessCliIdentity,
   deriveHumanCliIdentity,
-  deriveMcpHarnessIdentity,
   type ProcessInspector
 } from "../src/index.js";
 
@@ -70,39 +69,6 @@ describe("identity derivation", () => {
     });
   });
 
-  test("derives an MCP harness identity from the spawning parent process", () => {
-    const inspector = fakeInspector({
-      4242: {
-        startTime: "Thu Apr 23 12:15:00 2026",
-        command: "codex --mcp-worker"
-      }
-    });
-
-    const first = deriveMcpHarnessIdentity({
-      env: {},
-      parentPid: 4242,
-      sessionId: "stdio-session",
-      hostId: "test-host",
-      inspector
-    });
-    const second = deriveMcpHarnessIdentity({
-      env: {},
-      parentPid: 4242,
-      sessionId: "stdio-session",
-      hostId: "test-host",
-      inspector
-    });
-
-    expect(first.agent_id).toMatch(/^codex:[0-9a-f]{8}$/);
-    expect(first.agent_id).toBe(second.agent_id);
-    expect(first.process_metadata).toEqual({
-      host_id: "test-host",
-      pid: 4242,
-      process_started_at: "Thu Apr 23 12:15:00 2026",
-      session_kind: "mcp_harness",
-      display_name: "codex"
-    });
-  });
 });
 
 describe("deriveHarnessCliIdentity", () => {
@@ -821,68 +787,7 @@ describe("deriveHarnessCliIdentity", () => {
   });
 });
 
-describe("CLI and MCP identity unification", () => {
-  test("produces the same agent_id for harnesses that expose a session id", () => {
-    const inspector = fakeInspector({
-      42: { startTime: "Thu Apr 23 14:00:00 2026", command: "codex --mcp-worker" },
-      9000: { startTime: "Thu Apr 23 14:00:00 2026", command: "codex" }
-    });
-    const env = {
-      CODEX_THREAD_ID: "thread-abc"
-    };
-
-    const cliIdentity = deriveHarnessCliIdentity({
-      env,
-      username: "alice",
-      parentPid: 9000,
-      hostId: "test-host",
-      inspector
-    });
-
-    const mcpIdentity = deriveMcpHarnessIdentity({
-      env,
-      username: "alice",
-      parentPid: 42,
-      hostId: "test-host",
-      inspector
-    });
-
-    expect(cliIdentity!.agent_id).toBe(mcpIdentity.agent_id);
-    expect(cliIdentity!.process_metadata.session_kind).toBe("harness_cli");
-    expect(mcpIdentity.process_metadata.session_kind).toBe("mcp_harness");
-  });
-
-  test("unifies CLI and MCP codex identities via ancestry when CODEX_THREAD_ID is absent", () => {
-    // Codex root process at pid 100; codex's MCP subprocess is a direct child
-    // (parentPid=100). A `tt` CLI invocation goes codex → bash → tt, so its
-    // parentPid is the bash subshell (200), not codex. Without CODEX_THREAD_ID,
-    // both must still resolve to the same agent_id by anchoring to codex's pid.
-    const inspector = fakeInspector({
-      100: { startTime: "Tue Apr 28 19:00:00 2026", command: "codex", ppid: 1 },
-      200: { startTime: "Tue Apr 28 19:35:00 2026", command: "bash", ppid: 100 }
-    });
-    const env = { CODEX_MANAGED_BY_NPM: "1" };
-
-    const mcpIdentity = deriveMcpHarnessIdentity({
-      env,
-      username: "alice",
-      parentPid: 100,
-      hostId: "test-host",
-      inspector
-    });
-
-    const cliIdentity = deriveHarnessCliIdentity({
-      env,
-      username: "alice",
-      parentPid: 200,
-      hostId: "test-host",
-      inspector
-    });
-
-    expect(mcpIdentity.agent_id).toMatch(/^codex:[0-9a-f]{8}$/);
-    expect(cliIdentity!.agent_id).toBe(mcpIdentity.agent_id);
-  });
-
+describe("CLI identity stability", () => {
   test("a second `tt` shell-out from the same codex session reuses the agent_id", () => {
     // Same codex root, two distinct bash subshells with different pids.
     // Anchoring the session id to codex's pid means both `tt` invocations
@@ -912,20 +817,6 @@ describe("CLI and MCP identity unification", () => {
     expect(first!.agent_id).toBe(second!.agent_id);
   });
 
-  test("MCP path falls back to ancestry-based id when no harness env is set (backwards compat)", () => {
-    const inspector = fakeInspector({
-      42: { startTime: "Thu Apr 23 14:15:00 2026", command: "some-other-harness --mcp" }
-    });
-    const mcpIdentity = deriveMcpHarnessIdentity({
-      env: {},
-      username: "alice",
-      parentPid: 42,
-      hostId: "test-host",
-      inspector
-    });
-    expect(mcpIdentity.agent_id).toMatch(/^some-other-harness:[0-9a-f]{8}$/);
-    expect(mcpIdentity.process_metadata.display_name).toBe("some-other-harness");
-  });
 });
 
 function fakeInspector(

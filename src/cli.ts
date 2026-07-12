@@ -18,8 +18,7 @@ export {
   withCoordinationPrompt
 } from "./cli/output.js";
 export {
-  shouldAutoSyncInstalledSkills,
-  shouldRunFirstRunMcpMigration
+  shouldAutoSyncInstalledSkills
 } from "./cli/startup-maintenance.js";
 
 export async function runCli(argv = process.argv.slice(2)): Promise<void> {

@@ -15,9 +15,6 @@ export {
   type HarnessId
 } from "./harness-model.js";
 
-export const DEFAULT_SERVER_NAME = "talking-stick";
-// Legacy MCP command retained only to identify stale config entries for removal.
-export const DEFAULT_SERVER_COMMAND = ["tt", "mcp"] as const;
 export const GROK_SESSION_HOOK_FILE = "talking-stick-session.json";
 export const DEFAULT_GROK_SESSION_HOOK_COMMAND =
   ": talking-stick-grok-session-hook; if command -v tt >/dev/null 2>&1; then tt grok-session-hook >/dev/null 2>/dev/null || true; fi";
@@ -44,8 +41,6 @@ export interface InstallerHooks {
 }
 
 export interface InstallOptions extends Partial<InstallEnv>, InstallerHooks {
-  serverName?: string;
-  serverCommand?: readonly string[];
   skipMissing?: boolean;
 }
 
@@ -56,8 +51,6 @@ export interface ExecAction {
   args: string[];
   description: string;
   operation?: InstallOperation;
-  serverName?: string;
-  serverCommand?: readonly string[];
   inspect?: () => InstallTargetState;
 }
 
@@ -67,7 +60,6 @@ export interface FilePatchAction {
   filePath: string;
   description: string;
   operation?: InstallOperation;
-  serverName?: string;
   inspect?: () => InstallTargetState;
   apply: () => void;
 }
@@ -78,7 +70,6 @@ export interface SkipAction {
   description: string;
   message: string;
   operation?: undefined;
-  serverName?: undefined;
 }
 
 export type InstallAction = ExecAction | FilePatchAction | SkipAction;
@@ -88,6 +79,7 @@ export type InstallStatus =
   | "added"
   | "already_present"
   | "updated"
+  | "update_available"
   | "removed"
   | "already_absent"
   | "skipped"
@@ -119,14 +111,17 @@ interface ExecInvocationError {
   error: string;
 }
 
-export type InstallTargetState = "absent" | "present" | "different" | "unknown";
+export type InstallTargetState =
+  | "absent"
+  | "present"
+  | "different"
+  | "customized"
+  | "unknown";
 
 interface ResolvedOptions {
   env: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
   homeDir: string;
-  serverName: string;
-  serverCommand: readonly string[];
   skipMissing: boolean;
   hooks: Required<InstallerHooks>;
 }
@@ -147,8 +142,6 @@ function resolveOptions(options: InstallOptions = {}): ResolvedOptions {
     env,
     platform,
     homeDir,
-    serverName: options.serverName ?? DEFAULT_SERVER_NAME,
-    serverCommand: options.serverCommand ?? DEFAULT_SERVER_COMMAND,
     skipMissing: options.skipMissing ?? false,
     hooks: {
       run: options.run ?? defaultRun,
@@ -281,77 +274,6 @@ function resolveHarnessConfigDirFromResolved(
   }
 }
 
-export function planUninstall(harness: HarnessId, options: InstallOptions = {}): InstallAction {
-  const resolved = resolveOptions(options);
-  switch (harness) {
-    case "claude-code":
-      if (resolved.skipMissing && !resolved.hooks.which("claude")) {
-        return skipAction(harness, "claude not on PATH");
-      }
-      return {
-        kind: "exec",
-        harness,
-        command: "claude",
-        args: ["mcp", "remove", "-s", "user", resolved.serverName],
-        description: `claude mcp remove -s user ${resolved.serverName}`,
-        operation: "uninstall",
-        serverName: resolved.serverName
-      };
-    case "codex":
-      if (resolved.skipMissing && !resolved.hooks.which("codex")) {
-        return skipAction(harness, "codex not on PATH");
-      }
-      return {
-        kind: "exec",
-        harness,
-        command: "codex",
-        args: ["mcp", "remove", resolved.serverName],
-        description: `codex mcp remove ${resolved.serverName}`,
-        operation: "uninstall",
-        serverName: resolved.serverName
-      };
-    case "antigravity":
-      return skipAction(harness, "legacy Talking Stick cleanup is not applicable for antigravity");
-    case "gemini":
-      if (resolved.skipMissing && !resolved.hooks.which("gemini")) {
-        return skipAction(harness, "gemini not on PATH");
-      }
-      return {
-        kind: "exec",
-        harness,
-        command: "gemini",
-        args: ["mcp", "remove", "-s", "user", resolved.serverName],
-        description: `gemini mcp remove -s user ${resolved.serverName}`,
-        operation: "uninstall",
-        serverName: resolved.serverName
-      };
-    case "grok":
-      return skipAction(harness, "legacy Talking Stick cleanup is not applicable for grok");
-    case "opencode": {
-      const filePath = resolveOpencodeConfigPath(options);
-      const configDir = path.dirname(filePath);
-      if (resolved.skipMissing && !resolved.hooks.pathExists(configDir)) {
-        return skipAction(harness, `opencode config directory not found: ${configDir}`);
-      }
-      if (resolved.skipMissing && resolved.hooks.readFile(filePath) === null) {
-        return skipAction(harness, `opencode config not found: ${filePath}`);
-      }
-      return {
-        kind: "file-patch",
-        harness,
-        filePath,
-        description: `remove mcp.${resolved.serverName} from ${filePath}`,
-        operation: "uninstall",
-        serverName: resolved.serverName,
-        inspect: () => inspectOpencodeConfig(filePath, resolved),
-        apply: () => patchOpencodeConfig(filePath, resolved)
-      };
-    }
-    default:
-      throw new Error(`Unknown harness: ${harness satisfies never}`);
-  }
-}
-
 export function skipAction(harness: HarnessId, message: string): SkipAction {
   return {
     kind: "skip",
@@ -397,6 +319,7 @@ export function planGrokSessionHookUninstall(
     harness: "grok",
     filePath,
     description: `remove Grok session hook ${filePath}`,
+    operation: "uninstall",
     inspect: () =>
       resolved.hooks.readFile(filePath) === null ? "absent" : "present",
     apply: () => removeGrokSessionHook(filePath, resolved)
@@ -446,93 +369,6 @@ function removeGrokSessionHook(filePath: string, resolved: ResolvedOptions): voi
     }
     throw error;
   }
-}
-
-function patchOpencodeConfig(filePath: string, resolved: ResolvedOptions): void {
-  const existing = resolved.hooks.readFile(filePath);
-  if (resolved.skipMissing) {
-    const configDir = path.dirname(filePath);
-    if (!resolved.hooks.pathExists(configDir)) {
-      throw new MissingHarnessError(`opencode config directory not found: ${configDir}`);
-    }
-    if (existing === null) {
-      throw new MissingHarnessError(`opencode config not found: ${filePath}`);
-    }
-  }
-
-  const config: Record<string, unknown> = existing ? parseJsonOrThrow(existing, filePath) : {};
-  const mcp = isPlainObject(config.mcp) ? { ...config.mcp } : {};
-  delete mcp[resolved.serverName];
-
-  config.mcp = mcp;
-  resolved.hooks.ensureDir(path.dirname(filePath));
-  resolved.hooks.writeFile(filePath, JSON.stringify(config, null, 2) + "\n");
-}
-
-function inspectOpencodeConfig(filePath: string, resolved: ResolvedOptions): InstallTargetState {
-  const existing = resolved.hooks.readFile(filePath);
-  if (existing === null) return "absent";
-
-  let config: Record<string, unknown>;
-  try {
-    config = parseJsonOrThrow(existing, filePath);
-  } catch {
-    return "unknown";
-  }
-
-  const mcp = isPlainObject(config.mcp) ? config.mcp : {};
-  if (!(resolved.serverName in mcp)) return "absent";
-
-  const expected = {
-    type: "local",
-    command: [...resolved.serverCommand],
-    enabled: true
-  };
-  return valuesEqual(mcp[resolved.serverName], expected) ? "present" : "different";
-}
-
-function inspectGeminiSettings(action: ExecAction, resolved: ResolvedOptions): InstallTargetState {
-  const filePath = path.join(
-    resolveHarnessConfigDirFromResolved("gemini", resolved),
-    "settings.json"
-  );
-  const existing = resolved.hooks.readFile(filePath);
-  if (existing === null) return "absent";
-
-  let config: Record<string, unknown>;
-  try {
-    config = parseJsonOrThrow(existing, filePath);
-  } catch {
-    return "unknown";
-  }
-
-  const servers = isPlainObject(config.mcpServers) ? config.mcpServers : {};
-  const serverName = action.serverName ?? resolved.serverName;
-  if (!(serverName in servers)) return "absent";
-
-  const [command, ...args] = action.serverCommand ?? resolved.serverCommand;
-  const expected = { command, args };
-  return valuesEqual(servers[serverName], expected) ? "present" : "different";
-}
-
-function parseJsonOrThrow(raw: string, filePath: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw);
-    if (!isPlainObject(parsed)) {
-      throw new Error(`${filePath} is not a JSON object`);
-    }
-    return parsed;
-  } catch (error) {
-    throw new Error(`Failed to parse ${filePath} as JSON: ${(error as Error).message}`);
-  }
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function valuesEqual(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export interface HarnessDetection {
@@ -628,14 +464,23 @@ export async function runAction(action: InstallAction, options: InstallOptions =
       };
     }
 
-    const beforeState = await inspectExecAction(action, resolved);
+    const beforeState = action.inspect?.() ?? "unknown";
     if (action.operation === "install" && beforeState === "present") {
       return {
         harness: action.harness,
         ok: true,
         action,
         status: "already_present",
-        message: formatMcpActionMessage(action, "already_present")
+        message: formatActionMessage(action, "already_present")
+      };
+    }
+    if (action.operation === "install" && beforeState === "customized") {
+      return {
+        harness: action.harness,
+        ok: true,
+        action,
+        status: "update_available",
+        message: "Customized skill was preserved; pass --replace to overwrite it."
       };
     }
     if (action.operation === "uninstall" && beforeState === "absent") {
@@ -644,7 +489,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
         ok: true,
         action,
         status: "already_absent",
-        message: formatMcpActionMessage(action, "already_absent")
+        message: formatActionMessage(action, "already_absent")
       };
     }
 
@@ -672,7 +517,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
         ok: true,
         action,
         status,
-        message: formatMcpActionMessage(action, status, result.stdout.trim() || undefined)
+        message: formatActionMessage(action, status, result.stdout.trim() || undefined)
       };
     }
 
@@ -683,7 +528,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
         ok: true,
         action,
         status: "already_present",
-        message: formatMcpActionMessage(action, "already_present")
+        message: formatActionMessage(action, "already_present")
       };
     }
     if (action.operation === "uninstall" && isAlreadyAbsentMessage(errorMessage)) {
@@ -692,7 +537,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
         ok: true,
         action,
         status: "already_absent",
-        message: formatMcpActionMessage(action, "already_absent")
+        message: formatActionMessage(action, "already_absent")
       };
     }
 
@@ -712,7 +557,16 @@ export async function runAction(action: InstallAction, options: InstallOptions =
       ok: true,
       action,
       status: "already_present",
-      message: formatMcpActionMessage(action, "already_present")
+      message: formatActionMessage(action, "already_present")
+    };
+  }
+  if (action.operation === "install" && beforeState === "customized") {
+    return {
+      harness: action.harness,
+      ok: true,
+      action,
+      status: "update_available",
+      message: "Customized skill was preserved; pass --replace to overwrite it."
     };
   }
   if (action.operation === "uninstall" && beforeState === "absent") {
@@ -721,7 +575,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
       ok: true,
       action,
       status: "already_absent",
-      message: formatMcpActionMessage(action, "already_absent")
+      message: formatActionMessage(action, "already_absent")
     };
   }
 
@@ -733,7 +587,7 @@ export async function runAction(action: InstallAction, options: InstallOptions =
       ok: true,
       action,
       status,
-      message: formatMcpActionMessage(action, status, `Updated ${action.filePath}`)
+      message: formatActionMessage(action, status, `Updated ${action.filePath}`)
     };
   } catch (error) {
     if (resolved.skipMissing && error instanceof MissingHarnessError) {
@@ -757,40 +611,6 @@ export async function runAction(action: InstallAction, options: InstallOptions =
   }
 }
 
-async function inspectExecAction(
-  action: ExecAction,
-  resolved: ResolvedOptions
-): Promise<InstallTargetState> {
-  if (action.inspect) return action.inspect();
-  if (!action.operation || !action.serverName) return "unknown";
-
-  if (action.harness === "gemini") {
-    return inspectGeminiSettings(action, resolved);
-  }
-
-  if (action.harness !== "claude-code" && action.harness !== "codex") {
-    return "unknown";
-  }
-
-  const invocation = resolveCommandInvocation(
-    action.command,
-    ["mcp", "get", action.serverName],
-    resolved
-  );
-  if (!invocation || "error" in invocation) return "unknown";
-
-  try {
-    const result = await resolved.hooks.run(
-      invocation.command,
-      invocation.args,
-      invocation.options
-    );
-    return result.exitCode === 0 ? "present" : "absent";
-  } catch {
-    return "unknown";
-  }
-}
-
 function successStatusForOperation(
   operation: InstallOperation | undefined,
   beforeState: InstallTargetState
@@ -804,70 +624,33 @@ function successStatusForOperation(
   return "ok";
 }
 
-function formatMcpActionMessage(
+function formatActionMessage(
   action: InstallAction,
   status: InstallStatus,
   fallback?: string
 ): string {
-  if (!action.serverName || !action.operation) {
-    if (action.kind === "file-patch") {
-      switch (status) {
-        case "added":
-          return `Installed ${action.filePath}.`;
-        case "updated":
-          return `Updated ${action.filePath}.`;
-        case "already_present":
-          return `${action.filePath} is already installed.`;
-        case "removed":
-          return `Removed ${action.filePath}.`;
-        case "already_absent":
-          return `${action.filePath} is already absent.`;
-        default:
-          break;
-      }
+  if (action.kind === "file-patch") {
+    switch (status) {
+      case "added":
+        return `Installed ${action.filePath}.`;
+      case "updated":
+        return `Updated ${action.filePath}.`;
+      case "already_present":
+        return `${action.filePath} is already installed.`;
+      case "update_available":
+        return `Customized content at ${action.filePath} was preserved.`;
+      case "removed":
+        return `Removed ${action.filePath}.`;
+      case "already_absent":
+        return `${action.filePath} is already absent.`;
+      default:
+        break;
     }
-    if (action.kind === "exec" && status === "already_present") {
-      return "skill is already installed.";
-    }
-    return fallback ?? "ok";
   }
-
-  const target = `MCP server '${action.serverName}'`;
-  const location = mcpConfigLocation(action);
-  switch (status) {
-    case "added":
-      return `${target} registered in ${location}.`;
-    case "updated":
-      return `${target} updated in ${location}.`;
-    case "already_present":
-      return `${target} already registered in ${location}.`;
-    case "removed":
-      return `${target} removed from ${location}.`;
-    case "already_absent":
-      return `${target} is not registered in ${location}.`;
-    default:
-      return fallback ?? "ok";
+  if (action.kind === "exec" && status === "already_present") {
+    return "skill is already installed.";
   }
-}
-
-function mcpConfigLocation(action: InstallAction): string {
-  if (action.kind === "file-patch") return action.filePath;
-  switch (action.harness) {
-    case "claude-code":
-      return "Claude Code user config";
-    case "codex":
-      return "Codex global config";
-    case "antigravity":
-      return "Antigravity shared config";
-    case "gemini":
-      return "Gemini user config";
-    case "grok":
-      return "Grok config";
-    case "opencode":
-      return "OpenCode config";
-    default:
-      return "harness config";
-  }
+  return fallback ?? "ok";
 }
 
 function isAlreadyPresentMessage(message: string): boolean {
@@ -875,7 +658,7 @@ function isAlreadyPresentMessage(message: string): boolean {
 }
 
 function isAlreadyAbsentMessage(message: string): boolean {
-  return /\b(not found|does not exist|not configured|not registered|no mcp server)\b/i.test(message);
+  return /\b(not found|does not exist|not configured|not registered)\b/i.test(message);
 }
 
 export function parseHarnessList(values: string[]): HarnessId[] {

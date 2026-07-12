@@ -5,6 +5,12 @@ import { resolveDataDir, type ResolveDataDirOptions } from "./config.js";
 import { HARNESS_CLI_HARNESSES, type HarnessCliHarness } from "./harness-model.js";
 import type { DerivedIdentity } from "./identity.js";
 import { resolveContextPath } from "./path-resolution.js";
+import {
+  digestText,
+  getManagedContent,
+  recordManagedContent,
+  recordManagedContentOffer
+} from "./managed-content.js";
 
 export type InstructionHarness =
   | HarnessCliHarness
@@ -44,6 +50,14 @@ export interface ResetInstructionsResult {
   removed: boolean;
 }
 
+export interface UpdateInstructionsResult {
+  scope: EditableInstructionScope;
+  path: string;
+  status: "missing" | "current" | "updated" | "update_available";
+  message: string;
+  offer: boolean;
+}
+
 export interface InstructionOptions extends ResolveDataDirOptions {
   contextPath?: string;
   identity?: DerivedIdentity;
@@ -56,42 +70,24 @@ export const DEFAULT_MAX_INSTRUCTION_FILE_BYTES = 256 * 1024;
 
 export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration instructions
 
-Keep using Talking Stick until the shared task is done. Coordination is mandatory whenever this prompt applies, and agents should take turns whenever the work can be sequenced. After releasing or handing off, re-enter \`tt wait --events --after <cursor> --json\` by default. Prefer continued action unless the task is complete or the operator explicitly redirects or stops the room. If a handoff, message, or operator instruction leaves review, release, or other work pending, use normal \`tt wait --events --after <cursor> --json\`; do not park. Use \`tt wait --park --events --after <cursor> --json\` only for passive standby when no task is pending and you are blocked on operator input or an external signal.
+When this skill applies, coordinate until the shared task is complete:
 
-Keep exactly one receive path active while shared work remains pending: a single \`tt wait --events --after <cursor> --json\` long-poll. Never bare \`tt wait\` (it wakes only on a turn change and misses messages and events), and never a second \`tt events --follow\` or monitor loop alongside it. The same command is your receive path while you hold the stick; as the owner it long-polls for messages/events until an event arrives or the wait times out, then returns \`your_turn\` with \`reason: "already_owner"\` on timeout. Advance \`--after\` to the returned \`cursor_event_seq\` each return, re-arm one wait if work remains pending, and do not reflexively read \`tt state\`/\`tt events\` in between.
-
-Testing is required prior to final handoff unless the task is genuinely untestable. Run the focused tests, build checks, runtime checks, release checks, or dogfood checks that match the change, and record them in the handoff. If no useful test exists, say why.
-
-On freshly invoked multi-agent tasks, give peers a short window to join before deciding you are alone. Use a normal wait timeout or spend about a minute on read-only repo orientation while other harnesses appear.
-
-Use phase names in handoffs when they clarify the work: draft, adversarial review, convergence, implementation, implementation review, test review, and release. These phases are vocabulary, not protocol state.
-
-Claude and Codex are peers of comparable capability; neither outranks the other. Split work evenly between them rather than routing by stereotype, and have all models plan, implement, and evaluate together: any harness can draft, review, converge, implement, or release. Antigravity and OpenCode start with conservative local guidance until project dogfood says otherwise.
-
-When you kick off a multi-agent task, lead with one room broadcast of the goal and a proposed work split so peers converge in a single round-trip instead of negotiating piecemeal. For multi-agent design work, prefer independent read-only drafts first, then adversarial review and convergence. Do not impose a draft file structure on the workspace by default. If scratch draft files are useful, delete superseded pre-convergence drafts after the converged plan exists unless the operator asks to keep them.
-
-Default to normal release handoffs. Use named assignment only when a specific member must go next because of unique context, credentials, capability, direct operator routing, or a concrete review/test request.
-
-## Claude
-
-Take a full, even share of planning, implementation, and evaluation. Watch for scope creep and messy first-pass artifacts. Make the next phase explicit in the handoff.
-
-## Codex
-
-Take a full, even share of planning, implementation, and evaluation. Watch for over-indexing on mechanics when the operator still needs to decide direction. Make the next phase explicit in the handoff.
-
-## Antigravity
-
-Use broad context review and exploration conservatively until the project has stronger Antigravity-specific dogfood. Keep handoffs concrete and do not assume responsibility that the operator assigned to another harness.
-
-## Grok
-
-Use Grok Build as a first-class local coding harness. Keep coordination safety ahead of speed, rely on the native Grok skill and session hook when installed, and keep handoffs concrete when another harness is better positioned to implement or review.
-
-## OpenCode
-
-Use terminal-native local exploration and implementation conservatively until the project has stronger OpenCode-specific dogfood. Keep coordination safety ahead of speed.
+1. Run \`tt join --json\`, then \`tt instructions show --json\` once.
+2. Keep exactly one \`tt wait --json\` long-poll running while shared work remains. The CLI saves and advances the event cursor automatically. If your tool yields a running process handle, poll that same process; do not start another wait. Do not add a short \`--timeout\`.
+3. Only \`status: "your_turn"\` with a \`guardian_pid\` authorizes shared edits. Messages and event wakes do not.
+4. Send live messages with \`tt msg send\`; receive them through the same wait. Wait output is not ambient unless the harness surfaces the running process output.
+5. When a wait exits, process its events and start one successor if work remains. Do not use \`tt try\`, \`tt state\`, \`tt events\`, or \`tt msg recv\` as a polling loop.
+6. Test before handoff. Release with a concise status, next action, artifacts, and verification. Use park only when no agent work is pending.
 `;
+
+export const EDITABLE_INSTRUCTIONS_TEMPLATE = `# Local Talking Stick instructions
+
+<!-- Add only local overrides here. Bundled coordination instructions are loaded automatically. -->
+`;
+
+const LEGACY_DEFAULT_INSTRUCTION_DIGESTS = new Set([
+  "fa303d636041cc8444c84b173090ab778d22342774fe11d384d62d96400139c6"
+]);
 
 export const INSTRUCTION_HARNESSES = [
   ...HARNESS_CLI_HARNESSES,
@@ -160,7 +156,7 @@ export async function editInstructions(input: {
   const options = input.options ?? {};
   const paths = resolveInstructionPaths(options);
   const filePath = paths[scope];
-  const created = ensureInstructionFile(filePath);
+  const created = ensureInstructionFile(filePath, options);
   const editor = chooseEditor(options);
 
   if (!editor) {
@@ -169,6 +165,84 @@ export async function editInstructions(input: {
 
   await runEditor(editor, filePath);
   return { scope, path: filePath, created, opened: true, editor };
+}
+
+export function updateInstructions(input: {
+  scopes?: EditableInstructionScope[];
+  replaceEdited?: boolean;
+  markOffers?: boolean;
+  options?: InstructionOptions;
+} = {}): UpdateInstructionsResult[] {
+  const options = input.options ?? {};
+  const paths = resolveInstructionPaths(options);
+  const scopes = input.scopes ?? ["user", "project"];
+  const desiredDigest = digestText(EDITABLE_INSTRUCTIONS_TEMPLATE);
+
+  return scopes.map((scope) => {
+    const filePath = paths[scope];
+    if (!fs.existsSync(filePath)) {
+      return {
+        scope,
+        path: filePath,
+        status: "missing",
+        message: "instructions file is not present",
+        offer: false
+      };
+    }
+
+    const text = fs.readFileSync(filePath, "utf8");
+    const digest = digestText(text);
+    const managed = getManagedContent(filePath, options);
+    if (digest === desiredDigest) {
+      recordManagedContent(filePath, "editable-instructions", digest, options);
+      return {
+        scope,
+        path: filePath,
+        status: "current",
+        message: "local overrides template is current",
+        offer: false
+      };
+    }
+
+    const isUnedited =
+      LEGACY_DEFAULT_INSTRUCTION_DIGESTS.has(digest) ||
+      (managed?.kind === "editable-instructions" && managed.digest === digest);
+    if (isUnedited || input.replaceEdited) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, EDITABLE_INSTRUCTIONS_TEMPLATE, "utf8");
+      recordManagedContent(
+        filePath,
+        "editable-instructions",
+        desiredDigest,
+        options
+      );
+      return {
+        scope,
+        path: filePath,
+        status: "updated",
+        message: isUnedited
+          ? "replaced an unedited generated default with the local-overrides template"
+          : "replaced customized instructions at the operator's request",
+        offer: false
+      };
+    }
+
+    const offer = input.markOffers
+      ? recordManagedContentOffer(
+          filePath,
+          desiredDigest,
+          "editable-instructions",
+          options
+        )
+      : true;
+    return {
+      scope,
+      path: filePath,
+      status: "update_available",
+      message: `customized instructions were preserved; replace them with \`tt instructions update --${scope} --replace\``,
+      offer
+    };
+  });
 }
 
 export function resetInstructions(input: {
@@ -335,12 +409,21 @@ function joinInstructionTexts(parts: string[]): string {
     .join("\n\n");
 }
 
-function ensureInstructionFile(filePath: string): boolean {
+function ensureInstructionFile(
+  filePath: string,
+  options: InstructionOptions
+): boolean {
   if (fs.existsSync(filePath)) {
     return false;
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, DEFAULT_INSTRUCTIONS_MARKDOWN);
+  fs.writeFileSync(filePath, EDITABLE_INSTRUCTIONS_TEMPLATE);
+  recordManagedContent(
+    filePath,
+    "editable-instructions",
+    digestText(EDITABLE_INSTRUCTIONS_TEMPLATE),
+    options
+  );
   return true;
 }
 

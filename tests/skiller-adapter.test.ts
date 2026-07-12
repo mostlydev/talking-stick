@@ -115,7 +115,7 @@ describe("skiller adapter", () => {
       harness: "codex",
       target_type: "skill",
       action: "removed",
-      server_name: "talking-stick"
+      target_name: "talking-stick"
     });
 
     const calls = fs

@@ -1,4 +1,5 @@
 import {
+  findCliSessionByRoom,
   findCliSessionForContextPath,
   resolveCliSessionPath,
   upsertCliSession,
@@ -102,12 +103,20 @@ export function upsertSessionFromJoin(identity: DerivedIdentity, joined: {
   room_id: string;
   canonical_path: string;
   workspace_root: string;
+  cursor_event_seq: number;
 }): void {
+  const sessionPath = resolveCliSessionPath();
+  const existing = findCliSessionByRoom(
+    sessionPath,
+    identity.agent_id,
+    joined.room_id
+  );
   upsertJoinedCliSession(resolveCliSessionPath(), {
     agent_id: identity.agent_id,
     room_id: joined.room_id,
     canonical_path: joined.canonical_path,
     workspace_root: joined.workspace_root,
+    event_cursor_seq: existing?.event_cursor_seq ?? joined.cursor_event_seq,
     updated_at: new Date().toISOString()
   });
 }

@@ -7,10 +7,7 @@ const cliPath = path.resolve(__dirname, "..", "dist", "cli.js");
 const packageRoot = path.resolve(__dirname, "..").replace(/\\/g, "/");
 const skillerBootstrapPath = path.resolve(__dirname, "skiller-bootstrap.cjs");
 
-if (
-  !packageRoot.includes("/node_modules/talking-stick") ||
-  !fs.existsSync(cliPath)
-) {
+if (!packageRoot.includes("/node_modules/talking-stick") || !fs.existsSync(cliPath)) {
   process.exit(0);
 }
 
@@ -29,14 +26,11 @@ if (skiller.status !== 0 && !process.env.TALKING_STICK_QUIET_POSTINSTALL) {
   );
 }
 
-if (!process.env.TALKING_STICK_DISABLE_MCP_MIGRATION) {
-  spawnSync(process.execPath, [cliPath, "migrate-mcp", "--reason", "update", "--quiet"], {
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      TALKING_STICK_SKIP_STARTUP_MAINTENANCE: "1"
-    }
-  });
-}
+// Refresh recorded, unedited copies without overwriting custom content.
+// Offers for customized files are shown on the next tt invocation.
+spawnSync(process.execPath, [path.resolve(__dirname, "postinstall-sync.mjs")], {
+  stdio: "ignore",
+  env: process.env
+});
 
 process.exit(0);

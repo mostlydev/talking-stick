@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,13 +10,20 @@ import {
   type SkillLoadingModel
 } from "./harness-model.js";
 import type { AuditLog, AuditReason } from "./install-audit.js";
-import type { RemoveStaleMcpResult } from "./install-migration.js";
+import type { CleanupResult } from "./install-audit.js";
+import {
+  digestDirectory,
+  getManagedContent,
+  recordManagedContent,
+  recordManagedContentOffer
+} from "./managed-content.js";
 import {
   MissingHarnessError,
   resolveHarnessConfigDir,
   skipAction,
   type InstallAction,
-  type InstallOptions
+  type InstallOptions,
+  type InstallTargetState
 } from "./install.js";
 
 export const DEFAULT_SKILL_NAME = "talking-stick";
@@ -28,13 +34,16 @@ export interface SkillInstallOptions extends InstallOptions {
   skillName?: string;
   sourcePath?: string;
   link?: boolean;
+  replace?: boolean;
+  markOffers?: boolean;
 }
 
 export interface SkillSyncTargetResult {
   harness: FileSkillHarness;
   targetPath: string;
-  status: "missing" | "current" | "updated" | "failed";
+  status: "missing" | "current" | "updated" | "update_available" | "failed";
   message: string;
+  offer?: boolean;
 }
 
 export interface SkillSyncResult {
@@ -194,7 +203,13 @@ export function planSkillInstall(
         ? `link ${sourcePath} -> ${targetPath}`
         : `copy ${sourcePath} -> ${targetPath}`,
     operation: "install",
-    inspect: () => inspectInstalledSkill(sourcePath, targetPath, shouldLink),
+    inspect: () =>
+      inspectInstalledSkillForUpdate(
+        sourcePath,
+        targetPath,
+        shouldLink,
+        options
+      ),
     apply: () =>
       installSkillDirectory(sourcePath, targetPath, harnessRootPath, shouldLink, options)
   };
@@ -273,14 +288,14 @@ export function syncInstalledSkills(
 
 export function removeDuplicateSkillInstalls(
   options: RemoveDuplicateSkillOptions
-): RemoveStaleMcpResult[] {
+): CleanupResult[] {
   const sourcePath = resolveBundledSkillPath(options);
   ensureSkillSourceExists(sourcePath);
   const harnesses =
     options.harnesses === undefined || options.harnesses === "all"
       ? SUPPORTED_HARNESSES
       : options.harnesses;
-  const results: RemoveStaleMcpResult[] = [];
+  const results: CleanupResult[] = [];
 
   for (const harness of harnesses) {
     const targets = dedupePaths(resolveDuplicateSkillTargetPaths(harness, options));
@@ -322,7 +337,7 @@ function cleanupDuplicateSkillTarget(
   harness: HarnessId,
   targetPath: string,
   sourcePath: string
-): RemoveStaleMcpResult {
+): CleanupResult {
   try {
     const stat = fs.lstatSync(targetPath);
     if (!stat.isSymbolicLink()) {
@@ -372,7 +387,7 @@ function cleanupDuplicateSkillTarget(
 
 function appendSkillCleanupAudit(
   options: RemoveDuplicateSkillOptions,
-  result: RemoveStaleMcpResult,
+  result: CleanupResult,
   targetPath?: string
 ): void {
   options.audit?.append({
@@ -383,7 +398,7 @@ function appendSkillCleanupAudit(
     target_type: "skill",
     config_path: targetPath,
     action: result.action,
-    server_name: options.skillName ?? DEFAULT_SKILL_NAME,
+    target_name: options.skillName ?? DEFAULT_SKILL_NAME,
     detail: result.message
   });
 }
@@ -433,10 +448,12 @@ function installSkillDirectory(
       targetPath,
       process.platform === "win32" ? "junction" : "dir"
     );
+    recordManagedContent(targetPath, "skill-copy", digestDirectory(sourcePath), options);
     return;
   }
 
   fs.cpSync(sourcePath, targetPath, { recursive: true });
+  recordManagedContent(targetPath, "skill-copy", digestDirectory(sourcePath), options);
 }
 
 function syncInstalledFileSkill(
@@ -463,6 +480,7 @@ function syncInstalledFileSkill(
     }
 
     const targetStat = fs.lstatSync(targetPath);
+    const managed = getManagedContent(targetPath, options);
     if (targetStat.isSymbolicLink()) {
       const currentTarget = fs.readlinkSync(targetPath);
       const resolvedCurrentTarget = path.resolve(
@@ -470,6 +488,7 @@ function syncInstalledFileSkill(
         currentTarget
       );
       if (sameRealPath(resolvedCurrentTarget, sourcePath)) {
+        recordManagedContent(targetPath, "skill-copy", sourceDigest, options);
         return {
           harness,
           targetPath,
@@ -478,12 +497,24 @@ function syncInstalledFileSkill(
         };
       }
 
+      const linkedDigest = fs.existsSync(resolvedCurrentTarget)
+        ? digestDirectory(resolvedCurrentTarget)
+        : null;
+      if (
+        options.replace !== true &&
+        managed?.digest !== linkedDigest &&
+        linkedDigest !== LEGACY_BUNDLED_SKILL_DIGEST
+      ) {
+        return skillUpdateAvailable(harness, targetPath, sourceDigest, options);
+      }
+
       fs.unlinkSync(targetPath);
       fs.symlinkSync(
         sourcePath,
         targetPath,
         process.platform === "win32" ? "junction" : "dir"
       );
+      recordManagedContent(targetPath, "skill-copy", sourceDigest, options);
       return {
         harness,
         targetPath,
@@ -493,6 +524,7 @@ function syncInstalledFileSkill(
     }
 
     if (targetStat.isDirectory() && digestDirectory(targetPath) === sourceDigest) {
+      recordManagedContent(targetPath, "skill-copy", sourceDigest, options);
       return {
         harness,
         targetPath,
@@ -501,8 +533,20 @@ function syncInstalledFileSkill(
       };
     }
 
+    const targetDigest = targetStat.isDirectory()
+      ? digestDirectory(targetPath)
+      : null;
+    if (
+      options.replace !== true &&
+      managed?.digest !== targetDigest &&
+      targetDigest !== LEGACY_BUNDLED_SKILL_DIGEST
+    ) {
+      return skillUpdateAvailable(harness, targetPath, sourceDigest, options);
+    }
+
     removeInstalledSkill(targetPath);
     fs.cpSync(sourcePath, targetPath, { recursive: true });
+    recordManagedContent(targetPath, "skill-copy", sourceDigest, options);
     return {
       harness,
       targetPath,
@@ -517,6 +561,32 @@ function syncInstalledFileSkill(
       message: error instanceof Error ? error.message : String(error)
     };
   }
+}
+
+const LEGACY_BUNDLED_SKILL_DIGEST =
+  "7a89a8f72ef8377ddfc3eb67fb274af237275515e576f24272e6178c163591ed";
+
+function skillUpdateAvailable(
+  harness: FileSkillHarness,
+  targetPath: string,
+  sourceDigest: string,
+  options: SkillInstallOptions
+): SkillSyncTargetResult {
+  return {
+    harness,
+    targetPath,
+    status: "update_available",
+    message: "customized installed skill was preserved",
+    offer:
+      options.markOffers === false
+        ? true
+        : recordManagedContentOffer(
+            targetPath,
+            sourceDigest,
+            "skill-copy",
+            options
+          )
+  };
 }
 
 function inspectInstalledSkill(
@@ -550,6 +620,35 @@ function inspectInstalledSkill(
     }
     throw error;
   }
+}
+
+function inspectInstalledSkillForUpdate(
+  sourcePath: string,
+  targetPath: string,
+  link: boolean,
+  options: SkillInstallOptions
+): InstallTargetState {
+  const state = inspectInstalledSkill(sourcePath, targetPath, link);
+  if (state !== "different" || options.replace === true) return state;
+
+  const managed = getManagedContent(targetPath, options);
+  let targetDigest: string | null = null;
+  try {
+    const stat = fs.lstatSync(targetPath);
+    const contentPath = stat.isSymbolicLink()
+      ? path.resolve(path.dirname(targetPath), fs.readlinkSync(targetPath))
+      : targetPath;
+    if (fs.existsSync(contentPath) && fs.statSync(contentPath).isDirectory()) {
+      targetDigest = digestDirectory(contentPath);
+    }
+  } catch {
+    return "different";
+  }
+
+  return targetDigest === LEGACY_BUNDLED_SKILL_DIGEST ||
+    managed?.digest === targetDigest
+    ? "different"
+    : "customized";
 }
 
 function inspectInstalledPath(targetPath: string): "absent" | "present" {
@@ -595,34 +694,4 @@ function sameRealPath(left: string, right: string): boolean {
   } catch {
     return path.resolve(left) === path.resolve(right);
   }
-}
-
-function digestDirectory(dirPath: string): string {
-  const hash = crypto.createHash("sha256");
-  for (const filePath of listFiles(dirPath)) {
-    const relativePath = path.relative(dirPath, filePath).split(path.sep).join("/");
-    hash.update(relativePath);
-    hash.update("\0");
-    hash.update(fs.readFileSync(filePath));
-    hash.update("\0");
-  }
-  return hash.digest("hex");
-}
-
-function listFiles(dirPath: string): string[] {
-  const entries = fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .sort((left, right) => left.name.localeCompare(right.name));
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    const entryPath = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...listFiles(entryPath));
-    } else if (entry.isFile()) {
-      files.push(entryPath);
-    }
-  }
-
-  return files;
 }

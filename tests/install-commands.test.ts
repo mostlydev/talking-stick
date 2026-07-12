@@ -4,7 +4,7 @@ import {
   reportCleanupResults
 } from "../src/cli/install-commands.js";
 import type { InstallResult } from "../src/install.js";
-import type { RemoveStaleMcpResult } from "../src/install-migration.js";
+import type { CleanupResult } from "../src/install-audit.js";
 
 function captureStdout(): { lines: () => string[] } {
   const written: string[] = [];
@@ -22,16 +22,18 @@ afterEach(() => {
 describe("reportCleanupResults", () => {
   test("stays silent for absent and skipped cleanup results", () => {
     const stdout = captureStdout();
-    const results: RemoveStaleMcpResult[] = [
+    const results: CleanupResult[] = [
       {
         harness: "claude-code",
         action: "absent",
-        message: "MCP server 'talking-stick' is not registered."
+        message: "duplicate skill is absent",
+        target_type: "skill"
       },
       {
         harness: "grok",
         action: "skipped",
-        message: "legacy Talking Stick cleanup is not applicable for grok"
+        message: "no duplicate target",
+        target_type: "skill"
       }
     ];
 
@@ -42,21 +44,24 @@ describe("reportCleanupResults", () => {
 
   test("still reports removed, preserved, and failed cleanup results", () => {
     const stdout = captureStdout();
-    const results: RemoveStaleMcpResult[] = [
+    const results: CleanupResult[] = [
       {
         harness: "codex",
         action: "removed",
-        message: "Removed MCP server 'talking-stick'."
+        message: "removed duplicate skill",
+        target_type: "skill"
       },
       {
         harness: "opencode",
         action: "preserved",
-        message: "Entry differs from the legacy command; left in place."
+        message: "custom skill left in place",
+        target_type: "skill"
       },
       {
         harness: "gemini",
         action: "failed",
-        message: "could not rewrite settings"
+        message: "could not remove duplicate",
+        target_type: "skill"
       }
     ];
 
@@ -64,9 +69,9 @@ describe("reportCleanupResults", () => {
       /install completed with cleanup failures/
     );
     expect(stdout.lines()).toEqual([
-      "[codex] mcp-cleanup removed: Removed MCP server 'talking-stick'.",
-      "[opencode] mcp-cleanup preserved: Entry differs from the legacy command; left in place.",
-      "[gemini] mcp-cleanup failed: could not rewrite settings"
+      "[codex] skill-cleanup removed: removed duplicate skill",
+      "[opencode] skill-cleanup preserved: custom skill left in place",
+      "[gemini] skill-cleanup failed: could not remove duplicate"
     ]);
   });
 });

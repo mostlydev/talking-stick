@@ -96,7 +96,7 @@ const migrations: Migration[] = [
       ALTER TABLE room_members ADD COLUMN host_id TEXT;
       ALTER TABLE room_members ADD COLUMN pid INTEGER;
       ALTER TABLE room_members ADD COLUMN process_started_at TEXT;
-      ALTER TABLE room_members ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'mcp_harness';
+      ALTER TABLE room_members ADD COLUMN session_kind TEXT NOT NULL DEFAULT 'harness_cli';
       ALTER TABLE room_members ADD COLUMN display_name TEXT;
     `
   },

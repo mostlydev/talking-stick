@@ -3529,7 +3529,7 @@ describe("issue #29: presence and liveness track the harness, not the guardian",
     harness.clock.advance(11_000);
     expect(visibleClaude()).toBe("inactive");
 
-    // ...but a sustained self-targeted event wait (the §2 ambient receiver) is
+    // ...but a sustained self-targeted event wait is
     // the documented presence primitive: watching refreshes presence.
     await harness.service.waitForEvents({
       agent_id: "claude:test",
@@ -3707,7 +3707,7 @@ function createProcessRegistry() {
 
   return {
     hostId,
-    create(displayName: string, sessionKind = "mcp_harness"): ProcessMetadata {
+    create(displayName: string, sessionKind = "harness_cli"): ProcessMetadata {
       const metadata: ProcessMetadata = {
         host_id: hostId,
         pid: nextPid,

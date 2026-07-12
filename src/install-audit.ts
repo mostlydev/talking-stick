@@ -11,11 +11,18 @@ export interface AuditEntry {
   package_version_from?: string;
   package_version_to?: string;
   harness: HarnessId;
-  target_type?: "mcp" | "skill";
+  target_type: "skill";
   config_path?: string;
   action: AuditAction;
-  server_name: string;
+  target_name: string;
   detail?: string;
+}
+
+export interface CleanupResult {
+  harness: HarnessId;
+  action: AuditAction;
+  message: string;
+  target_type: "skill";
 }
 
 export type AuditReason = "update" | "first-run" | "uninstall" | "manual";

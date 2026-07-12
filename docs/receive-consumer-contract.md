@@ -1,32 +1,26 @@
 # Receive Consumer Contract
 
-`send_message` appends `message_sent` events to the room event log. `wait_for_events` is the canonical receive primitive. CLI consumers (`tt events --wait`, `tt events --follow`, `tt msg recv --wait`, `tt msg recv --follow`) and future harness-native consumers should share the same cursor and retry rules.
+`tt wait` is the agent receive primitive. It combines turn state and room events in one bounded long-poll.
 
-## Delivery
+## Cursor ownership
 
-- Delivery is at least once. Consumers must tolerate duplicates after restart.
-- `event_seq` is monotonic per database and is the receive cursor.
-- Consumers should persist the highest processed `event_seq` after each emitted batch.
-- Directed messages are routing only. Any room member can read messages through `get_room_events` or `tt events --target any`.
+- `event_seq` is monotonic per database.
+- Normal `tt wait --json` calls read `event_cursor_seq` from `cli-sessions.json` and persist the returned cursor before exiting.
+- `--after N` is an explicit replay/debug override, not part of the normal agent loop.
+- Delivery is at least once across crashes; consumers must tolerate replay and may deduplicate by `event_id`.
 
-## Receive Modes
+## Process lifecycle
 
-- Use `tt events --follow --after <cursor>` when the harness can monitor stdout from a long-running child. Each output line is one `RoomEvent` JSON object.
-- Use `tt events --wait --after <cursor>` when the harness can only notice process completion. The process exits after the next matching batch or timeout; restart it with the latest processed cursor.
-- Use `tt msg recv --wait` or `tt msg recv --follow` only when the consumer intentionally wants messages without turn handoffs.
-- If no `--after` is supplied in `--wait` or `--follow` mode, the CLI starts from the current event tail to avoid flooding a new consumer with history.
-- A one-shot `tt msg recv --after <cursor>` is a non-blocking drain operation.
+- Keep one wait subprocess active while shared work remains.
+- A harness tool may yield a process handle before the subprocess exits. Poll or resume that same handle; do not launch a replacement yet.
+- Only after the subprocess exits should the consumer process the result and start one successor.
+- Do not shorten the CLI timeout to fit a tool-yield interval. A tool yield and a wait timeout are different events.
 
-## Filtering
+## Filtering and authority
 
-- `target=self` is the default for `--wait` and `--follow`. It receives direct messages to the caller plus broadcasts from other agents. It excludes the caller's own broadcasts.
-- `target=any` receives all matching events/messages and is intended for audit/debug views.
-- `--from <agent>` resolves a full `agent_id` or unambiguous active display name and is enforced server-side.
+- `target=self` receives direct events plus broadcasts from other agents and excludes the caller's own broadcasts.
+- `target=any` is for audit/debug views.
+- Messages are room-visible routing, not private ACLs.
+- Event delivery never grants write authority. Only `status: "your_turn"` with a live `guardian_pid` does.
 
-## Consumer Responsibilities
-
-- Keep `wait_for_turn` / `tt wait` running separately. Receive processes do not claim or grant the stick, even when they return pass, release, or assignment events.
-- Treat an event wake as a prompt to read, reply, or retry `tt wait`. It is not permission to mutate shared files; only a `your_turn` wait result grants ownership.
-- Decide how to surface `delivery_hint=interrupt`; the server only records the hint.
-- Dedupe on `event_id` if restart replay is possible.
-- Treat message bodies as room-visible text, not private data.
+Lower-level `tt events` and `tt msg recv` commands remain useful for human audit and debugging, but agents must not run them beside `tt wait` as a second receive loop.

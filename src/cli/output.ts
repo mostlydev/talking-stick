@@ -4,7 +4,7 @@ import { isKnownHarnessCliEnv } from "./identity.js";
 import { hasOption, type ParsedCommand } from "./parser.js";
 
 export const COORDINATION_PROMPT =
-  "Keep `tt wait` or `tt events` active until all goals are met; re-read the Talking Stick skill if context slips.";
+  "Keep exactly one `tt wait --json` process active while shared work remains; poll the same process handle until it exits.";
 
 const COORDINATION_PROMPT_COMMANDS = new Set([
   "join",
@@ -197,8 +197,8 @@ Commands:
   tt join [path] [--force-new]
   tt leave [path]
   tt kick <agent_id> [path] [--reason TEXT] [--force]
-  tt wait [path] [--timeout 110s] [--park] [--events --after N]
-  tt try [path] [--park] [--events --after N]
+  tt wait [path] [--timeout 110s] [--park] [--after N]
+  tt try [path] [--park] [--after N]
   tt state [path] [--all]
   tt health [path] [--verbose|--all]
   tt status [path] [--verbose|--all]
@@ -207,6 +207,7 @@ Commands:
   tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
   tt instructions show [path] [--harness claude|codex|antigravity|gemini|grok|opencode|all] [--scope effective|bundled|user|project]
   tt instructions edit [path] [--user|--project]
+  tt instructions update [path] [--user|--project] [--replace]
   tt instructions reset [path] (--user|--project)
   tt release [path] (--status TEXT --next-action TEXT | --stdin)
   tt pass [path] (--status TEXT --next-action TEXT | --stdin)
@@ -215,7 +216,7 @@ Commands:
   tt takeover [path] [--reason TEXT] [--operator-requested]
   tt notes add <body> [--turn N] [--path DIR] [--stdin]
   tt notes list [--all] [--after NOTE_ID] [--limit N] [--path DIR]
-  tt install <harness...> | --all [--print] [--copy] [--link]
+  tt install <harness...> | --all [--print] [--copy] [--link] [--replace]
   tt uninstall <harness...|agents> | --all | --shared [--print]
   tt self-update [--print] [--manager npm|pnpm|yarn|bun]
 

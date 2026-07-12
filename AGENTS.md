@@ -23,7 +23,7 @@ Vitest runs in a Node environment with global setup from `tests/setup.ts`. Name 
 
 ## Commit & Pull Request Guidelines
 
-Recent commits use short, imperative subjects such as `Add MCP smoke coverage` and `Fix bin[tt] path to satisfy npm publish validator`. Follow that pattern, keep commits scoped, and avoid mixing refactors with behavior changes when possible. PRs should summarize the user-visible change, list affected commands or harnesses, link the issue when applicable, and update `README.md`, `docs/`, or the shipped skill when install or coordination behavior changes.
+Recent commits use short, imperative subjects such as `Harden wait cursor handling` and `Fix bin[tt] path to satisfy npm publish validator`. Follow that pattern, keep commits scoped, and avoid mixing refactors with behavior changes when possible. PRs should summarize the user-visible change, list affected commands or harnesses, link the issue when applicable, and update `README.md`, `docs/`, or the shipped skill when install or coordination behavior changes.
 
 ## Runtime & Dogfooding Notes
 

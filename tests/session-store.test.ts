@@ -156,6 +156,31 @@ describe("CLI session store", () => {
     );
     expect(readCliSessions(sessionPath)).toHaveLength(1);
   });
+
+  test("cursor updates are monotonic when wait processes finish out of order", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-cli-"));
+    tempRoots.push(tempRoot);
+    const sessionPath = path.join(tempRoot, "state", "cli-sessions.json");
+    const base = {
+      agent_id: "human:alice",
+      room_id: "room-1",
+      canonical_path: "/repo",
+      workspace_root: "/repo"
+    };
+
+    upsertCliSession(sessionPath, {
+      ...base,
+      event_cursor_seq: 20,
+      updated_at: "2026-04-23T12:00:00.000Z"
+    });
+    upsertCliSession(sessionPath, {
+      ...base,
+      event_cursor_seq: 10,
+      updated_at: "2026-04-23T12:01:00.000Z"
+    });
+
+    expect(readCliSessions(sessionPath)[0].event_cursor_seq).toBe(20);
+  });
 });
 
 function createWorkspace(tempRoot: string, name: string): string {

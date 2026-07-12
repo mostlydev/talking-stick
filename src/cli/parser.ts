@@ -21,6 +21,7 @@ const BOOLEAN_FLAGS = new Set([
   "print",
   "project",
   "quiet",
+  "replace",
   "room",
   "shared",
   "stdin",

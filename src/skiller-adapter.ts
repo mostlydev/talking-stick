@@ -15,7 +15,7 @@ import {
   type InstallStatus
 } from "./install.js";
 import type { AuditLog, AuditReason } from "./install-audit.js";
-import type { RemoveStaleMcpResult } from "./install-migration.js";
+import type { CleanupResult } from "./install-audit.js";
 import {
   DEFAULT_SKILL_NAME,
   resolveBundledSkillPath,
@@ -169,7 +169,7 @@ export async function runSkillerUninstall(
 
 export async function runSkillerCleanupDuplicates(
   options: SkillerRunOptions
-): Promise<RemoveStaleMcpResult[] | null> {
+): Promise<CleanupResult[] | null> {
   const result = await runSkiller("cleanup-duplicates", options);
   if (!result) return null;
 
@@ -370,7 +370,7 @@ function skillerActionsToInstallResults(plan: SkillerPlan): InstallResult[] {
   });
 }
 
-function skillerActionsToCleanupResults(plan: SkillerPlan): RemoveStaleMcpResult[] {
+function skillerActionsToCleanupResults(plan: SkillerPlan): CleanupResult[] {
   return (plan.actions ?? []).map((action) => ({
     harness: harnessFromAction(action),
     action: cleanupActionForSkillerAction(action),
@@ -381,7 +381,7 @@ function skillerActionsToCleanupResults(plan: SkillerPlan): RemoveStaleMcpResult
 
 function appendSkillerCleanupAudits(
   options: SkillerRunOptions,
-  cleanups: RemoveStaleMcpResult[],
+  cleanups: CleanupResult[],
   actions: SkillerAction[]
 ): void {
   if (!options.audit || !options.reason) return;
@@ -396,7 +396,7 @@ function appendSkillerCleanupAudits(
       target_type: "skill",
       config_path: action?.target?.path,
       action: cleanup.action,
-      server_name: DEFAULT_SKILL_NAME,
+      target_name: DEFAULT_SKILL_NAME,
       detail: cleanup.message
     });
   });
@@ -430,7 +430,7 @@ function installStatusForAction(action: SkillerAction): InstallStatus {
 
 function cleanupActionForSkillerAction(
   action: SkillerAction
-): RemoveStaleMcpResult["action"] {
+): CleanupResult["action"] {
   if (action.status === "removed") return "removed";
   if (
     action.status === "failed" ||

@@ -171,14 +171,11 @@ describe("talking-stick skill install", () => {
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("tt instructions show --json");
-    expect(skill).toContain("### 4.5 Out-Of-Band Messaging");
-    expect(skill).toContain("tt events --follow --json");
-    expect(skill).toContain("Coordination is mandatory");
-    expect(skill).toContain("Testing is required before final handoff");
-    expect(skill).toContain("Coordination Quick Reference");
-    expect(skill).toContain("Never bare `tt wait`");
-    expect(skill).toContain("Keep one receive path active while you hold the stick");
-    expect(skill).toContain("reason: \"already_owner\"");
+    expect(skill).toContain("tt wait --json");
+    expect(skill).toContain("cursor saved in `cli-sessions.json`");
+    expect(skill).toContain("Poll or resume that same handle");
+    expect(skill).toContain("output is not magically injected");
+    expect(skill).not.toContain("tt events --follow");
   });
 
   test("shared skill install does not require a proprietary harness config directory", async () => {
@@ -233,6 +230,40 @@ describe("talking-stick skill install", () => {
     expect(second.status).toBe("already_present");
   });
 
+  test("ordinary install preserves a customized copy and --replace overwrites it", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const sourcePath = path.join(tempRoot, "source-skill");
+    fs.mkdirSync(sourcePath, { recursive: true });
+    fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "bundled\n");
+    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, "SKILL.md"), "custom\n");
+
+    const preserved = await runAction(
+      planSkillInstall("codex", {
+        homeDir: tempRoot,
+        sourcePath,
+        link: false
+      }),
+      { homeDir: tempRoot }
+    );
+    expect(preserved.status).toBe("update_available");
+    expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toBe("custom\n");
+
+    const replaced = await runAction(
+      planSkillInstall("codex", {
+        homeDir: tempRoot,
+        sourcePath,
+        link: false,
+        replace: true
+      }),
+      { homeDir: tempRoot }
+    );
+    expect(replaced.status).toBe("updated");
+    expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toBe("bundled\n");
+  });
+
   test("copy install remains available for claude global skill directory", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
@@ -273,14 +304,11 @@ describe("talking-stick skill install", () => {
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("tt instructions show --json");
-    expect(skill).toContain("### 4.5 Out-Of-Band Messaging");
-    expect(skill).toContain("tt events --follow --json");
-    expect(skill).toContain("Coordination is mandatory");
-    expect(skill).toContain("Testing is required before final handoff");
-    expect(skill).toContain("Coordination Quick Reference");
-    expect(skill).toContain("Never bare `tt wait`");
-    expect(skill).toContain("Keep one receive path active while you hold the stick");
-    expect(skill).toContain("reason: \"already_owner\"");
+    expect(skill).toContain("tt wait --json");
+    expect(skill).toContain("cursor saved in `cli-sessions.json`");
+    expect(skill).toContain("Poll or resume that same handle");
+    expect(skill).toContain("output is not magically injected");
+    expect(skill).not.toContain("tt events --follow");
   });
 
   test("syncInstalledSkills updates an existing copied shared skill without installing missing proprietary harnesses", () => {
@@ -288,11 +316,18 @@ describe("talking-stick skill install", () => {
     tempRoots.push(tempRoot);
     const sourcePath = path.join(tempRoot, "source-skill");
     fs.mkdirSync(sourcePath, { recursive: true });
+    fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "old skill\n");
+    const install = planSkillInstall("codex", {
+      homeDir: tempRoot,
+      sourcePath,
+      link: false
+    });
+    expect(install.kind).toBe("file-patch");
+    if (install.kind !== "file-patch") throw new Error("unreachable");
+    install.apply();
     fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "new skill\n");
 
     const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
-    fs.mkdirSync(target, { recursive: true });
-    fs.writeFileSync(path.join(target, "SKILL.md"), "old skill\n");
 
     const result = syncInstalledSkills({
       homeDir: tempRoot,
@@ -309,7 +344,7 @@ describe("talking-stick skill install", () => {
     expect(fs.existsSync(path.join(tempRoot, ".codex"))).toBe(false);
   });
 
-  test("syncInstalledSkills leaves current symlinks alone and relinks stale ones", () => {
+  test("syncInstalledSkills leaves current symlinks alone and preserves unknown symlinks", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
     const sourcePath = path.join(tempRoot, "source-skill");
@@ -332,12 +367,35 @@ describe("talking-stick skill install", () => {
     });
 
     expect(fs.readlinkSync(codexTarget)).toBe(sourcePath);
-    expect(fs.readlinkSync(claudeTarget)).toBe(sourcePath);
+    expect(fs.readlinkSync(claudeTarget)).toBe(staleSourcePath);
     expect(result.targets.find((target) => target.harness === "codex")).toMatchObject({
       status: "current"
     });
     expect(result.targets.find((target) => target.harness === "claude-code")).toMatchObject({
-      status: "updated"
+      status: "update_available"
+    });
+  });
+
+  test("syncInstalledSkills preserves a customized copied skill and offers explicit replacement", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const sourcePath = path.join(tempRoot, "source-skill");
+    fs.mkdirSync(sourcePath, { recursive: true });
+    fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "new bundled skill\n");
+    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, "SKILL.md"), "custom skill\n");
+
+    const result = syncInstalledSkills({ homeDir: tempRoot, sourcePath });
+    expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toBe("custom skill\n");
+    expect(result.targets.find((item) => item.harness === "codex")).toMatchObject({
+      status: "update_available",
+      offer: true
+    });
+    const second = syncInstalledSkills({ homeDir: tempRoot, sourcePath });
+    expect(second.targets.find((item) => item.harness === "codex")).toMatchObject({
+      status: "update_available",
+      offer: false
     });
   });
 

@@ -13,6 +13,7 @@ export interface CliSession {
   turn_id?: number | null;
   guardian_pid?: number | null;
   guardian_process_started_at?: string | null;
+  event_cursor_seq?: number;
   updated_at: string;
 }
 
@@ -46,6 +47,13 @@ export function writeCliSessions(
   sessionPath: string,
   sessions: CliSession[]
 ): void {
+  withSessionLock(sessionPath, () => writeCliSessionsUnlocked(sessionPath, sessions));
+}
+
+function writeCliSessionsUnlocked(
+  sessionPath: string,
+  sessions: CliSession[]
+): void {
   writeFileAtomic(sessionPath, `${JSON.stringify(sessions, null, 2)}\n`);
 }
 
@@ -53,38 +61,48 @@ export function upsertCliSession(
   sessionPath: string,
   session: CliSession
 ): void {
-  const sessions = readCliSessions(sessionPath);
-  const index = sessions.findIndex(
-    (candidate) =>
-      candidate.agent_id === session.agent_id &&
-      candidate.room_id === session.room_id
-  );
+  withSessionLock(sessionPath, () => {
+    const sessions = readCliSessions(sessionPath);
+    const index = sessions.findIndex(
+      (candidate) =>
+        candidate.agent_id === session.agent_id &&
+        candidate.room_id === session.room_id
+    );
 
-  if (index === -1) {
-    sessions.push(session);
-  } else {
-    sessions[index] = session;
-  }
+    if (index === -1) {
+      sessions.push(session);
+    } else {
+      const existing = sessions[index];
+      const merged = { ...existing, ...session };
+      if (
+        existing.event_cursor_seq !== undefined &&
+        session.event_cursor_seq !== undefined
+      ) {
+        merged.event_cursor_seq = Math.max(
+          existing.event_cursor_seq,
+          session.event_cursor_seq
+        );
+      }
+      sessions[index] = merged;
+    }
 
-  writeCliSessions(sessionPath, sessions);
+    writeCliSessionsUnlocked(sessionPath, sessions);
+  });
 }
 
 export function upsertJoinedCliSession(
   sessionPath: string,
   session: Pick<
     CliSession,
-    "agent_id" | "room_id" | "canonical_path" | "workspace_root" | "updated_at"
+    | "agent_id"
+    | "room_id"
+    | "canonical_path"
+    | "workspace_root"
+    | "event_cursor_seq"
+    | "updated_at"
   >
 ): void {
-  const existing = findCliSessionByRoom(
-    sessionPath,
-    session.agent_id,
-    session.room_id
-  );
-  upsertCliSession(sessionPath, {
-    ...existing,
-    ...session
-  });
+  upsertCliSession(sessionPath, session);
 }
 
 export function findCliSessionByRoom(
@@ -105,18 +123,21 @@ export function clearCliSessionLease(
   agentId: string,
   roomId: string
 ): void {
-  const session = findCliSessionByRoom(sessionPath, agentId, roomId);
-  if (!session) {
-    return;
-  }
-
-  upsertCliSession(sessionPath, {
-    ...session,
-    lease_id: null,
-    turn_id: null,
-    guardian_pid: null,
-    guardian_process_started_at: null,
-    updated_at: new Date().toISOString()
+  withSessionLock(sessionPath, () => {
+    const sessions = readCliSessions(sessionPath);
+    const index = sessions.findIndex(
+      (session) => session.agent_id === agentId && session.room_id === roomId
+    );
+    if (index === -1) return;
+    sessions[index] = {
+      ...sessions[index],
+      lease_id: null,
+      turn_id: null,
+      guardian_pid: null,
+      guardian_process_started_at: null,
+      updated_at: new Date().toISOString()
+    };
+    writeCliSessionsUnlocked(sessionPath, sessions);
   });
 }
 
@@ -125,21 +146,60 @@ export function removeCliSession(
   agentId: string,
   roomId: string
 ): void {
-  const sessions = readCliSessions(sessionPath).filter(
-    (session) =>
-      !(session.agent_id === agentId && session.room_id === roomId)
-  );
-  writeCliSessions(sessionPath, sessions);
+  withSessionLock(sessionPath, () => {
+    const sessions = readCliSessions(sessionPath).filter(
+      (session) =>
+        !(session.agent_id === agentId && session.room_id === roomId)
+    );
+    writeCliSessionsUnlocked(sessionPath, sessions);
+  });
 }
 
 export function removeCliSessionsForRoom(
   sessionPath: string,
   roomId: string
 ): void {
-  const sessions = readCliSessions(sessionPath).filter(
-    (session) => session.room_id !== roomId
-  );
-  writeCliSessions(sessionPath, sessions);
+  withSessionLock(sessionPath, () => {
+    const sessions = readCliSessions(sessionPath).filter(
+      (session) => session.room_id !== roomId
+    );
+    writeCliSessionsUnlocked(sessionPath, sessions);
+  });
+}
+
+function withSessionLock<T>(sessionPath: string, fn: () => T): T {
+  const lockPath = `${sessionPath}.lock`;
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + 5_000;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+
+  while (true) {
+    try {
+      fs.mkdirSync(lockPath);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+        if (ageMs > 30_000) {
+          fs.rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for CLI session lock: ${lockPath}`);
+      }
+      Atomics.wait(sleeper, 0, 0, 10);
+    }
+  }
+
+  try {
+    return fn();
+  } finally {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+  }
 }
 
 export function findCliSessionForContextPath(

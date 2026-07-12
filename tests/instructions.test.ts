@@ -4,11 +4,14 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   editInstructions,
+  EDITABLE_INSTRUCTIONS_TEMPLATE,
   resetInstructions,
   resolveInstructionHarness,
   resolveInstructionPaths,
-  showInstructions
+  showInstructions,
+  updateInstructions
 } from "../src/index.js";
+import { digestText, recordManagedContent } from "../src/managed-content.js";
 import type { DerivedIdentity } from "../src/index.js";
 
 const tempRoots: string[] = [];
@@ -27,15 +30,11 @@ describe("collaboration instructions", () => {
     });
 
     expect(result.harness).toBe("codex");
-    expect(result.text).toContain("Keep using Talking Stick until the shared task is done.");
-    expect(result.text).toContain("Coordination is mandatory");
-    expect(result.text).toContain("tt wait --events --after <cursor> --json");
-    expect(result.text).toContain("Keep exactly one receive path active");
-    expect(result.text).toContain("reason: \"already_owner\"");
-    expect(result.text).toContain("Testing is required prior to final handoff");
-    expect(result.text).toContain("draft, adversarial review, convergence");
-    expect(result.text).toContain("## Codex");
-    expect(result.text).not.toContain("## Claude");
+    expect(result.text).toContain("tt wait --json");
+    expect(result.text).toContain("saves and advances the event cursor automatically");
+    expect(result.text).toContain("poll that same process");
+    expect(result.text).toContain("Wait output is not ambient");
+    expect(result.text).not.toContain("## Codex");
   });
 
   test("effective instructions layer bundled, user, and project files", () => {
@@ -143,7 +142,7 @@ describe("collaboration instructions", () => {
     expect(result.created).toBe(true);
     expect(result.opened).toBe(false);
     expect(result.path).toBe(path.join(dataDir, "instructions.md"));
-    expect(fs.readFileSync(result.path, "utf8")).toContain("## Codex");
+    expect(fs.readFileSync(result.path, "utf8")).toBe(EDITABLE_INSTRUCTIONS_TEMPLATE);
 
     const reset = resetInstructions({
       scope: "user",
@@ -155,6 +154,51 @@ describe("collaboration instructions", () => {
 
     expect(reset.removed).toBe(true);
     expect(fs.existsSync(result.path)).toBe(false);
+  });
+
+  test("instruction update refreshes generated defaults and preserves custom files", () => {
+    const { dataDir, project } = setupProject();
+    const userPath = path.join(dataDir, "instructions.md");
+    const oldGenerated = "# Prior generated Talking Stick instructions\n";
+    fs.writeFileSync(userPath, oldGenerated);
+    recordManagedContent(
+      userPath,
+      "editable-instructions",
+      digestText(oldGenerated),
+      { dataDir }
+    );
+
+    const updated = updateInstructions({
+      scopes: ["user"],
+      options: { contextPath: project, env: { TALKING_STICK_DATA_DIR: dataDir } }
+    });
+    expect(updated[0].status).toBe("updated");
+    expect(fs.readFileSync(userPath, "utf8")).toBe(EDITABLE_INSTRUCTIONS_TEMPLATE);
+
+    fs.writeFileSync(userPath, "# My custom coordination\n");
+    const preserved = updateInstructions({
+      scopes: ["user"],
+      markOffers: true,
+      options: { contextPath: project, env: { TALKING_STICK_DATA_DIR: dataDir } }
+    });
+    expect(preserved[0].status).toBe("update_available");
+    expect(preserved[0].offer).toBe(true);
+    expect(fs.readFileSync(userPath, "utf8")).toBe("# My custom coordination\n");
+
+    const offeredAgain = updateInstructions({
+      scopes: ["user"],
+      markOffers: true,
+      options: { contextPath: project, env: { TALKING_STICK_DATA_DIR: dataDir } }
+    });
+    expect(offeredAgain[0].offer).toBe(false);
+
+    const replaced = updateInstructions({
+      scopes: ["user"],
+      replaceEdited: true,
+      options: { contextPath: project, env: { TALKING_STICK_DATA_DIR: dataDir } }
+    });
+    expect(replaced[0].status).toBe("updated");
+    expect(fs.readFileSync(userPath, "utf8")).toBe(EDITABLE_INSTRUCTIONS_TEMPLATE);
   });
 
   test("show rejects oversized editable instruction files", () => {
@@ -204,8 +248,7 @@ describe("collaboration instructions", () => {
       scope: "bundled"
     });
     expect(antigravity.harness).toBe("antigravity");
-    expect(antigravity.text).toContain("## Antigravity");
-    expect(antigravity.text).not.toContain("## Gemini");
+    expect(antigravity.text).toContain("tt wait --json");
 
     expect(resolveInstructionHarness("gemini")).toBe("gemini");
   });

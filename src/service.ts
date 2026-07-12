@@ -1246,7 +1246,7 @@ export class TalkingStickService {
     }
 
     // The default `target=self` event wait is the documented per-session
-    // presence primitive (the §2 ambient receiver): "watching" the room keeps
+    // presence primitive: watching the room keeps
     // the member visible. Refresh — and, for a receiver that never ran
     // `tt join`, register — presence at entry (each long-poll cycle re-enters
     // with a fresh cursor), re-stamping current harness metadata but never
@@ -2243,8 +2243,8 @@ export class TalkingStickService {
   }
 
   /**
-   * Presence for a sustained self-targeted event receiver (the §2 ambient
-   * receiver). Watching the room is the documented per-session presence
+   * Presence for a sustained self-targeted event receiver. Watching the room
+   * is the documented per-session presence
    * primitive, so it refreshes — and, for a receiver that never ran `tt join`,
    * registers — the member, but never records turn interest (last_wait_at).
    */
@@ -3564,7 +3564,7 @@ function normalizeProcessMetadata(
     host_id: processMetadata?.host_id ?? null,
     pid: processMetadata?.pid ?? null,
     process_started_at: processMetadata?.process_started_at ?? null,
-    session_kind: processMetadata?.session_kind ?? "mcp_harness",
+    session_kind: processMetadata?.session_kind ?? "harness_cli",
     display_name: processMetadata?.display_name ?? null,
     harness_name: processMetadata?.harness_name ?? null,
     harness_session_id: processMetadata?.harness_session_id ?? null,
@@ -3708,7 +3708,7 @@ function sessionKindPriority(sessionKind: SessionKind): number {
   switch (sessionKind) {
     case "human_guardian":
       return 3;
-    case "mcp_harness":
+    case "harness_cli":
       return 2;
     case "human_cli":
       return 1;

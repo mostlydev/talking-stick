@@ -11,7 +11,6 @@ export type RoomState =
   | "dormant";
 
 export type SessionKind =
-  | "mcp_harness"
   | "human_guardian"
   | "human_cli"
   | "harness_cli"

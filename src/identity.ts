@@ -34,20 +34,6 @@ export interface DeriveHumanCliIdentityOptions {
   sessionKind?: SessionKind;
 }
 
-export interface DeriveMcpHarnessIdentityOptions {
-  agentId?: string;
-  env?: NodeJS.ProcessEnv;
-  parentPid?: number;
-  sessionId?: string;
-  hostId?: string;
-  username?: string;
-  inspector?: ProcessInspector;
-  displayName?: string;
-  contextPath?: string;
-  grokSessionLogPath?: string;
-  now?: Date;
-}
-
 export interface DeriveHarnessCliIdentityOptions {
   agentId?: string;
   env?: NodeJS.ProcessEnv;
@@ -99,81 +85,6 @@ export function deriveHumanCliIdentity(
       pid,
       process_started_at: processStartedAt,
       session_kind: sessionKind,
-      display_name: displayName
-    }
-  };
-}
-
-export function deriveMcpHarnessIdentity(
-  options: DeriveMcpHarnessIdentityOptions = {}
-): DerivedIdentity {
-  const env = options.env ?? process.env;
-  const inspector = options.inspector ?? createSystemProcessInspector();
-  const parentPid = options.parentPid ?? process.ppid;
-  const hostId = options.hostId ?? os.hostname();
-  const username = options.username ?? safeUsername();
-  const parentInspection = inspector.inspect(parentPid);
-
-  const signal = detectHarnessSignal(env);
-  if (signal) {
-    const processRef = resolveSignalProcessRef(
-      signal,
-      parentPid,
-      parentInspection,
-      inspector
-    );
-    const sessionId = resolveHarnessSessionId(
-      signal,
-      env,
-      processRef.pid,
-      processRef.inspection,
-      username,
-      hostId,
-      inspector,
-      {
-        contextPath: options.contextPath,
-        grokSessionLogPath: options.grokSessionLogPath,
-        now: options.now
-      }
-    );
-    const harnessProcess = resolveHarnessProcessRef(signal, processRef, inspector);
-    const agentId =
-      options.agentId ?? harnessAgentId(signal.harness, sessionId, hostId, username);
-    return {
-      agent_id: agentId,
-      process_metadata: {
-        host_id: hostId,
-        pid: processRef.pid,
-        process_started_at: processRef.inspection?.startTime ?? null,
-        session_kind: "mcp_harness",
-        display_name: signal.harness,
-        harness_name: signal.harness,
-        harness_session_id: sessionId,
-        harness_host_id: hostId,
-        harness_pid: harnessProcess.pid,
-        harness_process_started_at: harnessProcess.startTime
-      }
-    };
-  }
-
-  const displayName =
-    options.displayName ?? deriveCommandLabel(parentInspection?.command ?? null);
-  const agentId =
-    options.agentId ??
-    `${sanitizeIdentityComponent(displayName)}:${hashIdentityParts([
-      hostId,
-      String(parentPid),
-      parentInspection?.startTime ?? "",
-      options.sessionId ?? ""
-    ])}`;
-
-  return {
-    agent_id: agentId,
-    process_metadata: {
-      host_id: hostId,
-      pid: parentPid,
-      process_started_at: parentInspection?.startTime ?? null,
-      session_kind: "mcp_harness",
       display_name: displayName
     }
   };
@@ -345,8 +256,7 @@ function resolveHarnessProcessRef(
 
 // Walks the process ancestry (inclusive of startPid) looking for the deepest
 // process whose command matches the named harness. Anchoring session id to
-// that root keeps `tt` invocations stable whether they're spawned directly
-// by the harness (MCP subprocess) or through intermediate shells (CLI shell-out).
+// that root keeps repeated CLI invocations stable through intermediate shells.
 export function findHarnessRootInAncestry(
   harness: HarnessCliHarness,
   startPid: number,

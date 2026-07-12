@@ -27,7 +27,6 @@ import {
   parseWaitTimeout,
   type ParsedCommand
 } from "./parser.js";
-import { resolveTargetFilter } from "./event-stream.js";
 import {
   formatWaitResult,
   printResult
@@ -46,34 +45,33 @@ export async function handleWaitCommand(
   cliEntryUrl: string
 ): Promise<void> {
   const park = hasOption(parsed, "park");
-  const includeEvents = hasOption(parsed, "events");
-  const afterEventSeq = includeEvents
-    ? parseRequiredInteger(parsed, "after")
-    : undefined;
-  if (!includeEvents && hasOption(parsed, "after")) {
-    throw new Error("Pass --after only with --events.");
-  }
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const identity = deriveCliIdentity(parsed);
   const joined = runtime.commands.joinPath(identity, { context_path: contextPath });
   upsertSessionFromJoin(identity, joined);
-  const targetAgentId = includeEvents
-    ? resolveTargetFilter(
-        runtime,
-        identity,
-        joined.room_id,
-        getStringOption(parsed, "target") ?? "self"
-      )
-    : undefined;
+  const sessionPath = resolveCliSessionPath();
+  const session = findCliSessionByRoom(sessionPath, identity.agent_id, joined.room_id);
+  const hasExplicitCursor = hasOption(parsed, "after");
+  const afterEventSeq = hasExplicitCursor
+    ? parseRequiredInteger(parsed, "after")
+    : session?.event_cursor_seq ?? joined.cursor_event_seq;
+  const target = getStringOption(parsed, "target");
+  if (target && target !== "self") {
+    throw new Error(
+      "tt wait manages the self cursor only. Use `tt events --target ...` for audit/debug reads."
+    );
+  }
+  const targetAgentId = identity.agent_id;
 
   const waitResult = await runtime.commands.waitForTurn(identity, {
     room_id: joined.room_id,
     max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed),
     auto_claim: park ? false : undefined,
-    include_events: includeEvents,
+    include_events: true,
     after_event_seq: afterEventSeq,
     target_agent_id: targetAgentId
   });
+  const returnedCursor = waitResult.cursor_event_seq ?? afterEventSeq;
 
   const receivers = scanReceiverProcesses(joined.room_state, {
     root_pid: identity.process_metadata.harness_pid ?? identity.process_metadata.pid
@@ -81,8 +79,8 @@ export async function handleWaitCommand(
   const hasDuplicates =
     receivers.status === "scanned" && receivers.duplicate_count > 0;
   const nextReminder = hasDuplicates
-    ? "Remember to restart your listener, and keep only one active. WARNING: Duplicate active listeners detected! Stop extras."
-    : "Remember to restart your listener, and keep only one active.";
+    ? "Keep one `tt wait --json` running. WARNING: duplicate listeners detected; stop only the extra processes you started."
+    : "Keep one `tt wait --json` running; it resumes from the saved event cursor.";
 
   if (waitResult.status === "your_turn") {
     if (waitResult.reason === "already_owner") {
@@ -137,6 +135,9 @@ export async function handleWaitCommand(
             return `${body}\n\nnext: ${nextReminder}`;
           }
         );
+        if (!hasExplicitCursor) {
+          persistWaitCursor(identity, joined, returnedCursor);
+        }
         return;
       }
 
@@ -155,6 +156,9 @@ export async function handleWaitCommand(
           return `${body}\n\nnext: ${nextReminder}`;
         }
       );
+      if (!hasExplicitCursor) {
+        persistWaitCursor(identity, joined, returnedCursor);
+      }
       return;
     }
 
@@ -188,6 +192,9 @@ export async function handleWaitCommand(
         return `${body}\n\nGuardian ${guardianPid.pid} is holding the lease.\n\nnext: ${nextReminder}`;
       }
     );
+    if (!hasExplicitCursor) {
+      persistWaitCursor(identity, joined, returnedCursor);
+    }
     return;
   }
 
@@ -199,6 +206,28 @@ export async function handleWaitCommand(
       return `${body}\n\nnext: ${nextReminder}`;
     }
   );
+  if (!hasExplicitCursor) {
+    persistWaitCursor(identity, joined, returnedCursor);
+  }
+}
+
+function persistWaitCursor(
+  identity: DerivedIdentity,
+  joined: {
+    room_id: string;
+    canonical_path: string;
+    workspace_root: string;
+  },
+  eventCursorSeq: number
+): void {
+  upsertCliSession(resolveCliSessionPath(), {
+    agent_id: identity.agent_id,
+    room_id: joined.room_id,
+    canonical_path: joined.canonical_path,
+    workspace_root: joined.workspace_root,
+    event_cursor_seq: eventCursorSeq,
+    updated_at: new Date().toISOString()
+  });
 }
 
 export async function handleTakeCommand(
