@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.9.0] — 2026-07-12
+
+Full notes: [`docs/releases/0.9.0.md`](docs/releases/0.9.0.md).
+
 ### Added
 
 - **CLI-managed wait cursor.** Plain `tt wait --json` now receives room events by default and persists `event_cursor_seq` in `cli-sessions.json`. Normal agent loops no longer manage `--events` or `--after`, eliminating stale-cursor replay loops that made nominal long-polls return immediately.
@@ -381,6 +385,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.9.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.9.0
 [0.8.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.7.0
 [0.6.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.6.0
