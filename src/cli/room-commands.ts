@@ -190,8 +190,14 @@ export function handleStateCommand(
     for (const member of state.members) {
       const marker = member.agent_id === identity.agent_id ? "  ← you" : "";
       const seen = `last seen ${formatRelativeTime(member.last_seen_at)}`;
+      const intent = member.wait_intent ?? "legacy";
+      const standby = member.standby_transport
+        ? `, standby ${member.standby_transport}${
+            member.standby_wake_pending ? " pending" : ""
+          }`
+        : "";
       lines.push(
-        `            • ${member.agent_id.padEnd(24)} ${member.status.padEnd(8)} ${seen}${marker}`
+        `            • ${member.agent_id.padEnd(24)} ${member.status.padEnd(8)} ${seen}, intent ${intent}${standby}${marker}`
       );
     }
     const hiddenMembers = formatHiddenSummary("member", state.hidden?.members);
@@ -546,8 +552,13 @@ function renderHealthText(result: HealthCliResult, callerAgentId: string): strin
   lines.push("", "Members:");
   for (const member of result.members) {
     const marker = member.agent_id === callerAgentId ? "  ← you" : "";
+    const standby = member.standby_transport
+      ? ` standby=${member.standby_transport}${
+          member.standby_wake_pending ? ":pending" : ""
+        }${member.standby_last_error ? ` error=${member.standby_last_error}` : ""}`
+      : "";
     lines.push(
-      `  ${member.agent_id.padEnd(24)} ${member.status.padEnd(8)} last seen ${formatRelativeTime(member.last_seen_at)}${marker}`
+      `  ${member.agent_id.padEnd(24)} ${member.status.padEnd(8)} intent=${member.wait_intent ?? "legacy"}${standby} last seen ${formatRelativeTime(member.last_seen_at)}${marker}`
     );
   }
   const hiddenMembers = formatHiddenSummary("member", result.hidden?.members);
@@ -583,6 +594,18 @@ function formatListenerSummary(
 }
 
 function getNextAction(result: HealthCliResult, callerAgentId: string): string {
+  const caller = result.members.find(
+    (member) => member.agent_id === callerAgentId
+  );
+  if (caller?.wait_intent === "parked" && caller.standby_transport) {
+    if (caller.standby_wake_pending) {
+      return "Standby wake is pending; inspect the transport error or run 'tt wait'.";
+    }
+    if (caller.standby_delivered_at) {
+      return "A standby wake was delivered. Run 'tt wait' to resume coordination.";
+    }
+    return "Standby is registered; no listener process is required.";
+  }
   const isOwner = result.room.owner === callerAgentId;
   const isReserved = result.room.reserved_for === callerAgentId;
   const state = result.room.state;

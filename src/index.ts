@@ -8,6 +8,7 @@ export {
   type ListNotesCommandInput,
   type PassStickCommandInput,
   type ReleaseStickCommandInput,
+  type RegisterStandbyCommandInput,
   type SendMessageCommandInput,
   type TakeoverStickCommandInput,
   type WaitForEventsCommandInput,
@@ -169,4 +170,19 @@ export {
   type ProcessLivenessChecker,
   type TalkingStickServiceOptions
 } from "./service.js";
+export {
+  STANDBY_WAKE_TEXT,
+  CMUX_WAKE_TIMEOUT_MS,
+  createSystemWakeTransport,
+  resolveCmuxStandbyEndpoint,
+  type CmuxStandbyEndpoint,
+  type WakeDeliveryResult,
+  type WakeRequest,
+  type WakeExecFile,
+  type WakeTransport
+} from "./wake.js";
+export {
+  waitForActionableSignal,
+  type SignalWaitOptions
+} from "./wait-loop.js";
 export type * from "./types.js";

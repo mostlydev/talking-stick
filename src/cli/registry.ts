@@ -24,6 +24,7 @@ import {
   handleAssignCommand,
   handlePassCommand,
   handleReleaseCommand,
+  handleStandbyCommand,
   handleTakeCommand,
   handleWaitCommand
 } from "./turn-commands.js";
@@ -191,6 +192,16 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     description: "Long-poll for ownership and room events using the saved cursor.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, false, cliEntryUrl)
+  },
+  {
+    name: "standby",
+    needsRuntime: true,
+    startupMaintenance: true,
+    internal: false,
+    usage: "tt standby [path] [--wake cmux|manual]",
+    description: "Park without a listener and register an optional wake endpoint.",
+    handler: ({ runtime, parsed }) =>
+      handleStandbyCommand(requireRuntime(runtime), parsed)
   },
   {
     name: "try",

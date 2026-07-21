@@ -426,7 +426,7 @@ describe("talking-stick vertical slice", () => {
     expect(release.reserved_for).toBe("agent:5");
   });
 
-  test("idle handoff briefly defers a less-fair claimant for a stale best candidate", async () => {
+  test("persisted active intent outlives waiter grace and keeps fair reservation", async () => {
     const harness = createHarness({
       policy: {
         waiterGraceMs: 10_000
@@ -482,14 +482,7 @@ describe("talking-stick vertical slice", () => {
       handoff: validHandoff()
     });
 
-    expect(release.reserved_for).toBeNull();
-
-    const earlyClaim = await harness.service.waitForTurn({
-      agent_id: "agent:one",
-      room_id: agentOne.room_id,
-      max_wait_ms: 0
-    });
-    expect(earlyClaim.status).toBe("not_yet");
+    expect(release.reserved_for).toBe("agent:three");
 
     const fairClaim = asYourTurn(
       await harness.service.waitForTurn({
@@ -501,7 +494,7 @@ describe("talking-stick vertical slice", () => {
     expect(fairClaim.reason).toBe("sequence");
   });
 
-  test("idle handoff defers the prior owner for release cooldown while another active member exists", async () => {
+  test("release reserves another persisted active member after waiter grace", async () => {
     const harness = createHarness({
       policy: {
         waiterGraceMs: 10_000
@@ -536,14 +529,7 @@ describe("talking-stick vertical slice", () => {
       handoff: validHandoff()
     });
 
-    expect(release.reserved_for).toBeNull();
-
-    const immediateTakeBack = await harness.service.waitForTurn({
-      agent_id: "codex:test",
-      room_id: codexJoin.room_id,
-      max_wait_ms: 0
-    });
-    expect(immediateTakeBack.status).toBe("not_yet");
+    expect(release.reserved_for).toBe("claude:test");
 
     const claudeTurn = asYourTurn(
       await harness.service.waitForTurn({
@@ -581,6 +567,12 @@ describe("talking-stick vertical slice", () => {
     );
 
     harness.clock.advance(10_001);
+
+    harness.service.registerStandby({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      transport: "manual"
+    });
 
     harness.service.releaseStick({
       room_id: codexJoin.room_id,
@@ -1673,7 +1665,7 @@ describe("talking-stick vertical slice", () => {
       handoff: validHandoff()
     });
 
-    expect(livenessChecks).toBeLessThanOrEqual(2);
+    expect(livenessChecks).toBeLessThanOrEqual(3);
   });
 
   test("list_rooms summaries do not probe exact process liveness", async () => {
@@ -2987,7 +2979,7 @@ describe("talking-stick vertical slice", () => {
     expect(result.reason).toBe("open_claim");
   });
 
-  test("wait_for_turn with auto_claim=false still returns your_turn for the current owner", async () => {
+  test("wait_for_turn with auto_claim=false requires the current owner to release before parking", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
     const join = harness.service.joinPath({
@@ -3003,18 +2995,15 @@ describe("talking-stick vertical slice", () => {
       })
     );
 
-    const parkedAsOwner = asYourTurn(
-      await harness.service.waitForTurn({
+    await expect(
+      harness.service.waitForTurn({
         agent_id: "codex:test",
         room_id: join.room_id,
         max_wait_ms: 0,
         auto_claim: false
       })
-    );
-
-    expect(parkedAsOwner.reason).toBe("already_owner");
-    expect(parkedAsOwner.lease_id).toBe(firstTurn.lease_id);
-    expect(parkedAsOwner.turn_id).toBe(firstTurn.turn_id);
+    ).rejects.toMatchObject({ code: "park_requires_release" });
+    expect(firstTurn.reason).toBe("open_claim");
   });
 
   test("wait_for_turn with auto_claim=false still returns your_turn for the reserved recipient", async () => {

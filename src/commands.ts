@@ -17,6 +17,7 @@ import type {
   PassStickInput,
   PassStickResult,
   RelinquishOwnershipResult,
+  RegisterStandbyResult,
   ReleaseStickInput,
   ReleaseStickResult,
   RoomEvent,
@@ -65,9 +66,17 @@ export interface WaitForTurnCommandInput {
   room_id: string;
   max_wait_ms?: number;
   auto_claim?: boolean;
+  mode?: WaitForTurnInput["mode"];
   include_events?: boolean;
   after_event_seq?: number;
   target_agent_id?: WaitForTurnInput["target_agent_id"];
+}
+
+export interface RegisterStandbyCommandInput {
+  room_id: string;
+  transport: "cmux" | "manual";
+  workspace_id?: string | null;
+  surface_id?: string | null;
 }
 
 export interface TakeoverStickCommandInput {
@@ -155,9 +164,24 @@ export class TalkingStickCommands {
       room_id: input.room_id,
       max_wait_ms: input.max_wait_ms,
       auto_claim: input.auto_claim,
+      mode: input.mode,
       include_events: input.include_events,
       after_event_seq: input.after_event_seq,
       target_agent_id: input.target_agent_id,
+      process_metadata: identity.process_metadata
+    });
+  }
+
+  registerStandby(
+    identity: DerivedIdentity,
+    input: RegisterStandbyCommandInput
+  ): RegisterStandbyResult {
+    return this.service.registerStandby({
+      agent_id: identity.agent_id,
+      room_id: input.room_id,
+      transport: input.transport,
+      workspace_id: input.workspace_id,
+      surface_id: input.surface_id,
       process_metadata: identity.process_metadata
     });
   }

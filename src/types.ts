@@ -16,6 +16,10 @@ export type SessionKind =
   | "harness_cli"
   | string;
 
+export type WaitIntent = "active" | "parked";
+export type WaitMode = WaitIntent;
+export type StandbyTransport = "cmux" | "manual";
+
 export interface ProcessMetadata {
   host_id?: string | null;
   pid?: number | null;
@@ -95,6 +99,7 @@ export interface RoomMember {
   joined_at: string;
   last_seen_at: string;
   last_wait_at: string | null;
+  wait_intent: WaitIntent | null;
   host_id: string | null;
   pid: number | null;
   process_started_at: string | null;
@@ -106,6 +111,14 @@ export interface RoomMember {
   harness_pid: number | null;
   harness_process_started_at: string | null;
   last_park_hint_event_seq: number | null;
+  standby_transport: StandbyTransport | null;
+  standby_workspace_id: string | null;
+  standby_surface_id: string | null;
+  standby_generation: number;
+  standby_wake_pending: boolean;
+  standby_registered_at: string | null;
+  standby_last_error: string | null;
+  standby_delivered_at: string | null;
   status: "active" | "inactive";
 }
 
@@ -196,10 +209,30 @@ export interface WaitForTurnInput {
   room_id: string;
   max_wait_ms?: number;
   auto_claim?: boolean;
+  mode?: WaitMode;
   include_events?: boolean;
   after_event_seq?: number;
   target_agent_id?: TargetAgentFilter;
   process_metadata?: ProcessMetadata;
+}
+
+export interface RegisterStandbyInput {
+  agent_id: AgentId;
+  room_id: string;
+  transport: StandbyTransport;
+  workspace_id?: string | null;
+  surface_id?: string | null;
+  process_metadata?: ProcessMetadata;
+}
+
+export interface RegisterStandbyResult {
+  status: "standby_registered";
+  room_id: string;
+  agent_id: AgentId;
+  wait_intent: "parked";
+  transport: StandbyTransport;
+  generation: number;
+  can_self_wake: boolean;
 }
 
 export type WaitWakeReason = "turn" | "event" | "timeout" | "closed";
@@ -299,6 +332,8 @@ export interface ReleaseStickResult {
   room_id: string;
   reserved_for: AgentId | null;
   event_seq: number;
+  no_active_waiters: boolean;
+  parked_hinted: AgentId[];
 }
 
 export interface PassStickInput extends OwnerMutationInput {
@@ -311,6 +346,7 @@ export interface PassStickResult {
   room_id: string;
   reserved_for: AgentId;
   event_seq: number;
+  routed_to_parked: boolean;
 }
 
 export interface TakeoverStickInput {

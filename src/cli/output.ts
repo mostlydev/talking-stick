@@ -4,7 +4,7 @@ import { isKnownHarnessCliEnv } from "./identity.js";
 import { hasOption, type ParsedCommand } from "./parser.js";
 
 export const COORDINATION_PROMPT =
-  "Keep exactly one `tt wait --json` process active while shared work remains; poll the same process handle until it exits.";
+  "Keep one `tt wait --json` process while agent work remains; use `tt standby --wake cmux --json` when only an external signal remains.";
 
 const COORDINATION_PROMPT_COMMANDS = new Set([
   "join",
@@ -198,6 +198,7 @@ Commands:
   tt leave [path]
   tt kick <agent_id> [path] [--reason TEXT] [--force]
   tt wait [path] [--timeout 110s] [--park] [--after N]
+  tt standby [path] [--wake cmux|manual]
   tt try [path] [--park] [--after N]
   tt state [path] [--all]
   tt health [path] [--verbose|--all]

@@ -14,6 +14,7 @@ import {
   type SqliteDatabase
 } from "./db.js";
 import { ProtocolError } from "./errors.js";
+import type { WakeRequest, WakeTransport } from "./wake.js";
 import {
   createSystemProcessInspector,
   type ProcessInspector
@@ -52,6 +53,8 @@ import type {
   PathRoom,
   Policy,
   ProcessMetadata,
+  RegisterStandbyInput,
+  RegisterStandbyResult,
   ReleaseStickInput,
   ReleaseStickResult,
   RelinquishOwnershipResult,
@@ -70,6 +73,8 @@ import type {
   WaitForEventsResult,
   WaitForTurnInput,
   WaitForTurnResult,
+  WaitIntent,
+  WaitMode,
   WaitWakeReason
 } from "./types.js";
 
@@ -95,6 +100,7 @@ interface RoomMemberRow {
   joined_at: string;
   last_seen_at: string;
   last_wait_at: string | null;
+  wait_intent: WaitIntent | null;
   host_id: string | null;
   pid: number | null;
   process_started_at: string | null;
@@ -106,6 +112,14 @@ interface RoomMemberRow {
   harness_pid: number | null;
   harness_process_started_at: string | null;
   last_park_hint_event_seq: number | null;
+  standby_transport: "cmux" | "manual" | null;
+  standby_workspace_id: string | null;
+  standby_surface_id: string | null;
+  standby_generation: number;
+  standby_wake_pending: number;
+  standby_registered_at: string | null;
+  standby_last_error: string | null;
+  standby_delivered_at: string | null;
   status: "active" | "inactive";
 }
 
@@ -191,6 +205,7 @@ export interface TalkingStickServiceOptions extends OpenDatabaseOptions {
   policy?: Partial<Policy>;
   processLivenessChecker?: ProcessLivenessChecker;
   hostId?: string;
+  wakeTransport?: WakeTransport;
 }
 
 export class TalkingStickService {
@@ -200,6 +215,7 @@ export class TalkingStickService {
   private readonly ownsDatabase: boolean;
   private readonly processLivenessChecker: ProcessLivenessChecker;
   private readonly hostId: string;
+  private readonly wakeTransport: WakeTransport | null;
 
   constructor(options: TalkingStickServiceOptions = {}) {
     this.db = options.db ?? openDatabase(options);
@@ -210,6 +226,7 @@ export class TalkingStickService {
     this.processLivenessChecker =
       options.processLivenessChecker ??
       createDefaultProcessLivenessChecker(this.hostId);
+    this.wakeTransport = options.wakeTransport ?? null;
   }
 
   close(): void {
@@ -514,6 +531,7 @@ export class TalkingStickService {
     assertNonEmpty(input.agent_id, "agent_id");
     assertNonEmpty(input.room_id, "room_id");
     this.purgeExpiredIdleRooms(this.now());
+    this.recordWaitEntry(input);
 
     if (input.include_events) {
       return this.waitForTurnWithEvents(input);
@@ -620,6 +638,82 @@ export class TalkingStickService {
     }
   }
 
+  registerStandby(input: RegisterStandbyInput): RegisterStandbyResult {
+    assertNonEmpty(input.agent_id, "agent_id");
+    assertNonEmpty(input.room_id, "room_id");
+    if (input.transport !== "cmux" && input.transport !== "manual") {
+      throw new ProtocolError(
+        "invalid_standby_transport",
+        "Standby transport must be 'cmux' or 'manual'."
+      );
+    }
+    if (
+      input.transport === "cmux" &&
+      (!input.workspace_id || !input.surface_id)
+    ) {
+      throw new ProtocolError(
+        "cmux_endpoint_required",
+        "cmux standby requires a verified workspace and surface endpoint."
+      );
+    }
+
+    const now = this.now();
+    const timestamp = now.toISOString();
+    this.purgeExpiredIdleRooms(now);
+
+    return withImmediateTransaction(this.db, () => {
+      const room = this.requireRoom(input.room_id);
+      this.assertCanPark(room, input.agent_id, now);
+      this.touchMember(
+        input.room_id,
+        input.agent_id,
+        timestamp,
+        input.process_metadata
+      );
+      const member = this.getMember(input.room_id, input.agent_id);
+      if (!member) {
+        throw new ProtocolError("unknown_member", "Agent must join before standby.");
+      }
+      const generation = member.standby_generation + 1;
+      this.db
+        .prepare(
+          `
+          UPDATE room_members
+          SET wait_intent = 'parked',
+              last_wait_at = NULL,
+              standby_transport = ?,
+              standby_workspace_id = ?,
+              standby_surface_id = ?,
+              standby_generation = ?,
+              standby_wake_pending = 0,
+              standby_registered_at = ?,
+              standby_last_error = NULL,
+              standby_delivered_at = NULL
+          WHERE room_id = ? AND agent_id = ?
+        `
+        )
+        .run(
+          input.transport,
+          input.workspace_id ?? null,
+          input.surface_id ?? null,
+          generation,
+          timestamp,
+          input.room_id,
+          input.agent_id
+        );
+
+      return {
+        status: "standby_registered",
+        room_id: input.room_id,
+        agent_id: input.agent_id,
+        wait_intent: "parked",
+        transport: input.transport,
+        generation,
+        can_self_wake: input.transport === "cmux"
+      };
+    });
+  }
+
   heartbeat(input: OwnerMutationInput): HeartbeatResult {
     const now = this.now();
     const timestamp = now.toISOString();
@@ -665,7 +759,7 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
-    return withImmediateTransaction(this.db, () => {
+    const result: ReleaseStickResult = withImmediateTransaction(this.db, () => {
       const room = this.requireRoom(input.room_id);
       this.assertOwnerMutation(room, input, now);
       this.touchMember(
@@ -692,6 +786,17 @@ export class TalkingStickService {
         now
       );
       const reservedFor = nextMember?.agent_id ?? null;
+      const parkedHinted = this.getMembers(input.room_id)
+        .filter(
+          (member) =>
+            member.agent_id !== input.agent_id &&
+            member.wait_intent === "parked" &&
+            this.hasRecentPresence(member, now)
+        )
+        .map((member) => member.agent_id);
+      for (const agentId of parkedHinted) {
+        this.queueStandbyWake(input.room_id, agentId);
+      }
       const claimExpiresAt = reservedFor
         ? this.expiresAt(now, this.policy.claimTtlMs)
         : null;
@@ -726,9 +831,13 @@ export class TalkingStickService {
         status: "released",
         room_id: input.room_id,
         reserved_for: reservedFor,
-        event_seq: eventSeq
+        event_seq: eventSeq,
+        no_active_waiters: reservedFor === null,
+        parked_hinted: parkedHinted
       };
     });
+    this.flushPendingWakes(input.room_id);
+    return result;
   }
 
   /**
@@ -771,7 +880,6 @@ export class TalkingStickService {
         reason: "harness_gone",
         created_at: timestamp
       });
-
       this.db
         .prepare(
           `
@@ -806,7 +914,7 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
-    return withImmediateTransaction(this.db, () => {
+    const result: PassStickResult = withImmediateTransaction(this.db, () => {
       const room = this.requireRoom(input.room_id);
       this.assertOwnerMutation(room, input, now);
       this.touchMember(
@@ -835,6 +943,7 @@ export class TalkingStickService {
         reason: null,
         created_at: timestamp
       });
+      this.queueStandbyWake(input.room_id, input.to_agent_id);
 
       this.db
         .prepare(
@@ -865,9 +974,12 @@ export class TalkingStickService {
         status: "passed",
         room_id: input.room_id,
         reserved_for: input.to_agent_id,
-        event_seq: eventSeq
+        event_seq: eventSeq,
+        routed_to_parked: target.wait_intent === "parked"
       };
     });
+    this.flushPendingWakes(input.room_id);
+    return result;
   }
 
   takeoverStick(input: TakeoverStickInput): TakeoverStickResult {
@@ -1020,6 +1132,8 @@ export class TalkingStickService {
         "No room found for this path. Run `tt join` first."
       );
     }
+
+    this.flushPendingWakes(room.room_id);
 
     const now = this.now();
     const timestamp = now.toISOString();
@@ -1179,7 +1293,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
-    return withImmediateTransaction(this.db, () => {
+    const result = withImmediateTransaction(this.db, () => {
       const room = this.requireRoom(input.room_id);
       if (room.state === "closed") {
         throw new ProtocolError(
@@ -1218,6 +1332,9 @@ export class TalkingStickService {
         created_at: timestamp,
         payload: { body, delivery_hint: deliveryHint }
       });
+      if (input.to_agent_id) {
+        this.queueStandbyWake(input.room_id, input.to_agent_id);
+      }
 
       const row = this.db
         .prepare<[number], { event_id: string }>(
@@ -1231,6 +1348,8 @@ export class TalkingStickService {
         created_at: timestamp
       };
     });
+    this.flushPendingWakes(input.room_id);
+    return result;
   }
 
   async waitForEvents(input: WaitForEventsInput): Promise<WaitForEventsResult> {
@@ -1672,15 +1791,7 @@ export class TalkingStickService {
 
   private waitForTurnOnce(input: WaitForTurnInput): WaitForTurnResult {
     const now = this.now();
-    const timestamp = now.toISOString();
     const room = this.requireRoom(input.room_id);
-
-    this.touchWaitingMember(
-      input.room_id,
-      input.agent_id,
-      timestamp,
-      input.process_metadata
-    );
     const inspection = this.inspectRoomForMutation(room, now);
 
     if (room.state === "closed") {
@@ -1705,7 +1816,10 @@ export class TalkingStickService {
     }
 
     if (!room.owner && !room.reserved_for) {
-      const autoClaim = input.auto_claim ?? true;
+      const autoClaim =
+        input.mode !== undefined
+          ? input.mode === "active"
+          : input.auto_claim ?? true;
       if (!autoClaim) {
         if (room.pending_handoff_event_seq) {
           const member = this.getMember(input.room_id, input.agent_id);
@@ -1847,15 +1961,7 @@ export class TalkingStickService {
     input: WaitForTurnInput
   ): WaitForTurnResult {
     const now = this.now();
-    const timestamp = now.toISOString();
     const room = this.requireRoom(input.room_id);
-
-    this.touchWaitingMember(
-      input.room_id,
-      input.agent_id,
-      timestamp,
-      input.process_metadata
-    );
     const inspection = this.inspectRoomForMutation(room, now);
 
     if (room.state === "closed") {
@@ -2089,8 +2195,8 @@ export class TalkingStickService {
     timestamp: string,
     processMetadata?: ProcessMetadata
   ): void {
-    // `tt join`: create the member if absent, refresh presence, record wait
-    // interest, and re-stamp process metadata.
+    // Preserve the established join workflow: a fresh join is active turn
+    // interest until the member explicitly parks or enters standby.
     this.applyPresence(roomId, agentId, timestamp, {
       processMetadata,
       recordWait: true,
@@ -2134,7 +2240,18 @@ export class TalkingStickService {
       const sets = ["last_seen_at = ?", "status = 'active'"];
       const params: Array<string | number | null> = [timestamp];
       if (options.recordWait) {
-        sets.push("last_wait_at = ?");
+        sets.push(
+          "last_wait_at = ?",
+          "wait_intent = 'active'",
+          "standby_transport = NULL",
+          "standby_workspace_id = NULL",
+          "standby_surface_id = NULL",
+          "standby_wake_pending = 0",
+          "standby_registered_at = NULL",
+          "standby_last_error = NULL",
+          "standby_delivered_at = NULL",
+          "standby_generation = standby_generation + 1"
+        );
         params.push(timestamp);
       }
       if (hasIdentity) {
@@ -2207,6 +2324,7 @@ export class TalkingStickService {
           joined_at,
           last_seen_at,
           last_wait_at,
+          wait_intent,
           status,
           host_id,
           pid,
@@ -2219,7 +2337,7 @@ export class TalkingStickService {
           harness_pid,
           harness_process_started_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -2229,6 +2347,7 @@ export class TalkingStickService {
         timestamp,
         timestamp,
         options.recordWait ? timestamp : null,
+        options.recordWait ? "active" : null,
         normalized.host_id,
         normalized.pid,
         normalized.process_started_at,
@@ -2445,14 +2564,84 @@ export class TalkingStickService {
     roomId: string,
     agentId: AgentId,
     timestamp: string,
-    processMetadata?: ProcessMetadata
+    processMetadata: ProcessMetadata | undefined,
+    waitIntent: WaitIntent
   ): void {
+    const member = this.getMember(roomId, agentId);
+    if (
+      member &&
+      member.wait_intent === waitIntent &&
+      member.standby_transport === null &&
+      Date.parse(timestamp) - Date.parse(member.last_seen_at) <
+        this.policy.heartbeatIntervalMs
+    ) {
+      return;
+    }
     this.applyPresence(roomId, agentId, timestamp, {
       processMetadata,
-      recordWait: true,
+      recordWait: false,
       allowCreate: false,
       requireMember: true
     });
+    this.db
+      .prepare(
+        `
+        UPDATE room_members
+        SET wait_intent = ?,
+            last_wait_at = ?,
+            standby_transport = NULL,
+            standby_workspace_id = NULL,
+            standby_surface_id = NULL,
+            standby_wake_pending = 0,
+            standby_registered_at = NULL,
+            standby_last_error = NULL,
+            standby_delivered_at = NULL,
+            standby_generation = standby_generation + 1
+        WHERE room_id = ? AND agent_id = ?
+      `
+      )
+      .run(
+        waitIntent,
+        waitIntent === "active" ? timestamp : null,
+        roomId,
+        agentId
+      );
+  }
+
+  private recordWaitEntry(input: WaitForTurnInput): void {
+    const now = this.now();
+    const timestamp = now.toISOString();
+    const mode = normalizeWaitMode(input);
+    withImmediateTransaction(this.db, () => {
+      const room = this.requireRoom(input.room_id);
+      if (mode === "parked") {
+        this.assertCanPark(room, input.agent_id, now);
+      }
+      this.touchWaitingMember(
+        input.room_id,
+        input.agent_id,
+        timestamp,
+        input.process_metadata,
+        mode
+      );
+    });
+  }
+
+  private assertCanPark(
+    room: PathRoomRow,
+    agentId: AgentId,
+    now: Date
+  ): void {
+    if (
+      room.owner === agentId &&
+      room.lease_expires_at &&
+      !this.hasExpired(room.lease_expires_at, now)
+    ) {
+      throw new ProtocolError(
+        "park_requires_release",
+        "The active owner must release or pass the turn before parking."
+      );
+    }
   }
 
   private touchKnownMember(
@@ -2761,9 +2950,16 @@ export class TalkingStickService {
     const bestKnownMember = this.findBestFairKnownMember(
       roomId,
       afterAgentId,
-      now
+      now,
+      true
     );
     if (!bestKnownMember || !this.isRecentWaiter(bestKnownMember, now)) {
+      return null;
+    }
+    if (
+      bestKnownMember.wait_intent === "active" &&
+      !this.isMemberActive(bestKnownMember, now)
+    ) {
       return null;
     }
 
@@ -2773,14 +2969,18 @@ export class TalkingStickService {
   private findBestFairKnownMember(
     roomId: string,
     afterAgentId: AgentId | null,
-    now: Date
+    now: Date,
+    requireRecentWaiter = false
   ): RoomMemberRow | null {
     const members = this.getMembers(roomId);
     const candidates = members.filter((member) => {
       if (member.agent_id === afterAgentId) {
         return false;
       }
-      return this.isPlausibleFairCandidate(member, now);
+      return (
+        this.isPlausibleFairCandidate(member, now) &&
+        (!requireRecentWaiter || this.isRecentWaiter(member, now))
+      );
     });
 
     if (candidates.length === 0) {
@@ -2869,6 +3069,145 @@ export class TalkingStickService {
       );
 
     return Number(result.lastInsertRowid);
+  }
+
+  private queueStandbyWake(roomId: string, agentId: AgentId): void {
+    this.db
+      .prepare(
+        `
+        UPDATE room_members
+        SET standby_wake_pending = 1,
+            standby_last_error = NULL
+        WHERE room_id = ?
+          AND agent_id = ?
+          AND wait_intent = 'parked'
+          AND standby_transport IS NOT NULL
+          AND standby_registered_at IS NOT NULL
+          AND standby_delivered_at IS NULL
+      `
+      )
+      .run(roomId, agentId);
+  }
+
+  private flushPendingWakes(roomId: string): void {
+    const pending = this.db
+      .prepare<
+        [string],
+        Pick<
+          RoomMemberRow,
+          | "agent_id"
+          | "standby_transport"
+          | "standby_workspace_id"
+          | "standby_surface_id"
+          | "standby_generation"
+        >
+      >(
+        `
+        SELECT agent_id,
+               standby_transport,
+               standby_workspace_id,
+               standby_surface_id,
+               standby_generation
+        FROM room_members
+        WHERE room_id = ? AND standby_wake_pending = 1
+      `
+      )
+      .all(roomId);
+
+    for (const member of pending) {
+      if (member.standby_transport === "manual") {
+        this.recordWakeFailure(
+          roomId,
+          member.agent_id,
+          member.standby_generation,
+          "Manual standby cannot self-wake; run tt wait --json to resume."
+        );
+        continue;
+      }
+      if (
+        member.standby_transport !== "cmux" ||
+        !member.standby_workspace_id ||
+        !member.standby_surface_id
+      ) {
+        this.recordWakeFailure(
+          roomId,
+          member.agent_id,
+          member.standby_generation,
+          "Standby wake endpoint is incomplete."
+        );
+        continue;
+      }
+      if (!this.wakeTransport) {
+        this.recordWakeFailure(
+          roomId,
+          member.agent_id,
+          member.standby_generation,
+          "No wake transport is configured."
+        );
+        continue;
+      }
+
+      const request: WakeRequest = {
+        room_id: roomId,
+        agent_id: member.agent_id,
+        transport: "cmux",
+        workspace_id: member.standby_workspace_id,
+        surface_id: member.standby_surface_id,
+        generation: member.standby_generation,
+        reason: "actionable_room_update"
+      };
+      let delivery;
+      try {
+        delivery = this.wakeTransport.deliver(request);
+      } catch (error) {
+        delivery = {
+          delivered: false,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
+      if (delivery.delivered) {
+        this.db
+          .prepare(
+            `
+            UPDATE room_members
+            SET standby_wake_pending = 0,
+                standby_delivered_at = ?,
+                standby_last_error = NULL
+            WHERE room_id = ? AND agent_id = ? AND standby_generation = ?
+          `
+          )
+          .run(
+            this.now().toISOString(),
+            roomId,
+            member.agent_id,
+            member.standby_generation
+          );
+      } else {
+        this.recordWakeFailure(
+          roomId,
+          member.agent_id,
+          member.standby_generation,
+          delivery.error ?? "Wake delivery failed."
+        );
+      }
+    }
+  }
+
+  private recordWakeFailure(
+    roomId: string,
+    agentId: AgentId,
+    generation: number,
+    error: string
+  ): void {
+    this.db
+      .prepare(
+        `
+        UPDATE room_members
+        SET standby_last_error = ?
+        WHERE room_id = ? AND agent_id = ? AND standby_generation = ?
+      `
+      )
+      .run(error, roomId, agentId, generation);
   }
 
   private queryEvents(input: {
@@ -3130,11 +3469,16 @@ export class TalkingStickService {
   }
 
   private isRecentWaiter(member: RoomMemberRow, now: Date): boolean {
-    if (!member.last_wait_at) {
+    if (member.wait_intent === "parked") {
       return false;
     }
 
-    if (!this.hasRecentPresence(member, now)) {
+    if (member.wait_intent === "active") {
+      return this.hasRecentPresence(member, now);
+    }
+
+    // Compatibility for a pre-intent row that has not yet been backfilled.
+    if (!member.last_wait_at || !this.hasRecentPresence(member, now)) {
       return false;
     }
 
@@ -3413,6 +3757,7 @@ export class TalkingStickService {
   private mapMember(row: RoomMemberRow, now: Date): RoomMember {
     return {
       ...row,
+      standby_wake_pending: row.standby_wake_pending === 1,
       status: this.isMemberActive(row, now) ? "active" : "inactive"
     };
   }
@@ -3786,6 +4131,19 @@ function normalizeEventTypeFilter(
   }
 
   return values;
+}
+
+function normalizeWaitMode(input: WaitForTurnInput): WaitMode {
+  if (input.mode !== undefined) {
+    if (input.mode !== "active" && input.mode !== "parked") {
+      throw new ProtocolError(
+        "invalid_wait_mode",
+        "Wait mode must be 'active' or 'parked'."
+      );
+    }
+    return input.mode;
+  }
+  return input.auto_claim === false ? "parked" : "active";
 }
 
 function assertNonEmpty(value: string | undefined, field: string): void {

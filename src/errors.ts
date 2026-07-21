@@ -22,7 +22,11 @@ export type ProtocolErrorCode =
   | "invalid_event_type_filter"
   | "room_closed"
   | "invalid_turn_id"
-  | "invalid_cursor";
+  | "invalid_cursor"
+  | "invalid_standby_transport"
+  | "cmux_endpoint_required"
+  | "park_requires_release"
+  | "invalid_wait_mode";
 
 export interface ProtocolErrorDetails {
   field?: string;

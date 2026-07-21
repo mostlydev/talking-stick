@@ -959,6 +959,53 @@ describe("tt turn commands", () => {
     }
   });
 
+  test("tt standby --wake manual returns immediately and exposes parked diagnostics", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await captureStdout(["join", project, "--agent", "human:parked"]);
+
+    const output = JSON.parse(await captureStdout([
+      "standby",
+      project,
+      "--wake",
+      "manual",
+      "--agent",
+      "human:parked",
+      "--json"
+    ])) as {
+      status: string;
+      wait_intent: string;
+      transport: string;
+      can_self_wake: boolean;
+    };
+
+    expect(output).toMatchObject({
+      status: "standby_registered",
+      wait_intent: "parked",
+      transport: "manual",
+      can_self_wake: false
+    });
+    const state = JSON.parse(await captureStdout([
+      "state", project, "--agent", "human:parked", "--json"
+    ])) as { members: Array<{ agent_id: string; wait_intent: string }> };
+    expect(state.members.find((member) => member.agent_id === "human:parked"))
+      .toMatchObject({ wait_intent: "parked" });
+  });
+
+  test("tt standby rejects an active owner until the turn is released", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await seedCliLease(project, "human:owner");
+
+    await expect(captureStdout([
+      "standby",
+      project,
+      "--wake",
+      "manual",
+      "--agent",
+      "human:owner",
+      "--json"
+    ])).rejects.toMatchObject({ code: "park_requires_release" });
+  });
+
   test("tt assign next resolves the fair active recipient", async () => {
     const { project } = setupIsolatedCli(tempDirs);
 

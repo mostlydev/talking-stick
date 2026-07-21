@@ -9,6 +9,8 @@ import {
   type RoomEvent,
   type RoomMember
 } from "../index.js";
+import { resolveCmuxStandbyEndpoint } from "../wake.js";
+import { waitForActionableSignal } from "../wait-loop.js";
 import {
   checkGuardianLiveness,
   spawnGuardian,
@@ -63,14 +65,32 @@ export async function handleWaitCommand(
   }
   const targetAgentId = identity.agent_id;
 
-  const waitResult = await runtime.commands.waitForTurn(identity, {
-    room_id: joined.room_id,
-    max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed),
-    auto_claim: park ? false : undefined,
-    include_events: true,
-    after_event_seq: afterEventSeq,
-    target_agent_id: targetAgentId
-  });
+  const explicitTimeout = hasOption(parsed, "timeout");
+  let currentCursor = afterEventSeq;
+  const waitResult = await waitForActionableSignal(
+    async () => {
+      const result = await runtime.commands.waitForTurn(identity, {
+        room_id: joined.room_id,
+        max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed),
+        auto_claim: park ? false : undefined,
+        mode: park ? "parked" : "active",
+        include_events: true,
+        after_event_seq: currentCursor,
+        target_agent_id: targetAgentId
+      });
+      currentCursor = result.cursor_event_seq ?? currentCursor;
+      return result;
+    },
+    {
+      is_try: isTry,
+      explicit_timeout: explicitTimeout,
+      on_internal_timeout: () => {
+        if (!hasExplicitCursor) {
+          persistWaitCursor(identity, joined, currentCursor);
+        }
+      }
+    }
+  );
   const returnedCursor = waitResult.cursor_event_seq ?? afterEventSeq;
 
   const receivers = scanReceiverProcesses(joined.room_state, {
@@ -211,6 +231,37 @@ export async function handleWaitCommand(
   }
 }
 
+export function handleStandbyCommand(
+  runtime: Runtime,
+  parsed: ParsedCommand
+): void {
+  const contextPath = parsed.positionals[0] ?? process.cwd();
+  const identity = deriveCliIdentity(parsed);
+  const joined = runtime.commands.joinPath(identity, {
+    context_path: contextPath
+  });
+  upsertSessionFromJoin(identity, joined);
+  const transport = getStringOption(parsed, "wake") ?? "cmux";
+  if (transport !== "cmux" && transport !== "manual") {
+    throw new Error("--wake must be cmux or manual.");
+  }
+
+  const endpoint = transport === "cmux" ? resolveCmuxStandbyEndpoint() : null;
+  const result = runtime.commands.registerStandby(identity, {
+    room_id: joined.room_id,
+    transport,
+    workspace_id: endpoint?.workspace_id,
+    surface_id: endpoint?.surface_id
+  });
+
+  printResult(parsed, result, () => {
+    if (result.can_self_wake) {
+      return "Standby registered. This turn may end; cmux will wake this surface for an actionable update.";
+    }
+    return "Manual standby registered. It cannot self-wake; run `tt wait --json` to resume.";
+  });
+}
+
 function persistWaitCursor(
   identity: DerivedIdentity,
   joined: {
@@ -345,7 +396,11 @@ export async function handleReleaseCommand(
 
   printResult(parsed, result, () => {
     const target = result.reserved_for ? ` to ${result.reserved_for}` : "";
-    return `Released${target}.`;
+    const parked =
+      result.parked_hinted.length > 0
+        ? ` Parked hint: ${result.parked_hinted.join(", ")}.`
+        : "";
+    return `Released${target}.${parked}`;
   });
 }
 
@@ -478,6 +533,11 @@ function pickFairAssignmentCandidate(
   return candidates
     .slice()
     .sort((left, right) => {
+      const leftTier = left.wait_intent === "active" ? 0 : 1;
+      const rightTier = right.wait_intent === "active" ? 0 : 1;
+      if (leftTier !== rightTier) {
+        return leftTier - rightTier;
+      }
       const leftLastOwned = lastOwnership.get(left.agent_id);
       const rightLastOwned = lastOwnership.get(right.agent_id);
 

@@ -2,6 +2,7 @@ import {
   TalkingStickCommands,
   TalkingStickService
 } from "../index.js";
+import { createSystemWakeTransport } from "../wake.js";
 
 export interface Runtime {
   commands: TalkingStickCommands;
@@ -9,7 +10,9 @@ export interface Runtime {
 }
 
 export function createRuntime(): Runtime {
-  const service = new TalkingStickService();
+  const service = new TalkingStickService({
+    wakeTransport: createSystemWakeTransport()
+  });
   return {
     commands: new TalkingStickCommands(service),
     close: () => service.close()

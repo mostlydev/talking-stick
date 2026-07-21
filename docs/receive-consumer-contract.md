@@ -1,6 +1,6 @@
 # Receive Consumer Contract
 
-`tt wait` is the agent receive primitive. It combines turn state and room events in one bounded long-poll.
+`tt wait` is the agent receive primitive. It combines turn state and room events in one signal-only CLI process. The service RPC remains bounded internally, but the CLI silently re-enters it until an actionable signal or explicit timeout.
 
 ## Cursor ownership
 
@@ -12,9 +12,17 @@
 ## Process lifecycle
 
 - Keep one wait subprocess active while shared work remains.
+- Internal service timeouts do not produce CLI output and do not exit the process.
 - A harness tool may yield a process handle before the subprocess exits. Poll or resume that same handle; do not launch a replacement yet.
 - Only after the subprocess exits should the consumer process the result and start one successor.
 - Do not shorten the CLI timeout to fit a tool-yield interval. A tool yield and a wait timeout are different events.
+
+## Passive standby
+
+- `tt wait --park` is a live parked listener. It does not auto-claim and is excluded from ordinary release routing.
+- `tt standby --wake cmux` records parked intent and returns immediately so the model turn can end without a terminal process.
+- Directed messages, passes, assignments, and pending-handoff hints wake a registered cmux surface once. Broadcast chatter does not.
+- `tt standby --wake manual` records the same intent but cannot self-wake.
 
 ## Filtering and authority
 

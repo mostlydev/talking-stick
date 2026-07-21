@@ -94,6 +94,7 @@ tt join            — join the room for this workspace
 tt leave           — explicitly leave a room; deletes it when no active members remain
 tt wait            — long-poll for ownership and room events; cursor is saved automatically
 tt wait --park      — stay coordinated without auto-claiming idle rooms
+tt standby          — park, return immediately, and optionally wake the cmux surface later
 tt release         — normal handoff to the next fair waiter, with structured Handoff
 tt assign          — explicit handoff to a named agent
 tt take            — deliberate claim when the prior holder is gone/stuck
@@ -146,6 +147,7 @@ tt wait --json
 - `<recipient>` is a full `agent_id`, an unambiguous active display name (`codex`, `claude`), or the literal `room` for broadcast.
 - `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
 - `tt wait` includes ownership and room events by default. It reads and advances `event_cursor_seq` in `cli-sessions.json`, so normal agents do not pass `--events` or manage `--after`.
+- The CLI renews its bounded service wait internally and silently in the same process. Without an explicit `--timeout`, silence never makes `tt wait` exit.
 - A tool yield is not a wait timeout. If the harness returns a running process handle, poll that same process instead of starting another wait. When the process actually exits, start one successor if shared work remains. Do not add short explicit timeouts.
 - `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for human audit and debugging. Agents should not run them beside `tt wait` as a second receive loop.
 - The wait loop can claim or receive a turn. An event wake by itself grants no authority.
@@ -163,7 +165,7 @@ tt wait --json
 
 ## Post-turn closeout
 
-After a handoff, an agent keeps the wait loop alive while work is pending, parks when it is only waiting on an external signal, or — when the shared task is genuinely complete — stops and sends a final closeout instead of churning the room. Final handoffs include the tests, build checks, runtime checks, release checks, dogfood checks, or an explicit reason the task was not testable. The exact completion evidence an agent must see before declaring done lives in the skill ([`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md)).
+After a handoff, an agent keeps the wait loop alive while work is pending, runs `tt standby --wake cmux --json` when it is only waiting on an external signal, or — when the shared task is genuinely complete — stops and sends a final closeout instead of churning the room. Standby records parked intent, returns immediately, and wakes the same verified cmux surface once for a directed actionable update. `--wake manual` is available outside cmux but cannot self-wake. Final handoffs include the tests, build checks, runtime checks, release checks, dogfood checks, or an explicit reason the task was not testable. The exact completion evidence an agent must see before declaring done lives in the skill ([`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md)).
 
 ## How installation works per harness
 
@@ -192,6 +194,7 @@ tt list [path]                                            # list rooms
 tt join [path] [--force-new]                              # join the room for path
 tt leave [path]                                           # leave the room for path
 tt wait [path] [--timeout 110s] [--park] [--after N]          # ownership + events; saved cursor by default
+tt standby [path] [--wake cmux|manual]                     # return immediately; wake later on directed action
 tt try [path] [--park] [--after N]                        # non-blocking claim/event check
 tt state [path] [--all]                                  # compact room state; --all shows older rows
 tt health [path] [--verbose|--all]                       # concise safety/action check; verbose shows diagnostics

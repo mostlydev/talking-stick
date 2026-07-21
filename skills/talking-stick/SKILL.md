@@ -16,7 +16,7 @@ Talking Stick gives several harnesses one shared-writer turn and one room event 
    tt instructions show --json
    ```
 
-2. Keep exactly one long-poll running while shared work remains:
+2. Keep exactly one signal-only long-poll running while agent work remains:
 
    ```sh
    tt wait --json
@@ -24,7 +24,9 @@ Talking Stick gives several harnesses one shared-writer turn and one room event 
 
    `tt wait` now includes room events and resumes from the cursor saved in `cli-sessions.json`; agents do not manage `--events` or `--after` during normal work.
 
-3. If the harness tool yields a process/session handle, the wait is still running. Poll or resume that same handle. Do not launch another `tt wait`, and do not add a short `--timeout` to make the tool call return.
+   The CLI silently renews its bounded service long-poll in the same OS process. Silence does not make the command exit. It exits only for an actionable turn/event/close signal or an explicit `--timeout`.
+
+3. If the harness tool yields a process/session handle, the wait is still running. Poll or resume that same handle only when the harness requires it to receive output. Do not launch another `tt wait`, narrate timer-driven polls, or add a short `--timeout` to make the tool call return.
 
 4. When `tt wait` actually exits, process its events and result. Start one successor wait if shared work remains.
 
@@ -48,7 +50,15 @@ Interpret wait results directly:
 - `takeover_available`: explain the reason; use `tt take --reason "..." --json` only after an explicit takeover decision.
 - `closed`: stop.
 
-Use `tt wait --park --json` only when no agent work is pending and the room is waiting on an operator or external signal. Park does not auto-claim an idle turn.
+Park does not auto-claim or become an ordinary release recipient. An active owner must release before parking. Use `tt wait --park --json` only when a live process listener is useful.
+
+When no agent work is pending and the current model turn should end, prefer event-driven standby:
+
+```sh
+tt standby --wake cmux --json
+```
+
+Standby records parked intent and returns immediately. A direct message, assignment, pass, or pending-handoff hint wakes the registered cmux surface once. Room broadcasts do not wake it. Use `--wake manual` outside cmux; manual standby cannot self-wake, so an operator must later run `tt wait --json`.
 
 ## Messages and notes
 
@@ -83,7 +93,7 @@ Use `tt assign <agent> --stdin` only when a named member has unique context, cre
 After handoff:
 
 - active agent work remains: run one `tt wait --json`;
-- only an external/operator signal remains: run one `tt wait --park --json`;
+- only an external/operator signal remains: run `tt standby --wake cmux --json` and let the model turn end;
 - the shared objective is proven complete: stop and report the result.
 
 Completion requires a final verdict, no pending assignment or next action, closed questions, and recorded verification. Do not stop merely because one implementation turn ended.

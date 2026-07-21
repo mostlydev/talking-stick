@@ -73,10 +73,10 @@ export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration inst
 When this skill applies, coordinate until the shared task is complete:
 
 1. Run \`tt join --json\`, then \`tt instructions show --json\` once.
-2. Keep exactly one \`tt wait --json\` long-poll running while shared work remains. The CLI saves and advances the event cursor automatically. If your tool yields a running process handle, poll that same process; do not start another wait. Do not add a short \`--timeout\`.
+2. Keep exactly one \`tt wait --json\` long-poll running while agent work remains. The CLI saves the cursor and silently renews internal service waits in the same OS process, so silence does not exit. If your tool yields a running process handle, resume only that process; do not start another wait, narrate timer polls, or add a short \`--timeout\`.
 3. Only \`status: "your_turn"\` with a \`guardian_pid\` authorizes shared edits. Messages and event wakes do not.
 4. Send live messages with \`tt msg send\`; receive them through the same wait. Wait output is not ambient unless the harness surfaces the running process output.
-5. When a wait exits, process its events and start one successor if work remains. Do not use \`tt try\`, \`tt state\`, \`tt events\`, or \`tt msg recv\` as a polling loop.
+5. When a wait exits, process its actionable result and start one successor if agent work remains. When only an operator or external signal remains, use \`tt standby --wake cmux --json\` so the model turn can end without a terminal listener. Do not use \`tt try\`, \`tt state\`, \`tt events\`, or \`tt msg recv\` as a polling loop.
 6. Test before handoff. Release with a concise status, next action, artifacts, and verification. Use park only when no agent work is pending.
 `;
 

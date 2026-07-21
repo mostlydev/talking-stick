@@ -31,8 +31,10 @@ describe("collaboration instructions", () => {
 
     expect(result.harness).toBe("codex");
     expect(result.text).toContain("tt wait --json");
-    expect(result.text).toContain("saves and advances the event cursor automatically");
-    expect(result.text).toContain("poll that same process");
+    expect(result.text).toContain("silently renews internal service waits");
+    expect(result.text).toContain("resume only that process");
+    expect(result.text).toContain("do not start another wait, narrate timer polls");
+    expect(result.text).toContain("tt standby --wake cmux --json");
     expect(result.text).toContain("Wait output is not ambient");
     expect(result.text).not.toContain("## Codex");
   });

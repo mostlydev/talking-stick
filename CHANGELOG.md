@@ -11,6 +11,16 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- **Event-driven standby.** `tt standby --wake cmux` records parked intent and a verified caller surface, returns immediately, and delivers one coalesced wake for directed actionable work. Manual standby is explicit about requiring operator resumption; wake failures remain visible and retry on later mutations or `tt health`.
+- **Persisted wait intent and routing diagnostics.** Room members now expose active/parked intent plus standby generation, pending, delivery, and error state. Ordinary release selects fresh active intent (without requiring ten-second write churn), probes only the selected candidate for liveness, and reports `no_active_waiters` / `parked_hinted`; direct pass/assign may target parked members and reports `routed_to_parked`.
+
+### Fixed
+
+- **Silent waits no longer churn agent turns.** Without an explicit `--timeout`, `tt wait` and `tt wait --park` silently renew the bounded service long-poll in the same OS process instead of exiting every 110 seconds. The 250 ms observation loop is read-only; presence and intent writes are bounded to wait entry/heartbeat cadence.
+- **Passive park no longer masquerades as active work.** Park clears active wait recency, cannot be entered by a live owner before release, and does not receive ordinary fair releases. The shipped skill now directs truly passive cmux sessions to standby instead of repeatedly polling a parked subprocess.
+
 ## [0.9.0] — 2026-07-12
 
 Full notes: [`docs/releases/0.9.0.md`](docs/releases/0.9.0.md).

@@ -151,6 +151,24 @@ const migrations: Migration[] = [
     up: `
       ALTER TABLE room_members ADD COLUMN last_park_hint_event_seq INTEGER;
     `
+  },
+  {
+    id: 8,
+    name: "wait_intent_and_standby",
+    up: `
+      ALTER TABLE room_members ADD COLUMN wait_intent TEXT;
+      ALTER TABLE room_members ADD COLUMN standby_transport TEXT;
+      ALTER TABLE room_members ADD COLUMN standby_workspace_id TEXT;
+      ALTER TABLE room_members ADD COLUMN standby_surface_id TEXT;
+      ALTER TABLE room_members ADD COLUMN standby_generation INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE room_members ADD COLUMN standby_wake_pending INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE room_members ADD COLUMN standby_registered_at TEXT;
+      ALTER TABLE room_members ADD COLUMN standby_last_error TEXT;
+      ALTER TABLE room_members ADD COLUMN standby_delivered_at TEXT;
+      UPDATE room_members
+      SET wait_intent = 'active'
+      WHERE last_wait_at IS NOT NULL;
+    `
   }
 ];
 
