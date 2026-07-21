@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.10.0] — 2026-07-21
+
+Full notes: [`docs/releases/0.10.0.md`](docs/releases/0.10.0.md).
+
 ### Added
 
 - **Event-driven standby.** `tt standby --wake cmux` records parked intent and a verified caller surface, returns immediately, and delivers one coalesced wake for directed actionable work. Manual standby is explicit about requiring operator resumption; wake failures remain visible and retry on later mutations or `tt health`.
@@ -395,6 +399,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.10.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.10.0
 [0.9.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.9.0
 [0.8.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.8.0
 [0.7.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.7.0
