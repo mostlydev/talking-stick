@@ -212,7 +212,7 @@ Commands:
   tt instructions reset [path] (--user|--project)
   tt release [path] (--status TEXT --next-action TEXT | --stdin)
   tt pass [path] (--status TEXT --next-action TEXT | --stdin)
-  tt assign <target|next> [path] (--status TEXT --next-action TEXT | --stdin)
+  tt assign <target|next> [path] (--status TEXT --next-action TEXT | --stdin) [--operator-requested]
   tt take [path] [--reason TEXT] [--operator-requested]
   tt takeover [path] [--reason TEXT] [--operator-requested]
   tt notes add <body> [--turn N] [--path DIR] [--stdin]

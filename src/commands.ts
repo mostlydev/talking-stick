@@ -63,6 +63,7 @@ export interface ReleaseStickCommandInput extends HeartbeatCommandInput {
 export interface PassStickCommandInput extends HeartbeatCommandInput {
   to_agent_id: string;
   handoff: PassStickInput["handoff"];
+  operator_override?: boolean;
 }
 
 export interface WaitForTurnCommandInput {
@@ -287,6 +288,7 @@ export class TalkingStickCommands {
       expected_turn_id: input.expected_turn_id,
       to_agent_id: input.to_agent_id,
       handoff: input.handoff,
+      operator_override: input.operator_override,
       process_metadata: identity.process_metadata
     });
   }

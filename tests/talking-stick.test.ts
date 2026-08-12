@@ -3862,6 +3862,68 @@ describe("foreground receiver registry", () => {
     });
     expect(released.reserved_for).toBe("grok:live");
   });
+
+  test("named pass rejects an unreachable target unless operator override", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const ownerJoin = harness.service.joinPath({
+      agent_id: "codex:owner",
+      context_path: project
+    });
+    harness.service.joinPath({ agent_id: "claude:sleeper", context_path: project });
+    harness.service.joinPath({ agent_id: "grok:live", context_path: project });
+    const owner = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:owner",
+        room_id: ownerJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    await harness.service.waitForTurn({
+      agent_id: "claude:sleeper",
+      room_id: ownerJoin.room_id,
+      max_wait_ms: 0
+    });
+    const live = harness.processRegistry.create("grok-receiver");
+    harness.service.registerReceiver({
+      agent_id: "grok:live",
+      room_id: ownerJoin.room_id,
+      receiver_id: "receiver-live",
+      host_id: live.host_id!,
+      pid: live.pid!,
+      process_started_at: live.process_started_at!,
+      cursor_event_seq: 0
+    });
+
+    expect(() =>
+      harness.service.passStick({
+        agent_id: "codex:owner",
+        room_id: ownerJoin.room_id,
+        lease_id: owner.lease_id,
+        expected_turn_id: owner.turn_id,
+        to_agent_id: "claude:sleeper",
+        handoff: { status: "review", next_action: "claude reviews" }
+      })
+    ).toThrowProtocolError("recipient_unreachable");
+
+    const stillOwned = harness.service.getRoomState({
+      room_id: ownerJoin.room_id,
+      agent_id: "codex:owner"
+    });
+    expect(stillOwned.room.owner).toBe("codex:owner");
+    expect(stillOwned.room.state).toBe("owned");
+
+    const forced = harness.service.passStick({
+      agent_id: "codex:owner",
+      room_id: ownerJoin.room_id,
+      lease_id: owner.lease_id,
+      expected_turn_id: owner.turn_id,
+      to_agent_id: "claude:sleeper",
+      handoff: { status: "review", next_action: "claude reviews" },
+      operator_override: true
+    });
+    expect(forced.reserved_for).toBe("claude:sleeper");
+  });
 });
 
 function createHarness(

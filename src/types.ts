@@ -394,6 +394,7 @@ export interface ReleaseStickResult {
 export interface PassStickInput extends OwnerMutationInput {
   to_agent_id: AgentId;
   handoff: Handoff;
+  operator_override?: boolean;
 }
 
 export interface PassStickResult {

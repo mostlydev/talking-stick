@@ -27,6 +27,7 @@ export type ProtocolErrorCode =
   | "cmux_endpoint_required"
   | "park_requires_release"
   | "duplicate_listener"
+  | "recipient_unreachable"
   | "invalid_wait_mode";
 
 export interface ProtocolErrorDetails {

@@ -959,6 +959,17 @@ export class TalkingStickService {
           { to_agent_id: input.to_agent_id }
         );
       }
+      if (
+        input.operator_override !== true &&
+        this.hasReceiverRegistrations(input.room_id) &&
+        !this.hasReachableReceiverOrWakeEndpoint(input.room_id, target)
+      ) {
+        throw new ProtocolError(
+          "recipient_unreachable",
+          "Named pass/assign target has no live receiver or self-waking endpoint.",
+          { to_agent_id: input.to_agent_id }
+        );
+      }
 
       const eventSeq = this.appendEvent({
         room_id: input.room_id,

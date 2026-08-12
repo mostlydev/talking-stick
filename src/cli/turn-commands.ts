@@ -488,7 +488,8 @@ export async function handleAssignCommand(
     lease_id: session.lease_id as string,
     expected_turn_id: session.turn_id as number,
     to_agent_id: target,
-    handoff
+    handoff,
+    operator_override: hasOption(parsed, "operator-requested")
   });
 
   clearCliSessionLease(resolveCliSessionPath(), identity.agent_id, session.room_id);
@@ -515,9 +516,33 @@ function resolveAssignmentTarget(
     agent_id: identity.agent_id,
     process_metadata: identity.process_metadata
   });
+  const health = runtime.commands.getRoomHealth(identity, {
+    context_path: session.workspace_root
+  });
+  const reachableIds = new Set(
+    health.receivers
+      .filter((receiver) => receiver.liveness === "alive")
+      .map((receiver) => receiver.agent_id)
+  );
+  for (const member of state.members) {
+    if (
+      member.wait_intent === "parked" &&
+      member.standby_transport === "cmux" &&
+      member.standby_workspace_id &&
+      member.standby_surface_id &&
+      member.standby_registered_at &&
+      member.standby_last_error === null
+    ) {
+      reachableIds.add(member.agent_id);
+    }
+  }
+  const enforceReachable = health.receivers.length > 0;
   const normalizedSelector = selector.toLowerCase();
   const candidates = state.members.filter((member) => {
     if (member.agent_id === identity.agent_id || member.status !== "active") {
+      return false;
+    }
+    if (enforceReachable && !reachableIds.has(member.agent_id)) {
       return false;
     }
 
@@ -533,7 +558,11 @@ function resolveAssignmentTarget(
   });
 
   if (candidates.length === 0) {
-    throw new Error(`No active room member matched assignment target: ${selector}`);
+    throw new Error(
+      enforceReachable
+        ? `No reachable room member matched assignment target: ${selector}`
+        : `No active room member matched assignment target: ${selector}`
+    );
   }
 
   const events = runtime.commands.getRoomEvents({
