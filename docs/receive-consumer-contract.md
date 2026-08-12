@@ -33,5 +33,6 @@
 - `target=any` is for audit/debug views.
 - Messages are room-visible routing, not private ACLs.
 - Event delivery never grants write authority. Only `status: "your_turn"` with a live `guardian_pid` does.
+- An expired unowned reservation emits `reservation_expired`, keeps the pending handoff, and reroutes to a reachable waiter or idle. That event is not write authority and does not return `takeover_available`. Owner-gone, owner-idle, and owner-timeout still require explicit `tt take`.
 
 Lower-level `tt events` and `tt msg recv` commands remain useful for human audit and debugging, but agents must not run them beside `tt wait` as a second receive loop.

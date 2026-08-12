@@ -130,6 +130,7 @@ export type EventType =
   | "close"
   | "kick"
   | "session_superseded"
+  | "reservation_expired"
   | "message_sent";
 
 export type DeliveryHint = "normal" | "interrupt";

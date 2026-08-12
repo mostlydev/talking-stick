@@ -1131,21 +1131,19 @@ describe("talking-stick vertical slice", () => {
         expected_turn_id: codexTurn.turn_id,
         reason: "claim timeout expired"
       })
-    ).toThrowProtocolError("takeover_ineligible");
+    ).toThrowProtocolError("takeover_not_available");
 
-    const geminiTurn = harness.service.takeoverStick({
-      agent_id: "gemini:test",
-      room_id: codexJoin.room_id,
-      expected_turn_id: codexTurn.turn_id,
-      reason: "claim timeout expired"
-    });
-
-    expect(geminiTurn.status).toBe("your_turn");
-    expect(geminiTurn.reason).toBe("claim_timeout");
-    expect(geminiTurn.revoked_agent_id).toBe("claude:test");
+    expect(() =>
+      harness.service.takeoverStick({
+        agent_id: "gemini:test",
+        room_id: codexJoin.room_id,
+        expected_turn_id: codexTurn.turn_id,
+        reason: "claim timeout expired"
+      })
+    ).toThrowProtocolError("takeover_not_available");
   });
 
-  test("wait_for_turn returns takeover_available after claim timeout for another active member", async () => {
+  test("expired reservation requeues to a reachable waiter without takeover_available", async () => {
     const harness = createHarness({
       policy: {
         claimTtlMs: 1_000,
@@ -1185,20 +1183,27 @@ describe("talking-stick vertical slice", () => {
 
     harness.clock.advance(1_001);
 
-    const result = await harness.service.waitForTurn({
-      agent_id: "gemini:test",
-      room_id: codexJoin.room_id,
-      max_wait_ms: 0
-    });
+    const result = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "gemini:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
 
-    expect(result).toEqual({
-      status: "takeover_available",
+    expect(result.status).toBe("your_turn");
+    const events = harness.service.getRoomEvents({
       room_id: codexJoin.room_id,
-      turn_id: codexTurn.turn_id,
-      room_state: "reserved",
-      reason: "claim_timeout",
-      reserved_for: "claude:test"
+      agent_id: "gemini:test",
+      limit: 20
     });
+    expect(events.some((event) => event.event_type === "reservation_expired")).toBe(
+      true
+    );
+    expect(events.filter((event) => event.event_type === "reservation_expired")).toHaveLength(
+      1
+    );
+    expect(result.handoff).toEqual(validHandoff());
   });
 
   test("reserved recipient may still claim after claim timeout until takeover commits", async () => {
@@ -1796,36 +1801,26 @@ describe("talking-stick vertical slice", () => {
     });
     expect(afterClaimExpiry.room.state).toBe("reserved");
 
-    const geminiDuringGoneGrace = await harness.service.waitForTurn({
+    const geminiDuringGoneGrace = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "gemini:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    expect(geminiDuringGoneGrace.status).toBe("your_turn");
+    const events = harness.service.getRoomEvents({
+      room_id: codexJoin.room_id,
       agent_id: "gemini:test",
-      room_id: codexJoin.room_id,
-      max_wait_ms: 0
+      limit: 20
     });
-    expect(geminiDuringGoneGrace).toMatchObject({
-      status: "takeover_available",
-      room_state: "reserved",
-      reason: "claim_timeout",
-      reserved_for: "claude:test"
-    });
-
-    harness.clock.advance(1_001);
-
-    const state = harness.service.getRoomState({ room_id: codexJoin.room_id });
-    expect(state.room.state).toBe("recipient_gone");
-
-    const geminiView = await harness.service.waitForTurn({
-      agent_id: "gemini:test",
-      room_id: codexJoin.room_id,
-      max_wait_ms: 0
-    });
-    expect(geminiView).toEqual({
-      status: "takeover_available",
-      room_id: codexJoin.room_id,
-      turn_id: codexTurn.turn_id,
-      room_state: "recipient_gone",
-      reason: "recipient_gone",
-      reserved_for: "claude:test"
-    });
+    expect(
+      events.some(
+        (event) =>
+          event.event_type === "reservation_expired" &&
+          event.from_agent_id === "claude:test"
+      )
+    ).toBe(true);
   });
 
   test("reserved recipient can claim during gone grace after claim timeout", async () => {
@@ -3138,14 +3133,16 @@ describe("talking-stick vertical slice", () => {
       auto_claim: false
     });
 
-    expect(result).toEqual({
-      status: "takeover_available",
+    expect(result.status).toBe("not_yet");
+    expect(result).not.toMatchObject({ status: "takeover_available" });
+    const events = harness.service.getRoomEvents({
       room_id: codexJoin.room_id,
-      turn_id: codexTurn.turn_id,
-      room_state: "reserved",
-      reason: "claim_timeout",
-      reserved_for: "claude:test"
+      agent_id: "gemini:test",
+      limit: 20
     });
+    expect(events.some((event) => event.event_type === "reservation_expired")).toBe(
+      true
+    );
   });
 
   test("wait_for_turn with auto_claim=false returns not_yet when another agent owns the stick", async () => {

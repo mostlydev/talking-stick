@@ -180,6 +180,7 @@ const KNOWN_EVENT_TYPES: readonly EventType[] = [
   "close",
   "kick",
   "session_superseded",
+  "reservation_expired",
   "message_sent"
 ];
 
@@ -2024,8 +2025,8 @@ export class TalkingStickService {
 
   private waitForTurnOnce(input: WaitForTurnInput): WaitForTurnResult {
     const now = this.now();
-    const room = this.requireRoom(input.room_id);
-    const inspection = this.inspectRoomForMutation(room, now);
+    let room = this.requireRoom(input.room_id);
+    let inspection = this.inspectRoomForMutation(room, now);
 
     if (room.state === "closed") {
       return { status: "closed", room_id: input.room_id };
@@ -2101,43 +2102,49 @@ export class TalkingStickService {
       return this.grantTurn(room, input.agent_id, now);
     }
 
-    if (inspection.state === "recipient_gone") {
-      if (
-        room.reserved_for !== input.agent_id &&
-        this.isClaimTakeoverEligible(room, input.agent_id, now, inspection)
-      ) {
-        return {
-          status: "takeover_available",
-          room_id: input.room_id,
-          turn_id: room.turn_id,
-          room_state: "recipient_gone",
-          reason: "recipient_gone",
-          reserved_for: room.reserved_for ?? undefined
-        };
-      }
+    if (room.reserved_for === input.agent_id) {
+      return this.grantTurn(room, input.agent_id, now);
     }
 
-    if (room.reserved_for) {
-      if (
-        room.reserved_for === input.agent_id &&
-        inspection.state !== "recipient_gone"
-      ) {
+    if (
+      !room.owner &&
+      room.reserved_for &&
+      this.hasExpired(room.claim_expires_at, now)
+    ) {
+      room = this.requeueExpiredReservation(room, now);
+      inspection = this.inspectRoomForMutation(room, now);
+      if (room.reserved_for === input.agent_id) {
         return this.grantTurn(room, input.agent_id, now);
       }
-
-      if (
-        inspection.state !== "recipient_gone" &&
-        this.hasExpired(room.claim_expires_at, now) &&
-        this.isClaimTakeoverEligible(room, input.agent_id, now, inspection)
-      ) {
-        return {
-          status: "takeover_available",
-          room_id: input.room_id,
-          turn_id: room.turn_id,
-          room_state: "reserved",
-          reason: "claim_timeout",
-          reserved_for: room.reserved_for
-        };
+      if (!room.owner && !room.reserved_for) {
+        const autoClaim =
+          input.mode !== undefined
+            ? input.mode === "active"
+            : input.auto_claim ?? true;
+        if (autoClaim && !this.shouldDeferIdleClaim(room, input.agent_id, now)) {
+          return this.grantTurn(room, input.agent_id, now);
+        }
+        if (!autoClaim && room.pending_handoff_event_seq) {
+          const member = this.getMember(input.room_id, input.agent_id);
+          if (member?.last_park_hint_event_seq !== room.pending_handoff_event_seq) {
+            this.recordParkHint(
+              input.room_id,
+              input.agent_id,
+              room.pending_handoff_event_seq
+            );
+            return {
+              status: "not_yet",
+              room_state: inspection.state,
+              turn_id: room.turn_id,
+              current_owner: room.owner ?? undefined,
+              reserved_for: room.reserved_for ?? undefined,
+              lease_expires_at: room.lease_expires_at ?? undefined,
+              claim_expires_at: room.claim_expires_at ?? undefined,
+              reason: "auto_claim_disabled",
+              hint: "A pending handoff is waiting in this idle room, but park mode does not auto-claim. Run `tt wait --json` to pick it up, or ask for an explicit assignment."
+            };
+          }
+        }
       }
     }
 
@@ -2971,34 +2978,6 @@ export class TalkingStickService {
     now: Date,
     inspection: RoomInspection
   ): TakeoverKind {
-    if (inspection.state === "recipient_gone") {
-      if (!this.isClaimTakeoverEligible(room, agentId, now, inspection)) {
-        throw new ProtocolError(
-          "takeover_ineligible",
-          "Agent is not eligible to take over this reserved turn.",
-          {
-            reserved_for: room.reserved_for,
-            room_state: inspection.state
-          }
-        );
-      }
-      return "recipient_gone";
-    }
-
-    if (room.reserved_for && this.hasExpired(room.claim_expires_at, now)) {
-      if (!this.isClaimTakeoverEligible(room, agentId, now, inspection)) {
-        throw new ProtocolError(
-          "takeover_ineligible",
-          "Agent is not eligible to take over this reserved turn.",
-          {
-            reserved_for: room.reserved_for,
-            room_state: inspection.state
-          }
-        );
-      }
-      return "claim_timeout";
-    }
-
     if (inspection.state === "owner_gone" && room.owner) {
       if (room.owner === agentId) {
         throw new ProtocolError(
@@ -3054,40 +3033,6 @@ export class TalkingStickService {
   ): RoomHealthTakeover {
     if (!agentId || room.state === "closed") {
       return { available: false, room_state: inspection.state };
-    }
-
-    if (inspection.state === "recipient_gone") {
-      if (
-        room.reserved_for !== agentId &&
-        this.isClaimTakeoverEligible(room, agentId, now, inspection)
-      ) {
-        return {
-          available: true,
-          reason: "recipient_gone",
-          room_state: "recipient_gone",
-          reserved_for: room.reserved_for ?? undefined
-        };
-      }
-
-      return {
-        available: false,
-        room_state: "recipient_gone",
-        reserved_for: room.reserved_for ?? undefined
-      };
-    }
-
-    if (
-      room.reserved_for &&
-      room.reserved_for !== agentId &&
-      this.hasExpired(room.claim_expires_at, now) &&
-      this.isClaimTakeoverEligible(room, agentId, now, inspection)
-    ) {
-      return {
-        available: true,
-        reason: "claim_timeout",
-        room_state: "reserved",
-        reserved_for: room.reserved_for
-      };
     }
 
     if (inspection.state === "owner_gone" && room.owner !== agentId) {
@@ -3173,6 +3118,61 @@ export class TalkingStickService {
         member.agent_id !== reservedFor &&
         this.hasRecentPresence(member, now)
     );
+  }
+
+  private requeueExpiredReservation(room: PathRoomRow, now: Date): PathRoomRow {
+    const staleRecipient = room.reserved_for;
+    if (!staleRecipient || room.owner || !this.hasExpired(room.claim_expires_at, now)) {
+      return room;
+    }
+
+    const timestamp = now.toISOString();
+    this.appendEvent({
+      room_id: room.room_id,
+      turn_id: room.turn_id,
+      event_type: "reservation_expired",
+      from_agent_id: staleRecipient,
+      to_agent_id: null,
+      handoff: null,
+      reason: "claim_expired",
+      created_at: timestamp
+    });
+
+    const nextMember = this.findNextWaitingMember(
+      room.room_id,
+      staleRecipient,
+      now
+    );
+    const reservedFor = nextMember?.agent_id ?? null;
+    const claimExpiresAt = reservedFor
+      ? this.expiresAt(now, this.policy.claimTtlMs)
+      : null;
+
+    this.db
+      .prepare(
+        `
+        UPDATE path_rooms
+        SET reserved_for = ?,
+            pending_handoff_event_seq = ?,
+            claim_expires_at = ?,
+            state = ?,
+            updated_at = ?
+        WHERE room_id = ?
+      `
+      )
+      .run(
+        reservedFor,
+        room.pending_handoff_event_seq,
+        claimExpiresAt,
+        reservedFor ? "reserved" : "idle",
+        timestamp,
+        room.room_id
+      );
+
+    if (reservedFor) {
+      this.queueStandbyWake(room.room_id, reservedFor);
+    }
+    return this.requireRoom(room.room_id);
   }
 
   private findNextWaitingMember(
