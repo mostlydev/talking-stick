@@ -3638,10 +3638,237 @@ function buildGuardianBackedMetadata(
   return { combined, guardian, harnessProc };
 }
 
+describe("foreground receiver registry", () => {
+  test("rejects a second live receiver for the same room agent", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const joined = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const first = harness.processRegistry.create("first-receiver");
+    const second = harness.processRegistry.create("second-receiver");
+
+    harness.service.registerReceiver({
+      agent_id: "codex:test",
+      room_id: joined.room_id,
+      receiver_id: "receiver-1",
+      host_id: first.host_id!,
+      pid: first.pid!,
+      process_started_at: first.process_started_at!,
+      cursor_event_seq: joined.cursor_event_seq
+    });
+
+    expect(() =>
+      harness.service.registerReceiver({
+        agent_id: "codex:test",
+        room_id: joined.room_id,
+        receiver_id: "receiver-2",
+        host_id: second.host_id!,
+        pid: second.pid!,
+        process_started_at: second.process_started_at!,
+        cursor_event_seq: joined.cursor_event_seq
+      })
+    ).toThrowProtocolError("duplicate_listener");
+  });
+
+  test("replaces a gone receiver and protects it from stale cleanup", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const joined = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const first = harness.processRegistry.create("first-receiver");
+    const second = harness.processRegistry.create("second-receiver");
+
+    const registered = harness.service.registerReceiver({
+      agent_id: "codex:test",
+      room_id: joined.room_id,
+      receiver_id: "receiver-1",
+      host_id: first.host_id!,
+      pid: first.pid!,
+      process_started_at: first.process_started_at!,
+      cursor_event_seq: 1
+    });
+    expect(registered.receiver.generation).toBe(1);
+
+    harness.processRegistry.markGone(first);
+    const replacement = harness.service.registerReceiver({
+      agent_id: "codex:test",
+      room_id: joined.room_id,
+      receiver_id: "receiver-2",
+      host_id: second.host_id!,
+      pid: second.pid!,
+      process_started_at: second.process_started_at!,
+      cursor_event_seq: 2
+    });
+    expect(replacement.receiver.generation).toBe(2);
+
+    expect(
+      harness.service.unregisterReceiver({
+        agent_id: "codex:test",
+        room_id: joined.room_id,
+        receiver_id: "receiver-1",
+        cursor_event_seq: 3
+      })
+    ).toEqual({ status: "receiver_replaced", removed: false });
+
+    const health = harness.service.getRoomHealth({ context_path: project });
+    expect(health.receivers).toMatchObject([
+      {
+        receiver_id: "receiver-2",
+        generation: 2,
+        cursor_event_seq: 2,
+        liveness: "alive"
+      }
+    ]);
+  });
+
+  test("throttles unchanged heartbeats but persists cursor movement", () => {
+    const harness = createHarness({
+      policy: { heartbeatIntervalMs: 1_000 }
+    });
+    const project = createProject(harness.tempRoot);
+    const joined = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const receiver = harness.processRegistry.create("receiver");
+    harness.service.registerReceiver({
+      agent_id: "codex:test",
+      room_id: joined.room_id,
+      receiver_id: "receiver-1",
+      host_id: receiver.host_id!,
+      pid: receiver.pid!,
+      process_started_at: receiver.process_started_at!,
+      cursor_event_seq: 1
+    });
+
+    expect(
+      harness.service.heartbeatReceiver({
+        agent_id: "codex:test",
+        room_id: joined.room_id,
+        receiver_id: "receiver-1",
+        cursor_event_seq: 1
+      })
+    ).toEqual({ status: "receiver_heartbeat", updated: false });
+    expect(
+      harness.service.heartbeatReceiver({
+        agent_id: "codex:test",
+        room_id: joined.room_id,
+        receiver_id: "receiver-1",
+        cursor_event_seq: 2
+      })
+    ).toEqual({ status: "receiver_heartbeat", updated: true });
+
+    harness.clock.advance(1_000);
+    expect(
+      harness.service.heartbeatReceiver({
+        agent_id: "codex:test",
+        room_id: joined.room_id,
+        receiver_id: "receiver-1",
+        cursor_event_seq: 2
+      })
+    ).toEqual({ status: "receiver_heartbeat", updated: true });
+  });
+
+  test("keeps an unknown receiver during its heartbeat grace then replaces it", () => {
+    const harness = createHarness({
+      policy: { heartbeatIntervalMs: 1_000 },
+      receiverLivenessChecker: () => "unknown"
+    });
+    const project = createProject(harness.tempRoot);
+    const joined = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    const first = harness.processRegistry.create("first-receiver");
+    const second = harness.processRegistry.create("second-receiver");
+    const input = {
+      agent_id: "codex:test",
+      room_id: joined.room_id,
+      receiver_id: "receiver-1",
+      host_id: first.host_id!,
+      pid: first.pid!,
+      process_started_at: first.process_started_at!,
+      cursor_event_seq: 0
+    };
+    harness.service.registerReceiver(input);
+
+    expect(() =>
+      harness.service.registerReceiver({
+        ...input,
+        receiver_id: "receiver-2",
+        pid: second.pid!,
+        process_started_at: second.process_started_at!
+      })
+    ).toThrowProtocolError("duplicate_listener");
+
+    harness.clock.advance(2_001);
+    expect(
+      harness.service.registerReceiver({
+        ...input,
+        receiver_id: "receiver-2",
+        pid: second.pid!,
+        process_started_at: second.process_started_at!
+      }).receiver
+    ).toMatchObject({ receiver_id: "receiver-2", generation: 2 });
+  });
+
+  test("fair release skips a ghost waiter once the room uses receivers", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const ownerJoin = harness.service.joinPath({
+      agent_id: "codex:owner",
+      context_path: project
+    });
+    harness.service.joinPath({ agent_id: "claude:ghost", context_path: project });
+    harness.service.joinPath({ agent_id: "grok:live", context_path: project });
+    const owner = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:owner",
+        room_id: ownerJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    await harness.service.waitForTurn({
+      agent_id: "claude:ghost",
+      room_id: ownerJoin.room_id,
+      max_wait_ms: 0
+    });
+    await harness.service.waitForTurn({
+      agent_id: "grok:live",
+      room_id: ownerJoin.room_id,
+      max_wait_ms: 0
+    });
+    const live = harness.processRegistry.create("grok-receiver");
+    harness.service.registerReceiver({
+      agent_id: "grok:live",
+      room_id: ownerJoin.room_id,
+      receiver_id: "receiver-live",
+      host_id: live.host_id!,
+      pid: live.pid!,
+      process_started_at: live.process_started_at!,
+      cursor_event_seq: 0
+    });
+
+    const released = harness.service.releaseStick({
+      agent_id: "codex:owner",
+      room_id: ownerJoin.room_id,
+      lease_id: owner.lease_id,
+      expected_turn_id: owner.turn_id,
+      handoff: { status: "done", next_action: "review" }
+    });
+    expect(released.reserved_for).toBe("grok:live");
+  });
+});
+
 function createHarness(
   options: {
     policy?: Partial<Policy>;
     processLivenessChecker?: (metadata: ProcessMetadata) => ProcessLiveness;
+    receiverLivenessChecker?: (metadata: ProcessMetadata) => ProcessLiveness;
   } = {}
 ) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-"));
@@ -3656,7 +3883,9 @@ function createHarness(
     policy: options.policy,
     hostId: processRegistry.hostId,
     processLivenessChecker:
-      options.processLivenessChecker ?? processRegistry.checker
+      options.processLivenessChecker ?? processRegistry.checker,
+    receiverLivenessChecker:
+      options.receiverLivenessChecker ?? processRegistry.checker
   });
   services.push(service);
 

@@ -3,16 +3,19 @@ export {
   TalkingStickCommands,
   type AddNoteCommandInput,
   type HeartbeatCommandInput,
+  type HeartbeatReceiverCommandInput,
   type JoinPathCommandInput,
   type LeaveRoomCommandInput,
   type ListNotesCommandInput,
   type PassStickCommandInput,
   type ReleaseStickCommandInput,
   type RegisterStandbyCommandInput,
+  type RegisterReceiverCommandInput,
   type SendMessageCommandInput,
   type TakeoverStickCommandInput,
   type WaitForEventsCommandInput,
-  type WaitForTurnCommandInput
+  type WaitForTurnCommandInput,
+  type UnregisterReceiverCommandInput
 } from "./commands.js";
 export {
   applyPragmas,
@@ -144,6 +147,7 @@ export {
 } from "./skiller-adapter.js";
 export {
   createSystemProcessInspector,
+  getCurrentProcessStartedAt,
   terminateKnownProcess,
   type ExactProcessRef,
   type ProcessInspection,

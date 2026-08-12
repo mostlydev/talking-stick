@@ -7,6 +7,7 @@ import type {
   GetRoomHealthResult,
   GetRoomStateInput,
   GetRoomStateResult,
+  HeartbeatReceiverResult,
   HeartbeatResult,
   JoinPathResult,
   KickMemberResult,
@@ -18,6 +19,7 @@ import type {
   PassStickResult,
   RelinquishOwnershipResult,
   RegisterStandbyResult,
+  RegisterReceiverResult,
   ReleaseStickInput,
   ReleaseStickResult,
   RoomEvent,
@@ -27,7 +29,8 @@ import type {
   WaitForEventsInput,
   WaitForEventsResult,
   WaitForTurnInput,
-  WaitForTurnResult
+  WaitForTurnResult,
+  UnregisterReceiverResult
 } from "./types.js";
 import type { DerivedIdentity } from "./identity.js";
 
@@ -71,6 +74,25 @@ export interface WaitForTurnCommandInput {
   after_event_seq?: number;
   target_agent_id?: WaitForTurnInput["target_agent_id"];
 }
+
+export interface RegisterReceiverCommandInput {
+  room_id: string;
+  receiver_id: string;
+  harness_session_id?: string | null;
+  host_id: string;
+  pid: number;
+  process_started_at: string;
+  cursor_event_seq: number;
+}
+
+export interface HeartbeatReceiverCommandInput {
+  room_id: string;
+  receiver_id: string;
+  cursor_event_seq: number;
+}
+
+export interface UnregisterReceiverCommandInput
+  extends HeartbeatReceiverCommandInput {}
 
 export interface RegisterStandbyCommandInput {
   room_id: string;
@@ -169,6 +191,36 @@ export class TalkingStickCommands {
       after_event_seq: input.after_event_seq,
       target_agent_id: input.target_agent_id,
       process_metadata: identity.process_metadata
+    });
+  }
+
+  registerReceiver(
+    identity: DerivedIdentity,
+    input: RegisterReceiverCommandInput
+  ): RegisterReceiverResult {
+    return this.service.registerReceiver({
+      agent_id: identity.agent_id,
+      ...input
+    });
+  }
+
+  heartbeatReceiver(
+    identity: DerivedIdentity,
+    input: HeartbeatReceiverCommandInput
+  ): HeartbeatReceiverResult {
+    return this.service.heartbeatReceiver({
+      agent_id: identity.agent_id,
+      ...input
+    });
+  }
+
+  unregisterReceiver(
+    identity: DerivedIdentity,
+    input: UnregisterReceiverCommandInput
+  ): UnregisterReceiverResult {
+    return this.service.unregisterReceiver({
+      agent_id: identity.agent_id,
+      ...input
     });
   }
 

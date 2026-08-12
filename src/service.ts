@@ -33,6 +33,8 @@ import type {
   GetRoomStateInput,
   GetRoomStateResult,
   Handoff,
+  HeartbeatReceiverInput,
+  HeartbeatReceiverResult,
   HiddenRowsSummary,
   HeartbeatResult,
   JoinPathInput,
@@ -53,6 +55,8 @@ import type {
   PathRoom,
   Policy,
   ProcessMetadata,
+  RegisterReceiverInput,
+  RegisterReceiverResult,
   RegisterStandbyInput,
   RegisterStandbyResult,
   ReleaseStickInput,
@@ -61,6 +65,7 @@ import type {
   RoomEvent,
   RoomHealthTakeover,
   RoomMember,
+  RoomReceiver,
   RoomState,
   SendMessageInput,
   SendMessageResult,
@@ -75,7 +80,9 @@ import type {
   WaitForTurnResult,
   WaitIntent,
   WaitMode,
-  WaitWakeReason
+  WaitWakeReason,
+  UnregisterReceiverInput,
+  UnregisterReceiverResult
 } from "./types.js";
 
 interface PathRoomRow {
@@ -120,6 +127,7 @@ interface RoomMemberRow {
   standby_registered_at: string | null;
   standby_last_error: string | null;
   standby_delivered_at: string | null;
+  receiver_generation: number;
   status: "active" | "inactive";
 }
 
@@ -135,6 +143,20 @@ interface RoomEventRow {
   reason: string | null;
   created_at: string;
   payload_json: string | null;
+}
+
+interface RoomReceiverRow {
+  room_id: string;
+  agent_id: string;
+  receiver_id: string;
+  harness_session_id: string | null;
+  host_id: string;
+  pid: number;
+  process_started_at: string;
+  cursor_event_seq: number;
+  generation: number;
+  registered_at: string;
+  heartbeat_at: string;
 }
 
 interface NoteRow {
@@ -204,6 +226,7 @@ export interface TalkingStickServiceOptions extends OpenDatabaseOptions {
   now?: () => Date;
   policy?: Partial<Policy>;
   processLivenessChecker?: ProcessLivenessChecker;
+  receiverLivenessChecker?: ProcessLivenessChecker;
   hostId?: string;
   wakeTransport?: WakeTransport;
 }
@@ -214,6 +237,7 @@ export class TalkingStickService {
   private readonly now: () => Date;
   private readonly ownsDatabase: boolean;
   private readonly processLivenessChecker: ProcessLivenessChecker;
+  private readonly receiverLivenessChecker: ProcessLivenessChecker;
   private readonly hostId: string;
   private readonly wakeTransport: WakeTransport | null;
 
@@ -226,6 +250,9 @@ export class TalkingStickService {
     this.processLivenessChecker =
       options.processLivenessChecker ??
       createDefaultProcessLivenessChecker(this.hostId);
+    this.receiverLivenessChecker =
+      options.receiverLivenessChecker ??
+      createExactProcessLivenessChecker(this.hostId);
     this.wakeTransport = options.wakeTransport ?? null;
   }
 
@@ -1176,6 +1203,7 @@ export class TalkingStickService {
     return {
       room: this.mapRoom(inspection, now),
       members: memberView.rows,
+      receivers: this.listRoomReceivers(refreshedRoom.room_id),
       cursor_event_seq: this.latestEventSeq(refreshedRoom.room_id),
       pending_handoff: pendingHandoff ? this.mapEvent(pendingHandoff) : null,
       takeover: this.describeTakeoverAvailability(
@@ -1186,6 +1214,200 @@ export class TalkingStickService {
       ),
       ...(memberView.hidden ? { hidden: { members: memberView.hidden } } : {})
     };
+  }
+
+  registerReceiver(input: RegisterReceiverInput): RegisterReceiverResult {
+    assertNonEmpty(input.receiver_id, "receiver_id");
+    assertNonEmpty(input.host_id, "host_id");
+    assertNonEmpty(input.process_started_at, "process_started_at");
+    if (!Number.isInteger(input.pid) || input.pid <= 0) {
+      throw new ProtocolError("invalid_input", "pid must be a positive integer.", {
+        field: "pid"
+      });
+    }
+    assertEventCursor(input.cursor_event_seq);
+
+    return withImmediateTransaction(this.db, () => {
+      if (!this.getMember(input.room_id, input.agent_id)) {
+        throw new ProtocolError(
+          "unknown_member",
+          "Agent must join the room before registering a receiver."
+        );
+      }
+      const existing = this.db
+        .prepare<[string, string], RoomReceiverRow>(
+          "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
+        )
+        .get(input.room_id, input.agent_id);
+      const now = this.now().toISOString();
+
+      if (existing?.receiver_id === input.receiver_id) {
+        this.db
+          .prepare(
+            `UPDATE room_receivers
+             SET cursor_event_seq = ?, heartbeat_at = ?
+             WHERE room_id = ? AND agent_id = ? AND receiver_id = ?`
+          )
+          .run(
+            input.cursor_event_seq,
+            now,
+            input.room_id,
+            input.agent_id,
+            input.receiver_id
+          );
+        return {
+          status: "receiver_registered",
+          receiver: this.mapReceiver({
+            ...existing,
+            cursor_event_seq: input.cursor_event_seq,
+            heartbeat_at: now
+          })
+        };
+      }
+
+      if (existing) {
+        const liveness = this.receiverLiveness(existing);
+        const heartbeatAgeMs =
+          this.now().getTime() - Date.parse(existing.heartbeat_at);
+        const unknownStillFresh =
+          liveness === "unknown" &&
+          heartbeatAgeMs <= 2 * this.policy.heartbeatIntervalMs;
+        if (liveness === "alive" || unknownStillFresh) {
+          throw new ProtocolError(
+            "duplicate_listener",
+            "A foreground wait receiver is already active for this room member.",
+            {
+              room_id: input.room_id,
+              receiver_id: existing.receiver_id,
+              receiver_pid: existing.pid
+            }
+          );
+        }
+      }
+
+      const member = this.getMember(input.room_id, input.agent_id)!;
+      const generation = member.receiver_generation + 1;
+      this.db
+        .prepare(
+          `UPDATE room_members
+           SET receiver_generation = ?
+           WHERE room_id = ? AND agent_id = ?`
+        )
+        .run(generation, input.room_id, input.agent_id);
+      this.db
+        .prepare(
+          `INSERT INTO room_receivers (
+             room_id, agent_id, receiver_id, harness_session_id, host_id,
+             pid, process_started_at, cursor_event_seq, generation,
+             registered_at, heartbeat_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(room_id, agent_id) DO UPDATE SET
+             receiver_id = excluded.receiver_id,
+             harness_session_id = excluded.harness_session_id,
+             host_id = excluded.host_id,
+             pid = excluded.pid,
+             process_started_at = excluded.process_started_at,
+             cursor_event_seq = excluded.cursor_event_seq,
+             generation = excluded.generation,
+             registered_at = excluded.registered_at,
+             heartbeat_at = excluded.heartbeat_at`
+        )
+        .run(
+          input.room_id,
+          input.agent_id,
+          input.receiver_id,
+          input.harness_session_id ?? null,
+          input.host_id,
+          input.pid,
+          input.process_started_at,
+          input.cursor_event_seq,
+          generation,
+          now,
+          now
+        );
+
+      const row = this.db
+        .prepare<[string, string], RoomReceiverRow>(
+          "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
+        )
+        .get(input.room_id, input.agent_id)!;
+      return { status: "receiver_registered", receiver: this.mapReceiver(row) };
+    });
+  }
+
+  heartbeatReceiver(input: HeartbeatReceiverInput): HeartbeatReceiverResult {
+    assertEventCursor(input.cursor_event_seq);
+    const existing = this.db
+      .prepare<[string, string], RoomReceiverRow>(
+        "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
+      )
+      .get(input.room_id, input.agent_id);
+    if (!existing || existing.receiver_id !== input.receiver_id) {
+      return { status: "receiver_replaced", updated: false };
+    }
+
+    const now = this.now();
+    const heartbeatDue =
+      now.getTime() - Date.parse(existing.heartbeat_at) >=
+      this.policy.heartbeatIntervalMs;
+    if (!heartbeatDue && existing.cursor_event_seq === input.cursor_event_seq) {
+      return { status: "receiver_heartbeat", updated: false };
+    }
+
+    const result = this.db
+      .prepare(
+        `UPDATE room_receivers
+         SET cursor_event_seq = ?, heartbeat_at = ?
+         WHERE room_id = ? AND agent_id = ? AND receiver_id = ?`
+      )
+      .run(
+        input.cursor_event_seq,
+        now.toISOString(),
+        input.room_id,
+        input.agent_id,
+        input.receiver_id
+      );
+    return {
+      status: result.changes === 1 ? "receiver_heartbeat" : "receiver_replaced",
+      updated: result.changes === 1
+    };
+  }
+
+  unregisterReceiver(
+    input: UnregisterReceiverInput
+  ): UnregisterReceiverResult {
+    assertEventCursor(input.cursor_event_seq);
+    const result = this.db
+      .prepare(
+        `DELETE FROM room_receivers
+         WHERE room_id = ? AND agent_id = ? AND receiver_id = ?`
+      )
+      .run(input.room_id, input.agent_id, input.receiver_id);
+    return {
+      status: result.changes === 1 ? "receiver_unregistered" : "receiver_replaced",
+      removed: result.changes === 1
+    };
+  }
+
+  private listRoomReceivers(roomId: string): RoomReceiver[] {
+    return this.db
+      .prepare<[string], RoomReceiverRow>(
+        "SELECT * FROM room_receivers WHERE room_id = ? ORDER BY agent_id"
+      )
+      .all(roomId)
+      .map((row) => this.mapReceiver(row));
+  }
+
+  private mapReceiver(row: RoomReceiverRow): RoomReceiver {
+    return { ...row, liveness: this.receiverLiveness(row) };
+  }
+
+  private receiverLiveness(row: RoomReceiverRow): ProcessLiveness {
+    return this.receiverLivenessChecker({
+      host_id: row.host_id,
+      pid: row.pid,
+      process_started_at: row.process_started_at
+    });
   }
 
   getRoomEvents(input: GetRoomEventsInput): RoomEvent[] {
@@ -2951,7 +3173,8 @@ export class TalkingStickService {
       roomId,
       afterAgentId,
       now,
-      true
+      true,
+      this.hasReceiverRegistrations(roomId)
     );
     if (!bestKnownMember || !this.isRecentWaiter(bestKnownMember, now)) {
       return null;
@@ -2970,7 +3193,8 @@ export class TalkingStickService {
     roomId: string,
     afterAgentId: AgentId | null,
     now: Date,
-    requireRecentWaiter = false
+    requireRecentWaiter = false,
+    requireReachable = false
   ): RoomMemberRow | null {
     const members = this.getMembers(roomId);
     const candidates = members.filter((member) => {
@@ -2979,7 +3203,8 @@ export class TalkingStickService {
       }
       return (
         this.isPlausibleFairCandidate(member, now) &&
-        (!requireRecentWaiter || this.isRecentWaiter(member, now))
+        (!requireRecentWaiter || this.isRecentWaiter(member, now)) &&
+        (!requireReachable || this.hasReachableReceiverOrWakeEndpoint(roomId, member))
       );
     });
 
@@ -3005,6 +3230,39 @@ export class TalkingStickService {
           members.length
         )
       )[0];
+  }
+
+  private hasReceiverRegistrations(roomId: string): boolean {
+    return Boolean(
+      this.db
+        .prepare<[string], { present: number }>(
+          "SELECT 1 AS present FROM room_receivers WHERE room_id = ? LIMIT 1"
+        )
+        .get(roomId)
+    );
+  }
+
+  private hasReachableReceiverOrWakeEndpoint(
+    roomId: string,
+    member: RoomMemberRow
+  ): boolean {
+    const receiver = this.db
+      .prepare<[string, string], RoomReceiverRow>(
+        "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
+      )
+      .get(roomId, member.agent_id);
+    if (receiver && this.receiverLiveness(receiver) === "alive") {
+      return true;
+    }
+
+    return (
+      member.wait_intent === "parked" &&
+      member.standby_transport === "cmux" &&
+      Boolean(member.standby_workspace_id) &&
+      Boolean(member.standby_surface_id) &&
+      Boolean(member.standby_registered_at) &&
+      member.standby_last_error === null
+    );
   }
 
   private getLastOwnershipByAgent(roomId: string): Map<AgentId, string> {
@@ -3969,6 +4227,42 @@ export function createDefaultProcessLivenessChecker(
   };
 }
 
+function createExactProcessLivenessChecker(
+  currentHostId: string,
+  injectedInspector?: ProcessInspector
+): ProcessLivenessChecker {
+  const inspector =
+    injectedInspector ?? createSystemProcessInspector({ cacheTtlMs: 1_000 });
+
+  return (metadata) => {
+    if (
+      metadata.pid === null ||
+      metadata.pid === undefined ||
+      metadata.process_started_at === null ||
+      metadata.process_started_at === undefined ||
+      metadata.process_started_at.trim() === ""
+    ) {
+      return "unknown";
+    }
+    if (metadata.host_id && metadata.host_id !== currentHostId) {
+      return "unknown";
+    }
+    if (process.platform === "win32") {
+      return "unknown";
+    }
+    const inspection = inspector.inspect(metadata.pid!);
+    if (inspection === undefined) {
+      return "unknown";
+    }
+    if (inspection === null || !inspection.startTime) {
+      return "gone";
+    }
+    return inspection.startTime.trim() === metadata.process_started_at!.trim()
+      ? "alive"
+      : "gone";
+  };
+}
+
 function hasExactProcessIdentity(
   metadata:
     | RequiredProcessMetadata
@@ -4151,6 +4445,16 @@ function assertNonEmpty(value: string | undefined, field: string): void {
     throw new ProtocolError("invalid_input", `${field} must be non-empty.`, {
       field
     });
+  }
+}
+
+function assertEventCursor(value: number): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new ProtocolError(
+      "invalid_cursor",
+      "cursor_event_seq must be a non-negative integer.",
+      { supplied: value }
+    );
   }
 }
 

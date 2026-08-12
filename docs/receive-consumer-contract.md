@@ -6,12 +6,14 @@
 
 - `event_seq` is monotonic per database.
 - Normal `tt wait --json` calls read `event_cursor_seq` from `cli-sessions.json` and persist the returned cursor before exiting.
+- A sustained foreground wait registers its room member, receiver ID, exact PID/start time, cursor, generation, and heartbeat for the command lifetime. Cleanup is conditional on receiver ID, so an old process cannot erase its replacement.
 - `--after N` is an explicit replay/debug override, not part of the normal agent loop.
 - Delivery is at least once across crashes; consumers must tolerate replay and may deduplicate by `event_id`.
 
 ## Process lifecycle
 
 - Keep one wait subprocess active while shared work remains.
+- A concurrent second wait for the same room member receives `duplicate_listener`; Talking Stick does not kill either process automatically.
 - Internal service timeouts do not produce CLI output and do not exit the process.
 - A harness tool may yield a process handle before the subprocess exits. Poll or resume that same handle; do not launch a replacement yet.
 - Only after the subprocess exits should the consumer process the result and start one successor.
@@ -20,6 +22,7 @@
 ## Passive standby
 
 - `tt wait --park` is a live parked listener. It does not auto-claim and is excluded from ordinary release routing.
+- Once a room contains receiver registrations, fair release skips active waiters without a live registered receiver. Pre-registry rooms retain their existing behavior during upgrade.
 - `tt standby --wake cmux` records parked intent and returns immediately so the model turn can end without a terminal process.
 - Directed messages, passes, assignments, and pending-handoff hints wake a registered cmux surface once. Broadcast chatter does not.
 - `tt standby --wake manual` records the same intent but cannot self-wake.

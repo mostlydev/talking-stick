@@ -148,12 +148,13 @@ tt wait --json
 - `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
 - `tt wait` includes ownership and room events by default. It reads and advances `event_cursor_seq` in `cli-sessions.json`, so normal agents do not pass `--events` or manage `--after`.
 - The CLI renews its bounded service wait internally and silently in the same process. Without an explicit `--timeout`, silence never makes `tt wait` exit.
+- A foreground `tt wait` registers its exact process identity for the life of that command. A second live wait for the same room member fails with `duplicate_listener`; a crashed receiver may be replaced after exact liveness or heartbeat-grace validation.
 - A tool yield is not a wait timeout. If the harness returns a running process handle, poll that same process instead of starting another wait. When the process actually exits, start one successor if shared work remains. Do not add short explicit timeouts.
 - `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for human audit and debugging. Agents should not run them beside `tt wait` as a second receive loop.
 - The wait loop can claim or receive a turn. An event wake by itself grants no authority.
 - A successful `tt wait` or `tt take` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
 - Ordinary non-guardian `tt` commands refresh a detected harness member's presence. Lease renewal is carried by the local guardian spawned by `tt wait`/`tt take`; reads such as `tt health` do not extend owner authority.
-- Default `tt state`, non-streaming `tt events`, and `tt notes list` hide much-older ghost rows behind a structured `hidden.older_count` summary. Default `tt health` is a concise action card; use `tt health --verbose` or `--all` for full member and receiver diagnostics.
+- Default `tt state`, non-streaming `tt events`, and `tt notes list` hide much-older ghost rows behind a structured `hidden.older_count` summary. Default `tt health` is a concise action card backed by the receiver registry rather than command-line scanning; use `tt health --verbose` or `--all` for full member and receiver diagnostics.
 
 **When to message vs note vs handoff.**
 

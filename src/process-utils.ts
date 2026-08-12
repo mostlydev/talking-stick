@@ -107,6 +107,15 @@ export function createSystemProcessInspector(
   };
 }
 
+export function getCurrentProcessStartedAt(
+  inspector: ProcessInspector = createSystemProcessInspector()
+): string {
+  return (
+    inspector.inspect(process.pid)?.startTime ??
+    new Date(Date.now() - process.uptime() * 1_000).toISOString()
+  );
+}
+
 function inspectSystemProcess(
   pid: number,
   options: ProcessInspectorOptions

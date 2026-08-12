@@ -26,6 +26,7 @@ export type ProtocolErrorCode =
   | "invalid_standby_transport"
   | "cmux_endpoint_required"
   | "park_requires_release"
+  | "duplicate_listener"
   | "invalid_wait_mode";
 
 export interface ProtocolErrorDetails {
@@ -40,6 +41,8 @@ export interface ProtocolErrorDetails {
   supplied?: number;
   after_note_id?: string;
   candidates?: string[];
+  receiver_id?: string;
+  receiver_pid?: number;
 }
 
 export class ProtocolError extends Error {

@@ -169,6 +169,35 @@ const migrations: Migration[] = [
       SET wait_intent = 'active'
       WHERE last_wait_at IS NOT NULL;
     `
+  },
+  {
+    id: 9,
+    name: "foreground_wait_receivers",
+    up: `
+      ALTER TABLE room_members
+        ADD COLUMN receiver_generation INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE room_receivers (
+        room_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        receiver_id TEXT NOT NULL,
+        harness_session_id TEXT,
+        host_id TEXT NOT NULL,
+        pid INTEGER NOT NULL,
+        process_started_at TEXT NOT NULL,
+        cursor_event_seq INTEGER NOT NULL,
+        generation INTEGER NOT NULL,
+        registered_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        PRIMARY KEY (room_id, agent_id),
+        UNIQUE (receiver_id),
+        FOREIGN KEY (room_id, agent_id)
+          REFERENCES room_members(room_id, agent_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX room_receivers_room_idx
+        ON room_receivers (room_id, agent_id);
+    `
   }
 ];
 

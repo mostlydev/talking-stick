@@ -10,7 +10,6 @@ import {
   type GetRoomHealthResult,
   type HiddenRowsSummary,
   type PathRoom,
-  type ProcessMetadata,
   type RoomEvent
 } from "../index.js";
 import { checkGuardianLiveness, stopGuardian } from "./guardian.js";
@@ -258,8 +257,7 @@ export function handleHealthCommand(
     local: buildLocalHealth(
       identity.agent_id,
       contextPath,
-      health,
-      identity.process_metadata
+      health
     ),
     workspace: {
       git: buildGitAdvisory(contextPath)
@@ -312,13 +310,13 @@ interface LocalHealth {
 }
 
 interface ReceiverHealth {
-  status: "scanned" | "unsupported" | "error";
+  status: "registered" | "scanned" | "unsupported" | "error";
   processes: Array<{
     pid: number;
     ppid: number | null;
     started_at: string | null;
     cwd: string | null;
-    kind: "wait-events" | "events-follow" | "msg-recv";
+    kind: "wait" | "wait-events" | "events-follow" | "msg-recv";
     command: string;
   }>;
   duplicate_count: number;
@@ -425,7 +423,8 @@ function buildHealthSummary(
         ? "expired"
         : "active";
   const listenerActive =
-    result.local.receivers.status === "scanned" &&
+    (result.local.receivers.status === "registered" ||
+      result.local.receivers.status === "scanned") &&
     result.local.receivers.processes.length > 0;
 
   return {
@@ -464,7 +463,9 @@ function buildHealthSummary(
     next_action: getNextAction(result, callerAgentId),
     hidden: {
       members_omitted: result.hidden?.members.older_count ?? 0,
-      receivers_omitted: result.local.receivers.processes.length
+      receivers_omitted: result.receivers.filter(
+        (receiver) => receiver.agent_id !== callerAgentId
+      ).length
     }
   };
 }
@@ -641,8 +642,7 @@ function getNextAction(result: HealthCliResult, callerAgentId: string): string {
 function buildLocalHealth(
   agentId: string,
   contextPath: string,
-  health: GetRoomHealthResult,
-  processMetadata?: ProcessMetadata
+  health: GetRoomHealthResult
 ): LocalHealth {
   const session = findCliSessionForContextPath(
     resolveCliSessionPath(),
@@ -689,9 +689,33 @@ function buildLocalHealth(
       process_started_at: session?.guardian_process_started_at ?? null,
       protects_current_turn: protectsCurrentTurn && guardianLiveness !== "gone"
     },
-    receivers: scanReceiverProcesses(health.room, {
-      root_pid: receiverRootPid(processMetadata)
-    })
+    receivers: {
+      status: "registered",
+      processes: health.receivers
+        .filter(
+          (receiver) =>
+            receiver.agent_id === agentId && receiver.liveness === "alive"
+        )
+        .map((receiver) => ({
+          pid: receiver.pid,
+          ppid: null,
+          started_at: receiver.process_started_at,
+          cwd: health.room.canonical_path,
+          kind: "wait" as const,
+          command: "tt wait"
+        })),
+      duplicate_count: Math.max(
+        0,
+        health.receivers.filter(
+          (receiver) =>
+            receiver.agent_id === agentId && receiver.liveness === "alive"
+        ).length - 1
+      ),
+      stale_count: health.receivers.filter(
+        (receiver) =>
+          receiver.agent_id === agentId && receiver.liveness !== "alive"
+      ).length
+    }
   };
 }
 
@@ -811,10 +835,6 @@ function parseProcessLine(line: string): ProcessTableRow | null {
     started_at: match[3].trim() || null,
     command: match[4].trim()
   };
-}
-
-function receiverRootPid(metadata?: ProcessMetadata): number | null {
-  return metadata?.harness_pid ?? metadata?.pid ?? null;
 }
 
 function hasAncestor(
@@ -965,11 +985,13 @@ function formatGuardianHealth(
 }
 
 function formatReceiverHealth(receivers: ReceiverHealth): string {
-  if (receivers.status !== "scanned") {
+  if (receivers.status !== "scanned" && receivers.status !== "registered") {
     return receivers.status;
   }
   if (receivers.processes.length === 0) {
-    return "none";
+    return receivers.stale_count > 0
+      ? `none, ${receivers.stale_count} stale registration`
+      : "none";
   }
   const duplicate =
     receivers.duplicate_count > 0 ? `, ${receivers.duplicate_count} duplicate` : "";

@@ -216,6 +216,61 @@ export interface WaitForTurnInput {
   process_metadata?: ProcessMetadata;
 }
 
+export interface RegisterReceiverInput {
+  agent_id: AgentId;
+  room_id: string;
+  receiver_id: string;
+  harness_session_id?: string | null;
+  host_id: string;
+  pid: number;
+  process_started_at: string;
+  cursor_event_seq: number;
+}
+
+export interface HeartbeatReceiverInput {
+  agent_id: AgentId;
+  room_id: string;
+  receiver_id: string;
+  cursor_event_seq: number;
+}
+
+export interface UnregisterReceiverInput {
+  agent_id: AgentId;
+  room_id: string;
+  receiver_id: string;
+  cursor_event_seq: number;
+}
+
+export interface RoomReceiver {
+  room_id: string;
+  agent_id: AgentId;
+  receiver_id: string;
+  harness_session_id: string | null;
+  host_id: string;
+  pid: number;
+  process_started_at: string;
+  cursor_event_seq: number;
+  generation: number;
+  registered_at: string;
+  heartbeat_at: string;
+  liveness: "alive" | "gone" | "unknown";
+}
+
+export interface RegisterReceiverResult {
+  status: "receiver_registered";
+  receiver: RoomReceiver;
+}
+
+export interface HeartbeatReceiverResult {
+  status: "receiver_heartbeat" | "receiver_replaced";
+  updated: boolean;
+}
+
+export interface UnregisterReceiverResult {
+  status: "receiver_unregistered" | "receiver_replaced";
+  removed: boolean;
+}
+
 export interface RegisterStandbyInput {
   agent_id: AgentId;
   room_id: string;
@@ -415,6 +470,7 @@ export interface GetRoomHealthInput {
 export interface GetRoomHealthResult {
   room: PathRoom;
   members: RoomMember[];
+  receivers: RoomReceiver[];
   cursor_event_seq: number;
   pending_handoff: RoomEvent | null;
   takeover: RoomHealthTakeover;

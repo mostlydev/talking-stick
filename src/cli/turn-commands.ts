@@ -1,13 +1,17 @@
+import { randomUUID } from "node:crypto";
+import os from "node:os";
 import {
   clearCliSessionLease,
   createSystemProcessInspector,
   findCliSessionByRoom,
+  getCurrentProcessStartedAt,
   resolveCliSessionPath,
   upsertCliSession,
   type CliSession,
   type DerivedIdentity,
   type RoomEvent,
-  type RoomMember
+  type RoomMember,
+  type WaitForTurnResult
 } from "../index.js";
 import { resolveCmuxStandbyEndpoint } from "../wake.js";
 import { waitForActionableSignal } from "../wait-loop.js";
@@ -38,7 +42,6 @@ import {
   upsertSessionFromJoin
 } from "./session.js";
 import type { Runtime } from "./runtime.js";
-import { scanReceiverProcesses } from "./room-commands.js";
 
 export async function handleWaitCommand(
   runtime: Runtime,
@@ -67,40 +70,66 @@ export async function handleWaitCommand(
 
   const explicitTimeout = hasOption(parsed, "timeout");
   let currentCursor = afterEventSeq;
-  const waitResult = await waitForActionableSignal(
-    async () => {
-      const result = await runtime.commands.waitForTurn(identity, {
-        room_id: joined.room_id,
-        max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed),
-        auto_claim: park ? false : undefined,
-        mode: park ? "parked" : "active",
-        include_events: true,
-        after_event_seq: currentCursor,
-        target_agent_id: targetAgentId
-      });
-      currentCursor = result.cursor_event_seq ?? currentCursor;
-      return result;
-    },
-    {
-      is_try: isTry,
-      explicit_timeout: explicitTimeout,
-      on_internal_timeout: () => {
-        if (!hasExplicitCursor) {
-          persistWaitCursor(identity, joined, currentCursor);
+  const receiverId = isTry ? null : randomUUID();
+  if (receiverId) {
+    runtime.commands.registerReceiver(identity, {
+      room_id: joined.room_id,
+      receiver_id: receiverId,
+      harness_session_id:
+        identity.process_metadata.harness_session_id ?? null,
+      host_id: os.hostname(),
+      pid: process.pid,
+      process_started_at: getCurrentProcessStartedAt(),
+      cursor_event_seq: currentCursor
+    });
+  }
+
+  let waitResult: WaitForTurnResult;
+  try {
+    waitResult = await waitForActionableSignal(
+      async () => {
+        const result = await runtime.commands.waitForTurn(identity, {
+          room_id: joined.room_id,
+          max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed),
+          auto_claim: park ? false : undefined,
+          mode: park ? "parked" : "active",
+          include_events: true,
+          after_event_seq: currentCursor,
+          target_agent_id: targetAgentId
+        });
+        currentCursor = result.cursor_event_seq ?? currentCursor;
+        return result;
+      },
+      {
+        is_try: isTry,
+        explicit_timeout: explicitTimeout,
+        on_internal_timeout: () => {
+          if (!hasExplicitCursor) {
+            persistWaitCursor(identity, joined, currentCursor);
+          }
+          if (receiverId) {
+            runtime.commands.heartbeatReceiver(identity, {
+              room_id: joined.room_id,
+              receiver_id: receiverId,
+              cursor_event_seq: currentCursor
+            });
+          }
         }
       }
+    );
+  } finally {
+    if (receiverId) {
+      runtime.commands.unregisterReceiver(identity, {
+        room_id: joined.room_id,
+        receiver_id: receiverId,
+        cursor_event_seq: currentCursor
+      });
     }
-  );
+  }
   const returnedCursor = waitResult.cursor_event_seq ?? afterEventSeq;
 
-  const receivers = scanReceiverProcesses(joined.room_state, {
-    root_pid: identity.process_metadata.harness_pid ?? identity.process_metadata.pid
-  });
-  const hasDuplicates =
-    receivers.status === "scanned" && receivers.duplicate_count > 0;
-  const nextReminder = hasDuplicates
-    ? "Keep one `tt wait --json` running. WARNING: duplicate listeners detected; stop only the extra processes you started."
-    : "Keep one `tt wait --json` running; it resumes from the saved event cursor.";
+  const nextReminder =
+    "Keep one `tt wait --json` running; a duplicate for this room member is rejected.";
 
   if (waitResult.status === "your_turn") {
     if (waitResult.reason === "already_owner") {

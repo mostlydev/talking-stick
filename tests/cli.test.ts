@@ -767,6 +767,53 @@ describe("tt turn commands", () => {
     }
   });
 
+  test("health reports the registered wait and a duplicate wait is rejected", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let guardianPid: number | undefined;
+    let listener: SpawnedCliProcess | undefined;
+    try {
+      const first = JSON.parse(await captureStdout([
+        "wait", project, "--timeout", "0ms", "--agent", "human:receiver", "--json"
+      ])) as { guardian_pid: number };
+      guardianPid = first.guardian_pid;
+
+      listener = spawnCliProcess([
+        "wait", project, "--timeout", "5s", "--agent", "human:receiver", "--json"
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(listener.child.exitCode).toBeNull();
+
+      const health = JSON.parse(await captureStdout([
+        "health", project, "--agent", "human:receiver", "--json"
+      ])) as {
+        listener: { status: string; active: boolean; duplicates: number };
+      };
+      expect(health.listener).toEqual({
+        status: "registered",
+        active: true,
+        duplicates: 0
+      });
+
+      const duplicate = spawnCliProcess([
+        "wait", project, "--timeout", "5s", "--agent", "human:receiver", "--json"
+      ]);
+      const duplicateClose = await waitForProcessClose(duplicate.child, 3_000);
+      expect(duplicateClose.code).toBe(1);
+      expect(duplicate.stderr()).toContain("duplicate_listener");
+
+      await captureStdout(["join", project, "--agent", "human:sender", "--json"]);
+      await captureStdout([
+        "msg", "send", "human:receiver", "wake", "--path", project,
+        "--agent", "human:sender", "--json"
+      ]);
+      expect((await waitForProcessClose(listener.child, 5_000)).code).toBe(0);
+    } finally {
+      listener?.child.kill("SIGKILL");
+      await releaseIfHeld(project, "human:receiver");
+      killPidIfAlive(guardianPid);
+    }
+  });
+
   test("tt wait repairs a missing guardian for an existing owner", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     let firstGuardianPid: number | undefined;
@@ -2590,53 +2637,18 @@ describe("harness heartbeat and health output hardening", () => {
     expect(healthVerboseOut).toContain("Members:");
   });
 
-  test("wait output contains next reminder and duplicate listener warning", async () => {
+  test("wait output describes enforced duplicate rejection", async () => {
     const { project } = setupIsolatedCli(tempDirs);
-    const joinOut = await captureStdout(["join", project, "--agent", "human:wait-reminder", "--json"]);
-    const joined = JSON.parse(joinOut);
-
-    // Mock scanReceiverProcesses to return no duplicates
-    const roomCommands = await import("../src/cli/room-commands.js");
-    const spy = vi.spyOn(roomCommands, "scanReceiverProcesses").mockReturnValue({
-      status: "scanned",
-      processes: [
-        { pid: 123, ppid: null, started_at: "now", cwd: project, kind: "wait-events", command: "tt wait" }
-      ],
-      duplicate_count: 0,
-      stale_count: 0
-    });
-
-    try {
-      const waitOut = await captureStdout([
-        "try",
-        project,
-        "--agent",
-        "human:wait-reminder"
-      ]);
-      expect(waitOut).toContain("next: Keep one `tt wait --json` running; it resumes from the saved event cursor.");
-      expect(waitOut).not.toContain("WARNING: Duplicate active listeners detected!");
-
-      // Mock scanReceiverProcesses to return duplicates
-      spy.mockReturnValue({
-        status: "scanned",
-        processes: [
-          { pid: 123, ppid: null, started_at: "now", cwd: project, kind: "wait-events", command: "tt wait" },
-          { pid: 456, ppid: null, started_at: "now", cwd: project, kind: "wait-events", command: "tt wait" }
-        ],
-        duplicate_count: 1,
-        stale_count: 0
-      });
-
-      const waitDupOut = await captureStdout([
-        "try",
-        project,
-        "--agent",
-        "human:wait-reminder"
-      ]);
-      expect(waitDupOut).toContain("next: Keep one `tt wait --json` running. WARNING: duplicate listeners detected; stop only the extra processes you started.");
-    } finally {
-      spy.mockRestore();
-    }
+    await captureStdout(["join", project, "--agent", "human:wait-reminder", "--json"]);
+    const waitOut = await captureStdout([
+      "try",
+      project,
+      "--agent",
+      "human:wait-reminder"
+    ]);
+    expect(waitOut).toContain(
+      "next: Keep one `tt wait --json` running; a duplicate for this room member is rejected."
+    );
   });
 
   test("receiver scan scopes to caller root and dedupes wrapper processes", async () => {

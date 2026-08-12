@@ -110,4 +110,4 @@ tt notes list --json
 tt whoami --explain
 ```
 
-If `tt` reports duplicate listeners, identify the process handles you created and stop the extras. Do not kill unrelated room processes. If coordination is unavailable, say so rather than pretending it is active.
+If `tt wait` reports `duplicate_listener`, keep the already-registered receiver and do not start another. Talking Stick will not kill either process automatically. `tt health` reads the durable receiver registration instead of guessing from process command lines. If coordination is unavailable, say so rather than pretending it is active.
