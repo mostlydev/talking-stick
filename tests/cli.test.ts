@@ -16,6 +16,7 @@ import {
 } from "../src/cli.js";
 import {
   deriveHumanCliIdentity,
+  getCurrentProcessStartedAt,
   readCliSessions,
   resolveCliSessionPath,
   TalkingStickService,
@@ -1077,6 +1078,53 @@ describe("tt turn commands", () => {
 
     expect(assigned.status).toBe("passed");
     expect(assigned.reserved_for).toBe("human:next");
+  });
+
+  test("operator-requested assign can name an unreachable alias", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await seedCliLease(project, "human:owner", [
+      "human:sleeper",
+      "human:live"
+    ]);
+
+    const service = new TalkingStickService();
+    try {
+      const roomId = readCliSessions(resolveCliSessionPath()).find(
+        (session) => session.agent_id === "human:owner"
+      )!.room_id;
+      const state = service.getRoomState({
+        room_id: roomId
+      });
+      service.registerReceiver({
+        agent_id: "human:live",
+        room_id: state.room.room_id,
+        receiver_id: "live-receiver",
+        host_id: os.hostname(),
+        pid: process.pid,
+        process_started_at: getCurrentProcessStartedAt(),
+        cursor_event_seq: state.cursor_event_seq
+      });
+    } finally {
+      service.close();
+    }
+
+    await expect(captureStdout([
+      "assign", "sleeper", project,
+      "--agent", "human:owner",
+      "--status", "Assigning explicitly.",
+      "--next-action", "Take the assigned turn.",
+      "--json"
+    ])).rejects.toThrow(/No reachable room member/);
+
+    const assigned = JSON.parse(await captureStdout([
+      "assign", "sleeper", project,
+      "--agent", "human:owner",
+      "--status", "Operator override.",
+      "--next-action", "Resume when available.",
+      "--operator-requested",
+      "--json"
+    ])) as { reserved_for: string };
+    expect(assigned.reserved_for).toBe("human:sleeper");
   });
 
   test("human tt take can override a reserved turn without a reason", async () => {

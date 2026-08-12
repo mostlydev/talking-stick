@@ -481,7 +481,8 @@ export async function handleAssignCommand(
     runtime,
     identity,
     session,
-    targetSelector
+    targetSelector,
+    hasOption(parsed, "operator-requested")
   );
   const result = runtime.commands.passStick(identity, {
     room_id: session.room_id,
@@ -505,7 +506,8 @@ function resolveAssignmentTarget(
   runtime: Runtime,
   identity: DerivedIdentity,
   session: CliSession,
-  selector: string
+  selector: string,
+  allowUnreachable = false
 ): string {
   if (selector.includes(":")) {
     return selector;
@@ -542,7 +544,11 @@ function resolveAssignmentTarget(
     if (member.agent_id === identity.agent_id || member.status !== "active") {
       return false;
     }
-    if (enforceReachable && !reachableIds.has(member.agent_id)) {
+    if (
+      enforceReachable &&
+      !allowUnreachable &&
+      !reachableIds.has(member.agent_id)
+    ) {
       return false;
     }
 
