@@ -1197,12 +1197,15 @@ describe("talking-stick vertical slice", () => {
       agent_id: "gemini:test",
       limit: 20
     });
-    expect(events.some((event) => event.event_type === "reservation_expired")).toBe(
-      true
+    const expirationEvents = events.filter(
+      (event) => event.event_type === "reservation_expired"
     );
-    expect(events.filter((event) => event.event_type === "reservation_expired")).toHaveLength(
-      1
-    );
+    expect(expirationEvents).toHaveLength(1);
+    expect(expirationEvents[0]).toMatchObject({
+      from_agent_id: "gemini:test",
+      to_agent_id: "claude:test",
+      reason: "claim_expired"
+    });
     expect(result.handoff).toEqual(validHandoff());
   });
 
@@ -1818,7 +1821,8 @@ describe("talking-stick vertical slice", () => {
       events.some(
         (event) =>
           event.event_type === "reservation_expired" &&
-          event.from_agent_id === "claude:test"
+          event.from_agent_id === "gemini:test" &&
+          event.to_agent_id === "claude:test"
       )
     ).toBe(true);
   });
@@ -3087,7 +3091,7 @@ describe("talking-stick vertical slice", () => {
     });
   });
 
-  test("wait_for_turn with auto_claim=false surfaces takeover_available after claim timeout", async () => {
+  test("wait_for_turn with auto_claim=false requeues without takeover_available after claim timeout", async () => {
     const harness = createHarness({
       policy: {
         claimTtlMs: 1_000,

@@ -2111,7 +2111,7 @@ export class TalkingStickService {
       room.reserved_for &&
       this.hasExpired(room.claim_expires_at, now)
     ) {
-      room = this.requeueExpiredReservation(room, now);
+      room = this.requeueExpiredReservation(room, input.agent_id, now);
       inspection = this.inspectRoomForMutation(room, now);
       if (room.reserved_for === input.agent_id) {
         return this.grantTurn(room, input.agent_id, now);
@@ -3120,7 +3120,11 @@ export class TalkingStickService {
     );
   }
 
-  private requeueExpiredReservation(room: PathRoomRow, now: Date): PathRoomRow {
+  private requeueExpiredReservation(
+    room: PathRoomRow,
+    triggeringAgentId: AgentId,
+    now: Date
+  ): PathRoomRow {
     const staleRecipient = room.reserved_for;
     if (!staleRecipient || room.owner || !this.hasExpired(room.claim_expires_at, now)) {
       return room;
@@ -3131,8 +3135,8 @@ export class TalkingStickService {
       room_id: room.room_id,
       turn_id: room.turn_id,
       event_type: "reservation_expired",
-      from_agent_id: staleRecipient,
-      to_agent_id: null,
+      from_agent_id: triggeringAgentId,
+      to_agent_id: staleRecipient,
       handoff: null,
       reason: "claim_expired",
       created_at: timestamp
