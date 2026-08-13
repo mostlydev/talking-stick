@@ -2650,6 +2650,32 @@ describe("talking-stick vertical slice", () => {
     ).toBe(false);
   });
 
+  test("sendMessage from a non-member names the caller, not a recipient", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const joined = harness.service.joinPath({
+      agent_id: "codex:owner",
+      context_path: project
+    });
+
+    try {
+      harness.service.sendMessage({
+        agent_id: "human:stranger",
+        room_id: joined.room_id,
+        body: "hello before join"
+      });
+      throw new Error("expected unknown_member");
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "unknown_member",
+        details: { agent_id: "human:stranger" }
+      });
+      expect(error).not.toMatchObject({
+        details: { to_agent_id: "human:stranger" }
+      });
+    }
+  });
+
   test("a verified harness identity supersedes its provisional fallback", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
