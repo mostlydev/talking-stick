@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.12.1] — 2026-08-13
+
+Full notes: [`docs/releases/0.12.1.md`](docs/releases/0.12.1.md).
+
 ### Fixed
 
 - **Concurrent same-process sessions no longer evict each other.** Session supersession now fires only when a verified `harness:` identity replaces a provisional (`pid:`/`term:`/`userhost:`) identity from the same harness process. Subagent threads sharing one process coexist instead of deleting the owner's membership and voiding its lease mid-turn (the my-cli `unknown_member` failure).
@@ -432,6 +436,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.12.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.12.1
 [0.12.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.12.0
 [0.11.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.11.0
 [0.10.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.10.0
