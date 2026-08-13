@@ -584,7 +584,7 @@ function resolveAssignmentTarget(
   if (candidates.length === 0) {
     throw new Error(
       enforceReachable
-        ? `No reachable room member matched assignment target: ${selector}`
+        ? `No reachable room member matched assignment target: ${selector}. Release for fair routing or use --operator-requested for an explicit override.`
         : `No active room member matched assignment target: ${selector}`
     );
   }

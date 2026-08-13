@@ -1207,7 +1207,7 @@ describe("tt turn commands", () => {
       "--status", "Assigning explicitly.",
       "--next-action", "Take the assigned turn.",
       "--json"
-    ])).rejects.toThrow(/No reachable room member/);
+    ])).rejects.toThrow(/No reachable room member[\s\S]*--operator-requested/);
 
     const assigned = JSON.parse(await captureStdout([
       "assign", "sleeper", project,
@@ -1230,7 +1230,7 @@ describe("tt turn commands", () => {
       "--status", "Assigning normally.",
       "--next-action", "Take the assigned turn.",
       "--json"
-    ])).rejects.toThrow(/No reachable room member/);
+    ])).rejects.toThrow(/No reachable room member[\s\S]*--operator-requested/);
   });
 
   test.each(["release", "pass", "assign"])(
