@@ -1931,6 +1931,34 @@ describe("tt notes", () => {
     expect(out).toContain("Left ~/.agents/skills/talking-stick");
   });
 
+  test("tt uninstall claude removes the managed Stop guard without skiller", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-uninstall-claude-home-"));
+    tempDirs.push(home);
+    const claudeDir = path.join(home, ".claude");
+    const settingsPath = path.join(claudeDir, "settings.json");
+    fs.mkdirSync(claudeDir, { recursive: true });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      await captureStdout(["install", "claude", "--copy", "--replace"]);
+      expect(fs.readFileSync(settingsPath, "utf8")).toContain(
+        "talking-stick-claude-stop-hook"
+      );
+
+      await captureStdout(["uninstall", "claude"]);
+      expect(fs.readFileSync(settingsPath, "utf8")).not.toContain(
+        "talking-stick-claude-stop-hook"
+      );
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+    }
+  });
+
   test("tt uninstall agents --print removes the shared skill target", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-uninstall-home-"));
     tempDirs.push(home);

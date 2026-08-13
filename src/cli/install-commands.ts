@@ -401,6 +401,14 @@ async function runSkillUninstall(
       ...installOptions,
       skipMissing: false
     }),
+    ...(harness === "claude-code"
+      ? [
+          planClaudeStopGuardUninstall({
+            ...installOptions,
+            skipMissing: false
+          })
+        ]
+      : []),
     ...(harness === "grok"
       ? [
           planGrokSessionHookUninstall({

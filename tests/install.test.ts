@@ -86,7 +86,10 @@ describe("Claude Stop guard", () => {
     expect(merged).not.toBeNull();
     const parsed = JSON.parse(merged!) as {
       model: string;
-      hooks: { SessionStart: unknown[]; Stop: Array<{ hooks: Array<{ command: string }> }> };
+      hooks: {
+        SessionStart: unknown[];
+        Stop: Array<{ hooks: Array<{ command: string; timeout?: number }> }>;
+      };
     };
     expect(parsed.model).toBe("opus");
     expect(parsed.hooks.SessionStart).toHaveLength(1);
@@ -94,6 +97,7 @@ describe("Claude Stop guard", () => {
     expect(parsed.hooks.Stop[0].hooks[0].command).toBe("foreign-stop.sh");
     expect(parsed.hooks.Stop[1].hooks[0].command).toContain(CLAUDE_STOP_GUARD_MARKER);
     expect(parsed.hooks.Stop[1].hooks[0].command).toContain('rc=$?; if [ "$rc" -eq 2 ]; then exit 2; fi');
+    expect(parsed.hooks.Stop[1].hooks[0]).toMatchObject({ timeout: 5 });
 
     expect(mergeClaudeStopGuard(merged)).toBe(merged);
   });

@@ -59,7 +59,7 @@ export async function runClaudeStopHookCommand(
         : `has an unclaimed Talking Stick reservation (turn ${inspection.turn_id})`;
     writeStderr(
       `This session's agent ${inspection.agent_id} still ${grant} in ${inspection.canonical_path}. ` +
-        `Finish the work, hand off with \`tt release --stdin\` or \`tt pass\`, or run \`tt standby --json\` before stopping.\n`
+        `Finish the work, then hand off with \`tt release --stdin\` or \`tt pass\` before stopping.\n`
     );
     setExitCode(2);
   } catch {

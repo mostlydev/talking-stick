@@ -296,7 +296,7 @@ export function buildClaudeStopGuardHook(): Record<string, unknown> {
   return {
     type: "command",
     command: CLAUDE_STOP_GUARD_COMMAND,
-    timeout: 10
+    timeout: 5
   };
 }
 
