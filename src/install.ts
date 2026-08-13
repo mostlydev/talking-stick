@@ -283,7 +283,7 @@ export function skipAction(harness: HarnessId, message: string): SkipAction {
 }
 
 export const CLAUDE_STOP_GUARD_MARKER = "talking-stick-claude-stop-hook";
-const CLAUDE_STOP_GUARD_COMMAND = `: ${CLAUDE_STOP_GUARD_MARKER}; if command -v tt >/dev/null 2>&1; then tt claude-stop-hook; fi`;
+const CLAUDE_STOP_GUARD_COMMAND = `: ${CLAUDE_STOP_GUARD_MARKER}; if command -v tt >/dev/null 2>&1; then tt claude-stop-hook; rc=$?; if [ "$rc" -eq 2 ]; then exit 2; fi; fi`;
 
 function resolveClaudeSettingsPath(resolved: ResolvedOptions): string {
   return path.join(

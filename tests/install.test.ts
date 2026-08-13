@@ -93,6 +93,7 @@ describe("Claude Stop guard", () => {
     expect(parsed.hooks.Stop).toHaveLength(2);
     expect(parsed.hooks.Stop[0].hooks[0].command).toBe("foreign-stop.sh");
     expect(parsed.hooks.Stop[1].hooks[0].command).toContain(CLAUDE_STOP_GUARD_MARKER);
+    expect(parsed.hooks.Stop[1].hooks[0].command).toContain('rc=$?; if [ "$rc" -eq 2 ]; then exit 2; fi');
 
     expect(mergeClaudeStopGuard(merged)).toBe(merged);
   });
