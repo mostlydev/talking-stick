@@ -1,7 +1,7 @@
 # Harness ergonomics, reachability, and low-churn coordination
 
-**Status:** Unanimously approved by Codex, Claude, and Grok for operator review.
-No product implementation has started.
+**Status:** Implemented and unanimously approved by Codex, Claude, and Grok.
+Released as Talking Stick 0.11.0 on 2026-08-13.
 
 **Evidence window:** Retained Talking Stick data from 2026-07-29 through
 2026-08-12, plus current Codex 0.147.0, Claude Code, Grok, cmux, installed-skill,
@@ -197,3 +197,18 @@ tests pass. Publication/versioning is a separate operator decision.
 - Claude: `AGREE`, room event `13939`.
 - Grok: `AGREE`, room event `13942`.
 - Unanimous gate: room note `7c4cf06d-093d-412f-b4b5-3f2bea58332f`.
+
+## Completion record
+
+- Implementation commits: `4e97ae4` through `4a3b458` on the
+  `harness-ergonomics` branch, merged to `master` for 0.11.0.
+- Every phase received independent Codex, Claude, and Grok review before the
+  next phase started; the final dogfood corrections received the same
+  three-way veto gate.
+- All three harnesses independently dogfooded the built CLI and shipped skill.
+  The real Grok hook was refreshed only after repository and disposable-home
+  verification, and its lifecycle log remained bounded.
+- Release evidence: `docs/releases/0.11.0.md`, tag `v0.11.0`, and GitHub Release
+  0.11.0. npm publication remained a separate operator action.
+- Adapter-specific Stop/session-end guards remain explicitly deferred pending
+  a later opt-in, fail-open design and independent per-harness verification.
