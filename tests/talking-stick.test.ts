@@ -200,7 +200,8 @@ describe("talking-stick vertical slice", () => {
       lease_id: ownerTurn.lease_id,
       expected_turn_id: ownerTurn.turn_id,
       to_agent_id: "claude:reserved",
-      handoff: validHandoff()
+      handoff: validHandoff(),
+      operator_override: true
     });
 
     harness.clock.advance(2 * 24 * 60 * 60 * 1000);
@@ -361,7 +362,8 @@ describe("talking-stick vertical slice", () => {
       lease_id: firstTurn.lease_id,
       expected_turn_id: firstTurn.turn_id,
       to_agent_id: "agent:two",
-      handoff: validHandoff()
+      handoff: validHandoff(),
+      operator_override: true
     });
 
     const secondTurn = asYourTurn(
@@ -463,7 +465,8 @@ describe("talking-stick vertical slice", () => {
       lease_id: firstTurn.lease_id,
       expected_turn_id: firstTurn.turn_id,
       to_agent_id: "agent:two",
-      handoff: validHandoff()
+      handoff: validHandoff(),
+      operator_override: true
     });
 
     const secondTurn = asYourTurn(
@@ -3926,6 +3929,37 @@ describe("foreground receiver registry", () => {
       operator_override: true
     });
     expect(forced.reserved_for).toBe("claude:sleeper");
+  });
+
+  test("named pass rejects an unreachable target when the room has no receivers", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const ownerJoin = harness.service.joinPath({
+      agent_id: "codex:owner",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "claude:sleeper",
+      context_path: project
+    });
+    const owner = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:owner",
+        room_id: ownerJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+
+    expect(() =>
+      harness.service.passStick({
+        agent_id: "codex:owner",
+        room_id: ownerJoin.room_id,
+        lease_id: owner.lease_id,
+        expected_turn_id: owner.turn_id,
+        to_agent_id: "claude:sleeper",
+        handoff: { status: "review", next_action: "claude reviews" }
+      })
+    ).toThrowProtocolError("recipient_unreachable");
   });
 });
 

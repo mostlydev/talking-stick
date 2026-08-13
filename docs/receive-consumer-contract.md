@@ -14,6 +14,7 @@
 ## Process lifecycle
 
 - Keep one wait subprocess active while shared work remains.
+- Build, clean, and generated-output commands count as shared workspace mutations. They may remove or replace the CLI executable underneath another consumer and therefore require a live stick grant.
 - A concurrent second wait for the same room member receives `duplicate_listener`; Talking Stick does not kill either process automatically.
 - Internal service timeouts do not produce CLI output and do not exit the process.
 - A harness tool may yield a process handle before the subprocess exits. Poll or resume that same handle; do not launch a replacement yet.

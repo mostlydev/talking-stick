@@ -278,7 +278,7 @@ Commands:
   tt uninstall <harness...|agents> | --all | --shared [--print]
   tt self-update [--print] [--manager npm|pnpm|yarn|bun]
 
-Harnesses: ${SUPPORTED_HARNESSES.join(", ")}
+Harnesses: ${SUPPORTED_HARNESSES.join(", ")} (claude aliases claude-code)
 
 Common options:
   [path]     Defaults to the current working directory when omitted

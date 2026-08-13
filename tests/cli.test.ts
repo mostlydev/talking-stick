@@ -1133,6 +1133,24 @@ describe("tt turn commands", () => {
     const { project } = setupIsolatedCli(tempDirs);
 
     await seedCliLease(project, "human:owner", ["human:next"]);
+    const service = new TalkingStickService();
+    try {
+      const roomId = readCliSessions(resolveCliSessionPath()).find(
+        (session) => session.agent_id === "human:owner"
+      )!.room_id;
+      const state = service.getRoomState({ room_id: roomId });
+      service.registerReceiver({
+        agent_id: "human:next",
+        room_id: state.room.room_id,
+        receiver_id: "next-receiver",
+        host_id: os.hostname(),
+        pid: process.pid,
+        process_started_at: getCurrentProcessStartedAt(),
+        cursor_event_seq: state.cursor_event_seq
+      });
+    } finally {
+      service.close();
+    }
 
     const assignOut = await captureStdout([
       "assign",
@@ -1201,6 +1219,30 @@ describe("tt turn commands", () => {
     ])) as { reserved_for: string };
     expect(assigned.reserved_for).toBe("human:sleeper");
   });
+
+  test("ordinary alias assign rejects an unreachable target in a receiverless room", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    await seedCliLease(project, "human:owner", ["human:sleeper"]);
+
+    await expect(captureStdout([
+      "assign", "sleeper", project,
+      "--agent", "human:owner",
+      "--status", "Assigning normally.",
+      "--next-action", "Take the assigned turn.",
+      "--json"
+    ])).rejects.toThrow(/No reachable room member/);
+  });
+
+  test.each(["release", "pass", "assign"])(
+    "tt %s rejects --path instead of silently using cwd",
+    async (command) => {
+      const args = command === "assign"
+        ? [command, "human:reviewer", "--path", "/tmp/wrong-room"]
+        : [command, "--path", "/tmp/wrong-room"];
+      await expect(captureStdout([...args, "--json"]))
+        .rejects.toThrow(/takes its workspace path positionally/);
+    }
+  );
 
   test("human tt take can override a reserved turn without a reason", async () => {
     const { project } = setupIsolatedCli(tempDirs);
@@ -2645,7 +2687,8 @@ describe("tt msg", () => {
         handoff: {
           status: "Owner is passing.",
           next_action: "Harness should claim."
-        }
+        },
+        operator_override: true
       });
     } finally {
       service.close();
@@ -2995,7 +3038,8 @@ async function passCliTestTurn(
       handoff: {
         status: "Owner is passing.",
         next_action: "Receiver should claim."
-      }
+      },
+      operator_override: true
     });
   } finally {
     service.close();

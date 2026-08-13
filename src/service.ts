@@ -971,12 +971,11 @@ export class TalkingStickService {
       }
       if (
         input.operator_override !== true &&
-        this.hasReceiverRegistrations(input.room_id) &&
         !this.hasReachableReceiverOrWakeEndpoint(input.room_id, target)
       ) {
         throw new ProtocolError(
           "recipient_unreachable",
-          "Named pass/assign target has no live receiver or self-waking endpoint.",
+          "Named pass/assign target has no live receiver or self-waking endpoint. Release for fair routing or use --operator-requested for an explicit override.",
           { to_agent_id: input.to_agent_id }
         );
       }

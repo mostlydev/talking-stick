@@ -421,6 +421,7 @@ export async function handleReleaseCommand(
   runtime: Runtime,
   parsed: ParsedCommand
 ): Promise<void> {
+  rejectUnsupportedPathOption(parsed, "release");
   const identity = deriveCliIdentity(parsed);
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const session = requireLeaseSession(identity, contextPath);
@@ -452,6 +453,7 @@ export async function handlePassCommand(
   runtime: Runtime,
   parsed: ParsedCommand
 ): Promise<void> {
+  rejectUnsupportedPathOption(parsed, "pass");
   if (parsed.positionals[0]?.includes(":")) {
     await handleAssignCommand(runtime, parsed);
     return;
@@ -483,6 +485,7 @@ export async function handleAssignCommand(
   runtime: Runtime,
   parsed: ParsedCommand
 ): Promise<void> {
+  rejectUnsupportedPathOption(parsed, "assign");
   const targetSelector = parsed.positionals[0];
   if (!targetSelector) {
     throw new Error("Usage: tt assign <target|next> [path] (--status TEXT --next-action TEXT | --stdin)");
@@ -553,7 +556,7 @@ function resolveAssignmentTarget(
       reachableIds.add(member.agent_id);
     }
   }
-  const enforceReachable = health.receivers.length > 0;
+  const enforceReachable = !allowUnreachable;
   const normalizedSelector = selector.toLowerCase();
   const candidates = state.members.filter((member) => {
     if (member.agent_id === identity.agent_id || member.status !== "active") {
@@ -593,6 +596,17 @@ function resolveAssignmentTarget(
     process_metadata: identity.process_metadata
   });
   return pickFairAssignmentCandidate(candidates, events).agent_id;
+}
+
+function rejectUnsupportedPathOption(
+  parsed: ParsedCommand,
+  commandName: "release" | "pass" | "assign"
+): void {
+  if (hasOption(parsed, "path")) {
+    throw new Error(
+      `tt ${commandName} takes its workspace path positionally; --path is not supported.`
+    );
+  }
 }
 
 function pickFairAssignmentCandidate(

@@ -41,6 +41,8 @@ Only a successful `tt wait` or `tt take` result containing both of these authori
 - `status: "your_turn"`
 - a live `guardian_pid`
 
+Build, clean, and generated-output commands are shared workspace mutations too. Commands such as `npm run build` may remove or replace the executable another agent is using, so run them only while holding the stick.
+
 Messages, event wakes, notes, room state, and `takeover_available` do not grant the turn. Read-only investigation is always allowed.
 
 Interpret wait results directly:

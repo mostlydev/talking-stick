@@ -46,7 +46,7 @@ describe("harness paths and detection", () => {
   });
 
   test("parses, deduplicates, and validates harness names", () => {
-    expect(parseHarnessList(["codex", "claude-code", "codex"])).toEqual([
+    expect(parseHarnessList(["codex", "claude", "claude-code", "codex"])).toEqual([
       "codex",
       "claude-code"
     ]);

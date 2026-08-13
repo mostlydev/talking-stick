@@ -331,7 +331,8 @@ describe("out-of-band signaling substrate", () => {
       lease_id: turn.lease_id,
       expected_turn_id: turn.turn_id,
       to_agent_id: "claude:test",
-      handoff: validHandoff()
+      handoff: validHandoff(),
+      operator_override: true
     });
 
     const codexEvents = await harness.service.waitForEvents({
