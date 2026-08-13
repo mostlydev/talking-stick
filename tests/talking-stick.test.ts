@@ -127,7 +127,7 @@ describe("talking-stick vertical slice", () => {
       agent_id: "claude:test",
       context_path: project
     });
-    expect(claudeJoin.cursor_event_seq).toBe(2);
+    expect(claudeJoin.cursor_event_seq).toBe(3);
   });
 
   test("getRoomHealth is read-only and reports room health by path", async () => {
@@ -168,7 +168,7 @@ describe("talking-stick vertical slice", () => {
     expect(health.room.room_id).toBe(codexJoin.room_id);
     expect(health.pending_handoff?.event_type).toBe("release");
     expect(health.takeover.available).toBe(false);
-    expect(health.cursor_event_seq).toBe(2);
+    expect(health.cursor_event_seq).toBe(3);
   });
 
   test("read horizon hides old ghost members but keeps reserved and caller visible", async () => {
@@ -303,16 +303,17 @@ describe("talking-stick vertical slice", () => {
     expect(compactEvents.events.map((event) => event.payload?.body)).toEqual([
       "new event"
     ]);
-    expect(compactEvents.hidden?.events.older_count).toBe(1);
+    expect(compactEvents.hidden?.events.older_count).toBe(2);
 
     const allEvents = harness.service.getRoomEventsView({
       room_id: join.room_id,
       include_all: true
     });
-    expect(allEvents.events.map((event) => event.payload?.body)).toEqual([
-      "old event",
-      "new event"
-    ]);
+    expect(
+      allEvents.events
+        .filter((event) => event.event_type === "message_sent")
+        .map((event) => event.payload?.body)
+    ).toEqual(["old event", "new event"]);
 
     const compactNotes = harness.service.listNotes({
       room_id: join.room_id,
@@ -1539,7 +1540,9 @@ describe("talking-stick vertical slice", () => {
       room_id: codexJoin.room_id,
       agent_id: "codex:test"
     });
-    expect(ownerEvents).toHaveLength(1);
+    expect(
+      ownerEvents.filter((event) => event.event_type === "claim")
+    ).toHaveLength(1);
 
     const viewerState = harness.service.getRoomState({ room_id: codexJoin.room_id });
     expect(viewerState.room.state).toBe("owned");
@@ -2145,9 +2148,11 @@ describe("talking-stick vertical slice", () => {
     expect(results.filter((result) => result.status === "your_turn")).toHaveLength(1);
     const waiter = results.find((result) => result.status === "not_yet");
     expect(waiter).toBeDefined();
-    expect(waiter?.events?.map((event) => event.event_type)).toEqual([
-      "message_sent"
-    ]);
+    const waiterEventTypes = waiter?.events?.map((event) => event.event_type) ?? [];
+    expect(waiterEventTypes.filter((eventType) => eventType === "join").length)
+      .toBeGreaterThanOrEqual(1);
+    expect(waiterEventTypes.filter((eventType) => eventType === "message_sent"))
+      .toEqual(["message_sent"]);
   });
 
   test("wait_for_turn is idempotent for the current owner and returns the same lease", async () => {
@@ -2547,18 +2552,21 @@ describe("talking-stick vertical slice", () => {
     ).toThrowProtocolError("unknown_target");
   });
 
-  test("joining a new same-process harness session retires a superseded owner", async () => {
+  test("verified same-process harness sessions never supersede one another", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
-    const codexProcess = harness.processRegistry.create("codex");
+    const codexProcess = harness.processRegistry.create("codex-parent");
+    const oldProcess = harness.processRegistry.create("codex-old");
+    const newProcess = harness.processRegistry.create("codex-new");
     const guardianProcess = harness.processRegistry.create(
       "codex:old",
       "human_guardian"
     );
     const oldSession = withHarnessInstance(
-      codexProcess,
+      oldProcess,
       "codex",
-      "harness:old"
+      "harness:old",
+      codexProcess
     );
     const oldGuard = withHarnessInstance(
       guardianProcess,
@@ -2567,9 +2575,10 @@ describe("talking-stick vertical slice", () => {
       codexProcess
     );
     const newSession = withHarnessInstance(
-      codexProcess,
+      newProcess,
       "codex",
-      "harness:new"
+      "harness:new",
+      codexProcess
     );
 
     const oldJoin = harness.service.joinPath({
@@ -2603,33 +2612,231 @@ describe("talking-stick vertical slice", () => {
       process_metadata: newSession
     });
 
-    expect(newJoin.warning).toContain("Superseded previous harness session(s): codex:old");
-    expect(newJoin.room_state.owner).toBeNull();
-    expect(newJoin.room_state.state).toBe("idle");
-    expect(newJoin.room_state.lease_id).toBeNull();
+    expect(newJoin.warning).toBeUndefined();
+    expect(newJoin.room_state.owner).toBe("codex:old");
+    expect(newJoin.room_state.state).toBe("owned");
+    expect(newJoin.room_state.lease_id).not.toBeNull();
+
+    const concurrentState = harness.service.getRoomState({ room_id: oldJoin.room_id });
+    expect(concurrentState.members.map((member) => member.agent_id)).toEqual(
+      expect.arrayContaining(["codex:old", "codex:new"])
+    );
+    expect(
+      harness.service
+        .getRoomEvents({ room_id: oldJoin.room_id })
+        .some((event) => event.event_type === "session_superseded")
+    ).toBe(false);
+
+    harness.processRegistry.markGone(guardianProcess);
+    harness.clock.advance(2 * 300_000 + 1);
+    const replacementJoin = harness.service.joinPath({
+      agent_id: "codex:new",
+      context_path: project,
+      process_metadata: newSession
+    });
+
+    expect(replacementJoin.warning).toBeUndefined();
+    expect(replacementJoin.room_state.owner).toBe("codex:old");
+    expect(replacementJoin.room_state.state).toBe("owned");
 
     const state = harness.service.getRoomState({ room_id: oldJoin.room_id });
-    expect(state.members.map((member) => member.agent_id)).not.toContain(
-      "codex:old"
+    expect(state.members.map((member) => member.agent_id)).toEqual(
+      expect.arrayContaining(["codex:old", "codex:new"])
+    );
+    expect(
+      harness.service
+        .getRoomEvents({ room_id: oldJoin.room_id })
+        .some((event) => event.event_type === "session_superseded")
+    ).toBe(false);
+  });
+
+  test("a verified harness identity supersedes its provisional fallback", async () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const grokProcess = harness.processRegistry.create("grok-parent");
+    const fallbackProcess = harness.processRegistry.create("grok-fallback");
+    const verifiedProcess = harness.processRegistry.create("grok-verified");
+    const fallback = withHarnessInstance(
+      fallbackProcess,
+      "grok",
+      `pid:${grokProcess.pid}@${grokProcess.process_started_at}`,
+      grokProcess
+    );
+    const verified = withHarnessInstance(
+      verifiedProcess,
+      "grok",
+      "harness:session-a",
+      grokProcess
     );
 
-    const supersededEvent = harness.service
-      .getRoomEvents({ room_id: oldJoin.room_id })
-      .find((event) => event.event_type === "session_superseded");
-    expect(supersededEvent?.from_agent_id).toBe("codex:new");
-    expect(supersededEvent?.to_agent_id).toBe("codex:old");
-    expect(supersededEvent?.reason).toContain(
-      "superseded by newer codex session"
-    );
-
-    const newTurn = asYourTurn(
+    const fallbackJoin = harness.service.joinPath({
+      agent_id: "grok:fallback",
+      context_path: project,
+      process_metadata: fallback
+    });
+    asYourTurn(
       await harness.service.waitForTurn({
-        agent_id: "codex:new",
-        room_id: oldJoin.room_id,
+        agent_id: "grok:fallback",
+        room_id: fallbackJoin.room_id,
         max_wait_ms: 0
       })
     );
-    expect(newTurn.reason).toBe("open_claim");
+
+    const verifiedJoin = harness.service.joinPath({
+      agent_id: "grok:verified",
+      context_path: project,
+      process_metadata: verified
+    });
+
+    expect(verifiedJoin.warning).toContain(
+      "Superseded previous harness session(s): grok:fallback"
+    );
+    expect(verifiedJoin.room_state.owner).toBeNull();
+    expect(
+      harness.service
+        .getRoomState({ room_id: fallbackJoin.room_id })
+        .members.map((member) => member.agent_id)
+    ).not.toContain("grok:fallback");
+  });
+
+  test("a waiter removed during a long poll can never receive a turn", async () => {
+    const harness = createHarness({
+      policy: { waitForTurnPollMs: 10 }
+    });
+    const project = createProject(harness.tempRoot);
+    const ownerJoin = harness.service.joinPath({
+      agent_id: "claude:owner",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "codex:waiter",
+      context_path: project
+    });
+
+    const ownerTurn = asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "claude:owner",
+        room_id: ownerJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    const waiter = harness.service.waitForTurn({
+      agent_id: "codex:waiter",
+      room_id: ownerJoin.room_id,
+      max_wait_ms: 2_000
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    harness.service.kickMember({
+      room_id: ownerJoin.room_id,
+      agent_id: "claude:owner",
+      target_agent_id: "codex:waiter",
+      reason: "test membership revocation",
+      force: true
+    });
+    harness.service.releaseStick({
+      room_id: ownerJoin.room_id,
+      agent_id: "claude:owner",
+      lease_id: ownerTurn.lease_id,
+      expected_turn_id: ownerTurn.turn_id,
+      handoff: validHandoff()
+    });
+
+    await expect(waiter).rejects.toMatchObject({
+      code: "unknown_member",
+      details: { agent_id: "codex:waiter" }
+    });
+    const state = harness.service.getRoomState({ room_id: ownerJoin.room_id });
+    expect(state.room.owner).not.toBe("codex:waiter");
+    expect(state.members.map((member) => member.agent_id)).not.toContain(
+      "codex:waiter"
+    );
+  });
+
+  test("another member joining and claiming wakes a self-targeted wait", async () => {
+    const harness = createHarness({
+      policy: { waitForTurnPollMs: 10, waitForEventsPollMs: 10 }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:observer",
+      context_path: project
+    });
+
+    const joinWait = harness.service.waitForTurn({
+      agent_id: "codex:observer",
+      room_id: codexJoin.room_id,
+      include_events: true,
+      after_event_seq: codexJoin.cursor_event_seq,
+      target_agent_id: "self",
+      auto_claim: false,
+      max_wait_ms: 2_000
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    harness.service.joinPath({
+      agent_id: "grok:reviewer",
+      context_path: project
+    });
+
+    const joined = await joinWait;
+    expect(joined.status).toBe("not_yet");
+    expect(joined.wake_reason).toBe("event");
+    expect(joined.events).toContainEqual(
+      expect.objectContaining({
+        event_type: "join",
+        from_agent_id: "grok:reviewer"
+      })
+    );
+
+    const noReplay = await harness.service.waitForTurn({
+      agent_id: "codex:observer",
+      room_id: codexJoin.room_id,
+      include_events: true,
+      after_event_seq: joined.cursor_event_seq,
+      target_agent_id: "self",
+      auto_claim: false,
+      max_wait_ms: 0
+    });
+    expect(noReplay.status).toBe("not_yet");
+    expect(noReplay.events).toEqual([]);
+  });
+
+  test("another member leaving wakes a self-targeted wait", async () => {
+    const harness = createHarness({ policy: { waitForTurnPollMs: 10 } });
+    const project = createProject(harness.tempRoot);
+    const observerJoin = harness.service.joinPath({
+      agent_id: "codex:observer",
+      context_path: project
+    });
+    const peerJoin = harness.service.joinPath({
+      agent_id: "grok:reviewer",
+      context_path: project
+    });
+
+    const leaveWait = harness.service.waitForTurn({
+      agent_id: "codex:observer",
+      room_id: observerJoin.room_id,
+      include_events: true,
+      after_event_seq: peerJoin.cursor_event_seq,
+      target_agent_id: "self",
+      auto_claim: false,
+      max_wait_ms: 2_000
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    harness.service.leaveRoom({
+      room_id: observerJoin.room_id,
+      agent_id: "grok:reviewer"
+    });
+
+    const left = await leaveWait;
+    expect(left.status).toBe("not_yet");
+    expect(left.wake_reason).toBe("event");
+    expect(left.events).toContainEqual(
+      expect.objectContaining({
+        event_type: "leave",
+        from_agent_id: "grok:reviewer"
+      })
+    );
   });
 
   test("joining a different-process harness session does not retire an owner", async () => {
@@ -2678,10 +2885,12 @@ describe("talking-stick vertical slice", () => {
     expect(waitResult.current_owner).toBe("codex:old");
   });
 
-  test("joining a new same-process harness session preserves a superseded recipient handoff", async () => {
+  test("verified identity upgrade preserves a provisional recipient handoff", async () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
-    const codexProcess = harness.processRegistry.create("codex");
+    const codexProcess = harness.processRegistry.create("codex-parent");
+    const oldProcess = harness.processRegistry.create("codex-old");
+    const newProcess = harness.processRegistry.create("codex-new");
     const handoff = validHandoff();
 
     const claudeJoin = harness.service.joinPath({
@@ -2692,9 +2901,10 @@ describe("talking-stick vertical slice", () => {
       agent_id: "codex:old",
       context_path: project,
       process_metadata: withHarnessInstance(
-        codexProcess,
+        oldProcess,
         "codex",
-        "harness:old"
+        `pid:${codexProcess.pid}@${codexProcess.process_started_at}`,
+        codexProcess
       )
     });
 
@@ -2722,9 +2932,10 @@ describe("talking-stick vertical slice", () => {
       agent_id: "codex:new",
       context_path: project,
       process_metadata: withHarnessInstance(
-        codexProcess,
+        newProcess,
         "codex",
-        "harness:new"
+        "harness:new",
+        codexProcess
       )
     });
 
@@ -3554,7 +3765,7 @@ describe("issue #29: presence and liveness track the harness, not the guardian",
     // claude starts a sustained self-receiver carrying its harness identity but
     // never joined. The documented presence primitive must register it.
     const claudeProc = harness.processRegistry.create("claude", "harness_cli");
-    await harness.service.waitForEvents({
+    const receiverEvents = await harness.service.waitForEvents({
       agent_id: "claude:test",
       room_id: codexJoin.room_id,
       target_agent_id: "self",
@@ -3572,8 +3783,17 @@ describe("issue #29: presence and liveness track the harness, not the guardian",
     const claude = claudePresent();
     expect(claude).toBeDefined();
     expect(claude?.status).toBe("active");
+    expect(receiverEvents.events).toEqual([]);
     // Watching is presence, not turn interest.
     expect(claude?.last_wait_at).toBeNull();
+    expect(
+      harness.service
+        .getRoomEvents({ room_id: codexJoin.room_id })
+        .find((event) => event.event_type === "join")
+    ).toMatchObject({
+      from_agent_id: "claude:test",
+      reason: "registered by self-targeted event receiver"
+    });
   });
 
   test("an ordinary non-guardian command re-stamps stale process metadata (Defect 1 contract)", async () => {

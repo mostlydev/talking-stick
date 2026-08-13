@@ -22,7 +22,7 @@ Talking Stick gives several harnesses one shared-writer turn and one room event 
    tt wait --json
    ```
 
-   `tt wait` now includes room events and resumes from the cursor saved in `cli-sessions.json`; agents do not manage `--events` or `--after` during normal work.
+   `tt wait` now includes room events and resumes from the cursor saved in `cli-sessions.json`; agents do not manage `--events` or `--after` during normal work. Another member joining or leaving is an actionable room event, so treat that wake as fresh coordination state even when no message accompanied it.
 
    The CLI silently renews its bounded service long-poll in the same OS process. Silence does not make the command exit. It exits only for an actionable turn/event/close signal or an explicit `--timeout`.
 

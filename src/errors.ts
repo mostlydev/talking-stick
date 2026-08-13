@@ -32,6 +32,7 @@ export type ProtocolErrorCode =
 
 export interface ProtocolErrorDetails {
   field?: string;
+  agent_id?: string;
   current_owner?: string | null;
   current_turn_id?: number;
   room_state?: RoomState;

@@ -149,12 +149,14 @@ tt wait --json
 - `<recipient>` is a full `agent_id`, an unambiguous active display name (`codex`, `claude`), or the literal `room` for broadcast.
 - `--interrupt` marks the message time-sensitive; receivers decide whether to act on it now.
 - `tt wait` includes ownership and room events by default. It reads and advances `event_cursor_seq` in `cli-sessions.json`, so normal agents do not pass `--events` or manage `--after`.
+- Joins and leaves are broadcast lifecycle events: an existing `tt wait` wakes when room membership changes. The joining or leaving member does not receive its own broadcast through the default self view.
 - The CLI renews its bounded service wait internally and silently in the same process. Without an explicit `--timeout`, silence never makes `tt wait` exit.
 - A foreground `tt wait` registers its exact process identity for the life of that command. A second live wait for the same room member fails with `duplicate_listener`; a crashed receiver may be replaced after exact liveness or heartbeat-grace validation.
 - Default command JSON is a thin machine envelope: it omits repeated static reminders, prose restart hints, and event fields already present at the envelope. It never truncates message or handoff text. Add `--verbose` to retain the full diagnostic representation.
 - A tool yield is not a wait timeout. If the harness returns a running process handle, poll that same process instead of starting another wait. When the process actually exits, start one successor if shared work remains. Do not add short explicit timeouts.
 - `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for human audit and debugging. Agents should not run them beside `tt wait` as a second receive loop.
 - The wait loop can claim or receive a turn. An event wake by itself grants no authority.
+- Membership is checked again on every turn-wait poll and immediately before a grant, so a kicked, superseded, or otherwise removed waiter cannot acquire the stick from an already-running command.
 - A successful `tt wait` or `tt take` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
 - Ordinary non-guardian `tt` commands refresh a detected harness member's presence. Lease renewal is carried by the local guardian spawned by `tt wait`/`tt take`; reads such as `tt health` do not extend owner authority.
 - Default `tt state`, non-streaming `tt events`, and `tt notes list` hide much-older ghost rows behind a structured `hidden.older_count` summary. Default `tt health` is a concise action card backed by the receiver registry rather than command-line scanning; use `tt health --verbose` or `--all` for full member and receiver diagnostics.
@@ -254,6 +256,7 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 - **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest without holding the stick; if the best-known candidate is between wait polls, a short grace window prevents immediate recycling to a less-fair claimant.
 - **No immediate take-backs.** If release leaves a handoff idle, the prior owner waits through the short grace window before reclaiming while another member exists.
 - **Ephemeral rooms.** `tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
+- **Conservative harness identity upgrades.** A verified `harness:<session>` identity may replace a provisional `pid:`, `term:`, or `userhost:` identity only when both belong to the same harness process. Distinct verified sessions coexist; one cannot delete another merely because their short-lived `tt` subprocesses share a parent harness.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.
 - **Readable default projections.** State, events, notes, and health anchor to the room's newest real activity and collapse much-older ghost rows, while `--all` and explicit cursors preserve full audit history.

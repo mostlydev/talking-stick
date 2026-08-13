@@ -129,6 +129,8 @@ export interface RoomMember {
 }
 
 export type EventType =
+  | "join"
+  | "leave"
   | "claim"
   | "release"
   | "pass"

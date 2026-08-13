@@ -66,7 +66,7 @@ export async function handleWaitCommand(
       "tt wait manages the self cursor only. Use `tt events --target ...` for audit/debug reads."
     );
   }
-  const targetAgentId = identity.agent_id;
+  const targetAgentId = "self" as const;
 
   const explicitTimeout = hasOption(parsed, "timeout");
   let currentCursor = afterEventSeq;

@@ -32,9 +32,11 @@
 ## Filtering and authority
 
 - `target=self` receives direct events plus broadcasts from other agents and excludes the caller's own broadcasts.
+- Member joins and leaves are broadcast lifecycle events. They wake existing self-targeted receivers so an agent does not infer room membership from a silent, stale wait.
 - `target=any` is for audit/debug views.
 - Messages are room-visible routing, not private ACLs.
 - Event delivery never grants write authority. Only `status: "your_turn"` with a live `guardian_pid` does.
+- Membership is revalidated throughout a turn wait. A member removed while polling receives `unknown_member` and can never be granted a lease from that stale wait.
 - An expired unowned reservation emits `reservation_expired`, keeps the pending handoff, and reroutes to a reachable waiter or idle. That event is not write authority and does not return `takeover_available`. Owner-gone, owner-idle, and owner-timeout still require explicit `tt take`.
 
 ## Interrupt delivery

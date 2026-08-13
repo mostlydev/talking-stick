@@ -56,6 +56,7 @@ describe("out-of-band signaling substrate", () => {
 
     const events = harness.service.getRoomEvents({ room_id: room.room_id });
     expect(events.map((event) => event.event_type)).toEqual([
+      "join",
       "claim",
       "release"
     ]);
@@ -77,9 +78,10 @@ describe("out-of-band signaling substrate", () => {
     expect(sent.event_seq).toBeGreaterThan(0);
     expect(sent.event_id).toMatch(/^[0-9a-f-]+$/);
 
-    const events = harness.service.getRoomEvents({ room_id: room.room_id });
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    const event = harness.service
+      .getRoomEvents({ room_id: room.room_id })
+      .find((candidate) => candidate.event_type === "message_sent");
+    expect(event).toMatchObject({
       event_seq: sent.event_seq,
       event_id: sent.event_id,
       event_type: "message_sent",
@@ -104,7 +106,9 @@ describe("out-of-band signaling substrate", () => {
       body: "room-wide note"
     });
 
-    const [event] = harness.service.getRoomEvents({ room_id: room.room_id });
+    const event = harness.service
+      .getRoomEvents({ room_id: room.room_id })
+      .find((candidate) => candidate.event_type === "message_sent")!;
     expect(event.to_agent_id).toBeNull();
     expect(event.payload).toEqual({
       body: "room-wide note",
@@ -141,13 +145,20 @@ describe("out-of-band signaling substrate", () => {
       })
     ).toThrowProtocolError("unknown_recipient");
 
-    expect(() =>
+    let membershipError: unknown;
+    try {
       harness.service.sendMessage({
         agent_id: "ghost:test",
         room_id: room.room_id,
         body: "hello"
-      })
-    ).toThrowProtocolError("unknown_member");
+      });
+    } catch (error) {
+      membershipError = error;
+    }
+    expect(membershipError).toMatchObject({ code: "unknown_member" });
+    expect((membershipError as ProtocolError).details).toEqual({
+      agent_id: "ghost:test"
+    });
 
     expect(() =>
       harness.service.sendMessage({
@@ -158,7 +169,11 @@ describe("out-of-band signaling substrate", () => {
       })
     ).toThrowProtocolError("invalid_delivery_hint");
 
-    expect(harness.service.getRoomEvents({ room_id: room.room_id })).toEqual([]);
+    expect(
+      harness.service
+        .getRoomEvents({ room_id: room.room_id })
+        .filter((event) => event.event_type === "message_sent")
+    ).toEqual([]);
   });
 
   test("sendMessage rejects closed rooms", () => {
@@ -342,6 +357,7 @@ describe("out-of-band signaling substrate", () => {
       max_wait_ms: 0
     });
     expect(codexEvents.events.map((event) => event.event_type)).toEqual([
+      "join",
       "claim",
       "pass"
     ]);
@@ -478,20 +494,23 @@ describe("out-of-band signaling substrate", () => {
     harness.service.db
       .prepare("UPDATE path_rooms SET state = 'closed' WHERE room_id = ?")
       .run(room.room_id);
+    const afterJoin = harness.service.getLatestEventSeq({ room_id: room.room_id });
 
     const result = await harness.service.waitForEvents({
       agent_id: "codex:test",
       room_id: room.room_id,
       target_agent_id: "self",
+      after_event_seq: afterJoin,
       max_wait_ms: 0
     });
 
-    expect(result).toEqual({ events: [], cursor_event_seq: 0 });
+    expect(result).toEqual({ events: [], cursor_event_seq: afterJoin });
   });
 
   test("waitForTurn include_events on a closed room still returns queued events", async () => {
     const harness = createHarness();
     const room = joinPair(harness);
+    const afterJoin = harness.service.getLatestEventSeq({ room_id: room.room_id });
     const message = harness.service.sendMessage({
       agent_id: "claude:test",
       room_id: room.room_id,
@@ -507,7 +526,7 @@ describe("out-of-band signaling substrate", () => {
       room_id: room.room_id,
       max_wait_ms: 0,
       include_events: true,
-      after_event_seq: 0
+      after_event_seq: afterJoin
     });
 
     expect(result.status).toBe("closed");
@@ -893,6 +912,7 @@ describe("out-of-band signaling substrate", () => {
     expect(
       harness.service
         .getRoomEvents({ room_id: room.room_id })
+        .filter((event) => event.event_type !== "join")
         .map((event) => event.event_type)
     ).toEqual(["message_sent", "claim", "release"]);
   });
@@ -1001,7 +1021,9 @@ function asYourTurn(result: WaitForTurnResult) {
 }
 
 function messageBodies(events: RoomEvent[]): string[] {
-  return events.map((event) => event.payload?.body ?? "");
+  return events.flatMap((event) =>
+    event.payload?.body === undefined ? [] : [event.payload.body]
+  );
 }
 
 async function expectProtocolError(

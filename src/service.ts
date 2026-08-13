@@ -184,6 +184,8 @@ interface NoteRow {
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGE_BODY_BYTES = 4096;
 const KNOWN_EVENT_TYPES: readonly EventType[] = [
+  "join",
+  "leave",
   "claim",
   "release",
   "pass",
@@ -317,6 +319,13 @@ export class TalkingStickService {
         input.force_new === true,
         timestamp
       );
+      const existingMember = this.getMember(
+        roomSelection.room.room_id,
+        input.agent_id
+      );
+      const hadOtherMembers = this.getMembers(
+        roomSelection.room.room_id
+      ).some((member) => member.agent_id !== input.agent_id);
 
       this.upsertMember(
         roomSelection.room.room_id,
@@ -332,6 +341,18 @@ export class TalkingStickService {
       );
 
       const freshRoom = this.requireRoom(roomSelection.room.room_id);
+      if (!existingMember && hadOtherMembers) {
+        this.appendEvent({
+          room_id: freshRoom.room_id,
+          turn_id: freshRoom.turn_id,
+          event_type: "join",
+          from_agent_id: input.agent_id,
+          to_agent_id: null,
+          handoff: null,
+          reason: null,
+          created_at: timestamp
+        });
+      }
       const warning = joinWarnings(
         roomSelection.warning,
         supersededAgentIds.length > 0
@@ -370,7 +391,7 @@ export class TalkingStickService {
         throw new ProtocolError(
           "unknown_member",
           "Agent is not a member of this room.",
-          { to_agent_id: input.agent_id }
+          { agent_id: input.agent_id }
         );
       }
 
@@ -430,6 +451,17 @@ export class TalkingStickService {
           timestamp,
           input.room_id
         );
+
+      this.appendEvent({
+        room_id: input.room_id,
+        turn_id: room.turn_id,
+        event_type: "leave",
+        from_agent_id: input.agent_id,
+        to_agent_id: null,
+        handoff: null,
+        reason: null,
+        created_at: timestamp
+      });
 
       return {
         status: "left",
@@ -711,7 +743,11 @@ export class TalkingStickService {
       );
       const member = this.getMember(input.room_id, input.agent_id);
       if (!member) {
-        throw new ProtocolError("unknown_member", "Agent must join before standby.");
+        throw new ProtocolError(
+          "unknown_member",
+          "Agent must join before standby.",
+          { agent_id: input.agent_id }
+        );
       }
       const generation = member.standby_generation + 1;
       this.db
@@ -1253,7 +1289,8 @@ export class TalkingStickService {
       if (!this.getMember(input.room_id, input.agent_id)) {
         throw new ProtocolError(
           "unknown_member",
-          "Agent must join the room before registering a receiver."
+          "Agent must join the room before registering a receiver.",
+          { agent_id: input.agent_id }
         );
       }
       const existing = this.db
@@ -1700,7 +1737,8 @@ export class TalkingStickService {
       if (!member) {
         throw new ProtocolError(
           "unknown_member",
-          "Agent must join the room before registering a wake endpoint."
+          "Agent must join the room before registering a wake endpoint.",
+          { agent_id: input.agent_id }
         );
       }
       const generation = member.wake_endpoint_generation + 1;
@@ -2294,6 +2332,13 @@ export class TalkingStickService {
   private waitForTurnOnce(input: WaitForTurnInput): WaitForTurnResult {
     const now = this.now();
     let room = this.requireRoom(input.room_id);
+    if (!this.getMember(input.room_id, input.agent_id)) {
+      throw new ProtocolError(
+        "unknown_member",
+        "Agent is no longer a member of this room. Run `tt join` before waiting again.",
+        { agent_id: input.agent_id }
+      );
+    }
     let inspection = this.inspectRoomForMutation(room, now);
 
     if (room.state === "closed") {
@@ -2573,6 +2618,13 @@ export class TalkingStickService {
       : null;
     const reason = claimReasonForEvent(pendingEvent);
     const member = this.getMember(room.room_id, agentId);
+    if (!member) {
+      throw new ProtocolError(
+        "unknown_member",
+        "Agent is no longer a member of this room. Run `tt join` before waiting again.",
+        { agent_id: agentId }
+      );
+    }
 
     this.db
       .prepare(
@@ -2592,7 +2644,7 @@ export class TalkingStickService {
       `
       )
       .run(
-        member?.ordinal ?? room.sequence_index,
+        member.ordinal,
         agentId,
         nextTurnId,
         leaseId,
@@ -2807,7 +2859,7 @@ export class TalkingStickService {
       throw new ProtocolError(
         "unknown_member",
         "Agent must join the room before using this tool.",
-        { to_agent_id: agentId }
+        { agent_id: agentId }
       );
     }
 
@@ -2881,12 +2933,31 @@ export class TalkingStickService {
     timestamp: string,
     processMetadata?: ProcessMetadata
   ): void {
+    const existed = this.getMember(roomId, agentId) !== null;
+    const hadOtherMembers = this.getMembers(roomId).some(
+      (member) => member.agent_id !== agentId
+    );
     this.applyPresence(roomId, agentId, timestamp, {
       processMetadata,
       recordWait: false,
       allowCreate: true,
       requireMember: false
     });
+    if (!existed && hadOtherMembers) {
+      const room = this.requireRoom(roomId);
+      if (room.state !== "closed") {
+        this.appendEvent({
+          room_id: roomId,
+          turn_id: room.turn_id,
+          event_type: "join",
+          from_agent_id: agentId,
+          to_agent_id: null,
+          handoff: null,
+          reason: "registered by self-targeted event receiver",
+          created_at: timestamp
+        });
+      }
+    }
   }
 
   private mergeMemberProcessMetadata(
@@ -2952,7 +3023,7 @@ export class TalkingStickService {
         from_agent_id: incomingAgentId,
         to_agent_id: targetAgentId,
         handoff: null,
-        reason: `superseded by newer ${incomingMetadata.harness_name} session from the same harness process`,
+        reason: `superseded provisional ${incomingMetadata.harness_name} identity with a verified session from the same harness process`,
         created_at: timestamp
       });
     }
@@ -3781,10 +3852,13 @@ export class TalkingStickService {
         `(
           (event_type = 'message_sent' AND (to_agent_id = ? OR (to_agent_id IS NULL AND from_agent_id != ?)))
           OR
-          (event_type != 'message_sent' AND (to_agent_id = ? OR from_agent_id = ?))
+          (event_type IN ('join', 'leave') AND from_agent_id != ?)
+          OR
+          (event_type NOT IN ('message_sent', 'join', 'leave') AND (to_agent_id = ? OR from_agent_id = ?))
         )`
       );
       params.push(
+        input.caller_agent_id,
         input.caller_agent_id,
         input.caller_agent_id,
         input.caller_agent_id,
@@ -4613,8 +4687,21 @@ function isSupersededHarnessInstance(
     existing.harness_pid === incoming.harness_pid &&
     existing.harness_process_started_at ===
       incoming.harness_process_started_at &&
-    existing.harness_session_id !== incoming.harness_session_id
+    isProvisionalHarnessSessionId(existing.harness_session_id!) &&
+    isVerifiedHarnessSessionId(incoming.harness_session_id!)
   );
+}
+
+function isProvisionalHarnessSessionId(sessionId: string): boolean {
+  return (
+    sessionId.startsWith("pid:") ||
+    sessionId.startsWith("term:") ||
+    sessionId.startsWith("userhost:")
+  );
+}
+
+function isVerifiedHarnessSessionId(sessionId: string): boolean {
+  return sessionId.startsWith("harness:");
 }
 
 function joinWarnings(

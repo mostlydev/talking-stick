@@ -809,13 +809,15 @@ describe("tt turn commands", () => {
       ])) as { guardian_pid: number };
       guardianPid = first.guardian_pid;
 
+      await captureStdout(["join", project, "--agent", "human:b", "--json"]);
+      await captureStdout(["try", project, "--agent", "human:a", "--json"]);
+
       const listener = spawnCliProcess([
         "wait", project, "--timeout", "5s", "--agent", "human:a", "--json"
       ]);
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(listener.child.exitCode).toBeNull();
 
-      await captureStdout(["join", project, "--agent", "human:b", "--json"]);
       await captureStdout([
         "msg", "send", "human:a", "hello", "--path", project,
         "--agent", "human:b", "--json"
@@ -839,6 +841,77 @@ describe("tt turn commands", () => {
         await captureStdout(["leave", project, "--agent", "human:b", "--json"]);
       } catch {
         // best-effort fixture cleanup
+      }
+    }
+  });
+
+  test("one long-running wait process exits when another member joins", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    let ownerGuardianPid: number | undefined;
+    let listener: SpawnedCliProcess | undefined;
+    try {
+      await captureStdout(["join", project, "--agent", "human:observer"]);
+      await captureStdout(["join", project, "--agent", "human:owner"]);
+      const owner = JSON.parse(
+        await captureStdout([
+          "wait",
+          project,
+          "--timeout",
+          "0ms",
+          "--agent",
+          "human:owner",
+          "--json"
+        ])
+      ) as { guardian_pid: number };
+      ownerGuardianPid = owner.guardian_pid;
+
+      // Consume the observer's existing join/claim backlog so this exercises a
+      // genuinely live membership change rather than replaying old events.
+      await captureStdout([
+        "try",
+        project,
+        "--agent",
+        "human:observer",
+        "--json"
+      ]);
+
+      listener = spawnCliProcess([
+        "wait",
+        project,
+        "--timeout",
+        "5s",
+        "--agent",
+        "human:observer",
+        "--json"
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(listener.child.exitCode).toBeNull();
+
+      await captureStdout(["join", project, "--agent", "human:new-peer", "--json"]);
+
+      const close = await waitForProcessClose(listener.child, 5_000);
+      expect(close.code).toBe(0);
+      const result = JSON.parse(listener.stdout()) as {
+        wake_reason: string;
+        events: Array<{ event_type: string; from_agent_id?: string }>;
+      };
+      expect(result.wake_reason).toBe("event");
+      expect(result.events).toContainEqual(
+        expect.objectContaining({
+          event_type: "join",
+          from_agent_id: "human:new-peer"
+        })
+      );
+    } finally {
+      if (listener?.child.exitCode === null) listener.child.kill("SIGTERM");
+      await releaseIfHeld(project, "human:owner");
+      killPidIfAlive(ownerGuardianPid);
+      for (const agent of ["human:new-peer", "human:observer"]) {
+        try {
+          await captureStdout(["leave", project, "--agent", agent, "--json"]);
+        } catch {
+          // best-effort fixture cleanup
+        }
       }
     }
   });
@@ -2047,7 +2120,9 @@ describe("tt msg", () => {
 
     const service = new TalkingStickService();
     try {
-      const events = service.getRoomEvents({ room_id: roomId });
+      const events = service
+        .getRoomEvents({ room_id: roomId })
+        .filter((event) => event.event_type === "message_sent");
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({
         event_type: "message_sent",
@@ -2095,7 +2170,9 @@ describe("tt msg", () => {
 
     const service = new TalkingStickService();
     try {
-      const events = service.getRoomEvents({ room_id: roomId });
+      const events = service
+        .getRoomEvents({ room_id: roomId })
+        .filter((event) => event.event_type === "message_sent");
       expect(events.map((event) => event.to_agent_id)).toEqual([
         "codex:target",
         null
@@ -2131,8 +2208,10 @@ describe("tt msg", () => {
 
     const service = new TalkingStickService();
     try {
-      const events = service.getRoomEvents({ room_id: roomId });
-      expect(events[0]).toMatchObject({
+      const event = service
+        .getRoomEvents({ room_id: roomId })
+        .find((candidate) => candidate.event_type === "message_sent");
+      expect(event).toMatchObject({
         to_agent_id: "codex:target",
         payload: {
           body: "body",
@@ -2166,8 +2245,10 @@ describe("tt msg", () => {
 
     const service = new TalkingStickService();
     try {
-      const events = service.getRoomEvents({ room_id: roomId });
-      expect(events[0]).toMatchObject({
+      const event = service
+        .getRoomEvents({ room_id: roomId })
+        .find((candidate) => candidate.event_type === "message_sent");
+      expect(event).toMatchObject({
         to_agent_id: "codex:target",
         payload: {
           body: "the body has spaces",
@@ -2212,6 +2293,35 @@ describe("tt msg", () => {
         project
       ])
     ).rejects.toMatchObject({ code: "ambiguous_recipient" });
+  });
+
+  test("a rejected pre-join message does not create CLI session state", async () => {
+    const { dataDir, project } = setupIsolatedCli(tempDirs);
+    seedCliRoomMembers(project, [
+      { agent_id: "codex:target", display_name: "codex" }
+    ]);
+
+    await expect(
+      captureStdout([
+        "msg",
+        "send",
+        "codex",
+        "hello",
+        "--agent",
+        "human:not-joined",
+        "--path",
+        project
+      ])
+    ).rejects.toMatchObject({
+      code: "unknown_member",
+      details: { agent_id: "human:not-joined" }
+    });
+
+    expect(
+      readCliSessions(resolveCliSessionPath({ dataDir })).some(
+        (session) => session.agent_id === "human:not-joined"
+      )
+    ).toBe(false);
   });
 
   test("tt msg send rejects a missing body", async () => {
@@ -2260,8 +2370,10 @@ describe("tt msg", () => {
 
     const service = new TalkingStickService();
     try {
-      const events = service.getRoomEvents({ room_id: roomId });
-      expect(events[0]).toMatchObject({
+      const event = service
+        .getRoomEvents({ room_id: roomId })
+        .find((candidate) => candidate.event_type === "message_sent");
+      expect(event).toMatchObject({
         to_agent_id: "codex:target",
         payload: {
           body: "body from stdin",
@@ -2340,7 +2452,9 @@ describe("tt msg", () => {
     const service = new TalkingStickService();
     let firstSeq: number;
     try {
-      const events = service.getRoomEvents({ room_id: roomId });
+      const events = service
+        .getRoomEvents({ room_id: roomId })
+        .filter((event) => event.event_type === "message_sent");
       firstSeq = events[0].event_seq;
     } finally {
       service.close();
@@ -2583,6 +2697,8 @@ describe("tt msg", () => {
       "0",
       "--target",
       "any",
+      "--event",
+      "message_sent",
       "--timeout",
       "50ms",
       "--agent",
@@ -2619,6 +2735,8 @@ describe("tt msg", () => {
       "--follow",
       "--after",
       "0",
+      "--event",
+      "message_sent,pass",
       "--timeout",
       "50ms",
       "--agent",
@@ -2730,6 +2848,8 @@ describe("tt msg", () => {
       "0",
       "--target",
       "self",
+      "--event",
+      "message_sent,pass",
       "--timeout",
       "100ms",
       "--json"

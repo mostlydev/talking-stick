@@ -280,7 +280,9 @@ describe("skiller bootstrap script", () => {
       encoding: "utf8",
       env: {
         ...process.env,
-        PATH: process.env.PATH ?? "",
+        // The bootstrap fixture must exercise installation even when the
+        // developer already has a compatible skiller in ~/.local/bin.
+        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
         SKILLER_BIN: "",
         SKILLER_RELEASE_BASE_URL: `file://${assets}`,
         TALKING_STICK_SKILLER_BIN_DIR: binDir

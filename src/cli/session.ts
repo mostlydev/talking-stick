@@ -78,7 +78,6 @@ export function resolveSessionForNotes(
     workspace_root: resolvedPath.workspace_root,
     updated_at: new Date().toISOString()
   };
-  upsertCliSession(sessionPath, session);
   return session;
 }
 
