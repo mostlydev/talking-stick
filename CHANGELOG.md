@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.11.0] — 2026-08-13
+
+Full notes: [`docs/releases/0.11.0.md`](docs/releases/0.11.0.md).
+
 ### Added
 
 - **Durable receiver registry.** A foreground `tt wait` registers its exact PID, start time, cursor, generation, and heartbeat in `room_receivers`. A concurrent second wait for the same room member fails fast with `duplicate_listener`, crash recovery replaces provably dead registrations, and `tt health` reads the registry instead of scanning process command lines.
@@ -414,6 +418,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.11.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.11.0
 [0.10.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.10.0
 [0.9.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.9.0
 [0.8.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.8.0
