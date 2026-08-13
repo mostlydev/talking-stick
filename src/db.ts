@@ -209,6 +209,14 @@ const migrations: Migration[] = [
       ALTER TABLE room_members ADD COLUMN wake_endpoint_recorded_at TEXT;
       ALTER TABLE room_members ADD COLUMN wake_interrupt_delivered_at TEXT;
     `
+  },
+  {
+    id: 11,
+    name: "interrupt_wake_endpoint_generation",
+    up: `
+      ALTER TABLE room_members
+        ADD COLUMN wake_endpoint_generation INTEGER NOT NULL DEFAULT 0;
+    `
   }
 ];
 

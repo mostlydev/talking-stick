@@ -82,7 +82,11 @@ export async function handleWaitCommand(
       process_started_at: getCurrentProcessStartedAt(),
       cursor_event_seq: currentCursor
     });
+    const harnessSessionId = identity.process_metadata.harness_session_id;
     try {
+      if (!harnessSessionId) {
+        throw new Error("No harness session is available for endpoint scoping.");
+      }
       const endpoint = resolveCmuxStandbyEndpoint();
       runtime.commands.registerWakeEndpoint(identity, {
         room_id: joined.room_id,

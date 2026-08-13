@@ -242,7 +242,7 @@ export class TalkingStickCommands {
       workspace_id: input.workspace_id,
       surface_id: input.surface_id,
       harness_session_id:
-        identity.process_metadata.harness_session_id ?? null
+        identity.process_metadata.harness_session_id ?? ""
     });
   }
 

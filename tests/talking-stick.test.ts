@@ -4155,6 +4155,83 @@ describe("interrupt delivery", () => {
     expect(requests).toHaveLength(0);
   });
 
+  test("wake endpoint registration requires a harness session", () => {
+    const harness = createHarness();
+    const joined = joinTwo(harness);
+
+    expect(() =>
+      harness.service.registerWakeEndpoint({
+        agent_id: "codex:target",
+        room_id: joined.room_id,
+        workspace_id: "ws-1",
+        surface_id: "surface-1",
+        harness_session_id: ""
+      })
+    ).toThrowProtocolError("invalid_input");
+  });
+
+  test("endpoint replacement during delivery cannot coalesce the new generation", () => {
+    const requests: WakeRequest[] = [];
+    let replaceEndpoint: (() => void) | null = null;
+    const transport: WakeTransport = {
+      deliver(request) {
+        requests.push(request);
+        replaceEndpoint?.();
+        replaceEndpoint = null;
+        return { delivered: true };
+      }
+    };
+    const harness = createHarness({ wakeTransport: transport });
+    const joined = joinTwo(harness);
+    const first = harness.service.registerWakeEndpoint({
+      agent_id: "codex:target",
+      room_id: joined.room_id,
+      workspace_id: "ws-1",
+      surface_id: "surface-1",
+      harness_session_id: "sess-1"
+    });
+    expect(first.generation).toBe(1);
+    replaceEndpoint = () => {
+      const replacement = harness.service.registerWakeEndpoint({
+        agent_id: "codex:target",
+        room_id: joined.room_id,
+        workspace_id: "ws-2",
+        surface_id: "surface-2",
+        harness_session_id: "sess-1"
+      });
+      expect(replacement.generation).toBe(2);
+    };
+
+    const raced = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "urgent during endpoint replacement",
+      delivery_hint: "interrupt"
+    });
+    expect(raced).toMatchObject({
+      delivery_status: "pending",
+      delivery_error: "Wake endpoint changed during interrupt delivery."
+    });
+    expect(requests[0]).toMatchObject({
+      surface_id: "surface-1",
+      generation: 1
+    });
+
+    const retry = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "retry on current endpoint",
+      delivery_hint: "interrupt"
+    });
+    expect(retry.delivery_status).toBe("endpoint");
+    expect(requests[1]).toMatchObject({
+      surface_id: "surface-2",
+      generation: 2
+    });
+  });
+
   test("failed endpoint delivery reports pending with the transport error", () => {
     const { requests, transport } = recordingTransport(false);
     const harness = createHarness({ wakeTransport: transport });

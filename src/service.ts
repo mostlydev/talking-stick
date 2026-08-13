@@ -133,6 +133,7 @@ interface RoomMemberRow {
   wake_workspace_id: string | null;
   wake_surface_id: string | null;
   wake_endpoint_session_id: string | null;
+  wake_endpoint_generation: number;
   wake_endpoint_recorded_at: string | null;
   wake_interrupt_delivered_at: string | null;
   receiver_generation: number;
@@ -1624,13 +1625,16 @@ export class TalkingStickService {
   ): RegisterWakeEndpointResult {
     assertNonEmpty(input.workspace_id, "workspace_id");
     assertNonEmpty(input.surface_id, "surface_id");
+    assertNonEmpty(input.harness_session_id, "harness_session_id");
     return withImmediateTransaction(this.db, () => {
-      if (!this.getMember(input.room_id, input.agent_id)) {
+      const member = this.getMember(input.room_id, input.agent_id);
+      if (!member) {
         throw new ProtocolError(
           "unknown_member",
           "Agent must join the room before registering a wake endpoint."
         );
       }
+      const generation = member.wake_endpoint_generation + 1;
       this.db
         .prepare(
           `
@@ -1638,6 +1642,7 @@ export class TalkingStickService {
           SET wake_workspace_id = ?,
               wake_surface_id = ?,
               wake_endpoint_session_id = ?,
+              wake_endpoint_generation = ?,
               wake_endpoint_recorded_at = ?,
               wake_interrupt_delivered_at = NULL
           WHERE room_id = ? AND agent_id = ?
@@ -1646,12 +1651,13 @@ export class TalkingStickService {
         .run(
           input.workspace_id,
           input.surface_id,
-          input.harness_session_id ?? null,
+          input.harness_session_id,
+          generation,
           this.now().toISOString(),
           input.room_id,
           input.agent_id
         );
-      return { status: "wake_endpoint_registered" };
+      return { status: "wake_endpoint_registered", generation };
     });
   }
 
@@ -1732,7 +1738,7 @@ export class TalkingStickService {
       transport: "cmux",
       workspace_id: member.wake_workspace_id,
       surface_id: member.wake_surface_id,
-      generation: member.standby_generation,
+      generation: member.wake_endpoint_generation,
       reason: "interrupt"
     };
     let delivery: WakeDeliveryResult;
@@ -1750,15 +1756,32 @@ export class TalkingStickService {
         error: delivery.error ?? "Interrupt wake delivery failed."
       };
     }
-    this.db
+    const stamped = this.db
       .prepare(
         `
         UPDATE room_members
         SET wake_interrupt_delivered_at = ?
-        WHERE room_id = ? AND agent_id = ?
+        WHERE room_id = ?
+          AND agent_id = ?
+          AND wake_endpoint_generation = ?
+          AND wake_endpoint_session_id = ?
+          AND harness_session_id = ?
       `
       )
-      .run(this.now().toISOString(), roomId, member.agent_id);
+      .run(
+        this.now().toISOString(),
+        roomId,
+        member.agent_id,
+        member.wake_endpoint_generation,
+        member.wake_endpoint_session_id,
+        member.wake_endpoint_session_id
+      );
+    if (stamped.changes !== 1) {
+      return {
+        status: "pending",
+        error: "Wake endpoint changed during interrupt delivery."
+      };
+    }
     return { status: "endpoint" };
   }
 

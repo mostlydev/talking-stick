@@ -122,6 +122,7 @@ export interface RoomMember {
   wake_workspace_id: string | null;
   wake_surface_id: string | null;
   wake_endpoint_session_id: string | null;
+  wake_endpoint_generation: number;
   wake_endpoint_recorded_at: string | null;
   wake_interrupt_delivered_at: string | null;
   status: "active" | "inactive";
@@ -528,11 +529,12 @@ export interface RegisterWakeEndpointInput {
   room_id: string;
   workspace_id: string;
   surface_id: string;
-  harness_session_id: string | null;
+  harness_session_id: string;
 }
 
 export interface RegisterWakeEndpointResult {
   status: "wake_endpoint_registered";
+  generation: number;
 }
 
 export type EventTypeFilter = EventType | EventType[];
