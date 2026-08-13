@@ -4,6 +4,7 @@ import {
 } from "../process-utils.js";
 import {
   appendGrokSessionRecord,
+  isGrokIdentityLifecycleEvent,
   type GrokSessionRecord
 } from "../grok-session-store.js";
 import { findHarnessRootInAncestry } from "../identity.js";
@@ -48,6 +49,9 @@ export async function runGrokSessionHookCommand(
       env.GROK_HOOK_EVENT,
       input.hookEventName
     ) ?? "unknown";
+    if (!isGrokIdentityLifecycleEvent(event)) {
+      return;
+    }
     const inspector = options.inspector ?? createSystemProcessInspector();
     const parentPid = options.parentPid ?? process.ppid;
     const parentInspection = inspector.inspect(parentPid);

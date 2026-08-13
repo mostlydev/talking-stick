@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   buildGrokSessionHookConfig,
   detectHarness,
+  GROK_SESSION_HOOK_EVENTS,
   parseHarnessList,
   planGrokSessionHookInstall,
   planGrokSessionHookUninstall,
@@ -54,6 +55,19 @@ describe("harness paths and detection", () => {
 });
 
 describe("Grok session hook", () => {
+  test("uses identity lifecycle events and excludes per-tool hooks", () => {
+    expect(GROK_SESSION_HOOK_EVENTS).toEqual([
+      "SessionStart",
+      "UserPromptSubmit",
+      "SessionEnd"
+    ]);
+    const config = JSON.parse(buildGrokSessionHookConfig()) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(Object.keys(config.hooks)).toEqual(GROK_SESSION_HOOK_EVENTS);
+    expect(config.hooks).not.toHaveProperty("PreToolUse");
+  });
+
   test("installs idempotently and uninstalls the hook", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-"));
     roots.push(homeDir);
@@ -71,6 +85,33 @@ describe("Grok session hook", () => {
     const removed = await runAction(planGrokSessionHookUninstall(options), options);
     expect(removed.status).toBe("removed");
     expect(fs.existsSync(hookPath)).toBe(false);
+  });
+
+  test("updates an older per-tool hook to the lifecycle-only config", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-"));
+    roots.push(homeDir);
+    const hookPath = resolveGrokSessionHookPath({ homeDir, env: {} });
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.writeFileSync(
+      hookPath,
+      JSON.stringify({
+        hooks: {
+          SessionStart: [],
+          UserPromptSubmit: [],
+          PreToolUse: [],
+          SessionEnd: []
+        }
+      }),
+      "utf8"
+    );
+    const options = { homeDir, env: {}, skipMissing: true };
+
+    const updated = await runAction(planGrokSessionHookInstall(options), options);
+    expect(updated.status).toBe("updated");
+    const config = JSON.parse(fs.readFileSync(hookPath, "utf8")) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(Object.keys(config.hooks)).toEqual(GROK_SESSION_HOOK_EVENTS);
   });
 
   test("skips install when the harness root is absent", async () => {

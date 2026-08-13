@@ -100,6 +100,7 @@ export {
   DEFAULT_GROK_SESSION_RECORD_MAX_AGE_MS,
   appendGrokSessionRecord,
   findGrokSessionRecord,
+  isGrokIdentityLifecycleEvent,
   isGrokSessionEndEvent,
   readGrokSessionRecords,
   resolveGrokSessionLogPath,

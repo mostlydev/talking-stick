@@ -125,7 +125,7 @@ describe("Grok session hook store", () => {
 
     await runGrokSessionHookCommand({
       env: {
-        GROK_HOOK_EVENT: "pre_tool_use",
+        GROK_HOOK_EVENT: "user_prompt_submit",
         GROK_SESSION_ID: "session-a",
         GROK_WORKSPACE_ROOT: workspace
       },
@@ -144,12 +144,100 @@ describe("Grok session hook store", () => {
         grok_session_id: "session-a",
         workspace_root: workspace,
         cwd: workspace,
-        event: "pre_tool_use",
+        event: "user_prompt_submit",
         observed_at: now.toISOString(),
         grok_pid: 100,
         grok_process_started_at: "Mon Jun  8 12:00:00 2026"
       }
     ]);
+  });
+
+  test("ignores legacy PreToolUse invocations after the hook is slimmed", async () => {
+    const { logPath, workspace } = makeTempLog();
+    await runGrokSessionHookCommand({
+      env: {
+        GROK_HOOK_EVENT: "pre_tool_use",
+        GROK_SESSION_ID: "session-a",
+        GROK_WORKSPACE_ROOT: workspace
+      },
+      stdin: "{}",
+      logPath
+    });
+    expect(readGrokSessionRecords(logPath)).toEqual([]);
+  });
+
+  test("bounds repeated lifecycle observations to active evidence and one end", async () => {
+    const { logPath, workspace } = makeTempLog();
+    const inspector = fakeInspector({
+      100: {
+        startTime: "Mon Jun  8 12:00:00 2026",
+        command: "/Users/alice/.local/bin/grok",
+        ppid: 1
+      },
+      200: {
+        startTime: "Mon Jun  8 12:01:00 2026",
+        command: "sh -c tt grok-session-hook",
+        ppid: 100
+      }
+    });
+    const run = async (event: string) =>
+      runGrokSessionHookCommand({
+        env: {
+          GROK_HOOK_EVENT: event,
+          GROK_SESSION_ID: "session-a",
+          GROK_WORKSPACE_ROOT: workspace
+        },
+        stdin: JSON.stringify({ cwd: workspace }),
+        parentPid: 200,
+        inspector,
+        logPath,
+        now
+      });
+
+    await run("session_start");
+    for (let index = 0; index < 100; index += 1) {
+      await run("user_prompt_submit");
+    }
+    await run("session_end");
+    await run("session_end");
+
+    expect(readGrokSessionRecords(logPath).map((item) => item.event)).toEqual([
+      "session_start",
+      "session_end"
+    ]);
+    expect(fs.readFileSync(logPath, "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  test("an exact live process match survives age limits but SessionEnd still wins", () => {
+    const { logPath, workspace } = makeTempLog();
+    const exact = record("session-a", workspace, {
+      observed_at: "2026-06-01T00:00:00.000Z",
+      grok_pid: 100,
+      grok_process_started_at: "Mon Jun  1 00:00:00 2026"
+    });
+    appendGrokSessionRecord(exact, { logPath });
+
+    const find = () =>
+      findGrokSessionRecord({
+        logPath,
+        workspaceRoot: workspace,
+        grokPid: 100,
+        grokProcessStartedAt: "Mon Jun  1 00:00:00 2026",
+        now,
+        maxAgeMs: 1
+      });
+    expect(find()?.grok_session_id).toBe("session-a");
+
+    appendGrokSessionRecord(
+      record("session-a", workspace, {
+        event: "SessionEnd",
+        observed_at: "2026-06-01T01:00:00.000Z",
+        grok_pid: 100,
+        grok_process_started_at: "Mon Jun  1 00:00:00 2026"
+      }),
+      { logPath }
+    );
+    expect(find()).toBeNull();
   });
 });
 

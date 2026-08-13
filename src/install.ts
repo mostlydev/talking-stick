@@ -21,7 +21,6 @@ export const DEFAULT_GROK_SESSION_HOOK_COMMAND =
 export const GROK_SESSION_HOOK_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
-  "PreToolUse",
   "SessionEnd"
 ] as const;
 

@@ -3,6 +3,11 @@ import path from "node:path";
 import { resolveDataDir, type ResolveDataDirOptions } from "./config.js";
 
 export const DEFAULT_GROK_SESSION_RECORD_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+const GROK_IDENTITY_LIFECYCLE_EVENTS = new Set([
+  "sessionstart",
+  "userpromptsubmit",
+  "sessionend"
+]);
 
 export interface GrokSessionRecord {
   source: "grok_hook";
@@ -38,11 +43,15 @@ export function resolveGrokSessionLogPath(
 export function appendGrokSessionRecord(
   record: GrokSessionRecord,
   options: AppendGrokSessionRecordOptions = {}
-): void {
+): boolean {
   const logPath =
     options.logPath ?? resolveGrokSessionLogPath(options.dataDirOptions ?? {});
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  if (!shouldAppendGrokSessionRecord(record, readGrokSessionRecords(logPath))) {
+    return false;
+  }
   fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`, "utf8");
+  return true;
 }
 
 export function readGrokSessionRecords(logPath: string): GrokSessionRecord[] {
@@ -90,10 +99,6 @@ export function findGrokSessionRecord(
       continue;
     }
 
-    if (isStaleRecord(record, nowMs, maxAgeMs)) {
-      continue;
-    }
-
     if (isGrokSessionEndEvent(record.event)) {
       endedSessionIds.add(record.grok_session_id);
       continue;
@@ -103,15 +108,18 @@ export function findGrokSessionRecord(
       continue;
     }
 
-    workspaceCandidates.push(record);
-    if (
+    const exactProcessMatch =
       input.grokPid != null &&
       input.grokProcessStartedAt != null &&
       record.grok_pid === input.grokPid &&
-      record.grok_process_started_at === input.grokProcessStartedAt
-    ) {
+      record.grok_process_started_at === input.grokProcessStartedAt;
+    if (exactProcessMatch) {
       return record;
     }
+    if (isStaleRecord(record, nowMs, maxAgeMs)) {
+      continue;
+    }
+    workspaceCandidates.push(record);
   }
 
   if (input.grokPid != null && input.grokProcessStartedAt != null) {
@@ -130,6 +138,60 @@ export function findGrokSessionRecord(
 
 export function isGrokSessionEndEvent(event: string): boolean {
   return normalizeEventName(event) === "sessionend";
+}
+
+export function isGrokIdentityLifecycleEvent(event: string): boolean {
+  return GROK_IDENTITY_LIFECYCLE_EVENTS.has(normalizeEventName(event));
+}
+
+function shouldAppendGrokSessionRecord(
+  incoming: GrokSessionRecord,
+  existingRecords: GrokSessionRecord[]
+): boolean {
+  const workspaceRoot = normalizeWorkspaceRoot(incoming.workspace_root);
+  const sessionRecords = existingRecords.filter(
+    (record) =>
+      record.grok_session_id === incoming.grok_session_id &&
+      normalizeWorkspaceRoot(record.workspace_root) === workspaceRoot
+  );
+  const latest = sessionRecords.at(-1);
+  if (isGrokSessionEndEvent(incoming.event)) {
+    return !latest || !isGrokSessionEndEvent(latest.event);
+  }
+  if (latest && isGrokSessionEndEvent(latest.event)) {
+    return false;
+  }
+
+  const active = sessionRecords
+    .slice()
+    .reverse()
+    .find((record) => !isGrokSessionEndEvent(record.event));
+  if (!active) {
+    return true;
+  }
+
+  const incomingHasExactProcess = hasExactGrokProcess(incoming);
+  if (sameGrokProcess(active, incoming)) {
+    return false;
+  }
+  return incomingHasExactProcess;
+}
+
+function hasExactGrokProcess(record: GrokSessionRecord): boolean {
+  return (
+    record.grok_pid !== null &&
+    record.grok_process_started_at !== null
+  );
+}
+
+function sameGrokProcess(
+  left: GrokSessionRecord,
+  right: GrokSessionRecord
+): boolean {
+  return (
+    left.grok_pid === right.grok_pid &&
+    left.grok_process_started_at === right.grok_process_started_at
+  );
 }
 
 function parseGrokSessionRecord(value: unknown): GrokSessionRecord | null {
