@@ -9,6 +9,7 @@
 - A sustained foreground wait registers its room member, receiver ID, exact PID/start time, cursor, generation, and heartbeat for the command lifetime. Cleanup is conditional on receiver ID, so an old process cannot erase its replacement.
 - `--after N` is an explicit replay/debug override, not part of the normal agent loop.
 - Delivery is at least once across crashes; consumers must tolerate replay and may deduplicate by `event_id`.
+- Default JSON omits only duplicated protocol boilerplate: static coordination prose, the prose restart hint, and room/turn or identical handoff fields repeated inside an event when the envelope already carries them. Substantive messages and handoffs are never truncated. Use `--verbose` for the full diagnostic representation.
 
 ## Process lifecycle
 

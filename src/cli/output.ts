@@ -29,12 +29,25 @@ export function printResult(
 ): void {
   if (shouldUseJson(parsed)) {
     process.stdout.write(
-      `${JSON.stringify(withCoordinationPrompt(parsed, result), null, 2)}\n`
+      `${JSON.stringify(prepareJsonResult(parsed, result), null, 2)}\n`
     );
     return;
   }
 
   process.stdout.write(`${renderText()}\n`);
+}
+
+export function prepareJsonResult(
+  parsed: ParsedCommand,
+  result: unknown
+): unknown {
+  if (!COORDINATION_PROMPT_COMMANDS.has(parsed.name)) {
+    return result;
+  }
+  if (hasOption(parsed, "verbose")) {
+    return withCoordinationPrompt(parsed, result);
+  }
+  return compactMachineResult(result);
 }
 
 export function shouldUseJson(
@@ -73,6 +86,50 @@ export function withCoordinationPrompt(
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function compactMachineResult(result: unknown): unknown {
+  if (!isObjectRecord(result) || Array.isArray(result)) {
+    return result;
+  }
+
+  const {
+    coordination_prompt: _coordinationPrompt,
+    next: _next,
+    ...compact
+  } = result;
+  if (!Array.isArray(compact.events)) {
+    return compact;
+  }
+
+  const room = isObjectRecord(compact.room) ? compact.room : null;
+  const envelopeRoomId = compact.room_id ?? room?.room_id;
+  const envelopeTurnId = compact.turn_id ?? room?.turn_id;
+  const envelopeHandoff = compact.handoff;
+  return {
+    ...compact,
+    events: compact.events.map((event) => {
+      if (!isObjectRecord(event)) {
+        return event;
+      }
+      const shaped = { ...event };
+      if (envelopeRoomId !== undefined && shaped.room_id === envelopeRoomId) {
+        delete shaped.room_id;
+      }
+      if (envelopeTurnId !== undefined && shaped.turn_id === envelopeTurnId) {
+        delete shaped.turn_id;
+      }
+      if (
+        envelopeHandoff !== undefined &&
+        envelopeHandoff !== null &&
+        shaped.handoff !== undefined &&
+        JSON.stringify(shaped.handoff) === JSON.stringify(envelopeHandoff)
+      ) {
+        delete shaped.handoff;
+      }
+      return shaped;
+    })
+  };
 }
 
 export function formatRelativeTime(

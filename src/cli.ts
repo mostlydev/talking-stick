@@ -14,6 +14,7 @@ export { parseHandoffJson } from "./cli/handoff.js";
 export {
   COORDINATION_PROMPT,
   formatRelativeTime,
+  prepareJsonResult,
   shouldUseJson,
   withCoordinationPrompt
 } from "./cli/output.js";

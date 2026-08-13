@@ -9,6 +9,7 @@ import {
   COORDINATION_PROMPT,
   formatRelativeTime,
   parseHandoffJson,
+  prepareJsonResult,
   runCli,
   shouldAutoSyncInstalledSkills,
   shouldUseJson,
@@ -278,6 +279,80 @@ describe("withCoordinationPrompt", () => {
         result
       )
     ).toBe(result);
+  });
+});
+
+describe("prepareJsonResult", () => {
+  const parsed = {
+    name: "wait",
+    positionals: [],
+    options: new Map<string, string | true>()
+  };
+  const substantiveHandoff = {
+    status: "Exact status with hostile-looking $(echo body) and unicode café.",
+    next_action: "Preserve this entire next action verbatim.",
+    open_questions: ["Does every byte survive?"],
+    do_not: ["truncate anything"]
+  };
+  const result = {
+    status: "your_turn",
+    room_id: "room-1",
+    turn_id: 7,
+    lease_id: "lease-1",
+    handoff: substantiveHandoff,
+    next: "Restart one listener.",
+    coordination_prompt: COORDINATION_PROMPT,
+    events: [
+      {
+        event_seq: 41,
+        event_id: "event-41",
+        room_id: "room-1",
+        turn_id: 7,
+        event_type: "pass",
+        handoff: substantiveHandoff,
+        payload: null
+      },
+      {
+        event_seq: 42,
+        event_id: "event-42",
+        room_id: "room-1",
+        turn_id: 7,
+        event_type: "message_sent",
+        handoff: null,
+        payload: {
+          body: "Full message body\nwith a second line and $(hostile-looking text).",
+          delivery_hint: "interrupt"
+        }
+      }
+    ]
+  };
+
+  test("compacts only duplicated protocol fields and preserves substantive text", () => {
+    const compact = prepareJsonResult(parsed, result) as Record<string, unknown>;
+    expect(compact).not.toHaveProperty("coordination_prompt");
+    expect(compact).not.toHaveProperty("next");
+    expect(compact.handoff).toEqual(substantiveHandoff);
+
+    const events = compact.events as Array<Record<string, unknown>>;
+    expect(events[0]).not.toHaveProperty("room_id");
+    expect(events[0]).not.toHaveProperty("turn_id");
+    expect(events[0]).not.toHaveProperty("handoff");
+    expect(events[1]).toMatchObject({
+      event_id: "event-42",
+      handoff: null,
+      payload: result.events[1].payload
+    });
+  });
+
+  test("verbose JSON preserves the full diagnostic representation", () => {
+    const verbose = prepareJsonResult(
+      {
+        ...parsed,
+        options: new Map<string, string | true>([["verbose", true]])
+      },
+      result
+    );
+    expect(verbose).toEqual(result);
   });
 });
 
@@ -615,7 +690,7 @@ describe("tt turn commands", () => {
       expect(waitResult.status).toBe("your_turn");
       expect(guardianPid).toEqual(expect.any(Number));
       expect(isPidAlive(guardianPid as number)).toBe(true);
-      expect(waitResult.coordination_prompt).toBe(COORDINATION_PROMPT);
+      expect(waitResult.coordination_prompt).toBeUndefined();
     } finally {
       await releaseIfHeld(project, "human:worker");
       killPidIfAlive(guardianPid);
@@ -1518,7 +1593,7 @@ describe("tt notes", () => {
     expect(health.listener.duplicates).toBe(0);
     expect(health.git.dirty).toBe(false);
     expect(health.next_action).toContain("tt wait");
-    expect(health.coordination_prompt).toBe(COORDINATION_PROMPT);
+    expect(health.coordination_prompt).toBeUndefined();
 
     const statusOut = await captureStdout([
       "status",
@@ -1542,7 +1617,7 @@ describe("tt notes", () => {
     expect(afterStatus.notes).toEqual(beforeState.notes);
     expect(afterStatus.sessions).toEqual(beforeState.sessions);
     expect(status.room.canonical_path).toBe(project);
-    expect(status.coordination_prompt).toBe(COORDINATION_PROMPT);
+    expect(status.coordination_prompt).toBeUndefined();
   });
 
   test("TT_HARNESS_EXPORT auto-switches state to JSON; --text overrides", async () => {
