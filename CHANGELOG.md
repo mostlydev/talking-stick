@@ -11,6 +11,12 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- **Concurrent same-process sessions no longer evict each other.** Session supersession now fires only when a verified `harness:` identity replaces a provisional (`pid:`/`term:`/`userhost:`) identity from the same harness process. Subagent threads sharing one process coexist instead of deleting the owner's membership and voiding its lease mid-turn (the my-cli `unknown_member` failure).
+- **Membership changes wake waiting members.** Genuinely new joins and leaves emit broadcast `join`/`leave` events that reach every other member's `tt wait`; implicit-join presence touches stay silent. `tt wait` now uses the documented `self` event filter, which also keeps handoff-pickup claims visible to the releaser.
+- **No ghost grants.** A member removed mid-wait gets a caller-named `unknown_member` error with re-join guidance instead of being granted a turn; pre-join sends name the caller and no longer fabricate a CLI session row.
+
 ## [0.12.0] — 2026-08-13
 
 Full notes: [`docs/releases/0.12.0.md`](docs/releases/0.12.0.md).
