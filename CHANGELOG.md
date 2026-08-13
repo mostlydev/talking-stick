@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- **Default-on Claude Code Stop guard.** `tt install claude-code` merges a managed `Stop` hook into `~/.claude/settings.json` (`--no-guard` opts out; uninstall removes only the managed entry, including on the native fallback path). The internal `tt claude-stop-hook` command binds to the exact harness session, uses a genuinely read-only grant lookup, and blocks a stop with exit 2 only while that session holds an unexpired lease or an unclaimed reservation. It honors `stop_hook_active`, propagates only exit 2, and fails open on every error path.
+
 ## [0.11.0] — 2026-08-13
 
 Full notes: [`docs/releases/0.11.0.md`](docs/releases/0.11.0.md).
