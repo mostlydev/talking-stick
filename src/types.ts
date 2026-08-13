@@ -537,6 +537,26 @@ export interface RegisterWakeEndpointResult {
   generation: number;
 }
 
+export interface InspectStopGuardInput {
+  context_path: string;
+  harness_session_id: string;
+}
+
+export type StopGuardInspection =
+  | {
+      blocked: false;
+      reason: "no_room" | "room_closed" | "not_a_member" | "no_live_grant";
+    }
+  | {
+      blocked: true;
+      reason: "owner" | "reservation";
+      agent_id: AgentId;
+      room_id: string;
+      canonical_path: string;
+      turn_id: number;
+      expires_at: string;
+    };
+
 export type EventTypeFilter = EventType | EventType[];
 
 export type TargetAgentFilter = "self" | "any" | AgentId;

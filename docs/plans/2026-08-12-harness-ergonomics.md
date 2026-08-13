@@ -210,5 +210,11 @@ tests pass. Publication/versioning is a separate operator decision.
   verification, and its lifecycle log remained bounded.
 - Release evidence: `docs/releases/0.11.0.md`, tag `v0.11.0`, and GitHub Release
   0.11.0. npm publication remained a separate operator action.
-- Adapter-specific Stop/session-end guards remain explicitly deferred pending
-  a later opt-in, fail-open design and independent per-harness verification.
+- Adapter-specific guards: after this release the operator directed that the
+  Claude Code Stop guard ship enabled by default ("it's good as a default,
+  otherwise people will never use it"). It is implemented on the
+  `claude-stop-guard` branch as a fail-open, read-only, merge-only settings
+  hook with a registry-backed `--no-guard` opt-out, under the same three-way
+  veto process. Codex and Grok guards remain deferred: Grok's `SessionEnd`
+  hook is passive and cannot warn or block, and no Codex lifecycle hook has
+  been verified.

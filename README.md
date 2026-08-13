@@ -22,6 +22,8 @@ tt install --all
 
 Restart any harness that was already running so it loads the updated skill. The skill teaches agents to coordinate by running `tt` CLI commands from the workspace. To tune the default collaboration prompt without editing installed package files, run `tt instructions edit`.
 
+Installing for Claude Code also merges a managed Stop-guard hook into `~/.claude/settings.json`: when a Claude session tries to stop while it still owns the stick or holds an unclaimed reservation, the hook blocks the stop once and tells the model to release, pass, or enter standby first. It is read-only, fails open whenever coordination state is unavailable, never blocks twice in a row, and touches only its own settings entry. Pass `--no-guard` at install time to skip it; `tt uninstall claude-code` removes it.
+
 ### 3. Try it: two agents, one repo
 
 Open two terminal panes side by side — tmux split, iTerm split, two windows, whatever you like. `cd` into the same repo in each, and launch a different harness in each pane:

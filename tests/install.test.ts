@@ -4,6 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   buildGrokSessionHookConfig,
+  CLAUDE_STOP_GUARD_MARKER,
+  mergeClaudeStopGuard,
+  planClaudeStopGuardInstall,
+  planClaudeStopGuardUninstall,
+  removeClaudeStopGuard,
   detectHarness,
   GROK_SESSION_HOOK_EVENTS,
   parseHarnessList,
@@ -51,6 +56,88 @@ describe("harness paths and detection", () => {
       "claude-code"
     ]);
     expect(() => parseHarnessList(["unknown"])).toThrow(/Unknown harness/);
+  });
+});
+
+describe("Claude Stop guard", () => {
+  function setupHome(): { homeDir: string; settingsPath: string } {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-guard-"));
+    roots.push(homeDir);
+    fs.mkdirSync(path.join(homeDir, ".claude"), { recursive: true });
+    return {
+      homeDir,
+      settingsPath: path.join(homeDir, ".claude", "settings.json")
+    };
+  }
+
+  test("merge preserves foreign settings and is idempotent", () => {
+    const existing = JSON.stringify(
+      {
+        model: "opus",
+        hooks: {
+          SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: "other.sh" }] }],
+          Stop: [{ hooks: [{ type: "command", command: "foreign-stop.sh" }] }]
+        }
+      },
+      null,
+      2
+    );
+    const merged = mergeClaudeStopGuard(existing);
+    expect(merged).not.toBeNull();
+    const parsed = JSON.parse(merged!) as {
+      model: string;
+      hooks: { SessionStart: unknown[]; Stop: Array<{ hooks: Array<{ command: string }> }> };
+    };
+    expect(parsed.model).toBe("opus");
+    expect(parsed.hooks.SessionStart).toHaveLength(1);
+    expect(parsed.hooks.Stop).toHaveLength(2);
+    expect(parsed.hooks.Stop[0].hooks[0].command).toBe("foreign-stop.sh");
+    expect(parsed.hooks.Stop[1].hooks[0].command).toContain(CLAUDE_STOP_GUARD_MARKER);
+
+    expect(mergeClaudeStopGuard(merged)).toBe(merged);
+  });
+
+  test("merge refuses unparseable settings; remove strips only our entry", () => {
+    expect(mergeClaudeStopGuard("{ not json")).toBeNull();
+
+    const merged = mergeClaudeStopGuard(null)!;
+    const removed = removeClaudeStopGuard(merged)!;
+    const parsed = JSON.parse(removed) as Record<string, unknown>;
+    expect(parsed.hooks).toBeUndefined();
+
+    const withForeign = mergeClaudeStopGuard(
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "foreign.sh" }] }] } })
+    )!;
+    const strippedText = removeClaudeStopGuard(withForeign)!;
+    const stripped = JSON.parse(strippedText) as {
+      hooks: { Stop: Array<{ hooks: Array<{ command: string }> }> };
+    };
+    expect(stripped.hooks.Stop).toHaveLength(1);
+    expect(stripped.hooks.Stop[0].hooks[0].command).toBe("foreign.sh");
+  });
+
+  test("install action writes, is idempotent, and uninstall cleans", async () => {
+    const { homeDir, settingsPath } = setupHome();
+    const options = { homeDir, env: {}, skipMissing: true };
+
+    const first = await runAction(planClaudeStopGuardInstall(options), options);
+    const second = await runAction(planClaudeStopGuardInstall(options), options);
+    expect(first.status).toBe("added");
+    expect(second.status).toBe("already_present");
+    expect(fs.readFileSync(settingsPath, "utf8")).toContain(CLAUDE_STOP_GUARD_MARKER);
+
+    const removed = await runAction(planClaudeStopGuardUninstall(options), options);
+    expect(removed.status).toBe("removed");
+    const after = JSON.parse(fs.readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+    expect(JSON.stringify(after)).not.toContain(CLAUDE_STOP_GUARD_MARKER);
+  });
+
+  test("install skips when the claude config directory is missing", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-guard-"));
+    roots.push(homeDir);
+    const options = { homeDir, env: {}, skipMissing: true };
+    const action = planClaudeStopGuardInstall(options);
+    expect(action.kind).toBe("skip");
   });
 });
 

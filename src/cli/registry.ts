@@ -1,4 +1,5 @@
 import { runGuardCommand } from "./guardian.js";
+import { runClaudeStopHookCommand } from "./claude-stop-hook.js";
 import { runGrokSessionHookCommand } from "./grok-session-hook.js";
 import {
   runInstallCommand,
@@ -57,6 +58,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     handler: ({ parsed }) => runGuardCommand(parsed)
   },
   {
+    name: "claude-stop-hook",
+    needsRuntime: false,
+    startupMaintenance: false,
+    internal: true,
+    usage: "tt claude-stop-hook",
+    description: "Warn a stopping Claude Code session that still holds the stick.",
+    handler: () => runClaudeStopHookCommand()
+  },
+  {
     name: "grok-session-hook",
     needsRuntime: false,
     startupMaintenance: false,
@@ -70,7 +80,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: false,
     startupMaintenance: false,
     internal: false,
-    usage: "tt install <harness...> | --all [--print] [--copy] [--link] [--replace]",
+    usage: "tt install <harness...> | --all [--print] [--copy] [--link] [--replace] [--no-guard]",
     description: "Install or explicitly replace the Talking Stick skill.",
     handler: ({ parsed }) => runInstallCommand(parsed)
   },

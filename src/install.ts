@@ -282,6 +282,186 @@ export function skipAction(harness: HarnessId, message: string): SkipAction {
   };
 }
 
+export const CLAUDE_STOP_GUARD_MARKER = "talking-stick-claude-stop-hook";
+const CLAUDE_STOP_GUARD_COMMAND = `: ${CLAUDE_STOP_GUARD_MARKER}; if command -v tt >/dev/null 2>&1; then tt claude-stop-hook; fi`;
+
+function resolveClaudeSettingsPath(resolved: ResolvedOptions): string {
+  return path.join(
+    resolveHarnessConfigDirFromResolved("claude-code", resolved),
+    "settings.json"
+  );
+}
+
+export function buildClaudeStopGuardHook(): Record<string, unknown> {
+  return {
+    type: "command",
+    command: CLAUDE_STOP_GUARD_COMMAND,
+    timeout: 10
+  };
+}
+
+function isStopGuardEntry(entry: unknown): boolean {
+  if (typeof entry !== "object" || entry === null) return false;
+  const hooks = (entry as { hooks?: unknown }).hooks;
+  if (!Array.isArray(hooks)) return false;
+  return hooks.some(
+    (hook) =>
+      typeof hook === "object" &&
+      hook !== null &&
+      typeof (hook as { command?: unknown }).command === "string" &&
+      ((hook as { command: string }).command.includes(CLAUDE_STOP_GUARD_MARKER))
+  );
+}
+
+// Merge-only: adds our Stop entry to existing settings, preserving every other
+// key and every foreign hook. Returns null when the settings file cannot be
+// safely modified (unparseable or non-object) so the caller can skip.
+export function mergeClaudeStopGuard(existing: string | null): string | null {
+  let settings: Record<string, unknown> = {};
+  if (existing !== null && existing.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(existing) as unknown;
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return null;
+      }
+      settings = parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  const hooks =
+    typeof settings.hooks === "object" &&
+    settings.hooks !== null &&
+    !Array.isArray(settings.hooks)
+      ? (settings.hooks as Record<string, unknown>)
+      : {};
+  const stopEntries = Array.isArray(hooks.Stop) ? [...(hooks.Stop as unknown[])] : [];
+  if (stopEntries.some(isStopGuardEntry)) {
+    return existing;
+  }
+  stopEntries.push({ hooks: [buildClaudeStopGuardHook()] });
+  settings.hooks = { ...hooks, Stop: stopEntries };
+  return JSON.stringify(settings, null, 2) + "\n";
+}
+
+// Removes only our Stop entry; leaves foreign hooks and settings untouched.
+export function removeClaudeStopGuard(existing: string | null): string | null {
+  if (existing === null || existing.trim().length === 0) return existing;
+  let settings: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(existing) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return existing;
+    }
+    settings = parsed as Record<string, unknown>;
+  } catch {
+    return existing;
+  }
+
+  const hooks =
+    typeof settings.hooks === "object" &&
+    settings.hooks !== null &&
+    !Array.isArray(settings.hooks)
+      ? (settings.hooks as Record<string, unknown>)
+      : null;
+  if (!hooks || !Array.isArray(hooks.Stop)) return existing;
+
+  const remaining = (hooks.Stop as unknown[]).filter(
+    (entry) => !isStopGuardEntry(entry)
+  );
+  if (remaining.length === (hooks.Stop as unknown[]).length) return existing;
+
+  const nextHooks: Record<string, unknown> = { ...hooks };
+  if (remaining.length > 0) {
+    nextHooks.Stop = remaining;
+  } else {
+    delete nextHooks.Stop;
+  }
+  if (Object.keys(nextHooks).length > 0) {
+    settings.hooks = nextHooks;
+  } else {
+    delete settings.hooks;
+  }
+  return JSON.stringify(settings, null, 2) + "\n";
+}
+
+export function planClaudeStopGuardInstall(
+  options: InstallOptions = {}
+): InstallAction {
+  const resolved = resolveOptions(options);
+  const configDir = resolveHarnessConfigDirFromResolved("claude-code", resolved);
+  const filePath = resolveClaudeSettingsPath(resolved);
+  if (resolved.skipMissing && !resolved.hooks.pathExists(configDir)) {
+    return skipAction(
+      "claude-code",
+      `claude config directory not found: ${configDir}`
+    );
+  }
+
+  return {
+    kind: "file-patch",
+    harness: "claude-code",
+    filePath,
+    description: `merge Stop guard hook into ${filePath}`,
+    operation: "install",
+    inspect: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      const merged = mergeClaudeStopGuard(existing);
+      if (merged === null) return "different";
+      return merged === existing ? "present" : "absent";
+    },
+    apply: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      const merged = mergeClaudeStopGuard(existing);
+      if (merged === null) {
+        throw new Error(
+          `Refusing to modify unparseable settings file: ${filePath}`
+        );
+      }
+      if (merged !== existing) {
+        resolved.hooks.ensureDir(path.dirname(filePath));
+        resolved.hooks.writeFile(filePath, merged);
+      }
+    }
+  };
+}
+
+export function planClaudeStopGuardUninstall(
+  options: InstallOptions = {}
+): InstallAction {
+  const resolved = resolveOptions(options);
+  const configDir = resolveHarnessConfigDirFromResolved("claude-code", resolved);
+  const filePath = resolveClaudeSettingsPath(resolved);
+  if (resolved.skipMissing && !resolved.hooks.pathExists(configDir)) {
+    return skipAction(
+      "claude-code",
+      `claude config directory not found: ${configDir}`
+    );
+  }
+
+  return {
+    kind: "file-patch",
+    harness: "claude-code",
+    filePath,
+    description: `remove Stop guard hook from ${filePath}`,
+    operation: "uninstall",
+    inspect: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      if (existing === null) return "absent";
+      const removed = removeClaudeStopGuard(existing);
+      return removed === existing ? "absent" : "present";
+    },
+    apply: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      const removed = removeClaudeStopGuard(existing);
+      if (removed !== existing && removed !== null) {
+        resolved.hooks.writeFile(filePath, removed);
+      }
+    }
+  };
+}
+
 export function planGrokSessionHookInstall(
   options: InstallOptions = {}
 ): InstallAction {

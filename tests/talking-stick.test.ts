@@ -3963,6 +3963,111 @@ describe("foreground receiver registry", () => {
   });
 });
 
+describe("stop guard inspection", () => {
+  const SESSION = "harness:claude-session-1";
+
+  async function setupOwnedRoom(harness: ReturnType<typeof createHarness>) {
+    const project = createProject(harness.tempRoot);
+    const joined = harness.service.joinPath({
+      agent_id: "claude:owner",
+      context_path: project,
+      process_metadata: { harness_session_id: SESSION }
+    });
+    const claim = await harness.service.waitForTurn({
+      room_id: joined.room_id,
+      agent_id: "claude:owner",
+      max_wait_ms: 0,
+      process_metadata: { harness_session_id: SESSION }
+    });
+    expect(claim.status).toBe("your_turn");
+    return { project, joined };
+  }
+
+  test("blocks the exact session that owns a live lease", async () => {
+    const harness = createHarness();
+    const { project } = await setupOwnedRoom(harness);
+
+    const inspection = harness.service.inspectStopGuard({
+      context_path: project,
+      harness_session_id: SESSION
+    });
+    expect(inspection).toMatchObject({
+      blocked: true,
+      reason: "owner",
+      agent_id: "claude:owner"
+    });
+
+    const other = harness.service.inspectStopGuard({
+      context_path: project,
+      harness_session_id: "harness:someone-else"
+    });
+    expect(other).toEqual({ blocked: false, reason: "not_a_member" });
+  });
+
+  test("fails open on expired lease, missing room, and closed room", async () => {
+    const harness = createHarness();
+    const { project, joined } = await setupOwnedRoom(harness);
+
+    harness.clock.advance(46 * 60 * 1000);
+    expect(
+      harness.service.inspectStopGuard({
+        context_path: project,
+        harness_session_id: SESSION
+      })
+    ).toEqual({ blocked: false, reason: "no_live_grant" });
+
+    const emptyDir = path.join(harness.tempRoot, "empty");
+    fs.mkdirSync(emptyDir, { recursive: true });
+    expect(
+      harness.service.inspectStopGuard({
+        context_path: emptyDir,
+        harness_session_id: SESSION
+      })
+    ).toEqual({ blocked: false, reason: "no_room" });
+    void joined;
+  });
+
+  test("blocks an unclaimed live reservation and never mutates presence", async () => {
+    const harness = createHarness();
+    const { project, joined } = await setupOwnedRoom(harness);
+    harness.service.joinPath({
+      agent_id: "codex:peer",
+      context_path: project,
+      process_metadata: { harness_session_id: "harness:codex-session" }
+    });
+    harness.service.passStick({
+      room_id: joined.room_id,
+      agent_id: "claude:owner",
+      lease_id: harness.service.getRoomState({ room_id: joined.room_id }).room
+        .lease_id as string,
+      expected_turn_id: 1,
+      to_agent_id: "codex:peer",
+      handoff: { status: "done", next_action: "peer continues" },
+      operator_override: true,
+      process_metadata: { harness_session_id: SESSION }
+    });
+
+    const before = harness.service
+      .getRoomState({ room_id: joined.room_id })
+      .members.map((m) => [m.agent_id, m.last_seen_at]);
+
+    const inspection = harness.service.inspectStopGuard({
+      context_path: project,
+      harness_session_id: "harness:codex-session"
+    });
+    expect(inspection).toMatchObject({
+      blocked: true,
+      reason: "reservation",
+      agent_id: "codex:peer"
+    });
+
+    const after = harness.service
+      .getRoomState({ room_id: joined.room_id })
+      .members.map((m) => [m.agent_id, m.last_seen_at]);
+    expect(after).toEqual(before);
+  });
+});
+
 describe("interrupt delivery", () => {
   function recordingTransport(deliver = true) {
     const requests: WakeRequest[] = [];

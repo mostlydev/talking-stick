@@ -16,6 +16,7 @@ const BOOLEAN_FLAGS = new Set([
   "interrupt",
   "json",
   "link",
+  "no-guard",
   "operator-requested",
   "park",
   "print",

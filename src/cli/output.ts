@@ -274,7 +274,7 @@ Commands:
   tt takeover [path] [--reason TEXT] [--operator-requested]
   tt notes add <body> [--turn N] [--path DIR] [--stdin]
   tt notes list [--all] [--after NOTE_ID] [--limit N] [--path DIR]
-  tt install <harness...> | --all [--print] [--copy] [--link] [--replace]
+  tt install <harness...> | --all [--print] [--copy] [--link] [--replace] [--no-guard]
   tt uninstall <harness...|agents> | --all | --shared [--print]
   tt self-update [--print] [--manager npm|pnpm|yarn|bun]
 

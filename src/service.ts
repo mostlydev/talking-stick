@@ -34,6 +34,8 @@ import type {
   GetRoomStateResult,
   Handoff,
   HeartbeatReceiverInput,
+  InspectStopGuardInput,
+  StopGuardInspection,
   HeartbeatReceiverResult,
   HiddenRowsSummary,
   HeartbeatResult,
@@ -1617,6 +1619,74 @@ export class TalkingStickService {
       delivery_target: wakeTargetId,
       ...(delivery.error ? { delivery_error: delivery.error } : {})
     };
+  }
+
+  // Read-only lifecycle-guard lookup: resolves the room for a path and reports
+  // whether the given harness session holds a live grant. It must never create
+  // rooms, touch presence, purge state, or write anything.
+  inspectStopGuard(input: InspectStopGuardInput): StopGuardInspection {
+    assertNonEmpty(input.context_path, "context_path");
+    assertNonEmpty(input.harness_session_id, "harness_session_id");
+
+    const resolved = resolveContextPath(input.context_path);
+    const room = this.findDeepestRoom(
+      ancestorPaths(resolved.canonical_context_path, resolved.workspace_root)
+    );
+    if (!room) {
+      return { blocked: false, reason: "no_room" };
+    }
+    if (room.state === "closed") {
+      return { blocked: false, reason: "room_closed" };
+    }
+
+    const sessionAgents = new Set(
+      this.db
+        .prepare<[string, string], { agent_id: string }>(
+          `SELECT agent_id FROM room_members
+           WHERE room_id = ? AND harness_session_id = ?`
+        )
+        .all(room.room_id, input.harness_session_id)
+        .map((row) => row.agent_id)
+    );
+    if (sessionAgents.size === 0) {
+      return { blocked: false, reason: "not_a_member" };
+    }
+
+    const now = this.now();
+    if (
+      room.owner &&
+      sessionAgents.has(room.owner) &&
+      room.lease_expires_at &&
+      !this.hasExpired(room.lease_expires_at, now)
+    ) {
+      return {
+        blocked: true,
+        reason: "owner",
+        agent_id: room.owner,
+        room_id: room.room_id,
+        canonical_path: room.canonical_path,
+        turn_id: room.turn_id,
+        expires_at: room.lease_expires_at
+      };
+    }
+    if (
+      !room.owner &&
+      room.reserved_for &&
+      sessionAgents.has(room.reserved_for) &&
+      room.claim_expires_at &&
+      !this.hasExpired(room.claim_expires_at, now)
+    ) {
+      return {
+        blocked: true,
+        reason: "reservation",
+        agent_id: room.reserved_for,
+        room_id: room.room_id,
+        canonical_path: room.canonical_path,
+        turn_id: room.turn_id,
+        expires_at: room.claim_expires_at
+      };
+    }
+    return { blocked: false, reason: "no_live_grant" };
   }
 
   registerWakeEndpoint(

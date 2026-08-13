@@ -4,6 +4,8 @@ import {
   detectHarness,
   isDeprecatedHarness,
   parseHarnessList,
+  planClaudeStopGuardInstall,
+  planClaudeStopGuardUninstall,
   planGrokSessionHookInstall,
   planGrokSessionHookUninstall,
   runAction,
@@ -50,7 +52,8 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
   const installOptions = {
     link: resolveSkillInstallLinkMode(parsed),
     replace: hasOption(parsed, "replace"),
-    skipMissing: true
+    skipMissing: true,
+    guard: !hasOption(parsed, "no-guard")
   };
 
   if (dryRun) {
@@ -65,9 +68,14 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
       for (const line of skillerLines) {
         process.stdout.write(`${line}\n`);
       }
-      for (const action of harnesses.includes("grok")
-        ? [planGrokSessionHookInstall(installOptions)]
-        : []) {
+      for (const action of [
+        ...(harnesses.includes("grok")
+          ? [planGrokSessionHookInstall(installOptions)]
+          : []),
+        ...(harnesses.includes("claude-code") && installOptions.guard !== false
+          ? [planClaudeStopGuardInstall(installOptions)]
+          : [])
+      ]) {
         printActionPlan(action);
       }
       const cleanupLines = await runSkillerDryRun("cleanup-duplicates", {
@@ -98,6 +106,12 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
         ...skillerResults,
         ...(harnesses.includes("grok")
           ? await runSkillInstallActions([planGrokSessionHookInstall(installOptions)], installOptions)
+          : []),
+        ...(harnesses.includes("claude-code") && installOptions.guard !== false
+          ? await runSkillInstallActions(
+              [planClaudeStopGuardInstall(installOptions)],
+              installOptions
+            )
           : [])
       ]
     : await runSkillInstallActions(
@@ -132,14 +146,24 @@ export async function runUninstallCommand(
       for (const line of skillerLines) {
         process.stdout.write(`${line}\n`);
       }
-      for (const action of harnesses.includes("grok")
-        ? [
-            planGrokSessionHookUninstall({
-              ...installOptions,
-              skipMissing: false
-            })
-          ]
-        : []) {
+      for (const action of [
+        ...(harnesses.includes("grok")
+          ? [
+              planGrokSessionHookUninstall({
+                ...installOptions,
+                skipMissing: false
+              })
+            ]
+          : []),
+        ...(harnesses.includes("claude-code")
+          ? [
+              planClaudeStopGuardUninstall({
+                ...installOptions,
+                skipMissing: false
+              })
+            ]
+          : [])
+      ]) {
         printActionPlan(action);
       }
       printSharedSkillLeftHint(harnesses, removeShared);
@@ -165,6 +189,17 @@ export async function runUninstallCommand(
           ? [
               await runAction(
                 planGrokSessionHookUninstall({
+                  ...installOptions,
+                  skipMissing: false
+                }),
+                installOptions
+              )
+            ]
+          : []),
+        ...(harnesses.includes("claude-code")
+          ? [
+              await runAction(
+                planClaudeStopGuardUninstall({
                   ...installOptions,
                   skipMissing: false
                 }),
@@ -331,6 +366,14 @@ function planUninstallActions(
       ...installOptions,
       skipMissing: false
     }),
+    ...(harness === "claude-code"
+      ? [
+          planClaudeStopGuardUninstall({
+            ...installOptions,
+            skipMissing: false
+          })
+        ]
+      : []),
     ...(harness === "grok"
       ? [
           planGrokSessionHookUninstall({
@@ -372,11 +415,14 @@ async function runSkillUninstall(
 
 function planInstallActionsForHarness(
   harness: HarnessId,
-  installOptions: { link: boolean; skipMissing: boolean }
+  installOptions: { link: boolean; skipMissing: boolean; guard?: boolean }
 ): InstallAction[] {
   return [
     planSkillInstall(harness, installOptions),
-    ...(harness === "grok" ? [planGrokSessionHookInstall(installOptions)] : [])
+    ...(harness === "grok" ? [planGrokSessionHookInstall(installOptions)] : []),
+    ...(harness === "claude-code" && installOptions.guard !== false
+      ? [planClaudeStopGuardInstall(installOptions)]
+      : [])
   ];
 }
 
