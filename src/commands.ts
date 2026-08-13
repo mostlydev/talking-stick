@@ -20,6 +20,7 @@ import type {
   RelinquishOwnershipResult,
   RegisterStandbyResult,
   RegisterReceiverResult,
+  RegisterWakeEndpointResult,
   ReleaseStickInput,
   ReleaseStickResult,
   RoomEvent,
@@ -94,6 +95,12 @@ export interface HeartbeatReceiverCommandInput {
 
 export interface UnregisterReceiverCommandInput
   extends HeartbeatReceiverCommandInput {}
+
+export interface RegisterWakeEndpointCommandInput {
+  room_id: string;
+  workspace_id: string;
+  surface_id: string;
+}
 
 export interface RegisterStandbyCommandInput {
   room_id: string;
@@ -222,6 +229,20 @@ export class TalkingStickCommands {
     return this.service.unregisterReceiver({
       agent_id: identity.agent_id,
       ...input
+    });
+  }
+
+  registerWakeEndpoint(
+    identity: DerivedIdentity,
+    input: RegisterWakeEndpointCommandInput
+  ): RegisterWakeEndpointResult {
+    return this.service.registerWakeEndpoint({
+      agent_id: identity.agent_id,
+      room_id: input.room_id,
+      workspace_id: input.workspace_id,
+      surface_id: input.surface_id,
+      harness_session_id:
+        identity.process_metadata.harness_session_id ?? null
     });
   }
 

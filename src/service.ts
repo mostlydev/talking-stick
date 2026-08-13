@@ -14,7 +14,7 @@ import {
   type SqliteDatabase
 } from "./db.js";
 import { ProtocolError } from "./errors.js";
-import type { WakeRequest, WakeTransport } from "./wake.js";
+import type { WakeDeliveryResult, WakeRequest, WakeTransport } from "./wake.js";
 import {
   createSystemProcessInspector,
   type ProcessInspector
@@ -57,7 +57,10 @@ import type {
   ProcessMetadata,
   RegisterReceiverInput,
   RegisterReceiverResult,
+  MessageDeliveryStatus,
   RegisterStandbyInput,
+  RegisterWakeEndpointInput,
+  RegisterWakeEndpointResult,
   RegisterStandbyResult,
   ReleaseStickInput,
   ReleaseStickResult,
@@ -127,6 +130,11 @@ interface RoomMemberRow {
   standby_registered_at: string | null;
   standby_last_error: string | null;
   standby_delivered_at: string | null;
+  wake_workspace_id: string | null;
+  wake_surface_id: string | null;
+  wake_endpoint_session_id: string | null;
+  wake_endpoint_recorded_at: string | null;
+  wake_interrupt_delivered_at: string | null;
   receiver_generation: number;
   status: "active" | "inactive";
 }
@@ -1576,14 +1584,182 @@ export class TalkingStickService {
         )
         .get(eventSeq);
 
+      const wakeTargetId =
+        input.to_agent_id ??
+        (deliveryHint === "interrupt" &&
+        room.owner &&
+        room.owner !== input.agent_id
+          ? room.owner
+          : null);
+
       return {
         event_seq: eventSeq,
         event_id: row?.event_id ?? "",
-        created_at: timestamp
+        created_at: timestamp,
+        wake_target_id: wakeTargetId
       };
     });
     this.flushPendingWakes(input.room_id);
-    return result;
+
+    const { wake_target_id: wakeTargetId, ...sendResult } = result;
+    if (!wakeTargetId) {
+      return sendResult;
+    }
+    const delivery = this.resolveMessageDelivery(
+      input.room_id,
+      wakeTargetId,
+      deliveryHint,
+      timestamp
+    );
+    return {
+      ...sendResult,
+      delivery_status: delivery.status,
+      delivery_target: wakeTargetId,
+      ...(delivery.error ? { delivery_error: delivery.error } : {})
+    };
+  }
+
+  registerWakeEndpoint(
+    input: RegisterWakeEndpointInput
+  ): RegisterWakeEndpointResult {
+    assertNonEmpty(input.workspace_id, "workspace_id");
+    assertNonEmpty(input.surface_id, "surface_id");
+    return withImmediateTransaction(this.db, () => {
+      if (!this.getMember(input.room_id, input.agent_id)) {
+        throw new ProtocolError(
+          "unknown_member",
+          "Agent must join the room before registering a wake endpoint."
+        );
+      }
+      this.db
+        .prepare(
+          `
+          UPDATE room_members
+          SET wake_workspace_id = ?,
+              wake_surface_id = ?,
+              wake_endpoint_session_id = ?,
+              wake_endpoint_recorded_at = ?,
+              wake_interrupt_delivered_at = NULL
+          WHERE room_id = ? AND agent_id = ?
+        `
+        )
+        .run(
+          input.workspace_id,
+          input.surface_id,
+          input.harness_session_id ?? null,
+          this.now().toISOString(),
+          input.room_id,
+          input.agent_id
+        );
+      return { status: "wake_endpoint_registered" };
+    });
+  }
+
+  private resolveMessageDelivery(
+    roomId: string,
+    targetId: AgentId,
+    deliveryHint: DeliveryHint,
+    sentAt: string
+  ): { status: MessageDeliveryStatus; error?: string } {
+    const receiver = this.db
+      .prepare<[string, string], RoomReceiverRow>(
+        "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
+      )
+      .get(roomId, targetId);
+    if (receiver && this.receiverLiveness(receiver) === "alive") {
+      return { status: "receiver" };
+    }
+
+    const member = this.getMember(roomId, targetId);
+    if (!member) {
+      return { status: "unreachable" };
+    }
+
+    if (member.standby_transport === "cmux" && member.standby_registered_at) {
+      if (member.standby_delivered_at && member.standby_delivered_at >= sentAt) {
+        return { status: "endpoint" };
+      }
+      if (member.standby_delivered_at || member.standby_wake_pending) {
+        return {
+          status: "pending",
+          ...(member.standby_last_error
+            ? { error: member.standby_last_error }
+            : {})
+        };
+      }
+    }
+
+    if (deliveryHint === "interrupt") {
+      return this.attemptInterruptWake(roomId, member);
+    }
+
+    if (member.standby_transport === "manual" && member.standby_registered_at) {
+      return { status: "pending", error: "Manual standby requires an operator to resume." };
+    }
+
+    return { status: "unreachable" };
+  }
+
+  private attemptInterruptWake(
+    roomId: string,
+    member: RoomMemberRow
+  ): { status: MessageDeliveryStatus; error?: string } {
+    const sessionMatches =
+      member.wake_endpoint_session_id === member.harness_session_id;
+    if (
+      !member.wake_workspace_id ||
+      !member.wake_surface_id ||
+      !sessionMatches
+    ) {
+      return { status: "unreachable" };
+    }
+
+    const alreadyPrompted =
+      member.wake_interrupt_delivered_at !== null &&
+      (!member.last_seen_at ||
+        member.wake_interrupt_delivered_at >= member.last_seen_at);
+    if (alreadyPrompted) {
+      return { status: "pending" };
+    }
+
+    if (!this.wakeTransport) {
+      return { status: "pending", error: "No wake transport is configured." };
+    }
+
+    const request: WakeRequest = {
+      room_id: roomId,
+      agent_id: member.agent_id,
+      transport: "cmux",
+      workspace_id: member.wake_workspace_id,
+      surface_id: member.wake_surface_id,
+      generation: member.standby_generation,
+      reason: "interrupt"
+    };
+    let delivery: WakeDeliveryResult;
+    try {
+      delivery = this.wakeTransport.deliver(request);
+    } catch (error) {
+      delivery = {
+        delivered: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+    if (!delivery.delivered) {
+      return {
+        status: "pending",
+        error: delivery.error ?? "Interrupt wake delivery failed."
+      };
+    }
+    this.db
+      .prepare(
+        `
+        UPDATE room_members
+        SET wake_interrupt_delivered_at = ?
+        WHERE room_id = ? AND agent_id = ?
+      `
+      )
+      .run(this.now().toISOString(), roomId, member.agent_id);
+    return { status: "endpoint" };
   }
 
   async waitForEvents(input: WaitForEventsInput): Promise<WaitForEventsResult> {

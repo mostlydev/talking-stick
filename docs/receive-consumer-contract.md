@@ -35,4 +35,11 @@
 - Event delivery never grants write authority. Only `status: "your_turn"` with a live `guardian_pid` does.
 - An expired unowned reservation emits `reservation_expired`, keeps the pending handoff, and reroutes to a reachable waiter or idle. That event is not write authority and does not return `takeover_available`. Owner-gone, owner-idle, and owner-timeout still require explicit `tt take`.
 
+## Interrupt delivery
+
+- A foreground `tt wait` records the caller's verified cmux surface (when `cmux identify` succeeds) as a session-scoped wake endpoint. Absence of cmux is valid; the endpoint is invalidated when the harness session changes.
+- `tt msg send ... --interrupt` delivers through a live receiver's wait output when one exists. Otherwise a directed interrupt sends one fixed, body-free wake prompt to the recipient's verified endpoint, coalesced until the recipient is next seen.
+- A room-targeted interrupt may wake only the current owner. Normal chatter, directed or broadcast, never injects terminal input.
+- The send result exposes `delivery_status`: `receiver` (live wait will surface it), `endpoint` (wake prompt delivered), `pending` (endpoint known but not woken now: coalesced, failed, or manual standby), or `unreachable` (no live receiver and no valid endpoint). There is no acknowledgement handshake.
+
 Lower-level `tt events` and `tt msg recv` commands remain useful for human audit and debugging, but agents must not run them beside `tt wait` as a second receive loop.

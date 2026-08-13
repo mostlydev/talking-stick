@@ -82,6 +82,17 @@ export async function handleWaitCommand(
       process_started_at: getCurrentProcessStartedAt(),
       cursor_event_seq: currentCursor
     });
+    try {
+      const endpoint = resolveCmuxStandbyEndpoint();
+      runtime.commands.registerWakeEndpoint(identity, {
+        room_id: joined.room_id,
+        workspace_id: endpoint.workspace_id,
+        surface_id: endpoint.surface_id
+      });
+    } catch {
+      // Absence of a cmux surface is a valid state; interrupts then rely on
+      // the live receiver alone.
+    }
   }
 
   let waitResult: WaitForTurnResult;

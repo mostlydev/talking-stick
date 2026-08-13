@@ -119,6 +119,11 @@ export interface RoomMember {
   standby_registered_at: string | null;
   standby_last_error: string | null;
   standby_delivered_at: string | null;
+  wake_workspace_id: string | null;
+  wake_surface_id: string | null;
+  wake_endpoint_session_id: string | null;
+  wake_endpoint_recorded_at: string | null;
+  wake_interrupt_delivered_at: string | null;
   status: "active" | "inactive";
 }
 
@@ -503,10 +508,31 @@ export interface SendMessageInput {
   process_metadata?: ProcessMetadata;
 }
 
+export type MessageDeliveryStatus =
+  | "receiver"
+  | "endpoint"
+  | "pending"
+  | "unreachable";
+
 export interface SendMessageResult {
   event_seq: number;
   event_id: string;
   created_at: string;
+  delivery_status?: MessageDeliveryStatus;
+  delivery_target?: AgentId;
+  delivery_error?: string;
+}
+
+export interface RegisterWakeEndpointInput {
+  agent_id: AgentId;
+  room_id: string;
+  workspace_id: string;
+  surface_id: string;
+  harness_session_id: string | null;
+}
+
+export interface RegisterWakeEndpointResult {
+  status: "wake_endpoint_registered";
 }
 
 export type EventTypeFilter = EventType | EventType[];

@@ -198,6 +198,17 @@ const migrations: Migration[] = [
       CREATE INDEX room_receivers_room_idx
         ON room_receivers (room_id, agent_id);
     `
+  },
+  {
+    id: 10,
+    name: "interrupt_wake_endpoints",
+    up: `
+      ALTER TABLE room_members ADD COLUMN wake_workspace_id TEXT;
+      ALTER TABLE room_members ADD COLUMN wake_surface_id TEXT;
+      ALTER TABLE room_members ADD COLUMN wake_endpoint_session_id TEXT;
+      ALTER TABLE room_members ADD COLUMN wake_endpoint_recorded_at TEXT;
+      ALTER TABLE room_members ADD COLUMN wake_interrupt_delivered_at TEXT;
+    `
   }
 ];
 

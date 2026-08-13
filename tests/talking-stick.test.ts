@@ -11,7 +11,9 @@ import {
   type Policy,
   type ProcessLiveness,
   type ProcessMetadata,
-  type WaitForTurnResult
+  type WaitForTurnResult,
+  type WakeRequest,
+  type WakeTransport
 } from "../src/index.js";
 
 const tempRoots: string[] = [];
@@ -3927,11 +3929,265 @@ describe("foreground receiver registry", () => {
   });
 });
 
+describe("interrupt delivery", () => {
+  function recordingTransport(deliver = true) {
+    const requests: WakeRequest[] = [];
+    const transport: WakeTransport = {
+      deliver(request) {
+        requests.push(request);
+        return deliver
+          ? { delivered: true }
+          : { delivered: false, error: "surface offline" };
+      }
+    };
+    return { requests, transport };
+  }
+
+  function joinTwo(harness: ReturnType<typeof createHarness>) {
+    const project = createProject(harness.tempRoot);
+    const joined = harness.service.joinPath({
+      agent_id: "claude:sender",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "codex:target",
+      context_path: project,
+      process_metadata: { harness_session_id: "sess-1" }
+    });
+    return joined;
+  }
+
+  test("directed interrupt prefers a live receiver and skips the wake transport", () => {
+    const { requests, transport } = recordingTransport();
+    const harness = createHarness({ wakeTransport: transport });
+    const joined = joinTwo(harness);
+    const receiverProcess = harness.processRegistry.create("target-receiver");
+
+    harness.service.registerReceiver({
+      agent_id: "codex:target",
+      room_id: joined.room_id,
+      receiver_id: "receiver-1",
+      host_id: receiverProcess.host_id!,
+      pid: receiverProcess.pid!,
+      process_started_at: receiverProcess.process_started_at!,
+      cursor_event_seq: joined.cursor_event_seq
+    });
+
+    const result = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "urgent finding",
+      delivery_hint: "interrupt"
+    });
+
+    expect(result.delivery_status).toBe("receiver");
+    expect(result.delivery_target).toBe("codex:target");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("directed interrupt wakes a verified endpoint once with a body-free prompt", () => {
+    const { requests, transport } = recordingTransport();
+    const harness = createHarness({ wakeTransport: transport });
+    const joined = joinTwo(harness);
+
+    harness.service.registerWakeEndpoint({
+      agent_id: "codex:target",
+      room_id: joined.room_id,
+      workspace_id: "ws-1",
+      surface_id: "surface-1",
+      harness_session_id: "sess-1"
+    });
+
+    const first = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "hostile $(rm -rf ~) body must never reach a terminal",
+      delivery_hint: "interrupt"
+    });
+
+    expect(first.delivery_status).toBe("endpoint");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      workspace_id: "ws-1",
+      surface_id: "surface-1",
+      reason: "interrupt"
+    });
+    expect(JSON.stringify(requests[0])).not.toContain("rm -rf");
+
+    const coalesced = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "second urgent ping",
+      delivery_hint: "interrupt"
+    });
+    expect(coalesced.delivery_status).toBe("pending");
+    expect(requests).toHaveLength(1);
+
+    harness.clock.advance(1000);
+    harness.service.getRoomState({
+      room_id: joined.room_id,
+      agent_id: "codex:target"
+    });
+    const rewake = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "third urgent ping after target returned",
+      delivery_hint: "interrupt"
+    });
+    expect(rewake.delivery_status).toBe("endpoint");
+    expect(requests).toHaveLength(2);
+  });
+
+  test("normal directed chatter never uses the wake endpoint", () => {
+    const { requests, transport } = recordingTransport();
+    const harness = createHarness({ wakeTransport: transport });
+    const joined = joinTwo(harness);
+
+    harness.service.registerWakeEndpoint({
+      agent_id: "codex:target",
+      room_id: joined.room_id,
+      workspace_id: "ws-1",
+      surface_id: "surface-1",
+      harness_session_id: "sess-1"
+    });
+
+    const result = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "normal discussion",
+      delivery_hint: "normal"
+    });
+
+    expect(result.delivery_status).toBe("unreachable");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("room interrupt wakes only the current owner", async () => {
+    const { requests, transport } = recordingTransport();
+    const harness = createHarness({ wakeTransport: transport });
+    const project = createProject(harness.tempRoot);
+    const joined = harness.service.joinPath({
+      agent_id: "codex:owner",
+      context_path: project,
+      process_metadata: { harness_session_id: "owner-sess" }
+    });
+    harness.service.joinPath({
+      agent_id: "claude:sender",
+      context_path: project
+    });
+    harness.service.joinPath({
+      agent_id: "grok:parked",
+      context_path: project,
+      process_metadata: { harness_session_id: "parked-sess" }
+    });
+
+    const claim = await harness.service.waitForTurn({
+      room_id: joined.room_id,
+      agent_id: "codex:owner",
+      max_wait_ms: 0
+    });
+    expect(claim.status).toBe("your_turn");
+
+    harness.service.registerWakeEndpoint({
+      agent_id: "codex:owner",
+      room_id: joined.room_id,
+      workspace_id: "ws-owner",
+      surface_id: "surface-owner",
+      harness_session_id: "owner-sess"
+    });
+    harness.service.registerWakeEndpoint({
+      agent_id: "grok:parked",
+      room_id: joined.room_id,
+      workspace_id: "ws-parked",
+      surface_id: "surface-parked",
+      harness_session_id: "parked-sess"
+    });
+
+    const broadcast = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      body: "room interrupt for a stalled owner",
+      delivery_hint: "interrupt"
+    });
+
+    expect(broadcast.delivery_status).toBe("endpoint");
+    expect(broadcast.delivery_target).toBe("codex:owner");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].surface_id).toBe("surface-owner");
+
+    const normalBroadcast = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      body: "normal room chatter",
+      delivery_hint: "normal"
+    });
+    expect(normalBroadcast.delivery_status).toBeUndefined();
+    expect(requests).toHaveLength(1);
+  });
+
+  test("session change invalidates a recorded endpoint", () => {
+    const { requests, transport } = recordingTransport();
+    const harness = createHarness({ wakeTransport: transport });
+    const joined = joinTwo(harness);
+
+    harness.service.registerWakeEndpoint({
+      agent_id: "codex:target",
+      room_id: joined.room_id,
+      workspace_id: "ws-1",
+      surface_id: "surface-1",
+      harness_session_id: "stale-session"
+    });
+
+    const result = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "interrupt for a stale endpoint",
+      delivery_hint: "interrupt"
+    });
+
+    expect(result.delivery_status).toBe("unreachable");
+    expect(requests).toHaveLength(0);
+  });
+
+  test("failed endpoint delivery reports pending with the transport error", () => {
+    const { requests, transport } = recordingTransport(false);
+    const harness = createHarness({ wakeTransport: transport });
+    const joined = joinTwo(harness);
+
+    harness.service.registerWakeEndpoint({
+      agent_id: "codex:target",
+      room_id: joined.room_id,
+      workspace_id: "ws-1",
+      surface_id: "surface-1",
+      harness_session_id: "sess-1"
+    });
+
+    const result = harness.service.sendMessage({
+      room_id: joined.room_id,
+      agent_id: "claude:sender",
+      to_agent_id: "codex:target",
+      body: "interrupt over a broken surface",
+      delivery_hint: "interrupt"
+    });
+
+    expect(result.delivery_status).toBe("pending");
+    expect(result.delivery_error).toBe("surface offline");
+    expect(requests).toHaveLength(1);
+  });
+});
+
 function createHarness(
   options: {
     policy?: Partial<Policy>;
     processLivenessChecker?: (metadata: ProcessMetadata) => ProcessLiveness;
     receiverLivenessChecker?: (metadata: ProcessMetadata) => ProcessLiveness;
+    wakeTransport?: WakeTransport;
   } = {}
 ) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-"));
@@ -3948,7 +4204,8 @@ function createHarness(
     processLivenessChecker:
       options.processLivenessChecker ?? processRegistry.checker,
     receiverLivenessChecker:
-      options.receiverLivenessChecker ?? processRegistry.checker
+      options.receiverLivenessChecker ?? processRegistry.checker,
+    wakeTransport: options.wakeTransport
   });
   services.push(service);
 

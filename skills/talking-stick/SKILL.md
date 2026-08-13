@@ -70,6 +70,8 @@ tt msg send <agent|room> "message" --json
 
 Receive messages through the same `tt wait --json` process. Messages are room-visible routing, not private ACLs and not write authority.
 
+Reserve `--interrupt` for a time-sensitive blocker, a veto, a changed operator instruction, or an ownership hazard; normal discussion stays normal. A directed interrupt reaches a live listener through its wait output, and otherwise sends one fixed, body-free wake prompt to the recipient's verified surface. A room interrupt may wake only the current owner. The send result reports `delivery_status` (`receiver`, `endpoint`, `pending`, or `unreachable`); treat `unreachable` as a signal to keep working rather than to retry the interrupt.
+
 Use `tt notes add "finding" --json` for durable findings that should survive a handoff. Do not use notes as a second chat stream.
 
 ## Handoff
