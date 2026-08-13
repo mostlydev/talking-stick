@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.12.0] — 2026-08-13
+
+Full notes: [`docs/releases/0.12.0.md`](docs/releases/0.12.0.md).
+
 ### Added
 
 - **Default-on Claude Code Stop guard.** `tt install claude-code` merges a managed `Stop` hook into `~/.claude/settings.json` (`--no-guard` opts out; uninstall removes only the managed entry, including on the native fallback path). The internal `tt claude-stop-hook` command binds to the exact harness session, uses a genuinely read-only grant lookup, and blocks a stop with exit 2 only while that session holds an unexpired lease or an unclaimed reservation. It honors `stop_hook_active`, propagates only exit 2, and fails open on every error path.
@@ -422,6 +426,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.12.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.12.0
 [0.11.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.11.0
 [0.10.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.10.0
 [0.9.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.9.0
