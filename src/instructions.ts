@@ -72,7 +72,7 @@ export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration inst
 
 When this skill applies, coordinate until the shared task is complete:
 
-1. Run \`tt join --json\`, then \`tt instructions show --json\` once. Check \`tt state --json\` for who is present and give peers a brief window to join before planning alone.
+1. Run \`tt join --json\`, then \`tt instructions show --json\` once. Expected peers join or the operator narrows scope; discover them from the join result and join events on the wait. Do not poll \`tt state\` or sleep for a join window.
 2. Keep exactly one \`tt wait --json\` long-poll running while agent work remains. The CLI saves the cursor and silently renews internal service waits in the same OS process, so silence does not exit. If your tool yields a running process handle, resume only that process; do not start another wait, narrate timer polls, or add a short \`--timeout\`.
 3. Only \`status: "your_turn"\` with a \`guardian_pid\` authorizes shared edits. Messages and event wakes do not.
 4. Send live messages with \`tt msg send\`; receive them through the same wait. Wait output is not ambient unless the harness surfaces the running process output.
@@ -83,8 +83,8 @@ Working agreement:
 
 7. Plan first: debate adversarially in the room, challenge proposals, converge on a written plan, then implement. Prefer TDD/BDD when the behavior can be specified first.
 8. Default roles when present — Claude: architecture, drafting, large-context synthesis. Codex: precise implementation. Grok: fast implementation and cross-checks. Reassign explicitly when the task warrants.
-9. Review independently: reproduce peer claims and re-run tests yourself before agreeing. Every member has an independent voice and a veto.
-10. Close or leave the room only after unanimous agreement and one full action-free cycle (each member takes a turn with nothing left to change or object to).
+9. Review independently: reproduce material peer claims and re-run tests yourself before agreeing. Every member has an independent voice and a veto.
+10. After the last action, every participating member independently reviews and explicitly AGREEs or vetoes. Any further action invalidates prior approvals and restarts the final review. Close or leave only on unanimous AGREE.
 `;
 
 export const EDITABLE_INSTRUCTIONS_TEMPLATE = `# Local Talking Stick instructions

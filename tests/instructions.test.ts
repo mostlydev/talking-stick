@@ -42,17 +42,23 @@ describe("collaboration instructions", () => {
   test("bundled contract carries the working agreement for every harness", () => {
     for (const harness of ["claude", "codex", "grok"] as const) {
       const result = showInstructions({ harness, scope: "bundled" });
-      expect(result.text).toContain("tt state --json` for who is present");
+      expect(result.text).toContain("discover them from the join result and join events");
+      expect(result.text).toContain("Do not poll `tt state` or sleep for a join window");
       expect(result.text).toContain("Working agreement");
       expect(result.text).toContain("debate adversarially");
       expect(result.text).toContain("TDD/BDD");
       expect(result.text).toContain("Claude: architecture");
       expect(result.text).toContain("Codex: precise implementation");
       expect(result.text).toContain("Grok: fast implementation");
+      expect(result.text).toContain("reproduce material peer claims");
       expect(result.text).toContain("independent voice and a veto");
-      expect(result.text).toContain("unanimous agreement and one full action-free cycle");
+      expect(result.text).toContain("every participating member independently reviews");
+      expect(result.text).toContain("invalidates prior approvals and restarts the final review");
+      expect(result.text).toContain("Close or leave only on unanimous AGREE");
       expect(result.text).toContain("only when a live process listener is useful");
       expect(result.text).not.toContain("park only when no agent work is pending");
+      expect(result.text).not.toContain("brief window to join");
+      expect(result.text).not.toContain("one full action-free cycle");
     }
   });
 
