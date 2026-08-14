@@ -3,6 +3,7 @@ import os from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   ancestorPaths,
+  isWithinOrSame,
   resolveContextPath,
   type ResolvedContextPath
 } from "./path-resolution.js";
@@ -2722,7 +2723,16 @@ export class TalkingStickService {
     }
 
     if (existingAncestor) {
-      return { room: existingAncestor, joinedExistingRoom: true };
+      const aboveWorkspaceRoot =
+        isWithinOrSame(resolved.workspace_root, existingAncestor.canonical_path) &&
+        !isWithinOrSame(existingAncestor.canonical_path, resolved.workspace_root);
+      return {
+        room: existingAncestor,
+        joinedExistingRoom: true,
+        warning: aboveWorkspaceRoot
+          ? `Joined ancestor room ${existingAncestor.canonical_path} above this workspace root (${resolved.workspace_root}).`
+          : undefined
+      };
     }
 
     return {

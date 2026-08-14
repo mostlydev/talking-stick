@@ -82,15 +82,15 @@ Working agreement:
 
 ## Claude
 
-Default role: architecture, drafting, and large-context synthesis. Reassign explicitly when the task warrants.
+Default role: architecture, drafting, and large-context synthesis. Peers: Codex — precise implementation; Grok — fast implementation and cross-checks. Reassign explicitly when the task warrants.
 
 ## Codex
 
-Default role: precise implementation. Reassign explicitly when the task warrants.
+Default role: precise implementation. Peers: Claude — architecture, drafting, and large-context synthesis; Grok — fast implementation and cross-checks. Reassign explicitly when the task warrants.
 
 ## Grok
 
-Default role: fast implementation and cross-checks. Reassign explicitly when the task warrants.
+Default role: fast implementation and cross-checks. Peers: Claude — architecture, drafting, and large-context synthesis; Codex — precise implementation. Reassign explicitly when the task warrants.
 `;
 
 export const EDITABLE_INSTRUCTIONS_TEMPLATE = `# Local Talking Stick instructions

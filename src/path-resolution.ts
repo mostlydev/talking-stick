@@ -170,7 +170,7 @@ function samePath(left: string, right: string): boolean {
   return path.normalize(left) === path.normalize(right);
 }
 
-function isWithinOrSame(candidate: string, root: string): boolean {
+export function isWithinOrSame(candidate: string, root: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }

@@ -835,6 +835,36 @@ describe("talking-stick vertical slice", () => {
     expect(nestedJoin.canonical_path).toBe(project);
   });
 
+  test("join_path warns when the selected ancestor room sits above the workspace root", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const nestedWorkspace = path.join(project, "packages", "api");
+    fs.mkdirSync(nestedWorkspace, { recursive: true });
+    fs.writeFileSync(path.join(nestedWorkspace, "package.json"), "{}\n");
+
+    const rootJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    expect(rootJoin.warning).toBeUndefined();
+
+    const nestedJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: nestedWorkspace
+    });
+
+    expect(nestedJoin.room_id).toBe(rootJoin.room_id);
+    expect(nestedJoin.canonical_path).toBe(project);
+    expect(nestedJoin.warning).toContain("above this workspace root");
+
+    const sameWorkspaceJoin = harness.service.joinPath({
+      agent_id: "grok:test",
+      context_path: path.join(project, "packages")
+    });
+    expect(sameWorkspaceJoin.room_id).toBe(rootJoin.room_id);
+    expect(sameWorkspaceJoin.warning).toBeUndefined();
+  });
+
   test("join_path creates a room at the resolved workspace root", () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);

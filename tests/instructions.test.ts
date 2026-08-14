@@ -32,11 +32,14 @@ describe("collaboration instructions", () => {
     expect(result.harness).toBe("codex");
     expect(result.text).toContain("skill remains authoritative");
     expect(result.text).toContain("Default role: precise implementation");
-    expect(result.text).not.toContain("large-context synthesis");
-    expect(result.text).not.toContain("fast implementation and cross-checks");
+    expect(result.text).toContain(
+      "Peers: Claude — architecture, drafting, and large-context synthesis; Grok — fast implementation and cross-checks"
+    );
+    expect(result.text).not.toContain("## Claude");
+    expect(result.text).not.toContain("## Grok");
   });
 
-  test("bundled contract carries shared behavior and only the current harness role", () => {
+  test("bundled contract carries shared behavior and the full role map per harness", () => {
     const roles = {
       claude: "architecture, drafting, and large-context synthesis",
       codex: "precise implementation",
@@ -53,10 +56,11 @@ describe("collaboration instructions", () => {
       expect(result.text).toContain("debate adversarially");
       expect(result.text).toContain("TDD/BDD");
       expect(result.text).toContain(`Default role: ${role}`);
+      expect(result.text).toContain("Peers:");
       for (const peerRole of Object.values(roles).filter(
         (value) => value !== role
       )) {
-        expect(result.text).not.toContain(peerRole);
+        expect(result.text).toContain(peerRole);
       }
       expect(result.text).toContain("reproduce material peer claims");
       expect(result.text).toContain("independent voice and an evidence-backed veto");
