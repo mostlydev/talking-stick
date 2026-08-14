@@ -30,32 +30,39 @@ describe("collaboration instructions", () => {
     });
 
     expect(result.harness).toBe("codex");
-    expect(result.text).toContain("tt wait --json");
-    expect(result.text).toContain("silently renews internal service waits");
-    expect(result.text).toContain("resume only that process");
-    expect(result.text).toContain("do not start another wait, narrate timer polls");
-    expect(result.text).toContain("tt standby --wake cmux --json");
-    expect(result.text).toContain("Wait output is not ambient");
-    expect(result.text).not.toContain("## Codex");
+    expect(result.text).toContain("skill remains authoritative");
+    expect(result.text).toContain("Default role: precise implementation");
+    expect(result.text).not.toContain("large-context synthesis");
+    expect(result.text).not.toContain("fast implementation and cross-checks");
   });
 
-  test("bundled contract carries the working agreement for every harness", () => {
-    for (const harness of ["claude", "codex", "grok"] as const) {
+  test("bundled contract carries shared behavior and only the current harness role", () => {
+    const roles = {
+      claude: "architecture, drafting, and large-context synthesis",
+      codex: "precise implementation",
+      grok: "fast implementation and cross-checks"
+    } as const;
+
+    for (const [harness, role] of Object.entries(roles) as Array<
+      [keyof typeof roles, string]
+    >) {
       const result = showInstructions({ harness, scope: "bundled" });
-      expect(result.text).toContain("discover them from the join result and join events");
+      expect(result.text).toContain("discover peers from the join result and join events");
       expect(result.text).toContain("Do not poll `tt state` or sleep for a join window");
       expect(result.text).toContain("Working agreement");
       expect(result.text).toContain("debate adversarially");
       expect(result.text).toContain("TDD/BDD");
-      expect(result.text).toContain("Claude: architecture");
-      expect(result.text).toContain("Codex: precise implementation");
-      expect(result.text).toContain("Grok: fast implementation");
+      expect(result.text).toContain(`Default role: ${role}`);
+      for (const peerRole of Object.values(roles).filter(
+        (value) => value !== role
+      )) {
+        expect(result.text).not.toContain(peerRole);
+      }
       expect(result.text).toContain("reproduce material peer claims");
-      expect(result.text).toContain("independent voice and a veto");
+      expect(result.text).toContain("independent voice and an evidence-backed veto");
       expect(result.text).toContain("every participating member independently reviews");
-      expect(result.text).toContain("invalidates prior approvals and restarts the final review");
+      expect(result.text).toContain("invalidates prior approvals and restarts final review");
       expect(result.text).toContain("Close or leave only on unanimous AGREE");
-      expect(result.text).toContain("only when a live process listener is useful");
       expect(result.text).not.toContain("park only when no agent work is pending");
       expect(result.text).not.toContain("brief window to join");
       expect(result.text).not.toContain("one full action-free cycle");
@@ -273,7 +280,7 @@ describe("collaboration instructions", () => {
       scope: "bundled"
     });
     expect(antigravity.harness).toBe("antigravity");
-    expect(antigravity.text).toContain("tt wait --json");
+    expect(antigravity.text).toContain("Working agreement");
 
     expect(resolveInstructionHarness("gemini")).toBe("gemini");
   });

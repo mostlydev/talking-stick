@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   ProtocolError,
+  resolveContextPath,
   TalkingStickService,
   type Handoff,
   type Policy,
@@ -4248,6 +4249,28 @@ describe("stop guard inspection", () => {
       harness_session_id: "harness:someone-else"
     });
     expect(other).toEqual({ blocked: false, reason: "not_a_member" });
+  });
+
+  test("blocks the owner when a nested workspace path resolves to the parent room", async () => {
+    const harness = createHarness();
+    const { project } = await setupOwnedRoom(harness);
+    const nestedProject = path.join(project, "repos", "child");
+    fs.mkdirSync(nestedProject, { recursive: true });
+    fs.writeFileSync(path.join(nestedProject, "package.json"), "{}\n");
+
+    expect(resolveContextPath(nestedProject).workspace_root).toBe(
+      fs.realpathSync.native(nestedProject)
+    );
+    expect(
+      harness.service.inspectStopGuard({
+        context_path: nestedProject,
+        harness_session_id: SESSION
+      })
+    ).toMatchObject({
+      blocked: true,
+      reason: "owner",
+      agent_id: "claude:owner"
+    });
   });
 
   test("fails open on expired lease, missing room, and closed room", async () => {

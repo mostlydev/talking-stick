@@ -98,6 +98,63 @@ describe("path resolution", () => {
     expect(scratchJoin.workspace_root).toBe(realPath(scratch));
     expect(scratchJoin.joined_existing_room).toBe(false);
   });
+
+  test("a nested project root still joins an existing parent room", () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "talking-stick-parent-")
+    );
+    tempRoots.push(tempRoot);
+    const parent = path.join(tempRoot, "umbrella");
+    const nestedProject = path.join(parent, "repos", "child");
+    fs.mkdirSync(nestedProject, { recursive: true });
+    fs.writeFileSync(path.join(parent, "package.json"), "{}\n");
+    fs.writeFileSync(path.join(nestedProject, "package.json"), "{}\n");
+
+    const service = new TalkingStickService({
+      dbPath: path.join(tempRoot, "state", "rooms.sqlite")
+    });
+    services.push(service);
+
+    const parentJoin = service.joinPath({
+      agent_id: "claude:parent",
+      context_path: parent
+    });
+    const nestedJoin = service.joinPath({
+      agent_id: "codex:child",
+      context_path: nestedProject
+    });
+
+    expect(resolveContextPath(nestedProject).workspace_root).toBe(
+      realPath(nestedProject)
+    );
+    expect(nestedJoin.room_id).toBe(parentJoin.room_id);
+    expect(nestedJoin.canonical_path).toBe(realPath(parent));
+    expect(nestedJoin.members.map((member) => member.agent_id).sort()).toEqual([
+      "claude:parent",
+      "codex:child"
+    ]);
+    expect(
+      service.listRooms({ context_path: nestedProject }).rooms
+    ).toHaveLength(1);
+    expect(
+      service.getRoomHealth({
+        agent_id: "codex:child",
+        context_path: nestedProject
+      }).room.room_id
+    ).toBe(parentJoin.room_id);
+
+    const explicitNested = path.join(parent, "repos", "isolated");
+    fs.mkdirSync(explicitNested, { recursive: true });
+    fs.writeFileSync(path.join(explicitNested, "package.json"), "{}\n");
+    const forced = service.joinPath({
+      agent_id: "grok:isolated",
+      context_path: explicitNested,
+      force_new: true
+    });
+    expect(forced.room_id).not.toBe(parentJoin.room_id);
+    expect(forced.canonical_path).toBe(realPath(explicitNested));
+    expect(forced.warning).toContain("Created nested room inside");
+  });
 });
 
 function createTempHome(): { home: string; tempRoot: string } {

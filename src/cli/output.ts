@@ -4,7 +4,7 @@ import { isKnownHarnessCliEnv } from "./identity.js";
 import { hasOption, type ParsedCommand } from "./parser.js";
 
 export const COORDINATION_PROMPT =
-  "Keep one `tt wait --json` process while agent work remains; use `tt standby --wake cmux --json` when only an external signal remains.";
+  "Edit only with `your_turn` + `guardian_pid`; never duplicate a running wait; release, pass, or standby before stopping.";
 
 const COORDINATION_PROMPT_COMMANDS = new Set([
   "join",
@@ -47,7 +47,7 @@ export function prepareJsonResult(
   if (hasOption(parsed, "verbose")) {
     return withCoordinationPrompt(parsed, result);
   }
-  return compactMachineResult(result);
+  return compactMachineResult(parsed, result);
 }
 
 export function shouldUseJson(
@@ -88,25 +88,26 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function compactMachineResult(result: unknown): unknown {
+function compactMachineResult(parsed: ParsedCommand, result: unknown): unknown {
   if (!isObjectRecord(result) || Array.isArray(result)) {
     return result;
   }
 
-  const {
-    coordination_prompt: _coordinationPrompt,
-    next: _next,
-    ...compact
-  } = result;
+  const compact = { ...result };
+  delete compact.coordination_prompt;
+  delete compact.next;
+  if (parsed.name === "join") {
+    delete compact.policy;
+  }
   if (!Array.isArray(compact.events)) {
-    return compact;
+    return withTransitionHint(parsed, compact);
   }
 
   const room = isObjectRecord(compact.room) ? compact.room : null;
   const envelopeRoomId = compact.room_id ?? room?.room_id;
   const envelopeTurnId = compact.turn_id ?? room?.turn_id;
   const envelopeHandoff = compact.handoff;
-  return {
+  return withTransitionHint(parsed, {
     ...compact,
     events: compact.events.map((event) => {
       if (!isObjectRecord(event)) {
@@ -129,7 +130,45 @@ function compactMachineResult(result: unknown): unknown {
       }
       return shaped;
     })
-  };
+  });
+}
+
+function withTransitionHint(
+  parsed: ParsedCommand,
+  result: Record<string, unknown>
+): Record<string, unknown> {
+  if (typeof result.hint === "string" && result.hint.length > 0) {
+    return result;
+  }
+  if (parsed.name === "join") {
+    return {
+      ...result,
+      hint: "Load `tt instructions show --json` once; expected peers are listed in members."
+    };
+  }
+  if (result.status === "your_turn") {
+    return {
+      ...result,
+      hint: "You hold the stick: work, test, then release or pass before stopping."
+    };
+  }
+  if (
+    parsed.name === "wait" &&
+    result.status === "not_yet" &&
+    !hasOption(parsed, "park")
+  ) {
+    return {
+      ...result,
+      hint: "Wait exited: process events; if work remains, start one successor."
+    };
+  }
+  if (["release", "pass", "assign"].includes(parsed.name)) {
+    return {
+      ...result,
+      hint: "Work remains: run one `tt wait`; external-only: use `tt standby`."
+    };
+  }
+  return result;
 }
 
 export function formatRelativeTime(

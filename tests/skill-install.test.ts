@@ -171,6 +171,7 @@ describe("talking-stick skill install", () => {
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("tt instructions show --json");
+    expect(skill).toContain("join result lists current members");
     expect(skill).toContain("tt wait --json");
     expect(skill).toContain("cursor saved in `cli-sessions.json`");
     expect(skill).toContain("Poll or resume that same handle");
@@ -304,6 +305,7 @@ describe("talking-stick skill install", () => {
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("tt instructions show --json");
+    expect(skill).toContain("join result lists current members");
     expect(skill).toContain("tt wait --json");
     expect(skill).toContain("cursor saved in `cli-sessions.json`");
     expect(skill).toContain("Poll or resume that same handle");

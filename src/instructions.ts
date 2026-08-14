@@ -70,21 +70,27 @@ export const DEFAULT_MAX_INSTRUCTION_FILE_BYTES = 256 * 1024;
 
 export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration instructions
 
-When this skill applies, coordinate until the shared task is complete:
-
-1. Run \`tt join --json\`, then \`tt instructions show --json\` once. Expected peers join or the operator narrows scope; discover them from the join result and join events on the wait. Do not poll \`tt state\` or sleep for a join window.
-2. Keep exactly one \`tt wait --json\` long-poll running while agent work remains. The CLI saves the cursor and silently renews internal service waits in the same OS process, so silence does not exit. If your tool yields a running process handle, resume only that process; do not start another wait, narrate timer polls, or add a short \`--timeout\`.
-3. Only \`status: "your_turn"\` with a \`guardian_pid\` authorizes shared edits. Messages and event wakes do not.
-4. Send live messages with \`tt msg send\`; receive them through the same wait. Wait output is not ambient unless the harness surfaces the running process output.
-5. When a wait exits, process its actionable result and start one successor if agent work remains. When only an operator or external signal remains, use \`tt standby --wake cmux --json\`; use \`tt wait --park\` only when a live process listener is useful. Do not poll with \`tt try\`, \`tt state\`, \`tt events\`, or \`tt msg recv\`.
-6. Test before handoff. Release with a concise status, next action, artifacts, and verification.
+Coordinate until the shared task is complete. The Talking Stick skill remains authoritative for ownership, wait, and handoff mechanics.
 
 Working agreement:
 
-7. Plan first: debate adversarially in the room, challenge proposals, converge on a written plan, then implement. Prefer TDD/BDD when the behavior can be specified first.
-8. Default roles when present — Claude: architecture, drafting, large-context synthesis. Codex: precise implementation. Grok: fast implementation and cross-checks. Reassign explicitly when the task warrants.
-9. Review independently: reproduce material peer claims and re-run tests yourself before agreeing. Every member has an independent voice and a veto.
-10. After the last action, every participating member independently reviews and explicitly AGREEs or vetoes. Any further action invalidates prior approvals and restarts the final review. Close or leave only on unanimous AGREE.
+1. Expected peers join or the operator narrows scope; discover peers from the join result and join events. Do not poll \`tt state\` or sleep for a join window.
+2. Plan first: debate adversarially in the room, challenge proposals, converge in writing, then implement. Prefer TDD/BDD when behavior can be specified first.
+3. Review independently: reproduce material peer claims and re-run relevant tests before agreeing. Every participating member has an independent voice and an evidence-backed veto.
+4. Test before handoff. Record changes, evidence, risks, and the concrete next action.
+5. After the last action, every participating member independently reviews and explicitly AGREEs or vetoes. Any further action invalidates prior approvals and restarts final review. Close or leave only on unanimous AGREE.
+
+## Claude
+
+Default role: architecture, drafting, and large-context synthesis. Reassign explicitly when the task warrants.
+
+## Codex
+
+Default role: precise implementation. Reassign explicitly when the task warrants.
+
+## Grok
+
+Default role: fast implementation and cross-checks. Reassign explicitly when the task warrants.
 `;
 
 export const EDITABLE_INSTRUCTIONS_TEMPLATE = `# Local Talking Stick instructions

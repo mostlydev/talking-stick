@@ -9,7 +9,7 @@
 - A sustained foreground wait registers its room member, receiver ID, exact PID/start time, cursor, generation, and heartbeat for the command lifetime. Cleanup is conditional on receiver ID, so an old process cannot erase its replacement.
 - `--after N` is an explicit replay/debug override, not part of the normal agent loop.
 - Delivery is at least once across crashes; consumers must tolerate replay and may deduplicate by `event_id`.
-- Default JSON omits only duplicated protocol boilerplate: static coordination prose, the prose restart hint, and room/turn or identical handoff fields repeated inside an event when the envelope already carries them. Substantive messages and handoffs are never truncated. Use `--verbose` for the full diagnostic representation.
+- Default JSON omits duplicated protocol boilerplate and room/turn or identical handoff fields repeated inside an event when the envelope already carries them. It adds one short `hint` only when the caller must cross a join, authority, wait-exit, or handoff transition. Substantive messages, handoffs, and `event_id` values are never truncated. Use `--verbose` for the full diagnostic representation.
 
 ## Process lifecycle
 
@@ -19,6 +19,7 @@
 - Internal service timeouts do not produce CLI output and do not exit the process.
 - A harness tool may yield a process handle before the subprocess exits. Poll or resume that same handle; do not launch a replacement yet.
 - Only after the subprocess exits should the consumer process the result and start one successor.
+- A terminal active-wait `not_yet` result carries that successor reminder. Parked waits do not, because park is not an active-work loop.
 - Do not shorten the CLI timeout to fit a tool-yield interval. A tool yield and a wait timeout are different events.
 
 ## Passive standby
