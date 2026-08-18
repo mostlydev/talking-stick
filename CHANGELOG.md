@@ -11,6 +11,19 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- **Working agreement in bundled instructions.** After join, `tt instructions show` now carries a concise plan → adversarial debate → implement contract: material-claim independent review, participating-member AGREE/veto, and close only on unanimous AGREE. Each known harness gets a default role plus a peer map; the shipped skill remains the ownership/wait/handoff floor.
+- **Join member discovery and transition hints.** `tt join` returns a compact `members[]` list. Default JSON adds one short `hint` only on join, `your_turn`, terminal `not_yet`, and release/pass/assign — not on ordinary messages or events.
+
+### Changed
+
+- **Ancestor rooms cross nested workspace roots.** Existing-room lookup now walks past a nested Git or project-marker root up to the home boundary, so a child repo joins the deepest existing parent room instead of silently creating a sibling. New rooms still create at `workspace_root`; `--force-new` remains the only nested-create path. Joining an ancestor above the current workspace root emits an explicit warning.
+
+### Fixed
+
+- **cmux standby wakes submit.** Wake text no longer ends with a raw newline (which TUI composers insert instead of submitting). Delivery now sends the prompt, then a discrete `cmux send-key enter`; either failure reports the wake undelivered.
+
 ## [0.12.1] — 2026-08-13
 
 Full notes: [`docs/releases/0.12.1.md`](docs/releases/0.12.1.md).
