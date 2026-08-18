@@ -64,16 +64,20 @@ export function resolveWorkspaceRoot(canonicalContextPath: string): string {
   return canonicalContextPath;
 }
 
+// Existing rooms are an explicit coordination boundary, even across nested
+// Git/project roots. Stop before HOME so an intentionally broad home room does
+// not absorb unrelated descendant workspaces. The second argument remains for
+// API compatibility; new-room creation still uses the resolved workspace root.
 export function ancestorPaths(
   canonicalContextPath: string,
-  workspaceRoot: string
+  _workspaceRoot: string
 ): string[] {
   const ancestors: string[] = [];
+  const homeBoundary = resolveHomeMarkerBoundary(canonicalContextPath);
   let current = canonicalContextPath;
 
   while (true) {
-    ancestors.push(current);
-    if (samePath(current, workspaceRoot)) {
+    if (homeBoundary && samePath(current, homeBoundary)) {
       break;
     }
 
@@ -82,10 +86,11 @@ export function ancestorPaths(
       break;
     }
 
+    ancestors.push(current);
     current = parent;
   }
 
-  return ancestors.filter((candidate) => isWithinOrSame(candidate, workspaceRoot));
+  return ancestors;
 }
 
 function resolveGitRoot(canonicalContextPath: string): string | null {
@@ -165,7 +170,7 @@ function samePath(left: string, right: string): boolean {
   return path.normalize(left) === path.normalize(right);
 }
 
-function isWithinOrSame(candidate: string, root: string): boolean {
+export function isWithinOrSame(candidate: string, root: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   ProtocolError,
+  resolveContextPath,
   TalkingStickService,
   type Handoff,
   type Policy,
@@ -832,6 +833,36 @@ describe("talking-stick vertical slice", () => {
 
     expect(nestedJoin.room_id).toBe(rootJoin.room_id);
     expect(nestedJoin.canonical_path).toBe(project);
+  });
+
+  test("join_path warns when the selected ancestor room sits above the workspace root", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const nestedWorkspace = path.join(project, "packages", "api");
+    fs.mkdirSync(nestedWorkspace, { recursive: true });
+    fs.writeFileSync(path.join(nestedWorkspace, "package.json"), "{}\n");
+
+    const rootJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project
+    });
+    expect(rootJoin.warning).toBeUndefined();
+
+    const nestedJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: nestedWorkspace
+    });
+
+    expect(nestedJoin.room_id).toBe(rootJoin.room_id);
+    expect(nestedJoin.canonical_path).toBe(project);
+    expect(nestedJoin.warning).toContain("above this workspace root");
+
+    const sameWorkspaceJoin = harness.service.joinPath({
+      agent_id: "grok:test",
+      context_path: path.join(project, "packages")
+    });
+    expect(sameWorkspaceJoin.room_id).toBe(rootJoin.room_id);
+    expect(sameWorkspaceJoin.warning).toBeUndefined();
   });
 
   test("join_path creates a room at the resolved workspace root", () => {
@@ -4248,6 +4279,28 @@ describe("stop guard inspection", () => {
       harness_session_id: "harness:someone-else"
     });
     expect(other).toEqual({ blocked: false, reason: "not_a_member" });
+  });
+
+  test("blocks the owner when a nested workspace path resolves to the parent room", async () => {
+    const harness = createHarness();
+    const { project } = await setupOwnedRoom(harness);
+    const nestedProject = path.join(project, "repos", "child");
+    fs.mkdirSync(nestedProject, { recursive: true });
+    fs.writeFileSync(path.join(nestedProject, "package.json"), "{}\n");
+
+    expect(resolveContextPath(nestedProject).workspace_root).toBe(
+      fs.realpathSync.native(nestedProject)
+    );
+    expect(
+      harness.service.inspectStopGuard({
+        context_path: nestedProject,
+        harness_session_id: SESSION
+      })
+    ).toMatchObject({
+      blocked: true,
+      reason: "owner",
+      agent_id: "claude:owner"
+    });
   });
 
   test("fails open on expired lease, missing room, and closed room", async () => {

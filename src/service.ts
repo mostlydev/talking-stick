@@ -3,6 +3,7 @@ import os from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
   ancestorPaths,
+  isWithinOrSame,
   resolveContextPath,
   type ResolvedContextPath
 } from "./path-resolution.js";
@@ -359,6 +360,15 @@ export class TalkingStickService {
           ? `Superseded previous harness session(s): ${supersededAgentIds.join(", ")}.`
           : undefined
       );
+      const roomInspection = this.inspectRoom(freshRoom, now);
+      const members = roomInspection.members
+        .map((member) => this.mapMember(member, now))
+        .filter((member) => member.status === "active")
+        .map((member) => ({
+          agent_id: member.agent_id,
+          status: member.status,
+          last_seen_at: member.last_seen_at
+        }));
 
       return {
         agent_id: input.agent_id,
@@ -369,8 +379,9 @@ export class TalkingStickService {
         joined_existing_room: roomSelection.joinedExistingRoom,
         cursor_event_seq: this.latestEventSeq(freshRoom.room_id),
         warning,
+        members,
         policy: { ...this.policy },
-        room_state: this.mapRoom(this.inspectRoom(freshRoom, now), now),
+        room_state: this.mapRoom(roomInspection, now),
         handoff_template: handoffTemplate()
       };
     });
@@ -2712,7 +2723,16 @@ export class TalkingStickService {
     }
 
     if (existingAncestor) {
-      return { room: existingAncestor, joinedExistingRoom: true };
+      const aboveWorkspaceRoot =
+        isWithinOrSame(resolved.workspace_root, existingAncestor.canonical_path) &&
+        !isWithinOrSame(existingAncestor.canonical_path, resolved.workspace_root);
+      return {
+        room: existingAncestor,
+        joinedExistingRoom: true,
+        warning: aboveWorkspaceRoot
+          ? `Joined ancestor room ${existingAncestor.canonical_path} above this workspace root (${resolved.workspace_root}).`
+          : undefined
+      };
     }
 
     return {

@@ -178,6 +178,7 @@ export interface JoinPathResult {
   joined_existing_room: boolean;
   cursor_event_seq: number;
   warning?: string;
+  members: Array<Pick<RoomMember, "agent_id" | "status" | "last_seen_at">>;
   policy: Policy;
   room_state: PathRoom;
   handoff_template: Handoff;

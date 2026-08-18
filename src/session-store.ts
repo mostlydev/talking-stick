@@ -209,9 +209,7 @@ export function findCliSessionForContextPath(
 ): CliSession | null {
   const resolved = resolveContextPath(contextPath);
   const candidates = readCliSessions(sessionPath).filter(
-    (session) =>
-      session.agent_id === agentId &&
-      session.workspace_root === resolved.workspace_root
+    (session) => session.agent_id === agentId
   );
 
   if (candidates.length === 0) {

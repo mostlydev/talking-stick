@@ -16,6 +16,8 @@ Talking Stick gives several harnesses one shared-writer turn and one room event 
    tt instructions show --json
    ```
 
+   The join result lists current members. If an expected peer is absent, let the normal wait deliver its join event; do not poll room state or sleep for a join window.
+
 2. Keep exactly one signal-only long-poll running while agent work remains:
 
    ```sh

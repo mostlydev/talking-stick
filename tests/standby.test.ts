@@ -359,9 +359,8 @@ describe("zero-churn wait and standby workflow", () => {
     expect(timeout).toBe(CMUX_WAKE_TIMEOUT_MS);
   });
 
-  test("cmux wake delivery is time-bounded and reports execution failure", () => {
-    let timeout = 0;
-    let sentText = "";
+  test("cmux wake delivery sends the prompt then a discrete Enter", () => {
+    const calls: { args: readonly string[]; timeout: number }[] = [];
     const request: WakeRequest = {
       room_id: "room:1",
       agent_id: "agent:1",
@@ -372,12 +371,23 @@ describe("zero-churn wait and standby workflow", () => {
       reason: "actionable_room_update"
     };
     const transport = createSystemWakeTransport((_file, args, options) => {
-      timeout = options.timeout;
-      sentText = args.at(-1) ?? "";
+      calls.push({ args, timeout: options.timeout });
     });
     expect(transport.deliver(request)).toEqual({ delivered: true });
-    expect(timeout).toBe(CMUX_WAKE_TIMEOUT_MS);
+    expect(calls).toHaveLength(2);
+
+    const [send, sendKey] = calls;
+    expect(send.args[0]).toBe("send");
+    expect(send.timeout).toBe(CMUX_WAKE_TIMEOUT_MS);
+    const sentText = send.args.at(-1) ?? "";
     expect(sentText).toContain("Run tt wait --json");
+    // A trailing newline only inserts a linefeed into a TUI composer; the
+    // prompt must be submitted by the separate Enter key event below.
+    expect(sentText.endsWith("\n")).toBe(false);
+    expect(sendKey.args[0]).toBe("send-key");
+    expect(sendKey.args.at(-1)).toBe("enter");
+    expect(sendKey.args).toContain("surface:2");
+    expect(sendKey.timeout).toBe(CMUX_WAKE_TIMEOUT_MS);
 
     const failed = createSystemWakeTransport(() => {
       throw new Error("timed out");
@@ -385,6 +395,16 @@ describe("zero-churn wait and standby workflow", () => {
     expect(failed.deliver(request)).toEqual({
       delivered: false,
       error: "timed out"
+    });
+
+    const enterFails = createSystemWakeTransport((_file, args) => {
+      if (args[0] === "send-key") {
+        throw new Error("send-key failed");
+      }
+    });
+    expect(enterFails.deliver(request)).toEqual({
+      delivered: false,
+      error: "send-key failed"
     });
   });
 });

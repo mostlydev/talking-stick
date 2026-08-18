@@ -56,6 +56,32 @@ describe("CLI session store", () => {
     expect(session?.room_id).toBe("room-api");
   });
 
+  test("resolves a parent-room session across a nested workspace root", () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "talking-stick-cli-")
+    );
+    tempRoots.push(tempRoot);
+    const sessionPath = resolveCliSessionPath({
+      dataDir: path.join(tempRoot, "state")
+    });
+    const parent = createWorkspace(tempRoot, "umbrella");
+    const nested = path.join(parent, "repos", "child");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, "package.json"), "{}\n");
+
+    upsertCliSession(sessionPath, {
+      agent_id: "human:alice",
+      room_id: "room-parent",
+      canonical_path: parent,
+      workspace_root: parent,
+      updated_at: "2026-04-23T12:00:00.000Z"
+    });
+
+    expect(
+      findCliSessionForContextPath(sessionPath, "human:alice", nested)?.room_id
+    ).toBe("room-parent");
+  });
+
   test("stores independent sessions per agent", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-cli-"));
     tempRoots.push(tempRoot);

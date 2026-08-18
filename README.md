@@ -109,13 +109,25 @@ tt msg send        — out-of-band chat into the room event log
 tt instructions    — show, edit, safely update, or reset local instruction overrides
 ```
 
-A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically. Marker files directly in your home directory are ignored for descendant paths, so scratch directories under `$HOME` do not collapse into one broad home-scoped room unless you explicitly join home itself.
+A workspace maps to a room — usually the `git` root or nearest project marker — so two agents `cd`'d anywhere under the same repo join the same room automatically. An existing parent room also wins across a nested Git repository or nearer project marker; `--force-new` is the explicit way to create a nested room. Marker files directly in your home directory are ignored for descendant paths, so scratch directories under `$HOME` do not collapse into one broad home-scoped room unless you explicitly join home itself.
 
 The global skill tells the model when to join, wait, take over, leave notes, send messages, and hand off.
 
 ## Editable collaboration instructions
 
 The bundled skill is the safety floor. It is intentionally small and package-managed. Local collaboration preferences live in editable Markdown files that `tt instructions` shows to agents after they join.
+
+Instruction delivery is deliberately tiered:
+
+| Surface | When the model sees it | Content |
+| --- | --- | --- |
+| Installed skill | When Talking Stick is invoked/loaded | Full ownership, wait, recovery, and handoff mechanics |
+| `tt instructions show` | Once after joining | Concise working agreement plus the detected harness's default role |
+| Compact `tt` result hints | Only at join, authority, wait-exit, and handoff transitions | One short next-step safety reminder |
+| Wake and Claude Stop hooks | Only on the matching lifecycle event | Fixed resume or release/pass warning |
+| README and design docs | Only when explicitly opened | Human reference and rationale |
+
+Normal `tt join --json` includes compact current-member summaries and omits the large policy block; `--verbose` retains the full diagnostic result. This lets an agent discover expected peers without polling `tt state`.
 
 ```bash
 tt instructions show                     # effective prompt for the detected harness
@@ -152,7 +164,7 @@ tt wait --json
 - Joins and leaves are broadcast lifecycle events: an existing `tt wait` wakes when room membership changes. The joining or leaving member does not receive its own broadcast through the default self view.
 - The CLI renews its bounded service wait internally and silently in the same process. Without an explicit `--timeout`, silence never makes `tt wait` exit.
 - A foreground `tt wait` registers its exact process identity for the life of that command. A second live wait for the same room member fails with `duplicate_listener`; a crashed receiver may be replaced after exact liveness or heartbeat-grace validation.
-- Default command JSON is a thin machine envelope: it omits repeated static reminders, prose restart hints, and event fields already present at the envelope. It never truncates message or handoff text. Add `--verbose` to retain the full diagnostic representation.
+- Default command JSON is a thin machine envelope: it omits repeated static reminders and event fields already present at the envelope, but adds a short `hint` only at join, authority, wait-exit, and handoff transitions. It never truncates message or handoff text. Add `--verbose` to retain the full diagnostic representation.
 - A tool yield is not a wait timeout. If the harness returns a running process handle, poll that same process instead of starting another wait. When the process actually exits, start one successor if shared work remains. Do not add short explicit timeouts.
 - `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for human audit and debugging. Agents should not run them beside `tt wait` as a second receive loop.
 - The wait loop can claim or receive a turn. An event wake by itself grants no authority.
@@ -251,7 +263,7 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 
 ## Design highlights
 
-- **Workspace-root room resolution.** An agent at any depth under `/repo/` joins the `/repo/` room automatically. Nested rooms require explicit `force_new`.
+- **Parent-room resolution.** An agent at any depth under `/repo/` joins the `/repo/` room automatically, even when the chosen subfolder is a nested Git/project root. The search stops before a descendant implicitly inherits a room at `$HOME`; nested rooms require explicit `force_new`.
 - **Structured handoffs.** `tt release` and `tt pass` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
 - **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest without holding the stick; if the best-known candidate is between wait polls, a short grace window prevents immediate recycling to a less-fair claimant.
 - **No immediate take-backs.** If release leaves a handoff idle, the prior owner waits through the short grace window before reclaiming while another member exists.

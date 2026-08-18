@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 
 export const STANDBY_WAKE_TEXT =
-  "Talking Stick has an actionable update. Run tt wait --json to resume coordination.\n";
+  "Talking Stick has an actionable update. Run tt wait --json to resume coordination.";
 export const CMUX_WAKE_TIMEOUT_MS = 5_000;
 
 export interface WakeRequest {
@@ -45,6 +45,20 @@ export function createSystemWakeTransport(
             "--surface",
             request.surface_id,
             STANDBY_WAKE_TEXT
+          ],
+          { stdio: "ignore", timeout: CMUX_WAKE_TIMEOUT_MS }
+        );
+        // TUI composers insert a raw newline instead of submitting, so the
+        // prompt only fires with a discrete Enter key event after the text.
+        execFile(
+          "cmux",
+          [
+            "send-key",
+            "--workspace",
+            request.workspace_id,
+            "--surface",
+            request.surface_id,
+            "enter"
           ],
           { stdio: "ignore", timeout: CMUX_WAKE_TIMEOUT_MS }
         );

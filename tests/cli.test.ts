@@ -354,6 +354,79 @@ describe("prepareJsonResult", () => {
     );
     expect(verbose).toEqual(result);
   });
+
+  test("adds short hints only at authority and listener transitions", () => {
+    const command = (name: string) => ({
+      name,
+      positionals: [],
+      options: new Map<string, string | true>()
+    });
+
+    expect(
+      prepareJsonResult(command("wait"), {
+        status: "your_turn",
+        guardian_pid: 42
+      })
+    ).toMatchObject({
+      hint: expect.stringContaining("release or pass before stopping")
+    });
+    expect(
+      prepareJsonResult(command("wait"), {
+        status: "not_yet",
+        events: [{ event_id: "event-1" }]
+      })
+    ).toMatchObject({
+      hint: "Wait exited: process events; if work remains, start one successor."
+    });
+    expect(
+      prepareJsonResult(command("release"), { status: "released" })
+    ).toMatchObject({
+      hint: expect.stringContaining("Work remains")
+    });
+    expect(
+      prepareJsonResult(command("msg send"), { status: "sent" })
+    ).not.toHaveProperty("hint");
+  });
+
+  test("compacts join policy but preserves member discovery", () => {
+    const compact = prepareJsonResult(
+      {
+        name: "join",
+        positionals: [],
+        options: new Map<string, string | true>()
+      },
+      {
+        room_id: "room-1",
+        policy: { heartbeatIntervalMs: 300_000 },
+        members: [
+          {
+            agent_id: "claude:one",
+            status: "active",
+            last_seen_at: "2026-08-14T22:00:00.000Z"
+          }
+        ]
+      }
+    ) as Record<string, unknown>;
+
+    expect(compact).not.toHaveProperty("policy");
+    expect(compact.members).toEqual([
+      {
+        agent_id: "claude:one",
+        status: "active",
+        last_seen_at: "2026-08-14T22:00:00.000Z"
+      }
+    ]);
+
+    const verbose = prepareJsonResult(
+      {
+        name: "join",
+        positionals: [],
+        options: new Map<string, string | true>([["verbose", true]])
+      },
+      { policy: { heartbeatIntervalMs: 300_000 } }
+    ) as Record<string, unknown>;
+    expect(verbose).toHaveProperty("policy.heartbeatIntervalMs", 300_000);
+  });
 });
 
 describe("shouldAutoSyncInstalledSkills", () => {
@@ -1426,6 +1499,48 @@ describe("tt room commands", () => {
     const listOut = await captureStdout(["list", project]);
     expect(listOut.split("\n").filter(Boolean)).toHaveLength(1);
   });
+
+  test("tt join from a nested workspace root discovers the parent room and members", async () => {
+    const { dataDir, project } = setupIsolatedCli(tempDirs);
+    const nestedProject = path.join(project, "repos", "child");
+    fs.mkdirSync(nestedProject, { recursive: true });
+    fs.writeFileSync(path.join(nestedProject, "package.json"), "{}\n");
+
+    const parent = JSON.parse(
+      await captureStdout([
+        "join",
+        project,
+        "--agent",
+        "human:parent",
+        "--json"
+      ])
+    ) as { room_id: string };
+    const nested = JSON.parse(
+      await captureStdout([
+        "join",
+        nestedProject,
+        "--agent",
+        "human:child",
+        "--json"
+      ])
+    ) as {
+      room_id: string;
+      canonical_path: string;
+      members: Array<{ agent_id: string }>;
+      policy?: unknown;
+      hint: string;
+    };
+
+    expect(nested.room_id).toBe(parent.room_id);
+    expect(nested.canonical_path).toBe(project);
+    expect(nested.members.map((member) => member.agent_id).sort()).toEqual([
+      "human:child",
+      "human:parent"
+    ]);
+    expect(nested.policy).toBeUndefined();
+    expect(nested.hint).toContain("expected peers are listed in members");
+    expect(fs.existsSync(path.join(dataDir, "cli-sessions.json"))).toBe(true);
+  });
 });
 
 describe("tt notes", () => {
@@ -1860,7 +1975,7 @@ describe("tt notes", () => {
 
     expect(result.harness).toBe("codex");
     expect(result.scope).toBe("bundled");
-    expect(result.text).toContain("tt wait --json");
+    expect(result.text).toContain("Default role: precise implementation");
   });
 
   test("tt instructions show returns the bundled Grok prompt", async () => {
@@ -1879,7 +1994,9 @@ describe("tt notes", () => {
     };
 
     expect(result.harness).toBe("grok");
-    expect(result.text).toContain("tt wait --json");
+    expect(result.text).toContain(
+      "Default role: fast implementation and cross-checks"
+    );
   });
 
   test("tt instructions show preserves a path after trailing --json", async () => {
