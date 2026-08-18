@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.13.0] — 2026-08-18
+
+Full notes: [`docs/releases/0.13.0.md`](docs/releases/0.13.0.md).
+
 ### Added
 
 - **Working agreement in bundled instructions.** After join, `tt instructions show` now carries a concise plan → adversarial debate → implement contract: material-claim independent review, participating-member AGREE/veto, and close only on unanimous AGREE. Each known harness gets a default role plus a peer map; the shipped skill remains the ownership/wait/handoff floor.
@@ -450,6 +454,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.13.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.13.0
 [0.12.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.12.1
 [0.12.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.12.0
 [0.11.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.11.0
