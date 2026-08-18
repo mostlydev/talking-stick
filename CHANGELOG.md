@@ -19,6 +19,7 @@ changes will be called out under **Breaking changes**.
 ### Changed
 
 - **Ancestor rooms cross nested workspace roots.** Existing-room lookup now walks past a nested Git or project-marker root up to the home boundary, so a child repo joins the deepest existing parent room instead of silently creating a sibling. New rooms still create at `workspace_root`; `--force-new` remains the only nested-create path. Joining an ancestor above the current workspace root emits an explicit warning.
+- **Leaner compact join output.** Compact `tt join` JSON omits the static `policy` block; `--verbose` restores it.
 
 ### Fixed
 
