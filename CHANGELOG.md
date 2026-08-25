@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.14.0] — 2026-08-25
+
+Full notes: [`docs/releases/0.14.0.md`](docs/releases/0.14.0.md).
+
 ### Added
 
 - **CI workflow.** `.github/workflows/ci.yml` runs `npm ci`, typecheck, build, and the Vitest suite on Ubuntu and macOS with Node 22 and 24 for every push to `master` and every pull request. (#43)
@@ -469,6 +473,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.14.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.14.0
 [0.13.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.13.0
 [0.12.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.12.1
 [0.12.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.12.0
