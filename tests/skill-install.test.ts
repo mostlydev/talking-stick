@@ -64,7 +64,9 @@ describe("talking-stick skill install", () => {
         homeDir: "/home/u"
       })
     ).toBe("/custom/grok/skills/talking-stick");
-    expect(resolveSkillTargetPath("opencode", { homeDir: "/home/u" })).toBe(
+    expect(
+      resolveSkillTargetPath("opencode", { env: {}, homeDir: "/home/u" })
+    ).toBe(
       "/home/u/.config/opencode/skills/talking-stick"
     );
     expect(
@@ -94,7 +96,12 @@ describe("talking-stick skill install", () => {
     expect(resolveDuplicateSkillTargetPaths("codex", { homeDir: "/home/u" })).toEqual([
       "/home/u/.codex/skills/talking-stick"
     ]);
-    expect(resolveDuplicateSkillTargetPaths("opencode", { homeDir: "/home/u" })).toEqual([
+    expect(
+      resolveDuplicateSkillTargetPaths("opencode", {
+        env: {},
+        homeDir: "/home/u"
+      })
+    ).toEqual([
       "/home/u/.config/opencode/skills/talking-stick",
       "/home/u/.opencode/skills/talking-stick"
     ]);

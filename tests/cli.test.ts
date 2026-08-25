@@ -1002,14 +1002,11 @@ describe("tt turn commands", () => {
       listener = spawnCliProcess([
         "wait", project, "--timeout", "5s", "--agent", "human:receiver", "--json"
       ]);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(listener.child.exitCode).toBeNull();
-
-      const health = JSON.parse(await captureStdout([
-        "health", project, "--agent", "human:receiver", "--json"
-      ])) as {
-        listener: { status: string; active: boolean; duplicates: number };
-      };
+      const health = await waitForActiveListener(
+        project,
+        "human:receiver",
+        listener
+      );
       expect(health.listener).toEqual({
         status: "registered",
         active: true,
@@ -3433,6 +3430,41 @@ function spawnCliProcess(
     stdout: () => stdout,
     stderr: () => stderr
   };
+}
+
+async function waitForActiveListener(
+  project: string,
+  agentId: string,
+  listener: SpawnedCliProcess,
+  timeoutMs = 5_000
+): Promise<{
+  listener: { status: string; active: boolean; duplicates: number };
+}> {
+  type ListenerHealth = {
+    listener: { status: string; active: boolean; duplicates: number };
+  };
+  const deadline = Date.now() + timeoutMs;
+  let lastHealth: ListenerHealth | undefined;
+
+  while (Date.now() < deadline) {
+    if (listener.child.exitCode !== null) {
+      throw new Error(
+        `Listener exited before registration: code=${listener.child.exitCode} stderr=${listener.stderr()}`
+      );
+    }
+    const health = JSON.parse(await captureStdout([
+      "health", project, "--agent", agentId, "--json"
+    ])) as ListenerHealth;
+    lastHealth = health;
+    if (health.listener.active) {
+      return health;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error(
+    `Listener did not become active within ${timeoutMs}ms: ${JSON.stringify(lastHealth)}`
+  );
 }
 
 async function runCliProcess(

@@ -11,6 +11,14 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.14.1] — 2026-08-25
+
+Full notes: [`docs/releases/0.14.1.md`](docs/releases/0.14.1.md).
+
+### Fixed
+
+- **Portable release verification.** CI path tests now isolate environment overrides such as `XDG_CONFIG_HOME`, and the registered-listener integration test waits for observable readiness instead of assuming a fixed startup delay. The 0.14.0 behavior is unchanged; this patch release makes its Linux/macOS and Node 22/24 release gate deterministic. (#43)
+
 ## [0.14.0] — 2026-08-25
 
 Full notes: [`docs/releases/0.14.0.md`](docs/releases/0.14.0.md).
