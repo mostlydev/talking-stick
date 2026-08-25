@@ -75,6 +75,7 @@ export interface WaitForTurnCommandInput {
   include_events?: boolean;
   after_event_seq?: number;
   target_agent_id?: WaitForTurnInput["target_agent_id"];
+  advisory_takeover_wake?: boolean;
 }
 
 export interface RegisterReceiverCommandInput {
@@ -198,6 +199,7 @@ export class TalkingStickCommands {
       include_events: input.include_events,
       after_event_seq: input.after_event_seq,
       target_agent_id: input.target_agent_id,
+      advisory_takeover_wake: input.advisory_takeover_wake,
       process_metadata: identity.process_metadata
     });
   }

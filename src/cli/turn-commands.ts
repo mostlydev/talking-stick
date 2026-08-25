@@ -13,7 +13,10 @@ import {
   type RoomMember,
   type WaitForTurnResult
 } from "../index.js";
-import { resolveCmuxStandbyEndpoint } from "../wake.js";
+import {
+  hasCmuxCallerContext,
+  resolveCmuxStandbyEndpoint
+} from "../wake.js";
 import { waitForActionableSignal } from "../wait-loop.js";
 import {
   checkGuardianLiveness,
@@ -87,6 +90,9 @@ export async function handleWaitCommand(
       if (!harnessSessionId) {
         throw new Error("No harness session is available for endpoint scoping.");
       }
+      if (!hasCmuxCallerContext()) {
+        throw new Error("No cmux caller context is available.");
+      }
       const endpoint = resolveCmuxStandbyEndpoint();
       runtime.commands.registerWakeEndpoint(identity, {
         room_id: joined.room_id,
@@ -110,7 +116,10 @@ export async function handleWaitCommand(
           mode: park ? "parked" : "active",
           include_events: true,
           after_event_seq: currentCursor,
-          target_agent_id: targetAgentId
+          target_agent_id: targetAgentId,
+          // An unbounded default wait keeps listening through advisory
+          // owner_idle; `tt try` and explicit --timeout still report it.
+          advisory_takeover_wake: isTry || explicitTimeout
         });
         currentCursor = result.cursor_event_seq ?? currentCursor;
         return result;
@@ -285,12 +294,33 @@ export function handleStandbyCommand(
     context_path: contextPath
   });
   upsertSessionFromJoin(identity, joined);
-  const transport = getStringOption(parsed, "wake") ?? "cmux";
-  if (transport !== "cmux" && transport !== "manual") {
+  const requestedTransport = getStringOption(parsed, "wake");
+  if (
+    requestedTransport !== undefined &&
+    requestedTransport !== "cmux" &&
+    requestedTransport !== "manual"
+  ) {
     throw new Error("--wake must be cmux or manual.");
   }
+  let transport: "cmux" | "manual" = requestedTransport ?? "cmux";
 
-  const endpoint = transport === "cmux" ? resolveCmuxStandbyEndpoint() : null;
+  let endpoint = null;
+  let fallbackReason: string | undefined;
+  if (transport === "cmux") {
+    try {
+      if (!hasCmuxCallerContext()) {
+        throw new Error("No cmux caller context is available.");
+      }
+      endpoint = resolveCmuxStandbyEndpoint();
+    } catch (error) {
+      if (requestedTransport !== undefined) {
+        throw error;
+      }
+      transport = "manual";
+      fallbackReason =
+        error instanceof Error ? error.message : String(error);
+    }
+  }
   const result = runtime.commands.registerStandby(identity, {
     room_id: joined.room_id,
     transport,
@@ -298,12 +328,19 @@ export function handleStandbyCommand(
     surface_id: endpoint?.surface_id
   });
 
-  printResult(parsed, result, () => {
-    if (result.can_self_wake) {
-      return "Standby registered. This turn may end; cmux will wake this surface for an actionable update.";
+  printResult(
+    parsed,
+    fallbackReason ? { ...result, fallback_reason: fallbackReason } : result,
+    () => {
+      if (result.can_self_wake) {
+        return "Standby registered. This turn may end; cmux will wake this surface for an actionable update.";
+      }
+      if (fallbackReason) {
+        return `Manual standby registered because cmux wake is unavailable (${fallbackReason}). It cannot self-wake; run \`tt wait --json\` to resume.`;
+      }
+      return "Manual standby registered. It cannot self-wake; run `tt wait --json` to resume.";
     }
-    return "Manual standby registered. It cannot self-wake; run `tt wait --json` to resume.";
-  });
+  );
 }
 
 function persistWaitCursor(

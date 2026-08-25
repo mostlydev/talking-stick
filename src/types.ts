@@ -224,6 +224,9 @@ export interface WaitForTurnInput {
   after_event_seq?: number;
   target_agent_id?: TargetAgentFilter;
   process_metadata?: ProcessMetadata;
+  // When false, an advisory `takeover_available` (reason `owner_idle`, owner
+  // still alive) does not end the wait; ownership hazards always do.
+  advisory_takeover_wake?: boolean;
 }
 
 export interface RegisterReceiverInput {

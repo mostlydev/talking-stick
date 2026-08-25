@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -154,6 +155,68 @@ describe("path resolution", () => {
     expect(forced.room_id).not.toBe(parentJoin.room_id);
     expect(forced.canonical_path).toBe(realPath(explicitNested));
     expect(forced.warning).toContain("Created nested room inside");
+  });
+
+  test("git worktrees share the main repository room unless explicitly isolated", () => {
+    const tempRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "talking-stick-worktree-")
+    );
+    tempRoots.push(tempRoot);
+    const main = path.join(tempRoot, "main");
+    const linked = path.join(tempRoot, "linked");
+    fs.mkdirSync(main, { recursive: true });
+    execFileSync("git", ["init", "-b", "main", main]);
+    execFileSync("git", ["-C", main, "config", "user.name", "Test User"]);
+    execFileSync("git", ["-C", main, "config", "user.email", "test@example.com"]);
+    fs.writeFileSync(path.join(main, "package.json"), "{}\n");
+    execFileSync("git", ["-C", main, "add", "package.json"]);
+    execFileSync("git", ["-C", main, "commit", "-m", "Initial commit"]);
+    execFileSync("git", [
+      "-C",
+      main,
+      "worktree",
+      "add",
+      "-b",
+      "linked",
+      linked
+    ]);
+
+    expect(resolveContextPath(main).workspace_root).toBe(realPath(main));
+    expect(resolveContextPath(linked).workspace_root).toBe(realPath(main));
+
+    const service = new TalkingStickService({
+      dbPath: path.join(tempRoot, "state", "rooms.sqlite")
+    });
+    services.push(service);
+    const mainJoin = service.joinPath({
+      agent_id: "claude:main",
+      context_path: main
+    });
+    const linkedJoin = service.joinPath({
+      agent_id: "codex:linked",
+      context_path: linked
+    });
+
+    expect(linkedJoin.room_id).toBe(mainJoin.room_id);
+    expect(linkedJoin.canonical_path).toBe(realPath(main));
+    expect(service.listRooms({ context_path: linked }).rooms).toHaveLength(1);
+
+    const isolated = service.joinPath({
+      agent_id: "grok:isolated",
+      context_path: linked,
+      force_new: true
+    });
+    expect(isolated.room_id).not.toBe(mainJoin.room_id);
+    expect(isolated.canonical_path).toBe(realPath(linked));
+
+    const nestedLinked = path.join(linked, "src");
+    fs.mkdirSync(nestedLinked);
+    expect(
+      service.joinPath({
+        agent_id: "codex:nested-linked",
+        context_path: nestedLinked
+      }).room_id
+    ).toBe(isolated.room_id);
   });
 });
 

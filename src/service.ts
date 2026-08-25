@@ -184,6 +184,8 @@ interface NoteRow {
 
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
 const MAX_MESSAGE_BODY_BYTES = 4096;
+// Bare `tt events` returns a bounded recent tail; --all / --limit widen it.
+const DEFAULT_EVENT_VIEW_LIMIT = 50;
 const KNOWN_EVENT_TYPES: readonly EventType[] = [
   "join",
   "leave",
@@ -697,7 +699,13 @@ export class TalkingStickService {
         return this.withWaitEvents(waitResult, events, afterEventSeq, "closed");
       }
 
-      if (this.isTurnWake(waitResult, startedAsOwner)) {
+      if (
+        this.isTurnWake(
+          waitResult,
+          startedAsOwner,
+          input.advisory_takeover_wake ?? true
+        )
+      ) {
         return this.withWaitEvents(waitResult, events, afterEventSeq, "turn");
       }
 
@@ -1535,12 +1543,12 @@ export class TalkingStickService {
         SELECT *
         FROM room_events
         WHERE room_id = ? AND created_at >= ?
-        ORDER BY event_seq
+        ORDER BY event_seq DESC
         LIMIT ?
       `
       )
-      .all(input.room_id, horizon.horizon_start_at ?? "", 500);
-    const events = rows.map((row) => this.mapEvent(row));
+      .all(input.room_id, horizon.horizon_start_at ?? "", DEFAULT_EVENT_VIEW_LIMIT);
+    const events = rows.reverse().map((row) => this.mapEvent(row));
 
     return {
       events,
@@ -2577,12 +2585,20 @@ export class TalkingStickService {
 
   private isTurnWake(
     result: WaitForTurnResult,
-    startedAsOwner = false
+    startedAsOwner = false,
+    advisoryTakeoverWake = true
   ): boolean {
     if (
       startedAsOwner &&
       result.status === "your_turn" &&
       result.reason === "already_owner"
+    ) {
+      return false;
+    }
+    if (
+      !advisoryTakeoverWake &&
+      result.status === "takeover_available" &&
+      result.reason === "owner_idle"
     ) {
       return false;
     }

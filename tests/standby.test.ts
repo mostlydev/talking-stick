@@ -342,6 +342,7 @@ describe("zero-churn wait and standby workflow", () => {
 
   test("cmux standby records only the verified caller endpoint", () => {
     let timeout = 0;
+    let stdio: unknown;
     const endpoint = resolveCmuxStandbyEndpoint(() => JSON.stringify({
       caller: { workspace_ref: "workspace:12", surface_ref: "surface:28" },
       focused: { workspace_ref: "workspace:99", surface_ref: "surface:99" }
@@ -352,11 +353,13 @@ describe("zero-churn wait and standby workflow", () => {
 
     resolveCmuxStandbyEndpoint((_file, _args, options) => {
       timeout = options.timeout;
+      stdio = options.stdio;
       return JSON.stringify({
         caller: { workspace_ref: "workspace:1", surface_ref: "surface:2" }
       });
     });
     expect(timeout).toBe(CMUX_WAKE_TIMEOUT_MS);
+    expect(stdio).toEqual(["ignore", "pipe", "pipe"]);
   });
 
   test("cmux wake delivery sends the prompt then a discrete Enter", () => {

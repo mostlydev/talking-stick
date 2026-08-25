@@ -70,7 +70,7 @@ export function resolveWorkspaceRoot(canonicalContextPath: string): string {
 // API compatibility; new-room creation still uses the resolved workspace root.
 export function ancestorPaths(
   canonicalContextPath: string,
-  _workspaceRoot: string
+  workspaceRoot: string
 ): string[] {
   const ancestors: string[] = [];
   const homeBoundary = resolveHomeMarkerBoundary(canonicalContextPath);
@@ -90,22 +90,53 @@ export function ancestorPaths(
     current = parent;
   }
 
+  // A linked Git worktree's coordination root is the main repository root,
+  // which is a sibling rather than a filesystem ancestor. Keep real ancestors
+  // first so an explicitly forced per-worktree room still wins, then add the
+  // shared repository root as the default fallback.
+  if (
+    !ancestors.some((candidate) => samePath(candidate, workspaceRoot)) &&
+    (!homeBoundary || !samePath(workspaceRoot, homeBoundary))
+  ) {
+    ancestors.push(workspaceRoot);
+  }
+
   return ancestors;
 }
 
 function resolveGitRoot(canonicalContextPath: string): string | null {
   try {
-    const output = execFileSync(
+    const checkoutRoot = execFileSync(
       "git",
       ["-C", canonicalContextPath, "rev-parse", "--show-toplevel"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).trim();
 
-    if (!output) {
+    if (!checkoutRoot) {
       return null;
     }
 
-    return fs.realpathSync.native(output);
+    const commonDirectory = execFileSync(
+      "git",
+      [
+        "-C",
+        canonicalContextPath,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir"
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+    ).trim();
+
+    // Ordinary repositories and their linked worktrees share <main>/.git.
+    // More exotic layouts (notably submodules whose common dir lives under
+    // .git/modules) retain their checkout root instead of guessing a wrong
+    // working-tree path from an internal Git directory.
+    const coordinationRoot =
+      commonDirectory && path.basename(commonDirectory) === ".git"
+        ? path.dirname(commonDirectory)
+        : checkoutRoot;
+    return fs.realpathSync.native(coordinationRoot);
   } catch {
     return null;
   }

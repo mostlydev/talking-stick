@@ -81,8 +81,18 @@ export interface CmuxStandbyEndpoint {
 export type CmuxIdentify = (
   file: string,
   args: readonly string[],
-  options: { encoding: "utf8"; timeout: number }
+  options: {
+    encoding: "utf8";
+    timeout: number;
+    stdio: ["ignore", "pipe", "pipe"];
+  }
 ) => string;
+
+export function hasCmuxCallerContext(
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  return Boolean(env.CMUX_TAB_ID?.trim() || env.CMUX_AGENT_LAUNCH_KIND?.trim());
+}
 
 export function resolveCmuxStandbyEndpoint(
   identify: CmuxIdentify = (file, args, options) =>
@@ -96,7 +106,8 @@ export function resolveCmuxStandbyEndpoint(
     parsed = JSON.parse(
       identify("cmux", ["identify", "--json"], {
         encoding: "utf8",
-        timeout: CMUX_WAKE_TIMEOUT_MS
+        timeout: CMUX_WAKE_TIMEOUT_MS,
+        stdio: ["ignore", "pipe", "pipe"]
       })
     );
   } catch (error) {

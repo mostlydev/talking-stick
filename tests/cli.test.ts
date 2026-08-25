@@ -1260,6 +1260,58 @@ describe("tt turn commands", () => {
       .toMatchObject({ wait_intent: "parked" });
   });
 
+  test("tt standby defaults to manual when the inherited cmux endpoint is unreachable", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const fakeBin = path.join(path.dirname(project), "fake-bin");
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeCmux = path.join(fakeBin, "cmux");
+    fs.writeFileSync(
+      fakeCmux,
+      "#!/bin/sh\necho 'stale cmux socket' >&2\nexit 1\n"
+    );
+    fs.chmodSync(fakeCmux, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}${path.delimiter}${originalPath ?? ""}`;
+    process.env.CMUX_TAB_ID = "inherited-tab";
+
+    try {
+      const output = JSON.parse(await captureStdout([
+        "standby",
+        project,
+        "--agent",
+        "human:parked",
+        "--json"
+      ])) as {
+        transport: string;
+        can_self_wake: boolean;
+        fallback_reason?: string;
+      };
+
+      expect(output).toMatchObject({
+        transport: "manual",
+        can_self_wake: false
+      });
+      expect(output.fallback_reason).toContain("Unable to verify");
+    } finally {
+      process.env.PATH = originalPath;
+      delete process.env.CMUX_TAB_ID;
+    }
+  });
+
+  test("tt standby keeps an explicit --wake cmux request strict", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+
+    await expect(captureStdout([
+      "standby",
+      project,
+      "--wake",
+      "cmux",
+      "--agent",
+      "human:parked",
+      "--json"
+    ])).rejects.toThrow("No cmux caller context is available");
+  });
+
   test("tt standby rejects an active owner until the turn is released", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     await seedCliLease(project, "human:owner");

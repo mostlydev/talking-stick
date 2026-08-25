@@ -262,6 +262,34 @@ describe("talking-stick vertical slice", () => {
     expect(compact.room.room_id).toBe(join.room_id);
   });
 
+  test("bare events view is a bounded tail inside the recency horizon (#57)", () => {
+    const harness = createHarness();
+    const project = createProject(harness.tempRoot);
+    const join = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    for (let index = 0; index < 60; index += 1) {
+      harness.service.sendMessage({
+        agent_id: "claude:test",
+        room_id: join.room_id,
+        body: `burst ${index}`
+      });
+    }
+    const bounded = harness.service.getRoomEventsView({
+      room_id: join.room_id,
+      include_all: false
+    });
+    expect(bounded.events.length).toBe(50);
+    expect(bounded.events[0].payload?.body).toBe("burst 10");
+    expect(bounded.events.at(-1)?.payload?.body).toBe("burst 59");
+    const all = harness.service.getRoomEventsView({
+      room_id: join.room_id,
+      include_all: true
+    });
+    expect(all.events.length).toBeGreaterThan(50);
+  });
+
   test("events and notes default views hide older activity behind summaries", () => {
     const harness = createHarness();
     const project = createProject(harness.tempRoot);
@@ -3718,6 +3746,70 @@ describe("issue #29: presence and liveness track the harness, not the guardian",
     expect(taken.status).toBe("your_turn");
     expect(taken.reason).toBe("owner_idle");
     expect(taken.revoked_agent_id).toBe("codex:test");
+  });
+
+  test("owner_idle: an unbounded default wait keeps listening when advisory takeover wakes are off (#62)", async () => {
+    const harness = createHarness({
+      policy: { ownerActivityTtlMs: 5_000, presenceTtlMs: 60_000 }
+    });
+    const project = createProject(harness.tempRoot);
+    const codexProc = harness.processRegistry.create("codex", "harness_cli");
+    const codexMeta: ProcessMetadata = {
+      ...codexProc,
+      harness_name: "codex",
+      harness_session_id: "codex-session",
+      harness_host_id: harness.processRegistry.hostId,
+      harness_pid: codexProc.pid,
+      harness_process_started_at: codexProc.process_started_at
+    };
+    const codexJoin = harness.service.joinPath({
+      agent_id: "codex:test",
+      context_path: project,
+      process_metadata: codexMeta
+    });
+    const claudeJoin = harness.service.joinPath({
+      agent_id: "claude:test",
+      context_path: project
+    });
+    asYourTurn(
+      await harness.service.waitForTurn({
+        agent_id: "codex:test",
+        room_id: codexJoin.room_id,
+        max_wait_ms: 0
+      })
+    );
+    // Register the peer as a waiter so owner_idle becomes peer-gated eligible.
+    await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0
+    });
+    harness.clock.advance(6_000);
+
+    // The quiet default wait treats advisory owner_idle as silence.
+    const suppressed = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      include_events: true,
+      after_event_seq: claudeJoin.cursor_event_seq,
+      advisory_takeover_wake: false
+    });
+    // The offer is still described, but as silence: the persistent CLI loop
+    // re-arms on `timeout` instead of exiting and burning a model turn.
+    expect(suppressed.wake_reason).toBe("timeout");
+
+    // `tt try` / explicit --timeout waits still surface the offer.
+    const reported = await harness.service.waitForTurn({
+      agent_id: "claude:test",
+      room_id: codexJoin.room_id,
+      max_wait_ms: 0,
+      include_events: true,
+      after_event_seq: claudeJoin.cursor_event_seq,
+      advisory_takeover_wake: true
+    });
+    expect(reported.status).toBe("takeover_available");
+    expect(reported.wake_reason).toBe("turn");
   });
 
   test("owner_idle is peer-gated and any owner command clears it (operator's implicit-liveness rule)", async () => {
