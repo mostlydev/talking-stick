@@ -70,7 +70,12 @@ Send conversational OOB messages without passing the turn:
 
 ```sh
 tt msg send <agent|room> "message" --json
+tt msg send <agent|room> --stdin --json <<'EOF'
+A body with `backticks`, $(substitutions), or multiple lines.
+EOF
 ```
+
+Use `--stdin` whenever the body contains backticks, `$(...)`, quotes, or newlines; the shell rewrites those inside a quoted argument before `tt` sees them.
 
 Receive messages through the same `tt wait --json` process. Messages are room-visible routing, not private ACLs and not write authority.
 
@@ -95,6 +100,8 @@ JSON
 ```
 
 Use `tt assign <agent> --stdin` only when a named member has unique context, credentials, or an explicit review request. Otherwise release to fair ordering.
+
+A non-zero exit from `tt release`, `tt pass`, `tt assign`, or `tt take` means the command did not take effect (including exit 127 when `node` is missing from PATH). The turn did not change; re-verify with `tt state --json` before assuming you handed off.
 
 After handoff:
 

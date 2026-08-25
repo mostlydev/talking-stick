@@ -21,6 +21,7 @@
 - Only after the subprocess exits should the consumer process the result and start one successor.
 - A terminal active-wait `not_yet` result carries that successor reminder. Parked waits do not, because park is not an active-work loop.
 - Do not shorten the CLI timeout to fit a tool-yield interval. A tool yield and a wait timeout are different events.
+- A non-zero exit from `tt release`, `tt pass`, `tt assign`, or `tt take` means the turn did not change. Exit 127 means `tt` never ran at all. Re-verify ownership with `tt state --json` instead of assuming the handoff happened.
 
 ## Passive standby
 
