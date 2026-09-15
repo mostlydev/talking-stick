@@ -463,7 +463,25 @@ export class TalkingStickService {
         .run(input.room_id, input.agent_id);
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (isObserverMember(member) && room.owner !== input.agent_id && room.reserved_for !== input.agent_id) {
+      if (
+        isObserverMember(member) &&
+        room.owner !== input.agent_id &&
+        room.reserved_for !== input.agent_id
+      ) {
+        // The last console closing an agent-less room cleans it up now. Any
+        // remaining agent rows, even stale ones, are left to idle purge.
+        if (
+          !remainingMembers.some((remaining) => !isObserverMember(remaining)) &&
+          !this.hasLiveObserver(remainingMembers)
+        ) {
+          this.deleteRoom(input.room_id);
+          return {
+            status: "room_deleted",
+            room_id: input.room_id,
+            canonical_path: room.canonical_path,
+            remaining_members: 0
+          };
+        }
         return {
           status: "left",
           room_id: input.room_id,
@@ -471,7 +489,7 @@ export class TalkingStickService {
           remaining_members: remainingMembers.length
         };
       }
-      if (!this.hasActiveTurnTakingMember(remainingMembers, now)) {
+      if (!this.shouldKeepRoom(remainingMembers, now)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -600,7 +618,7 @@ export class TalkingStickService {
       });
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (!this.hasActiveTurnTakingMember(remainingMembers, now)) {
+      if (!this.shouldKeepRoom(remainingMembers, now)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -4352,7 +4370,7 @@ export class TalkingStickService {
 
   private shouldRetainIdleRoom(member: RoomMemberRow, now: Date): boolean {
     if (isObserverMember(member)) {
-      return false;
+      return this.getMemberProcessLiveness(member) === "alive";
     }
     const liveness = this.getMemberProcessLiveness(member);
     if (liveness === "alive") {
@@ -4452,6 +4470,24 @@ export class TalkingStickService {
   ): boolean {
     return members.some(
       (member) => !isObserverMember(member) && this.isMemberActive(member, now)
+    );
+  }
+
+  // An operator chat console keeps its room open after the agents leave, so
+  // the operator can wait for them to come back. Only a console whose exact
+  // process is verifiably alive counts; a crashed console retains nothing.
+  private hasLiveObserver(members: RoomMemberRow[]): boolean {
+    return members.some(
+      (member) =>
+        isObserverMember(member) &&
+        this.getMemberProcessLiveness(member) === "alive"
+    );
+  }
+
+  private shouldKeepRoom(members: RoomMemberRow[], now: Date): boolean {
+    return (
+      this.hasActiveTurnTakingMember(members, now) ||
+      this.hasLiveObserver(members)
     );
   }
 

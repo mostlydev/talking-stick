@@ -122,6 +122,8 @@ export async function runChatSession(
   });
   const roomId = joined.room_id;
 
+  // Agents seen leaving, so addressing one explains why it can't be reached.
+  const departedAgents = new Set<string>();
   let members: RoomMember[] = [];
   let owner: string | null = null;
   let ownerSince: string | null = null;
@@ -293,7 +295,17 @@ export async function runChatSession(
       refreshMembers();
       const resolved = resolveChatRecipient(to, members, selfId);
       if ("error" in resolved) {
-        print(`! ${sanitizeChatText(resolved.error)}`);
+        const selector = to.toLowerCase();
+        const departed = [...departedAgents].filter(
+          (agentId) =>
+            agentId.toLowerCase().startsWith(selector) ||
+            nameOf(agentId).toLowerCase().startsWith(selector)
+        );
+        print(
+          departed.length > 0
+            ? `! ${sanitizeChatText(departed.map((agentId) => nameOf(agentId)).join(", "))} left the room and can't receive messages until it rejoins.`
+            : `! ${sanitizeChatText(resolved.error)}`
+        );
         return;
       }
       targets = resolved.agent_ids;
@@ -348,6 +360,13 @@ export async function runChatSession(
   // lines stay compact underneath the message they follow.
   let lastPrinted: "message" | "system" | "info" = "info";
   const printEvent = (event: RoomEvent) => {
+    if (event.event_type === "leave" && event.from_agent_id) {
+      departedAgents.add(event.from_agent_id);
+    } else if (event.event_type === "kick" && event.to_agent_id) {
+      departedAgents.add(event.to_agent_id);
+    } else if (event.event_type === "join" && event.from_agent_id) {
+      departedAgents.delete(event.from_agent_id);
+    }
     if (terminal) {
       transcript.appendEvent(event);
       if (
