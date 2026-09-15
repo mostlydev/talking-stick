@@ -279,6 +279,9 @@ describe("chat rendering", () => {
     ] as never;
     expect(resolveChatRecipients(["everyone"], liveness, "human:op")).toEqual({ agent_ids: ["codex:aa", "claude:bb"] });
     expect(resolveChatRecipients(["claude"], liveness, "human:op")).toEqual({ agent_ids: ["claude:bb"] });
+    expect(resolveChatRecipients(["codex", "grok"], liveness, "human:op")).toMatchObject({
+      error: "No room member matches '@grok'. 'grok' only matches agents that have ended: grok:ff.", unmatched: ["grok"]
+    });
     expect(resolveChatRecipient("grok", liveness, "human:op")).toEqual({
       error: "'grok' only matches agents that have ended: grok:ff."
     });

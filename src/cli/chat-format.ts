@@ -139,12 +139,18 @@ export function resolveChatRecipients(
 ): { agent_ids: AgentId[] } | { error: string; unmatched: string[] } {
   const agentIds: AgentId[] = [];
   const unmatched: string[] = [];
+  const endedDetails: string[] = [];
   for (const selector of selectors) {
     const resolved = EVERYONE_SELECTORS.includes(selector)
       ? everyoneIn(members, selfAgentId)
       : resolveChatRecipient(selector, members, selfAgentId);
     if ("error" in resolved) {
       unmatched.push(selector);
+      const ended = members.filter((member) => member.agent_id !== selfAgentId &&
+        member.process_liveness === "gone" &&
+        (member.agent_id.toLowerCase().startsWith(selector.toLowerCase()) ||
+          member.display_name?.toLowerCase().startsWith(selector.toLowerCase())));
+      if (ended.length > 0) endedDetails.push(resolved.error);
       continue;
     }
     for (const agentId of resolved.agent_ids) {
@@ -153,7 +159,7 @@ export function resolveChatRecipients(
   }
   if (unmatched.length > 0) {
     return {
-      error: `No room member matches ${unmatched.map((selector) => `'@${selector}'`).join(", ")}.`,
+      error: `No room member matches ${unmatched.map((selector) => `'@${selector}'`).join(", ")}.${endedDetails.length > 0 ? ` ${endedDetails.join(" ")}` : ""}`,
       unmatched
     };
   }
