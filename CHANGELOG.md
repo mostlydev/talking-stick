@@ -14,6 +14,7 @@ changes will be called out under **Breaking changes**.
 ### Added
 
 - **Mention several agents anywhere in a chat message.** `@claude @codex, review this` and `hey @codex and @claude, check this` both send to every matching member. Leading mentions are stripped from the message text; an unknown `@name` blocks the whole send instead of delivering to some recipients; email addresses and `code` spans are not treated as mentions.
+- **Interrupt shortcut in chat.** `@!codex stop` interrupts the named agent, and `@! stop` sends an interrupt without naming anyone, the same as `/interrupt`.
 
 ## [0.16.0] — 2026-09-15
 

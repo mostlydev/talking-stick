@@ -91,19 +91,30 @@ export function parseChatInput(line: string): ChatInput {
 // A mention is @name at the start of the text or after a non-word character,
 // so email addresses (a@b.com) stay plain text. Mentions inside `code` spans
 // are ignored. Trailing punctuation (@codex, @claude:) is not part of the name.
-const MENTION_PATTERN = /(^|[^\p{L}\p{N}_@.])@([\p{L}\p{N}_][\p{L}\p{N}_:.-]*)/gu;
-const LEADING_MENTIONS = /^(?:@[\p{L}\p{N}_][\p{L}\p{N}_:.-]*[,;:]?\s*)+/u;
+// @!name marks the message as an interrupt for that agent; a bare @! interrupts
+// without naming anyone.
+const NAME = "[\\p{L}\\p{N}_][\\p{L}\\p{N}_:.-]*";
+const MENTION_PATTERN = new RegExp(`(^|[^\\p{L}\\p{N}_@.!])@(!?)(${NAME})?`, "gu");
+const LEADING_MENTIONS = new RegExp(`^(?:@!?(?:${NAME})?[,;:]?(?:\\s+|$))+`, "u");
+const ADJACENT_MENTIONS = new RegExp(`(?:^|[^\\p{L}\\p{N}_@.!])@!?${NAME}@`, "u");
 
 function parseMessage(text: string, interrupt: boolean, requireRecipient = false): ChatInput {
   const withoutCode = text.replace(/`[^`]*`/g, (span) => " ".repeat(span.length));
-  const selectors: string[] = [];
-  for (const match of withoutCode.matchAll(MENTION_PATTERN)) {
-    const selector = match[2].replace(/[.:-]+$/, "");
-    if (selector && !selectors.includes(selector.toLowerCase())) {
-      selectors.push(selector.toLowerCase());
-    }
+  if (ADJACENT_MENTIONS.test(withoutCode)) {
+    return { kind: "error", message: "Separate mentions with spaces, like @claude @codex." };
   }
-  if (text.startsWith("@") && selectors.length === 0) {
+  const selectors: string[] = [];
+  let urgent = interrupt;
+  let mentioned = false;
+  for (const match of withoutCode.matchAll(MENTION_PATTERN)) {
+    const bang = match[2] === "!";
+    const selector = (match[3] ?? "").replace(/[.:-]+$/, "").toLowerCase();
+    if (!bang && !selector) continue;
+    mentioned = true;
+    if (bang) urgent = true;
+    if (selector && !selectors.includes(selector)) selectors.push(selector);
+  }
+  if (text.startsWith("@") && !mentioned) {
     return { kind: "error", message: "Usage: @agent <message>" };
   }
   if (requireRecipient && selectors.length === 0) {
@@ -113,7 +124,7 @@ function parseMessage(text: string, interrupt: boolean, requireRecipient = false
   if (body.length === 0) {
     return { kind: "error", message: "Usage: @agent <message>" };
   }
-  return { kind: "send", to: selectors, body, interrupt };
+  return { kind: "send", to: selectors, body, interrupt: urgent };
 }
 
 // Resolves every selector before anything is sent, so one typo can't deliver a

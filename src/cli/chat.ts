@@ -598,7 +598,7 @@ export async function runChatSession(
 }
 
 const HELP_TEXT = [
-  "Plain text broadcasts; each @agent anywhere in the text adds matching members as recipients.",
+  "Plain text broadcasts; each @agent anywhere in the text adds matching members as recipients. @!agent (or @! alone) sends an interrupt.",
   ...CHAT_COMMANDS.map(
     (command) => `  ${command.usage} — ${command.description}`
   ),

@@ -70,6 +70,27 @@ describe("chat input parsing", () => {
     expect(parseChatInput("mail ops@example.com about it")).toMatchObject({ to: [], body: "mail ops@example.com about it" });
     expect(parseChatInput("run `git log @codex` please")).toMatchObject({ to: [] });
     expect(parseChatInput("/to @claude also @codex look")).toMatchObject({ to: ["claude", "codex"], body: "also @codex look" });
+    expect(parseChatInput("@claude@codex hello")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("meet @ 5pm")).toMatchObject({ to: [], body: "meet @ 5pm", interrupt: false });
+  });
+
+  test("@! marks an interrupt, for named agents or on its own", () => {
+    expect(parseChatInput("@!codex stop now")).toEqual({
+      kind: "send",
+      to: ["codex"],
+      body: "stop now",
+      interrupt: true
+    });
+    expect(parseChatInput("@!codex @claude, stop")).toMatchObject({ to: ["codex", "claude"], body: "stop", interrupt: true });
+    expect(parseChatInput("@! everyone stop")).toEqual({
+      kind: "send",
+      to: [],
+      body: "everyone stop",
+      interrupt: true
+    });
+    expect(parseChatInput("please stop @!codex")).toMatchObject({ to: ["codex"], interrupt: true });
+    expect(parseChatInput("@!")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("wow!@codex")).toMatchObject({ to: [] });
   });
 
   test("interrupts, commands, escapes, and errors", () => {
