@@ -287,10 +287,10 @@ Names use consistent harness colors in the conversation and participant list: Cl
 | Input | Result |
 | --- | --- |
 | Plain text or `/all <message>` | Broadcast to the room |
-| `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case. Mention several agents anywhere in the text: `@claude @codex, review this` or `hey @codex and @claude, check this`. Leading mentions are stripped from the message; an unknown `@name` blocks the whole send; email addresses and `` `code` `` spans are not mentions |
+| `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case. Mention several agents anywhere in the text: `@claude @codex, review this` or `hey @codex and @claude, check this`. `@everyone` (or `@all`) addresses every agent in the room. Leading mentions are stripped from the message; an unknown `@name` blocks the whole send; email addresses and `` `code` `` spans are not mentions |
 | `/who` | Show members and the current stick holder |
 | `/events` | Toggle turn and handoff events, hidden by default |
-| `/interrupt [@agent] <message>`, `@!agent <message>`, or `@! <message>` | Send an urgent interrupt through the wake mechanism; `@!` works anywhere a mention does |
+| `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Send an urgent interrupt through the wake mechanism. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
 | `/help` | Show chat commands |
 | `/quit`, `/exit`, or Ctrl+D on an empty draft | Exit and remove this console's membership |
 | Ctrl+C or Escape | Clear the draft without quitting |

@@ -91,12 +91,13 @@ export function parseChatInput(line: string): ChatInput {
 // A mention is @name at the start of the text or after a non-word character,
 // so email addresses (a@b.com) stay plain text. Mentions inside `code` spans
 // are ignored. Trailing punctuation (@codex, @claude:) is not part of the name.
-// @!name marks the message as an interrupt for that agent; a bare @! interrupts
-// without naming anyone.
+// !@name marks the whole message as an interrupt; a bare !@ interrupts without
+// naming anyone. @everyone (or @all) addresses every agent in the room.
 const NAME = "[\\p{L}\\p{N}_][\\p{L}\\p{N}_:.-]*";
-const MENTION_PATTERN = new RegExp(`(^|[^\\p{L}\\p{N}_@.!])@(!?)(${NAME})?`, "gu");
-const LEADING_MENTIONS = new RegExp(`^(?:@!?(?:${NAME})?[,;:]?(?:\\s+|$))+`, "u");
-const ADJACENT_MENTIONS = new RegExp(`(?:^|[^\\p{L}\\p{N}_@.!])@!?${NAME}@`, "u");
+const MENTION_PATTERN = new RegExp(`(^|[^\\p{L}\\p{N}_@.!])(!?)@(${NAME})?`, "gu");
+const LEADING_MENTIONS = new RegExp(`^(?:!?@(?:${NAME})?[,;:]?(?:\\s+|$))+`, "u");
+const ADJACENT_MENTIONS = new RegExp(`(?:^|[^\\p{L}\\p{N}_@.!])!?@${NAME}!?@`, "u");
+export const EVERYONE_SELECTORS: readonly string[] = ["everyone", "all"];
 
 function parseMessage(text: string, interrupt: boolean, requireRecipient = false): ChatInput {
   const withoutCode = text.replace(/`[^`]*`/g, (span) => " ".repeat(span.length));
@@ -114,7 +115,7 @@ function parseMessage(text: string, interrupt: boolean, requireRecipient = false
     if (bang) urgent = true;
     if (selector && !selectors.includes(selector)) selectors.push(selector);
   }
-  if (text.startsWith("@") && !mentioned) {
+  if (/^!?@/.test(text) && !mentioned) {
     return { kind: "error", message: "Usage: @agent <message>" };
   }
   if (requireRecipient && selectors.length === 0) {
@@ -137,7 +138,9 @@ export function resolveChatRecipients(
   const agentIds: AgentId[] = [];
   const unmatched: string[] = [];
   for (const selector of selectors) {
-    const resolved = resolveChatRecipient(selector, members, selfAgentId);
+    const resolved = EVERYONE_SELECTORS.includes(selector)
+      ? everyoneIn(members, selfAgentId)
+      : resolveChatRecipient(selector, members, selfAgentId);
     if ("error" in resolved) {
       unmatched.push(selector);
       continue;
@@ -199,6 +202,21 @@ export function resolveChatRecipient(
   return matches.length > 0
     ? { agent_ids: matches.map((member) => member.agent_id) }
     : { error: `No room member matches '${selector}'.` };
+}
+
+function everyoneIn(
+  members: RoomMember[],
+  selfAgentId: AgentId
+): { agent_ids: AgentId[] } | { error: string } {
+  const agents = members.filter(
+    (member) =>
+      member.agent_id !== selfAgentId &&
+      member.status === "active" &&
+      member.session_kind !== HUMAN_CHAT_SESSION_KIND
+  );
+  return agents.length > 0
+    ? { agent_ids: agents.map((member) => member.agent_id) }
+    : { error: "No agents are in the room." };
 }
 
 export function formatChatEvent(

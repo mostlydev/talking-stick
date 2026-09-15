@@ -74,23 +74,27 @@ describe("chat input parsing", () => {
     expect(parseChatInput("meet @ 5pm")).toMatchObject({ to: [], body: "meet @ 5pm", interrupt: false });
   });
 
-  test("@! marks an interrupt, for named agents or on its own", () => {
-    expect(parseChatInput("@!codex stop now")).toEqual({
+  test("!@ marks an interrupt, for named agents or on its own", () => {
+    expect(parseChatInput("!@codex stop now")).toEqual({
       kind: "send",
       to: ["codex"],
       body: "stop now",
       interrupt: true
     });
-    expect(parseChatInput("@!codex @claude, stop")).toMatchObject({ to: ["codex", "claude"], body: "stop", interrupt: true });
-    expect(parseChatInput("@! everyone stop")).toEqual({
+    expect(parseChatInput("!@codex !@claude, stop")).toMatchObject({ to: ["codex", "claude"], body: "stop", interrupt: true });
+    expect(parseChatInput("!@codex @claude stop")).toMatchObject({ to: ["codex", "claude"], interrupt: true });
+    expect(parseChatInput("!@everyone stop")).toEqual({
       kind: "send",
-      to: [],
-      body: "everyone stop",
+      to: ["everyone"],
+      body: "stop",
       interrupt: true
     });
-    expect(parseChatInput("please stop @!codex")).toMatchObject({ to: ["codex"], interrupt: true });
-    expect(parseChatInput("@!")).toMatchObject({ kind: "error" });
-    expect(parseChatInput("wow!@codex")).toMatchObject({ to: [] });
+    expect(parseChatInput("!@ stop")).toMatchObject({ to: [], body: "stop", interrupt: true });
+    expect(parseChatInput("please stop !@codex")).toMatchObject({ to: ["codex"], interrupt: true });
+    expect(parseChatInput("!@")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("wow!@codex")).toMatchObject({ to: [], interrupt: false });
+    expect(parseChatInput("!important")).toMatchObject({ to: [], body: "!important", interrupt: false });
+    expect(parseChatInput("!@claude!@codex hi")).toMatchObject({ kind: "error" });
   });
 
   test("interrupts, commands, escapes, and errors", () => {
@@ -244,6 +248,13 @@ describe("chat rendering", () => {
     expect(resolveChatRecipients(["codex", "claude", "claude:c"], members, "human:op")).toEqual({
       agent_ids: ["codex:aa", "claude:bb", "claude:cc"]
     });
+    expect(resolveChatRecipients(["everyone"], [
+      { agent_id: "codex:aa", status: "active", session_kind: "harness_cli" },
+      { agent_id: "claude:bb", status: "active", session_kind: "harness_cli" },
+      { agent_id: "gemini:dd", status: "inactive", session_kind: "harness_cli" },
+      { agent_id: "human:op:chat:2", status: "active", session_kind: "human_chat" },
+      { agent_id: "human:op", status: "active", session_kind: "human_chat" }
+    ] as never, "human:op")).toEqual({ agent_ids: ["codex:aa", "claude:bb"] });
     expect(resolveChatRecipients(["codex", "gemini", "grok"], members, "human:op")).toEqual({
       error: "No room member matches '@gemini', '@grok'.",
       unmatched: ["gemini", "grok"]
