@@ -632,8 +632,10 @@ export interface ChatFrame {
   cursor: { row: number; col: number };
 }
 
+// The suggestion menu overlays the bottom of the transcript instead of
+// shrinking it, so the conversation never shifts while the operator types.
 export function chatTranscriptHeight(
-  input: Pick<ChatScreenInput, "columns" | "rows" | "draft" | "completions">
+  input: Pick<ChatScreenInput, "columns" | "rows" | "draft">
 ): number {
   const width = Math.max(1, input.columns - 1);
   const height = Math.max(1, input.rows);
@@ -643,15 +645,11 @@ export function chatTranscriptHeight(
     width,
     Math.min(MAX_COMPOSER_ROWS, height - 3)
   );
-  const menu = Math.min(
-    MAX_MENU_ROWS,
-    input.completions?.length ?? getChatCompletions(input.draft, []).length
-  );
-  return Math.max(0, height - composer.rows.length - 3 - menu);
+  return Math.max(0, height - composer.rows.length - 3);
 }
 
-// Layout, top to bottom: transcript viewport, optional command menu, rule,
-// composer, rule, status. Every row stays one cell short of the terminal
+// Layout, top to bottom: transcript viewport (with the suggestion menu drawn
+// over its last rows), rule, composer, rule, status. Every row stays one cell short of the terminal
 // width so the terminal never auto-wraps a full row.
 export function renderChatScreen(input: ChatScreenInput): ChatFrame {
   const width = Math.max(1, input.columns - 1);
@@ -691,7 +689,13 @@ export function renderChatScreen(input: ChatScreenInput): ChatFrame {
     width,
     context
   );
-  const lines = [...transcript, ...menuRows, ...fixed]
+  // Occlude the transcript's bottom rows with a blank separator and the menu;
+  // on a very short transcript the menu keeps its first rows.
+  if (menuRows.length > 0 && transcript.length > 0) {
+    const overlay = ["", ...menuRows].slice(0, transcript.length);
+    transcript.splice(transcript.length - overlay.length, overlay.length, ...overlay);
+  }
+  const lines = [...transcript, ...fixed]
     .slice(-height)
     .map((line) => truncateStyled(line, width));
   const composerTop = lines.length - composer.rows.length - 2;

@@ -329,6 +329,50 @@ describe("screen rendering", () => {
     expect(frame.lines.at(-1)).toContain("↓ 1 new · ctrl+end");
   });
 
+  test("the suggestion menu overlays the transcript without shifting it", () => {
+    const transcript = new ChatTranscript();
+    for (let index = 0; index < 20; index++) {
+      transcript.appendEvent(message(`m${index}`));
+    }
+    const frame = (line: string) =>
+      renderChatScreen({
+        transcript,
+        format: context,
+        status,
+        draft: { line, cursor: line.length },
+        hint: null,
+        columns: 40,
+        rows: 16
+      });
+    const closed = frame("hello");
+    const open = frame("/");
+    const menuSize = open.lines.filter((row) => /^[›\s] \//.test(row)).length;
+    expect(menuSize).toBeGreaterThan(1);
+    const fixedRows = 4;
+    const transcriptRows = closed.lines.length - fixedRows;
+    const covered = menuSize + 1;
+    // Rows above the overlay are byte-identical with the menu open or closed.
+    expect(open.lines.slice(0, transcriptRows - covered)).toEqual(
+      closed.lines.slice(0, transcriptRows - covered)
+    );
+    expect(open.lines[transcriptRows - covered]).toBe("");
+    expect(open.lines[transcriptRows - covered + 1]).toMatch(/^› \//);
+    expect(open.cursor.row).toBe(closed.cursor.row);
+    // Narrowing the candidates doesn't move anything above the overlay either.
+    const narrowed = frame("/q");
+    expect(narrowed.lines.slice(0, transcriptRows - covered)).toEqual(
+      closed.lines.slice(0, transcriptRows - covered)
+    );
+    for (let rows = 4; rows <= 9; rows++) {
+      const tiny = renderChatScreen({
+        transcript, format: context, status, draft: { line: "/", cursor: 1 },
+        hint: null, columns: 30, rows
+      });
+      expect(tiny.lines).toHaveLength(rows);
+      expect(tiny.cursor.row).toBeLessThan(rows);
+    }
+  });
+
   test("shows a transient hint in place of the command hint", () => {
     const frame = renderChatScreen({
       transcript: new ChatTranscript(),

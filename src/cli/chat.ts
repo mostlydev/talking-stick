@@ -544,7 +544,7 @@ export async function runChatSession(
         onScroll: (kind, amount) => {
           const { columns, rows } = dimensions();
           const draft = editor?.draft ?? { line: "", cursor: 0 };
-          const height = chatTranscriptHeight({ draft, columns, rows, completions: editor?.completionVisible ? completionsFor(draft) : [] });
+          const height = chatTranscriptHeight({ draft, columns, rows });
           if (height === 0) return;
           transcript.scrollBy(
             amount * (kind === "pages" ? Math.max(1, height - 1) : 1),
