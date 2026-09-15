@@ -6,6 +6,7 @@ import {
   renderChatScreen,
   diffChatFrame,
   getChatCompletions,
+  formatChatHelp,
   chatTranscriptHeight,
   CHAT_COMMANDS,
   type ChatFrame
@@ -396,7 +397,7 @@ export async function runChatSession(
     }
   };
 
-  const runCommand = (name: string) => {
+  const runCommand = (name: string, args = "") => {
     switch (name) {
       case "quit":
       case "exit":
@@ -417,7 +418,7 @@ export async function runChatSession(
         print(`Stick events ${showTurnEvents ? "shown" : "hidden"}.`);
         return;
       case "help":
-        print(HELP_TEXT);
+        print(formatChatHelp(dimensions().columns - 1, options.color, args.trim() === "keys"));
         return;
       default:
         print(`! Unknown command /${name}. Try /help.`);
@@ -485,7 +486,7 @@ export async function runChatSession(
         return;
       case "command":
         transcript.scrollToBottom();
-        runCommand(parsed.name);
+        runCommand(parsed.name, parsed.args);
         return;
       case "send":
         transcript.scrollToBottom();
@@ -682,17 +683,6 @@ export async function runChatSession(
   }
 }
 
-const HELP_TEXT = [
-  "Plain text broadcasts; each @agent anywhere in the text adds matching members as recipients. !@agent (or !@ alone) sends an interrupt; @everyone reaches every agent.",
-  ...CHAT_COMMANDS.map(
-    (command) => `  ${command.usage} — ${command.description}`
-  ),
-  "PgUp/PgDn, Shift+↑/↓, mouse wheel: scroll messages. Ctrl+End: latest.",
-  "Ctrl+C: clear draft. Esc: dismiss suggestions, then clear. Ctrl+D on empty: quit.",
-  "Tab / Enter: accept suggestion. Enter otherwise sends. Alt+Enter: new line.",
-  "Up/Down: choose suggestions; otherwise move through draft lines or single-line history.",
-  "Paste stays in the draft until Enter. //text sends a leading slash."
-].join("\n");
 
 function isRoomGone(error: unknown): boolean {
   return error instanceof ProtocolError && error.code === "room_not_found";

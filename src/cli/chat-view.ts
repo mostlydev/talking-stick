@@ -51,6 +51,55 @@ export const CHAT_COMMANDS: ChatCommandInfo[] = [
   { name: "help", usage: "/help", description: "list commands and keys" }
 ];
 
+// Help is intentionally compact; detailed keyboard controls have their own
+// view so the command list remains readable at ordinary terminal heights.
+export function formatChatHelp(width: number, color: boolean, keys = false): string {
+  const usable = Math.max(12, width);
+  const accent = (text: string) => color ? `\u001b[1;38;5;147m${text}\u001b[0m` : text;
+  const muted = (text: string) => color ? `\u001b[2m${text}\u001b[0m` : text;
+  const entries: [string, string][] = keys ? [
+    ["Enter", "Send; accept an incomplete suggestion first"],
+    ["Tab", "Accept the selected suggestion"],
+    ["↑ / ↓", "Choose a suggestion, or move through draft lines"],
+    ["Alt+Enter", "Insert a new line"],
+    ["Esc", "Dismiss suggestions; press again to clear"],
+    ["Ctrl+C", "Clear the draft"],
+    ["PgUp / PgDn", "Scroll the conversation"],
+    ["Shift+↑ / ↓ · wheel", "Scroll a few lines"],
+    ["Ctrl+End", "Return to the latest messages"],
+    ["Ctrl+D", "Quit when the draft is empty"]
+  ] : CHAT_COMMANDS.map((command) => [
+    command.name === "help" ? "/help keys" : command.usage,
+    command.name === "help" ? "Keyboard shortcuts" : command.description
+  ]);
+  const labelWidth = Math.max(...entries.map(([label]) => textWidth(label)));
+  const wide = usable >= labelWidth + 28;
+  const lines = ["", accent(keys ? "Keyboard shortcuts" : "Chat commands"), ""];
+  for (const [index, [label, description]] of entries.entries()) {
+    if (index > 0 && !keys) lines.push("");
+    if (wide) {
+      const indent = " ".repeat(labelWidth + 4);
+      const descriptions = wrapStyledLine(muted(description), usable - indent.length);
+      lines.push(`  ${accent(label)}${" ".repeat(labelWidth - textWidth(label) + 2)}${descriptions[0]}`);
+      lines.push(...descriptions.slice(1).map((line) => indent + line));
+    } else {
+      lines.push(...wrapStyledLine(`  ${accent(label)}`, usable));
+      lines.push(...wrapStyledLine(`    ${muted(description)}`, usable));
+    }
+  }
+  lines.push("");
+  for (const note of keys ? [
+    "Single-line drafts use ↑ / ↓ for history when suggestions are closed.",
+    "Paste stays in the draft until sent. Shift+Enter also works in supported terminals.",
+    "/help returns to commands."
+  ] : [
+    "Type to message the room. Use @agent to address a participant.",
+    "!@agent sends an urgent message; @everyone reaches all agents.",
+    "Use // to send text beginning with a slash."
+  ]) lines.push(...wrapStyledLine(muted(note), usable));
+  return lines.join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Text measurement and wrapping
 
