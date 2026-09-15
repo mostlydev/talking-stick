@@ -113,7 +113,7 @@ After handoff:
 - only an external/operator signal remains: run `tt standby --wake cmux --json` and let the model turn end;
 - the shared objective is proven complete: stop and report the result.
 
-When an operator chat console is in the room (a `human:*:chat:*` member in `tt join` or `tt state`), don't `tt leave` at completion, even after unanimous AGREE. Run `tt standby --wake cmux --json` so the operator can wake you with a directed chat message; a member that left can't be messaged or woken. Leave only when the operator tells you to. The room stays open while the console is running, even with no agents in it.
+When an operator chat console is in the room (a `human:*:chat:*` member in `tt join` or `tt state`), don't `tt leave` at completion, even after unanimous AGREE. In cmux, run `tt standby --wake cmux --json` so the operator can wake you with a directed chat message. Outside cmux, use `tt standby --wake manual --json` and explain that the operator must resume the harness manually. A member that left can't be messaged or woken. Leave only when the operator tells you to. The room stays open while the console is running, even with no agents in it.
 
 Completion requires a final verdict, no pending assignment or next action, closed questions, and recorded verification. Do not stop merely because one implementation turn ended.
 
