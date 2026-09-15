@@ -2108,10 +2108,17 @@ export class TalkingStickService {
         SET awaiting_wait = 0, wake_pending = 0, wake_event_seq = NULL, batch_id = NULL, wake_reason = NULL, wake_from_agent_id = NULL
         WHERE room_id = ? AND agent_id = ?
           AND (awaiting_wait = 1 OR wake_pending = 1)
-          AND COALESCE(wake_event_seq, 0) <= ?
+          -- One batch per member across transports: close it only when the
+          -- cursor has passed the newest event queued on any endpoint.
+          AND (
+            SELECT COALESCE(MAX(wake_event_seq), 0)
+            FROM member_wake_endpoints
+            WHERE room_id = ? AND agent_id = ?
+              AND (awaiting_wait = 1 OR wake_pending = 1)
+          ) <= ?
       `
       )
-      .run(roomId, agentId, afterEventSeq);
+      .run(roomId, agentId, roomId, agentId, afterEventSeq);
   }
 
   // Writes only queue work. Call flushWakes after committing, before closing

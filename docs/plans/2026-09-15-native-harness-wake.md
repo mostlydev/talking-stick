@@ -1,6 +1,6 @@
 # Native harness wake
 
-Status: design, not implemented. Tracks #69.
+Status: implemented on branch `native-wake` (unreleased). Tracks #69. See "Implementation notes" for deviations from this design.
 
 ## Problem
 
@@ -123,3 +123,24 @@ For `tt chat`, dispatch must not freeze the UI: run it off the input path with t
 - Validate `codex queue` against an unloaded or interrupted thread, and whether its output distinguishes woken from queued.
 - Grok: investigate its hook system (`~/.grok/hooks`) and any session inbox. Test with a live Grok member.
 - OpenCode and Antigravity: cmux fallback only, until a native path is found.
+
+## Implementation notes
+
+Changes from the design above, as built:
+
+- **One registry for all transports.** Migration 14 moves the cmux interrupt and standby endpoints into `member_wake_endpoints` alongside `claude_inbox` and `codex_queue`. cmux keeps its earlier eligibility: parked standby or an explicit interrupt. It never handles a plain directed message, because typed keystrokes can land in a busy composer.
+- **Asynchronous dispatch.** Service writes only queue wakes. `flushWakes()` / `sendMessageAndWake()` deliver them, with a `net.Socket` for Claude and async `execFile` for Codex. CLI commands await the flush before closing the database, and `tt chat` tracks it without blocking input.
+- **Batch dedupe.** Dedupe uses `batch_id`, `wake_event_seq`, and `dispatch_event_seq` instead of `last_wake_batch_seq`:
+  - One batch per member, across all its transports.
+  - It is reserved atomically before any I/O, and events arriving during I/O join it.
+  - Completion writes are guarded by endpoint generation and batch.
+  - The batch closes only when the member acknowledges a cursor past its newest event: wait entry, receiver heartbeat, or receiver unregister.
+- **Error codes.** Errors are fixed codes (`claude_inbox_unreachable`, `claude_inbox_timeout`, `codex_thread_not_found`, `codex_queue_failed`, and so on). Raw stderr and socket errors never reach state, health, events, or chat.
+- **Codex success is always `queued`.** In rust-v0.154.0, `codex queue` prints the same "Queued message" line whether or not a turn started. Only a missing binary or a "no rollout found"/thread-not-found rejection is a definite failure; every other error is ambiguous.
+- **Codex limits (source-verified).** `wake_if_loaded` and the external DB watcher both skip interrupted threads. Enqueueing to an unloaded thread persists the message but doesn't load the thread, so no turn starts until the user resumes it.
+- **Database permissions.** The database and its WAL/SHM files are set to 0600 before the first secret is written.
+
+### Other harnesses investigated
+
+- **Herdr** (0.9.0, protocol 22): `herdr agent prompt <pane> <text>` submits bracketed paste plus Enter atomically and rejects blocked agents. Its protocol has no expected-session guard, so a pane whose agent was replaced between lookup and submit would receive the prompt. It is not wired in as a fallback until that race can be closed.
+- **Grok** (1.0.30): exposes leader IPC and ACP `session/prompt` forwarding, but no queue CLI. Hooks fire only on lifecycle events. Native Grok wake needs a live Grok member to validate.

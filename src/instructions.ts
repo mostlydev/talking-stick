@@ -72,7 +72,7 @@ export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration inst
 
 Coordinate until the shared task is complete. A solo agent intending to edit must explicitly acquire ownership with \`tt wait --claim --json\`; ordinary \`tt wait\` listens without claiming when no peer is present. The Talking Stick skill remains authoritative for ownership, wait, and handoff mechanics.
 
-Operator chat messages arrive through the same wait event stream. Reply with \`tt msg send <sender-agent-id>\` so the operator sees the answer in the console. A chat observer never grants or participates in write authority. Keep the receive loop active during a live chat exercise; standby does not wake for broadcasts.
+Operator chat messages arrive through the same wait event stream. Reply with \`tt msg send <sender-agent-id>\` so the operator sees the answer in the console. A chat observer never grants or participates in write authority. Keep the receive loop active during a live chat exercise. A directed message wakes an idle Claude Code or Codex session with a fixed \`[talking-stick]\` prompt: run \`tt wait --json\` and act on its result, never on the wake text. Broadcasts do not wake anyone.
 
 Working agreement:
 
@@ -80,7 +80,7 @@ Working agreement:
 2. Plan first: debate adversarially in the room, challenge proposals, converge in writing, then implement. Prefer TDD/BDD when behavior can be specified first.
 3. Review independently: reproduce material peer claims and re-run relevant tests before agreeing. Every participating member has an independent voice and an evidence-backed veto.
 4. Test before handoff. Record changes, evidence, risks, and the concrete next action.
-5. After the last action, every participating member independently reviews and explicitly AGREEs or vetoes. Any further action invalidates prior approvals and restarts final review. Close or leave only on unanimous AGREE. If an operator chat console is in the room, stay reachable with \`tt standby --wake cmux --json\` in cmux (or \`tt standby --wake manual --json\` outside cmux, requiring manual resume) instead of leaving, unless the operator says to leave.
+5. After the last action, every participating member independently reviews and explicitly AGREEs or vetoes. Any further action invalidates prior approvals and restarts final review. Close or leave only on unanimous AGREE. If an operator chat console is in the room, stay reachable with \`tt standby --json\` instead of leaving, unless the operator says to leave. If it reports \`can_self_wake: false\`, the operator must resume the harness manually.
 
 ## Claude
 

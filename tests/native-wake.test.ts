@@ -563,6 +563,24 @@ describe("concurrent wake batches", () => {
     expect(service.getRoomHealth({ context_path: project, agent_id: "claude:aa" }).wake_endpoints?.[0].last_status).toBeNull();
   });
 
+  test("a partial cursor acknowledgement keeps one batch across native and cmux endpoints", async () => {
+    const { service, project, nativeRequests, cmuxRequests } = harness();
+    const roomId = joinPair(service, project);
+    service.registerWakeEndpoint({
+      room_id: roomId, agent_id: "claude:aa", workspace_id: "w", surface_id: "s", harness_session_id: "claude-session"
+    });
+    const interrupt = (body: string) => service.sendMessageAndWake({
+      agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body, delivery_hint: "interrupt"
+    });
+    const first = await interrupt("first");
+    await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "second" });
+    service.registerReceiver({ room_id: roomId, agent_id: "claude:aa", receiver_id: "r", host_id: HOST, pid: 77, process_started_at: "t", cursor_event_seq: 0 });
+    service.unregisterReceiver({ room_id: roomId, agent_id: "claude:aa", receiver_id: "r", cursor_event_seq: first.event_seq });
+    await interrupt("third");
+    expect(nativeRequests).toHaveLength(1);
+    expect(cmuxRequests).toHaveLength(0);
+  });
+
   test("heartbeat cursor acknowledgement enables the next batch without rejoining", async () => {
     const { service, project, nativeRequests } = harness();
     const roomId = joinPair(service, project);
