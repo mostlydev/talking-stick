@@ -4,6 +4,7 @@ import { buildNameResolver } from "../src/cli/chat-format.js";
 import {
   ChatTranscript,
   completeChatInput,
+  getChatCompletions,
   diffChatFrame,
   graphemeWidth,
   layoutComposer,
@@ -214,6 +215,16 @@ describe("commands and completion", () => {
     expect(matchChatCommands("hello")).toEqual([]);
   });
 
+  test("mention suggestions respect token boundaries and replace a token around the cursor", () => {
+    const names = ["codex", "claude"];
+    expect(getChatCompletions({ line: "hello !@c", cursor: 9 }, names).map((item) => item.label)).toEqual(["!@codex", "!@claude"]);
+    expect(getChatCompletions({ line: "x@y", cursor: 3 }, names)).toEqual([]);
+    expect(getChatCompletions({ line: "`@c", cursor: 3 }, names)).toEqual([]);
+    expect(getChatCompletions({ line: "hi (@clxde), ok", cursor: 7 }, names)[0].draft.line).toBe("hi (@claude), ok");
+    expect(getChatCompletions({ line: "hey @codex.", cursor: 7 }, names)[0].draft.line).toBe("hey @codex.");
+    expect(getChatCompletions({ line: "@ev", cursor: 3 }, names)[0].draft.line).toBe("@everyone ");
+  });
+
   test("tab completes commands and @names", () => {
     expect(completeChatInput({ line: "/qu", cursor: 3 }, [])).toEqual({
       line: "/quit ",
@@ -236,6 +247,16 @@ describe("screen rendering", () => {
     reserved_for: null,
     now: new Date()
   };
+
+  test("keeps the selected mention visible and reserves menu space in a small terminal", () => {
+    const draft = { line: "@", cursor: 1 };
+    const completions = getChatCompletions(draft, ["a", "b", "c", "d"]);
+    const frame = renderChatScreen({ transcript: new ChatTranscript(), format: context,
+      status, draft, hint: null, completions, completion_index: 3, columns: 40, rows: 8 });
+    expect(frame.lines).toHaveLength(8);
+    expect(frame.lines.join("\n")).toContain("› @d");
+    expect(frame.cursor.row).toBe(5);
+  });
 
   test("pins rules, composer, and footer to the bottom", () => {
     const transcript = new ChatTranscript();

@@ -381,3 +381,5 @@ MIT. See [LICENSE.md](LICENSE.md).
 ### Conversation history in chat
 
 The chat separates activity with Today, Yesterday, and dated dividers. Previous days are dimmed, and older message timestamps include the day. A join after four hours without visible conversation starts a new conversation; the earlier conversation stays readable in dim text. This is a visual boundary, not a declaration that a quiet agent has exited.
+
+Chat suggests `/` commands and `@` or `!@` recipients as you type. Up/Down chooses a suggestion; Tab or Enter accepts it. Escape dismisses the menu without clearing the draft; a second Escape clears it. An exact command such as `/quit` still runs on Enter. With the menu closed, Up/Down moves through multiline and wrapped drafts at the same visual column; single-line drafts retain history recall. Alt+Enter inserts a newline (Shift+Enter also works in terminals that send a distinct key sequence). Enter sends unless it is accepting an incomplete suggestion.

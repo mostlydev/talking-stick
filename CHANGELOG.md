@@ -13,6 +13,8 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
+- Chat autocomplete menus for commands and mentions, with selection and draft-preserving dismissal; visual Up/Down editing for multiline drafts and Alt+Enter newlines.
+
 - **Mention several agents anywhere in a chat message.** `@claude @codex, review this` and `hey @codex and @claude, check this` both send to every matching member. Leading mentions are stripped from the message text; an unknown `@name` blocks the whole send instead of delivering to some recipients; email addresses and `code` spans are not treated as mentions.
 - **Interrupt shortcut and @everyone in chat.** `!@codex stop` interrupts the named agent, `!@everyone stop` interrupts every agent, and `!@ stop` sends an interrupt without naming anyone, the same as `/interrupt`. Any `!@` makes the whole message an interrupt. `@everyone` (or `@all`) addresses every agent in the room.
 - **Delivery receipts in chat.** A directed message's notice advances in place, for example `codex: queued → received`, once the recipient's own `tt wait` returns that message. Receipts are recorded per message, so skipped cursors and audit reads never count.

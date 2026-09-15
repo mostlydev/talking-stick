@@ -2,7 +2,7 @@ import readline from "node:readline";
 import { PassThrough, Writable, type Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { sanitizeChatText } from "./chat-format.js";
-import type { ChatDraft } from "./chat-view.js";
+import { moveChatCursorVertical, type ChatDraft } from "./chat-view.js";
 
 export interface ChatInputOptions {
   input: Readable;
@@ -13,7 +13,8 @@ export interface ChatInputOptions {
   onBottom: () => void;
   onQuit: () => void;
   onClear: () => void;
-  complete: (draft: ChatDraft) => ChatDraft | null;
+  complete: (draft: ChatDraft, index: number) => ChatDraft | null;
+  completionCount?: (draft: ChatDraft) => number;
 }
 
 type EditableReadline = Omit<readline.Interface, "line" | "cursor"> & {
@@ -43,6 +44,9 @@ export class ChatInputController {
   private escapeTimer: ReturnType<typeof setTimeout> | null = null;
   private submitted: string | null = null;
   private closed = false;
+  private selectedCompletion = 0;
+  private completionDismissed = false;
+  private verticalColumn: number | undefined;
 
   constructor(private readonly options: ChatInputOptions) {
     this.sink = Object.assign(
@@ -97,12 +101,25 @@ export class ChatInputController {
     return { line: this.rl.line, cursor: this.rl.cursor };
   }
 
+  get completionIndex(): number {
+    const count = this.options.completionCount?.(this.draft) ?? 0;
+    return Math.max(0, Math.min(this.selectedCompletion, count - 1));
+  }
+
+  get completionVisible(): boolean {
+    return !this.completionDismissed && this.paste === null && (this.options.completionCount?.(this.draft) ?? 0) > 0;
+  }
+
   resize(columns: number): void {
+    this.verticalColumn = undefined;
     this.sink.columns = Math.max(1, columns);
   }
 
   clear(): void {
     if (this.closed) return;
+    this.selectedCompletion = 0;
+    this.completionDismissed = false;
+    this.verticalColumn = undefined;
     this.rl.line = "";
     this.rl.cursor = 0;
     this.options.onClear();
@@ -134,12 +151,48 @@ export class ChatInputController {
       this.escapeTimer = setTimeout(() => {
         this.escapeTimer = null;
         // Never leak an incomplete mouse/control report into the draft.
-        if (this.pending === "\u001b") this.clear();
+        if (this.pending === "\u001b") {
+          if (this.completionVisible) {
+            this.completionDismissed = true;
+            this.options.onChange();
+          } else this.clear();
+        }
         this.pending = "";
       }, 50);
     }
     this.options.onChange();
   };
+
+  private writeKeys(text: string): void {
+    this.completionDismissed = false;
+    this.verticalColumn = undefined;
+    this.selectedCompletion = 0;
+    this.keys.write(text);
+  }
+
+  private moveVertical(direction: number, sequence: string): void {
+    const count = this.completionVisible ? this.options.completionCount!(this.draft) : 0;
+    if (count > 0) {
+      this.selectedCompletion = (this.completionIndex + direction + count) % count;
+      return;
+    }
+    const moved = moveChatCursorVertical(this.draft, this.sink.columns, direction, this.verticalColumn);
+    if (moved) {
+      this.rl.cursor = moved.draft.cursor;
+      this.verticalColumn = moved.column;
+      return;
+    }
+    this.writeKeys(sequence);
+  }
+
+  private insertNewline(): void {
+    const { line, cursor } = this.draft;
+    this.rl.line = line.slice(0, cursor) + "\n" + line.slice(cursor);
+    this.rl.cursor = cursor + 1;
+    this.completionDismissed = false;
+    this.selectedCompletion = 0;
+    this.verticalColumn = undefined;
+  }
 
   private consume(): void {
     while (this.pending && !this.closed) {
@@ -161,6 +214,9 @@ export class ChatInputController {
         const { line, cursor } = this.draft;
         this.rl.line = line.slice(0, cursor) + text + line.slice(cursor);
         this.rl.cursor = cursor + text.length;
+        this.selectedCompletion = 0;
+        this.completionDismissed = false;
+        this.verticalColumn = undefined;
         continue;
       }
 
@@ -186,6 +242,10 @@ export class ChatInputController {
               if ((button & 195) === 64 || (button & 195) === 65)
                 this.options.onScroll("lines", button & 1 ? 3 : -3);
             }
+          } else if (sequence === "\u001b[13;2u" || sequence === "\u001b[27;2;13~") {
+            this.insertNewline();
+          } else if (sequence === "\u001b[A" || sequence === "\u001b[B") {
+            this.moveVertical(sequence.endsWith("A") ? -1 : 1, sequence);
           } else if (sequence === "\u001b[5~" || sequence === "\u001b[6~") {
             this.options.onScroll("pages", sequence === "\u001b[5~" ? -1 : 1);
           } else if (sequence === "\u001b[1;2A" || sequence === "\u001b[1;2B") {
@@ -193,32 +253,52 @@ export class ChatInputController {
           } else if (sequence === "\u001b[1;5F" || sequence === "\u001b[4;5~") {
             this.options.onBottom();
           } else if (sequence !== PASTE_END) {
-            this.keys.write(sequence);
+            this.writeKeys(sequence);
           }
           continue;
         }
         if (this.pending[1] === "O" && this.pending.length < 3) return;
         const length = this.pending[1] === "O" ? 3 : 2;
-        this.keys.write(this.pending.slice(0, length));
+        const sequence = this.pending.slice(0, length);
+        if (sequence === "\u001b\r" || sequence === "\u001b\n") {
+          this.insertNewline();
+        } else if (sequence === "\u001bOA" || sequence === "\u001bOB") {
+          this.moveVertical(sequence.endsWith("A") ? -1 : 1, sequence);
+        } else this.writeKeys(sequence);
         this.pending = this.pending.slice(length);
+        continue;
+      }
+
+      if (this.pending[0] === "\r" || this.pending[0] === "\n") {
+        const key = this.pending[0];
+        this.pending = this.pending.slice(1);
+        const completed = this.completionVisible ? this.options.complete(this.draft, this.completionIndex) : null;
+        if (completed && this.draft.line.trimEnd() !== completed.line.trimEnd()) {
+          this.rl.line = completed.line;
+          this.rl.cursor = completed.cursor;
+          this.selectedCompletion = 0;
+          this.verticalColumn = undefined;
+        } else this.writeKeys(key);
         continue;
       }
 
       // Tabs belong to completion, not to readline's off-screen candidate list.
       if (this.pending[0] === "\t") {
-        const completed = this.options.complete(this.draft);
+        const completed = this.options.complete(this.draft, this.completionIndex);
         if (completed) {
           this.rl.line = completed.line;
           this.rl.cursor = completed.cursor;
         }
+        this.selectedCompletion = 0;
+        this.verticalColumn = undefined;
         this.pending = this.pending.slice(1);
         continue;
       }
-      const next = this.pending.search(/[\u001b\t]/);
+      const next = this.pending.search(/[\u001b\t\r\n]/);
       const length = next < 0 ? this.pending.length : next;
       const text = this.pending.slice(0, length);
       this.pending = this.pending.slice(length);
-      this.keys.write(text);
+      this.writeKeys(text);
     }
   }
 }

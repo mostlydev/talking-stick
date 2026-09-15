@@ -5,7 +5,7 @@ import {
   ChatTranscript,
   renderChatScreen,
   diffChatFrame,
-  completeChatInput,
+  getChatCompletions,
   chatTranscriptHeight,
   CHAT_COMMANDS,
   type ChatFrame
@@ -165,6 +165,9 @@ export async function runChatSession(
     now: new Date(),
     history_before: historyBefore
   });
+  const completionsFor = (draft: { line: string; cursor: number }) => getChatCompletions(draft,
+    members.filter((member) => member.agent_id !== selfId && member.process_liveness !== "gone")
+      .flatMap((member) => [nameOf(member.agent_id), member.agent_id]));
   const redraw = () => {
     if (!terminal || closed || frameTimer) return;
     frameTimer = setTimeout(() => {
@@ -183,6 +186,8 @@ export async function runChatSession(
           },
           draft: editor?.draft ?? { line: "", cursor: 0 },
           hint,
+          completions: editor?.completionVisible ? completionsFor(editor.draft) : [],
+          completion_index: editor?.completionIndex ?? 0,
           ...dimensions()
         });
         output.write(diffChatFrame(previousFrame, frame));
@@ -539,7 +544,7 @@ export async function runChatSession(
         onScroll: (kind, amount) => {
           const { columns, rows } = dimensions();
           const draft = editor?.draft ?? { line: "", cursor: 0 };
-          const height = chatTranscriptHeight({ draft, columns, rows });
+          const height = chatTranscriptHeight({ draft, columns, rows, completions: editor?.completionVisible ? completionsFor(draft) : [] });
           if (height === 0) return;
           transcript.scrollBy(
             amount * (kind === "pages" ? Math.max(1, height - 1) : 1),
@@ -549,13 +554,11 @@ export async function runChatSession(
           );
           redraw();
         },
-        complete: (draft) =>
-          completeChatInput(
-            draft,
-            members
-              .filter((member) => member.agent_id !== selfId && member.process_liveness !== "gone")
-              .flatMap((member) => [nameOf(member.agent_id), member.agent_id])
-          )
+        completionCount: (draft) => completionsFor(draft).length,
+        complete: (draft, index) => {
+          const matches = completionsFor(draft);
+          return matches[Math.min(index, matches.length - 1)]?.draft ?? null;
+        }
       });
     } else {
       rl = readline.createInterface({ input: options.input, terminal: false });
@@ -685,7 +688,9 @@ const HELP_TEXT = [
     (command) => `  ${command.usage} — ${command.description}`
   ),
   "PgUp/PgDn, Shift+↑/↓, mouse wheel: scroll messages. Ctrl+End: latest.",
-  "Ctrl+C / Esc: clear draft. Ctrl+D on empty: quit. Tab: complete.",
+  "Ctrl+C: clear draft. Esc: dismiss suggestions, then clear. Ctrl+D on empty: quit.",
+  "Tab / Enter: accept suggestion. Enter otherwise sends. Alt+Enter: new line.",
+  "Up/Down: choose suggestions; otherwise move through draft lines or single-line history.",
   "Paste stays in the draft until Enter. //text sends a leading slash."
 ].join("\n");
 

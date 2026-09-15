@@ -432,14 +432,13 @@ export interface ComposerLayout {
   cursor_col: number;
 }
 
-export function layoutComposer(
-  draft: ChatDraft,
-  width: number,
-  maxRows = MAX_COMPOSER_ROWS
-): ComposerLayout {
+interface ComposerStop { offset: number; row: number; col: number }
+
+function composerGeometry(draft: ChatDraft, width: number): ComposerLayout & { stops: ComposerStop[] } {
   const usable = Math.max(CHAT_PROMPT.length + 2, width);
   const indent = " ".repeat(CHAT_PROMPT.length);
   const rows: string[] = [];
+  const stops: ComposerStop[] = [];
   let row = CHAT_PROMPT;
   let rowWidth = CHAT_PROMPT.length;
   let cursorRow = -1;
@@ -458,6 +457,7 @@ export function layoutComposer(
     if (!isBreak && rowWidth + cellWidth > usable) {
       newRow();
     }
+    stops.push({ offset, row: rows.length, col: rowWidth });
     if (cursorRow < 0 && offset >= draft.cursor) {
       cursorRow = rows.length;
       cursorCol = rowWidth;
@@ -471,16 +471,29 @@ export function layoutComposer(
     offset += segment.length;
   }
 
+  if (rowWidth >= usable) newRow();
+  stops.push({ offset, row: rows.length, col: rowWidth });
   if (cursorRow < 0) {
-    // Cursor at the end: a full row pushes it onto a fresh row.
-    if (rowWidth >= usable) {
-      newRow();
-    }
     cursorRow = rows.length;
     cursorCol = rowWidth;
   }
   rows.push(row);
+  return { rows, cursor_row: cursorRow, cursor_col: cursorCol, stops };
+}
 
+export function moveChatCursorVertical(draft: ChatDraft, width: number, direction: number, preferredColumn?: number): { draft: ChatDraft; column: number } | null {
+  const geometry = composerGeometry(draft, width);
+  if (geometry.rows.length === 1) return null;
+  const column = preferredColumn ?? geometry.cursor_col;
+  const target = geometry.cursor_row + direction;
+  const stops = geometry.stops.filter((stop) => stop.row === target);
+  const closest = stops.reduce<ComposerStop | undefined>((best, stop) =>
+    !best || Math.abs(stop.col - column) < Math.abs(best.col - column) ? stop : best, undefined);
+  return { draft: { line: draft.line, cursor: closest?.offset ?? draft.cursor }, column };
+}
+
+export function layoutComposer(draft: ChatDraft, width: number, maxRows = MAX_COMPOSER_ROWS): ComposerLayout {
+  const { rows, cursor_row: cursorRow, cursor_col: cursorCol } = composerGeometry(draft, width);
   if (rows.length <= maxRows) {
     return { rows, cursor_row: cursorRow, cursor_col: cursorCol };
   }
@@ -501,6 +514,42 @@ export function matchChatCommands(line: string): ChatCommandInfo[] {
   if (!match) return [];
   const prefix = match[1].toLowerCase();
   return CHAT_COMMANDS.filter((command) => command.name.startsWith(prefix));
+}
+
+export interface ChatCompletion {
+  label: string;
+  description: string;
+  draft: ChatDraft;
+}
+
+export function getChatCompletions(draft: ChatDraft, names: string[]): ChatCompletion[] {
+  const before = draft.line.slice(0, draft.cursor);
+  const after = draft.line.slice(draft.cursor);
+  const command = /^\/([a-z]*)$/i.exec(before);
+  if (command) {
+    const tail = after.replace(/^[a-z]*/i, "");
+    return matchChatCommands(before).map((entry) => {
+      const text = `/${entry.name}${/^\s/.test(tail) ? "" : " "}`;
+      return { label: entry.usage, description: entry.description, draft: { line: text + tail, cursor: text.length } };
+    });
+  }
+  // Match the same punctuation boundaries as mentions, without completing
+  // email addresses or text inside backtick code spans.
+  if ((before.match(/`/g)?.length ?? 0) % 2 !== 0) return [];
+  const mention = /(^|[^\p{L}\p{N}_@])(!?@)([\p{L}\p{N}_:.-]*)$/u.exec(before);
+  if (!mention) return [];
+  const typed = mention[3].toLowerCase();
+  const head = before.slice(0, before.length - mention[3].length);
+  const remainder = (/^[\p{L}\p{N}_:.-]*/u.exec(after)?.[0] ?? "").replace(/[.:-]+$/, "");
+  const tail = after.slice(remainder.length);
+  return [...new Set([...names, "everyone"])].filter((name) =>
+    /^[\p{L}\p{N}_:.-]+$/u.test(name) && name.toLowerCase().startsWith(typed) &&
+    // Prefer a short unique name; offer full ids when their colon is typed.
+    (typed.includes(":") || !name.includes(":") || !names.includes(name.split(":")[0]))
+  ).map((name) => {
+    const text = `${head}${name}${/^[\s,.;:!?)-]/.test(tail) ? "" : " "}`;
+    return { label: `${mention[2]}${name}`, description: name === "everyone" ? "all available agents" : "message agent", draft: { line: text + tail, cursor: text.length } };
+  });
 }
 
 // Tab completion for `/command` names and `@name` mentions. Returns null
@@ -572,6 +621,8 @@ export interface ChatScreenInput {
   draft: ChatDraft;
   // A transient dim hint for the footer, e.g. "type /quit to exit".
   hint: string | null;
+  completions?: ChatCompletion[];
+  completion_index?: number;
   columns: number;
   rows: number;
 }
@@ -582,7 +633,7 @@ export interface ChatFrame {
 }
 
 export function chatTranscriptHeight(
-  input: Pick<ChatScreenInput, "columns" | "rows" | "draft">
+  input: Pick<ChatScreenInput, "columns" | "rows" | "draft" | "completions">
 ): number {
   const width = Math.max(1, input.columns - 1);
   const height = Math.max(1, input.rows);
@@ -594,7 +645,7 @@ export function chatTranscriptHeight(
   );
   const menu = Math.min(
     MAX_MENU_ROWS,
-    matchChatCommands(input.draft.line).length
+    input.completions?.length ?? getChatCompletions(input.draft, []).length
   );
   return Math.max(0, height - composer.rows.length - 3 - menu);
 }
@@ -620,16 +671,13 @@ export function renderChatScreen(input: ChatScreenInput): ChatFrame {
     width,
     Math.min(MAX_COMPOSER_ROWS, height - 3)
   );
-  const commands = matchChatCommands(input.draft.line);
-  const menuRows = commands.slice(0, MAX_MENU_ROWS).map((command, index) => {
-    const usage =
-      index === 0 && context.color
-        ? `\u001b[1m${command.usage}\u001b[0m`
-        : command.usage;
-    return truncateStyled(
-      `  ${usage}  ${dim(context, command.description)}`,
-      width
-    );
+  const completions = input.completions ?? getChatCompletions(input.draft, []);
+  const selected = Math.max(0, Math.min(input.completion_index ?? 0, completions.length - 1));
+  const first = Math.max(0, selected - MAX_MENU_ROWS + 1);
+  const menuRows = completions.slice(first, first + MAX_MENU_ROWS).map((entry, index) => {
+    const active = first + index === selected;
+    const label = active && context.color ? `\u001b[1m${entry.label}\u001b[0m` : entry.label;
+    return truncateStyled(`${active ? "›" : " "} ${label}  ${dim(context, entry.description)}`, width);
   });
 
   const rule = dim(context, "─".repeat(width));
@@ -667,6 +715,8 @@ function renderFooter(input: ChatScreenInput, width: number): string {
         ? `↓ ${transcript.unread} new · ctrl+end`
         : "scrolled · ctrl+end";
     suffix = context.color ? `\u001b[1;33m${label}\u001b[0m` : label;
+  } else if ((input.completions?.length ?? 0) > 0) {
+    suffix = dim(context, "↑↓ choose · Tab accept · Esc dismiss");
   } else if (input.hint) {
     suffix = dim(context, input.hint);
   } else if (input.draft.line.length === 0) {

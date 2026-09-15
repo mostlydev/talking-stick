@@ -1,9 +1,9 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, test, vi } from "vitest";
 import { ChatInputController } from "../src/cli/chat-input.js";
-import { completeChatInput } from "../src/cli/chat-view.js";
+import { completeChatInput, getChatCompletions } from "../src/cli/chat-view.js";
 
-function setup() {
+function setup(menu = false) {
   const input = Object.assign(new PassThrough(), {
     isRaw: false,
     setRawMode: vi.fn()
@@ -21,7 +21,8 @@ function setup() {
     onBottom: bottom,
     onChange: vi.fn(),
     onClear: vi.fn(),
-    complete: (draft) => completeChatInput(draft, ["codex", "claude"])
+    completionCount: menu ? (draft) => getChatCompletions(draft, ["codex", "claude"]).length : undefined,
+    complete: (draft, index) => menu ? getChatCompletions(draft, ["codex", "claude"])[index]?.draft ?? null : completeChatInput(draft, ["codex", "claude"])
   });
   return { editor, input, submit, quit, scroll, bottom };
 }
@@ -101,6 +102,78 @@ describe("full-screen chat input", () => {
     } finally {
       editor.close();
     }
+  });
+
+  test("arrows edit multiline drafts with a sticky column and never recall history at their edges", () => {
+    const { editor, input } = setup();
+    try {
+      input.write("history\r\u001b[200~abcdef\nx\nabcdef\u001b[201~");
+      input.write("\u001b[A");
+      expect(editor.draft.cursor).toBe(8);
+      input.write("\u001b[A");
+      expect(editor.draft.cursor).toBe(6);
+      input.write("\u001b[A");
+      expect(editor.draft.line).toBe("abcdef\nx\nabcdef");
+      expect(editor.draft.cursor).toBe(6);
+      input.write("\u001bOB\u001bOB\u001bOB");
+      expect(editor.draft.cursor).toBe(15);
+      input.write("\u001b[A\u001b[D\u001b[A");
+      expect(editor.draft.cursor).toBe(0);
+    } finally { editor.close(); }
+  });
+
+  test("menu selection, Enter acceptance, Escape dismissal, and multiline editing cooperate", async () => {
+    const { editor, input, submit } = setup(true);
+    try {
+      input.write("@c\u001b[B\t");
+      expect(editor.draft.line).toBe("@claude ");
+      expect(submit).not.toHaveBeenCalled();
+      editor.clear();
+      input.write("/he\r");
+      expect(editor.draft.line).toBe("/help ");
+      expect(submit).not.toHaveBeenCalled();
+      input.write("\r");
+      expect(submit).toHaveBeenLastCalledWith("/help ");
+      input.write("line one\u001b\r@c\u001b[B");
+      expect(editor.completionIndex).toBe(1);
+      const before = editor.draft.line;
+      input.write("\u001b");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(editor.draft.line).toBe(before);
+      expect(editor.completionVisible).toBe(false);
+      input.write("\u001b[A");
+      expect(editor.draft.cursor).toBe(2);
+      expect(editor.draft.line).toBe(before);
+    } finally { editor.close(); }
+  });
+
+  test("Enter sends an already-complete mention and executes an exact command", () => {
+    const { editor, input, submit } = setup(true);
+    try {
+      input.write("hey @codex\r");
+      expect(submit).toHaveBeenLastCalledWith("hey @codex");
+      input.write("/qu\r");
+      expect(editor.draft.line).toBe("/quit ");
+      expect(submit).toHaveBeenCalledTimes(1);
+      editor.clear();
+      input.write("/quit\r");
+      expect(submit).toHaveBeenLastCalledWith("/quit");
+    } finally { editor.close(); }
+  });
+
+  test("wrapped arrows and newline keys preserve graphemes and avoid submission", () => {
+    const { editor, input, submit } = setup();
+    try {
+      editor.resize(8);
+      input.write("界🙂abcdef");
+      input.write("\u001b[A");
+      expect(editor.draft.cursor).toBe(3);
+      input.write("\u001b[B");
+      expect(editor.draft.cursor).toBe(9);
+      input.write("\u001b[13;2u");
+      expect(editor.draft.line).toBe("界🙂abcdef\n");
+      expect(submit).not.toHaveBeenCalled();
+    } finally { editor.close(); }
   });
 
   test("restoration is idempotent and retains an already-raw input mode", () => {
