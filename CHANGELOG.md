@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.16.0] — 2026-09-15
+
+Full notes: [`docs/releases/0.16.0.md`](docs/releases/0.16.0.md).
+
 ### Added
 
 - **Native harness wake.** A directed message, assignment, pass, or pending handoff now wakes an idle Claude Code session (through its inbox socket) or Codex session (through `codex queue`) that isn't running `tt wait`. No cmux, keystrokes, or idle model polling is needed. The wake is a fixed prompt without the message body, sent once per unread batch and never for broadcasts. Delivery tries a live receiver, then the native transport, then eligible cmux, falling back only after a definite failure. Credentials stay in an owner-only private table and never appear in any output. (#69)
@@ -516,6 +520,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.16.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.16.0
 [0.15.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.15.0
 [0.14.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.14.0
 [0.13.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.13.0
