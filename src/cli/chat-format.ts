@@ -482,7 +482,7 @@ function rankMember(member: RoomMember, input: ChatStatusInput): number {
   return member.status === "active" ? 2 : 3;
 }
 
-function describeMemberState(
+export function describeMemberState(
   member: RoomMember,
   input: ChatStatusInput
 ): string {

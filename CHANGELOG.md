@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- **Remove agents from chat.** `/kick [--force] <agent> [reason]` removes one exact ID or unique prefix. Autocomplete shows full IDs and member status, with ended agents first. Live or unconfirmed processes require `--force`; removing a member does not terminate its harness.
+
 ## [0.17.0] — 2026-09-15
 
 Full notes: [`docs/releases/0.17.0.md`](docs/releases/0.17.0.md).

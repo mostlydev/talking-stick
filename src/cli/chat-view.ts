@@ -6,6 +6,7 @@ import {
   startsChatConversation,
   isChatConversationActivity,
   formatChatStatus,
+  sanitizeChatText,
   type ChatFormatContext,
   type ChatStatusInput
 } from "./chat-format.js";
@@ -28,6 +29,7 @@ export interface ChatCommandInfo {
 export const CHAT_COMMANDS: ChatCommandInfo[] = [
   { name: "quit", usage: "/quit", description: "leave the chat" },
   { name: "who", usage: "/who", description: "members and who has the stick" },
+  { name: "kick", usage: "/kick <agent>", description: "remove a member; --force for a live agent" },
   {
     name: "to",
     usage: "/to <agent> <text>",
@@ -571,7 +573,13 @@ export interface ChatCompletion {
   draft: ChatDraft;
 }
 
-export function getChatCompletions(draft: ChatDraft, names: string[]): ChatCompletion[] {
+export interface ChatMemberCompletion {
+  agent_id: string;
+  name: string;
+  status: string;
+}
+
+export function getChatCompletions(draft: ChatDraft, names: string[], kickMembers: ChatMemberCompletion[] = []): ChatCompletion[] {
   const before = draft.line.slice(0, draft.cursor);
   const after = draft.line.slice(draft.cursor);
   const command = /^\/([a-z]*)$/i.exec(before);
@@ -580,6 +588,17 @@ export function getChatCompletions(draft: ChatDraft, names: string[]): ChatCompl
     return matchChatCommands(before).map((entry) => {
       const text = `/${entry.name}${/^\s/.test(tail) ? "" : " "}`;
       return { label: entry.usage, description: entry.description, draft: { line: text + tail, cursor: text.length } };
+    });
+  }
+  const kick = /^(\/kick\s+(?:--force\s+)?@?)([^\s]*)$/i.exec(before);
+  if (kick) {
+    const typed = kick[2].toLowerCase();
+    const tail = after.replace(/^\S*/, "");
+    return kickMembers.filter((member) => member.agent_id.toLowerCase().startsWith(typed) ||
+      member.name.toLowerCase().startsWith(typed)).map((member) => {
+      const text = `${kick[1]}${member.agent_id}${/^\s/.test(tail) ? "" : " "}`;
+      return { label: sanitizeChatText(member.agent_id), description: sanitizeChatText(`${member.status}${member.name !== member.agent_id ? ` · ${member.name}` : ""}`).replace(/\n/g, " "),
+        draft: { line: text + tail, cursor: text.length } };
     });
   }
   // Match the same punctuation boundaries as mentions, without completing

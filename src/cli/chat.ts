@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import readline from "node:readline";
 import { ChatInputController } from "./chat-input.js";
+import { resolveChatKick } from "./chat-kick.js";
 import {
   ChatTranscript,
   renderChatScreen,
@@ -28,6 +29,7 @@ import {
   startsChatConversation,
   isChatConversationActivity,
   formatChatAgent,
+  describeMemberState,
   parseChatInput,
   resolveChatRecipients,
   sanitizeChatText
@@ -168,7 +170,13 @@ export async function runChatSession(
   });
   const completionsFor = (draft: { line: string; cursor: number }) => getChatCompletions(draft,
     members.filter((member) => member.agent_id !== selfId && member.process_liveness !== "gone")
-      .flatMap((member) => [nameOf(member.agent_id), member.agent_id]));
+      .flatMap((member) => [nameOf(member.agent_id), member.agent_id]),
+    members.filter((member) => member.agent_id !== selfId && member.session_kind !== HUMAN_CHAT_SESSION_KIND)
+      .sort((a, b) => Number(b.process_liveness === "gone") - Number(a.process_liveness === "gone") || a.agent_id.localeCompare(b.agent_id))
+      .map((member) => ({ agent_id: member.agent_id, name: member.display_name || nameOf(member.agent_id),
+        status: member.process_liveness === "gone" ? "ended" : describeMemberState(member, {
+          members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), columns: dimensions().columns
+        }) })));
   const redraw = () => {
     if (!terminal || closed || frameTimer) return;
     frameTimer = setTimeout(() => {
@@ -411,6 +419,27 @@ export async function runChatSession(
         refreshMembers();
         print(describeRoom());
         return;
+      case "kick": {
+        refreshMembers();
+        const { target, force, reason } = resolveChatKick(args, members, selfId);
+        let ownershipNote = "";
+        try {
+          const result = runtime.commands.kickMember(identity, { room_id: roomId, target_agent_id: target.agent_id, force, reason });
+          if (result.target_was_owner) ownershipNote = " Its turn was revoked.";
+          else if (result.target_was_reserved_for) ownershipNote = " Its next-turn reservation was cleared.";
+        } catch (error) {
+          if (error instanceof ProtocolError && error.code === "target_active") {
+            const state = target.process_liveness === "alive" ? "is still running" :
+              target.process_liveness === "gone" ? "has just ended; the liveness grace period has not elapsed" : "is not confirmed ended";
+            print(`! ${sanitizeChatText(target.agent_id)} ${state}. Use /kick --force ${sanitizeChatText(target.agent_id)} to remove it from the room.`);
+            return;
+          }
+          throw error;
+        }
+        refreshMembers();
+        print(`Removed ${sanitizeChatText(target.agent_id)} from the room.${ownershipNote} The harness was not stopped.`);
+        return;
+      }
       case "events":
         showTurnEvents = !showTurnEvents;
         transcript.invalidate();

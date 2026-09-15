@@ -416,3 +416,20 @@ describe("screen rendering", () => {
     expect(partial).toContain(`${ESC}[3;2H`);
   });
 });
+
+test("kick completion keeps duplicate agents distinct and shows status while preserving a reason", () => {
+  const members = [
+    { agent_id: "claude:old", name: "claude", status: "ended" },
+    { agent_id: "claude:live", name: "claude", status: "holding 12m" },
+    { agent_id: "codex:aa", name: "codex", status: "standby" }
+  ];
+  const suggestions = getChatCompletions({ line: "/kick ", cursor: 6 }, [], members);
+  expect(suggestions.map((item) => [item.label, item.description])).toEqual([
+    ["claude:old", "ended · claude"], ["claude:live", "holding 12m · claude"], ["codex:aa", "standby · codex"]
+  ]);
+  const draft = { line: "/kick --force @clxde cleanup", cursor: 17 };
+  const selected = getChatCompletions(draft, [], members)[1];
+  expect(selected.draft.line).toBe("/kick --force @claude:live cleanup");
+  expect(getChatCompletions({ line: "/kick claude:live reason", cursor: 24 }, [], members)).toEqual([]);
+  expect(matchChatCommands("/ki").map((command) => command.name)).toEqual(["kick"]);
+});
