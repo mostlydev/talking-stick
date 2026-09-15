@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- **Forced urgent delivery.** Each `/interrupt` or `!@` message has its own durable delivery reservation and submits a native prompt even when the recipient has a live listener or an earlier unread wake. Human-origin Claude interrupts use `priority: now` to request active-turn cancellation; agent-origin Claude interrupts inject at the next tool boundary, and Codex remains queued without cancellation. Unsent urgent deliveries expire after 60 seconds without discarding room messages. Chat distinguishes an interrupt request from transports that cannot interrupt immediately. Message bodies remain in the room event stream.
+
 ### Added
 
 - **Mention several agents anywhere in a chat message.** `@claude @codex, review this` and `hey @codex and @claude, check this` both send to every matching member. Leading mentions are stripped from the message text; an unknown `@name` blocks the whole send instead of delivering to some recipients; email addresses and `code` spans are not treated as mentions.

@@ -270,6 +270,28 @@ const migrations: Migration[] = [
       WHERE (standby_transport = 'cmux' AND standby_workspace_id IS NOT NULL AND standby_surface_id IS NOT NULL)
          OR (wake_workspace_id IS NOT NULL AND wake_surface_id IS NOT NULL AND wake_endpoint_session_id = harness_session_id);
     `
+  },
+  {
+    id: 15,
+    name: "forced_interrupt_deliveries",
+    up: `
+      CREATE TABLE interrupt_deliveries (
+        room_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        event_seq INTEGER NOT NULL,
+        harness_session_id TEXT NOT NULL,
+        host_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        cancel_requested INTEGER NOT NULL DEFAULT 0,
+        attempted_at TEXT,
+        transport TEXT,
+        error TEXT,
+        PRIMARY KEY (room_id, agent_id, event_seq),
+        FOREIGN KEY (room_id, agent_id) REFERENCES room_members(room_id, agent_id) ON DELETE CASCADE,
+        FOREIGN KEY (event_seq) REFERENCES room_events(event_seq) ON DELETE CASCADE
+      );
+      CREATE INDEX interrupt_deliveries_pending ON interrupt_deliveries(status, room_id);
+    `
   }
 ];
 

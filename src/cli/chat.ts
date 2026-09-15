@@ -322,6 +322,9 @@ export async function runChatSession(
         if (closed || !result.delivery_target) return;
         const state = result.delivery_status === "receiver" ? "listening" :
           result.delivery_status === "pending" ? "waiting for agent to read" :
+          result.delivery_state === "queued" && result.interrupt_status === "unsupported" ? "queued; immediate interrupt unavailable" :
+          result.delivery_state === "queued" && result.interrupt_status === "requested" ? "interrupt requested" :
+          result.delivery_state === "queued" && result.interrupt_status === "injected" ? "urgent prompt injected" :
           result.delivery_state === "queued" || result.delivery_state === "woken" ? result.delivery_state :
           result.delivery_state === "ambiguous" ? "wake unconfirmed" :
           "not listening";
