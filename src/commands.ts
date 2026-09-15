@@ -391,6 +391,15 @@ export class TalkingStickCommands {
     });
   }
 
+  flushWakes(roomId?: string): Promise<void> {
+    return this.service.flushWakes(roomId);
+  }
+
+  sendMessageAndWake(identity: DerivedIdentity, input: SendMessageCommandInput): Promise<SendMessageResult> {
+    return this.service.sendMessageAndWake({ ...input, agent_id: identity.agent_id,
+      process_metadata: identity.process_metadata });
+  }
+
   sendMessage(
     identity: DerivedIdentity,
     input: SendMessageCommandInput

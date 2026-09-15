@@ -299,21 +299,20 @@ export async function runChatSession(
       targets = resolved.agent_ids;
     }
     for (const toAgentId of targets) {
-      const result = runtime.commands.sendMessage(identity, {
+      void runtime.commands.sendMessageAndWake(identity, {
         room_id: roomId,
         body,
         to_agent_id: toAgentId,
         delivery_hint: interrupt ? "interrupt" : "normal"
-      });
-      if (
-        result.delivery_target &&
-        (result.delivery_status === "pending" ||
-          result.delivery_status === "unreachable")
-      ) {
-        print(
-          `! ${nameOf(result.delivery_target)} is not listening right now; it will see the message on its next wait.`
-        );
-      }
+      })
+      .then((result) => {
+        if (closed || !result.delivery_target) return;
+        const state = result.delivery_status === "receiver" ? "listening" :
+          result.delivery_state === "queued" || result.delivery_state === "woken" ? result.delivery_state :
+          result.delivery_status === "pending" ? "pending" : "not listening";
+        print(`${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`);
+      })
+      .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
     }
   };
 
@@ -567,6 +566,7 @@ export async function runChatSession(
     process.off("uncaughtExceptionMonitor", restore);
     stop();
     if (terminal && exitReason) output.write(`${exitReason}\n`);
+    await runtime.commands.flushWakes(roomId);
     try {
       runtime.commands.leaveRoom(identity, { room_id: roomId });
     } catch {

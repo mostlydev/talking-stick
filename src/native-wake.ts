@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import net from "node:net";
 
-export type NativeWakeTransportName = "claude_inbox" | "codex_queue";
-export type NativeWakeReason = "message" | "turn" | "room_update";
+export type NativeWakeTransportName = "claude_inbox" | "codex_queue" | "cmux";
+export type NativeWakeReason = "message" | "interrupt" | "turn" | "room_update";
 export type NativeWakeState = "woken" | "queued" | "ambiguous";
 
 export const CLAUDE_INBOX_TIMEOUT_MS = 2_000;
@@ -10,7 +11,8 @@ export const CODEX_QUEUE_TIMEOUT_MS = 10_000;
 // Native transports in delivery preference order.
 export const NATIVE_WAKE_TRANSPORTS: readonly NativeWakeTransportName[] = [
   "claude_inbox",
-  "codex_queue"
+  "codex_queue",
+  "cmux"
 ];
 
 export interface NativeWakeRegistration {
@@ -32,7 +34,7 @@ export interface NativeWakeResult {
 }
 
 export interface NativeWakeTransport {
-  deliver(request: NativeWakeRequest): NativeWakeResult;
+  deliver(request: NativeWakeRequest): NativeWakeResult | Promise<NativeWakeResult>;
 }
 
 export function detectNativeWakeEndpoints(
@@ -66,6 +68,7 @@ export function formatNativeWakeText(input: {
   const sender = sanitizeWakeLabel(input.sender ?? "") || "a room member";
   const place = sanitizeWakeLabel(input.path, 200) || "the room";
   switch (input.reason) {
+    case "interrupt":
     case "message":
       return `[talking-stick] New message from ${sender} in ${place}. Run \`tt wait --json\` to read it.`;
     case "turn":
@@ -83,134 +86,71 @@ function sanitizeWakeLabel(value: string, max = 64): string {
     .slice(0, max);
 }
 
-export type NativeWakeExec = (
-  file: string,
-  args: readonly string[],
-  options: {
-    input?: string;
-    timeout: number;
-    encoding: "utf8";
-    stdio: ["pipe", "pipe", "pipe"];
-  }
-) => string;
+export interface NativeWakeOptions {
+  timeout_ms?: number;
+  env?: NodeJS.ProcessEnv;
+}
 
-// Exit 3 means the socket could not be reached; nothing was written.
-const CLAUDE_INBOX_SCRIPT = `
-const net = require("node:net");
-let raw = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => { raw += chunk; });
-process.stdin.on("end", () => {
-  const { socket, token, text } = JSON.parse(raw);
-  let connected = false;
-  const conn = net.createConnection(socket);
-  conn.on("error", (error) => {
-    process.stderr.write(String(error.code || error.message));
-    process.exit(connected ? 4 : 3);
-  });
-  conn.on("connect", () => {
-    connected = true;
-    const lines =
-      JSON.stringify({ type: "auth", token }) + "\\n" +
-      JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\\n";
-    conn.end(lines, () => process.exit(0));
-  });
-});
-`;
-
-const CODEX_THREAD_NOT_FOUND = /no rollout found|thread not found/i;
-
-export function createSystemNativeWakeTransport(
-  exec: NativeWakeExec = (file, args, options) =>
-    execFileSync(file, args, options)
-): NativeWakeTransport {
+export function createSystemNativeWakeTransport(options: NativeWakeOptions = {}): NativeWakeTransport {
   return {
     deliver(request) {
-      if (request.transport === "claude_inbox") {
-        return deliverClaudeInbox(exec, request);
-      }
-      return deliverCodexQueue(exec, request);
+      if (request.transport === "claude_inbox") return deliverClaudeInbox(request, options);
+      if (request.transport === "codex_queue") return deliverCodexQueue(request, options);
+      return { outcome: "failed", error: "unsupported_native_transport" };
     }
   };
 }
 
-function deliverClaudeInbox(
-  exec: NativeWakeExec,
-  request: NativeWakeRequest
-): NativeWakeResult {
-  try {
-    // The token travels over stdin so it never appears in a process listing.
-    exec(process.execPath, ["-e", CLAUDE_INBOX_SCRIPT], {
-      input: JSON.stringify({
-        socket: request.address,
-        token: request.secret,
-        text: request.text
-      }),
-      timeout: CLAUDE_INBOX_TIMEOUT_MS,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"]
+export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
+  return new Promise((resolve) => {
+    let written = false;
+    let settled = false;
+    const socket = net.createConnection(request.address);
+    const finish = (result: NativeWakeResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ outcome: "ambiguous", error: "claude_inbox_timeout" }),
+      options.timeout_ms ?? CLAUDE_INBOX_TIMEOUT_MS);
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      const definite = !written && ["ENOENT", "ECONNREFUSED", "EACCES"].includes(error.code ?? "");
+      finish({ outcome: definite ? "failed" : "ambiguous", error: definite ? "claude_inbox_unreachable" : "claude_inbox_write_failed" });
     });
-    return { outcome: "queued" };
-  } catch (error) {
-    const failure = describeExecFailure(error);
-    if (failure.timed_out) {
-      return { outcome: "ambiguous", error: "claude_inbox_timeout" };
-    }
-    if (failure.status === 3 || failure.spawn_error) {
-      return { outcome: "failed", error: "claude_inbox_unreachable" };
-    }
-    return { outcome: "ambiguous", error: "claude_inbox_write_failed" };
-  }
+    socket.on("connect", () => {
+      written = true;
+      socket.end(
+        JSON.stringify({ type: "auth", token: request.secret }) + "\n" +
+        JSON.stringify({ type: "user", message: { role: "user", content: request.text } }) + "\n",
+        () => finish({ outcome: "queued" })
+      );
+    });
+    socket.on("close", () => finish({ outcome: "ambiguous", error: "claude_inbox_closed" }));
+  });
 }
 
-function deliverCodexQueue(
-  exec: NativeWakeExec,
-  request: NativeWakeRequest
-): NativeWakeResult {
-  try {
-    // codex queue prints the same "Queued message" line whether or not the
-    // thread started a turn, so success is always reported as queued.
-    exec(
-      "codex",
-      ["queue", "--thread", request.address, "--message", request.text],
-      {
-        timeout: CODEX_QUEUE_TIMEOUT_MS,
-        encoding: "utf8",
-        stdio: ["pipe", "pipe", "pipe"]
+export function deliverCodexQueue(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.address)) {
+    return Promise.resolve({ outcome: "failed", error: "invalid_codex_thread" });
+  }
+  return new Promise((resolve) => {
+    const child = execFile("codex", ["queue", "--thread", request.address, "--message", request.text], {
+      encoding: "utf8", timeout: options.timeout_ms ?? CODEX_QUEUE_TIMEOUT_MS,
+      killSignal: "SIGKILL", maxBuffer: 64 * 1024, windowsHide: true,
+      env: options.env ?? process.env
+    }, (error, _stdout, stderr) => {
+      if (!error) { resolve({ outcome: "queued" }); return; }
+      if (error.code === "ENOENT" || error.code === "EACCES") {
+        resolve({ outcome: "failed", error: "codex_unavailable" }); return;
       }
-    );
-    return { outcome: "queued" };
-  } catch (error) {
-    const failure = describeExecFailure(error);
-    if (failure.timed_out) {
-      return { outcome: "ambiguous", error: "codex_queue_timeout" };
-    }
-    if (failure.spawn_error) {
-      return { outcome: "failed", error: "codex_unavailable" };
-    }
-    if (CODEX_THREAD_NOT_FOUND.test(failure.stderr)) {
-      return { outcome: "failed", error: "codex_thread_not_found" };
-    }
-    return { outcome: "ambiguous", error: "codex_queue_failed" };
-  }
-}
-
-function describeExecFailure(error: unknown): {
-  timed_out: boolean;
-  spawn_error: boolean;
-  status: number | null;
-  stderr: string;
-} {
-  const failure = error as {
-    code?: string;
-    signal?: string | null;
-    status?: number | null;
-    stderr?: string | Buffer;
-  };
-  return {
-    timed_out: failure.code === "ETIMEDOUT" || failure.signal === "SIGTERM",
-    spawn_error: failure.code === "ENOENT" || failure.code === "EACCES",
-    status: typeof failure.status === "number" ? failure.status : null,
-    stderr: failure.stderr ? String(failure.stderr) : ""
-  };
+      if (!error.killed && !error.signal && typeof error.code === "number" &&
+        /thread\/queue\/add failed: failed to read thread: (?:invalid thread-store request: )?no rollout found for thread id [0-9a-f-]{36}(?:\s|$)/i.test(stderr)) {
+        resolve({ outcome: "failed", error: "codex_thread_not_found" }); return;
+      }
+      resolve({ outcome: "ambiguous", error: error.killed || error.signal ? "codex_queue_timeout" : "codex_queue_failed" });
+    });
+    child.stdin?.end();
+  });
 }

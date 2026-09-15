@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 export const STANDBY_WAKE_TEXT =
   "Talking Stick has an actionable update. Run tt wait --json to resume coordination.";
@@ -17,26 +17,29 @@ export interface WakeRequest {
 export interface WakeDeliveryResult {
   delivered: boolean;
   error?: string;
+  definite_failure?: boolean;
 }
 
 export interface WakeTransport {
-  deliver(request: WakeRequest): WakeDeliveryResult;
+  deliver(request: WakeRequest): WakeDeliveryResult | Promise<WakeDeliveryResult>;
 }
 
 export type WakeExecFile = (
   file: string,
   args: readonly string[],
   options: { stdio: "ignore"; timeout: number }
-) => void;
+) => void | Promise<void>;
 
 export function createSystemWakeTransport(
-  execFile: WakeExecFile = (file, args, options) =>
-    execFileSync(file, args, options)
+  run: WakeExecFile = (file, args, options) => new Promise<void>((resolve, reject) => {
+    execFile(file, args, { ...options, killSignal: "SIGKILL" }, (error) => error ? reject(error) : resolve());
+  })
 ): WakeTransport {
   return {
-    deliver(request) {
+    async deliver(request) {
+      let submitted = false;
       try {
-        execFile(
+        await run(
           "cmux",
           [
             "send",
@@ -50,7 +53,8 @@ export function createSystemWakeTransport(
         );
         // TUI composers insert a raw newline instead of submitting, so the
         // prompt only fires with a discrete Enter key event after the text.
-        execFile(
+        submitted = true;
+        await run(
           "cmux",
           [
             "send-key",
@@ -66,7 +70,8 @@ export function createSystemWakeTransport(
       } catch (error) {
         return {
           delivered: false,
-          error: error instanceof Error ? error.message : String(error)
+          error: "cmux_wake_failed",
+          definite_failure: !submitted && ["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")
         };
       }
     }

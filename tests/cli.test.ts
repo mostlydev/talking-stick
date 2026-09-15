@@ -63,14 +63,18 @@ const originalEnv = new Map<string, string | undefined>(
   ENV_KEYS.map((key) => [key, process.env[key]])
 );
 
+let isolatedCliDataDir: string | undefined;
 beforeEach(() => {
   for (const key of ENV_KEYS) {
     delete process.env[key];
   }
   process.env.TALKING_STICK_DISABLE_SKILLER = "1";
+  isolatedCliDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-cli-test-data-"));
+  process.env.TALKING_STICK_DATA_DIR = isolatedCliDataDir;
 });
 
 afterEach(() => {
+  if (isolatedCliDataDir) fs.rmSync(isolatedCliDataDir, { recursive: true, force: true });
   vi.restoreAllMocks();
   for (const key of ENV_KEYS) {
     const value = originalEnv.get(key);

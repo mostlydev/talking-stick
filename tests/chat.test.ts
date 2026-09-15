@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, test } from "vitest";
 import { TalkingStickCommands } from "../src/commands.js";
 import { deriveHumanCliIdentity } from "../src/identity.js";
-import { TalkingStickService } from "../src/service.js";
+import { TalkingStickService, type TalkingStickServiceOptions } from "../src/service.js";
 import type { RoomEvent } from "../src/types.js";
 import {
   agentColor,
@@ -688,13 +688,14 @@ test.each([
   }
 );
 
-function setupService() {
+function setupService(options: TalkingStickServiceOptions = {}) {
   const root = fs.realpathSync.native(
     fs.mkdtempSync(path.join(os.tmpdir(), "tt-chat-"))
   );
   const service = new TalkingStickService({
     dbPath: path.join(root, ".state", "rooms.sqlite"),
-    policy: { waitForEventsPollMs: 1 }
+    policy: { waitForEventsPollMs: 1 },
+    ...options
   });
   cleanups.push(() => {
     service.close();
@@ -740,3 +741,38 @@ async function until(
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+test("chat remains responsive while a slow recipient wakes and reports each recipient independently", async () => {
+  let finishSlow!: (result: { outcome: "queued" }) => void;
+  const slow = new Promise<{ outcome: "queued" }>((resolve) => { finishSlow = resolve; });
+  let deliveries = 0;
+  const { root, service } = setupService({ nativeWakeTransport: {
+    deliver(request) { deliveries++; return request.address === "slow" ? slow : { outcome: "queued" }; }
+  } });
+  const joined = service.joinPath({ agent_id: "claude:slow", context_path: root, process_metadata: { harness_session_id: "slow" } });
+  service.joinPath({ agent_id: "claude:fast", context_path: root, process_metadata: { harness_session_id: "fast" } });
+  for (const name of ["slow", "fast"]) service.registerNativeWakeEndpoint({ room_id: joined.room_id,
+    agent_id: `claude:${name}`, transport: "claude_inbox", address: name, secret: "private", harness_session_id: name, host_id: os.hostname() });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let transcript = "";
+  output.on("data", (chunk) => { transcript += chunk.toString(); });
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: false, color: false, history: 0,
+    show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => transcript.includes("Talking Stick chat"));
+    input.write("@claude hello both\n");
+    await until(() => deliveries === 2);
+    input.write("/who\n");
+    await until(() => transcript.split("In the room:").length >= 3);
+    await until(() => transcript.includes("claude:fast: queued"));
+    expect(transcript).not.toContain("claude:slow: queued");
+    finishSlow({ outcome: "queued" });
+    await until(() => transcript.includes("claude:slow: queued"));
+  } finally {
+    finishSlow({ outcome: "queued" });
+    input.write("/quit\n");
+    await session;
+  }
+});

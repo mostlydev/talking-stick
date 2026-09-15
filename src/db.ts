@@ -251,6 +251,25 @@ const migrations: Migration[] = [
     up: `
       ALTER TABLE member_wake_endpoints ADD COLUMN wake_event_seq INTEGER;
     `
+  },
+  {
+    id: 14,
+    name: "unified_wake_batches",
+    up: `
+      ALTER TABLE member_wake_endpoints ADD COLUMN batch_id TEXT;
+      ALTER TABLE member_wake_endpoints ADD COLUMN dispatch_event_seq INTEGER;
+      INSERT OR IGNORE INTO member_wake_endpoints
+        (room_id, agent_id, transport, address, secret, harness_session_id, host_id, generation, recorded_at)
+      SELECT room_id, agent_id, 'cmux',
+        json_object('workspace_id', COALESCE(standby_workspace_id, wake_workspace_id),
+                    'surface_id', COALESCE(standby_surface_id, wake_surface_id)), NULL,
+        COALESCE(harness_session_id, 'member:' || agent_id),
+        COALESCE(harness_host_id, host_id, ''), 1,
+        COALESCE(standby_registered_at, wake_endpoint_recorded_at, joined_at)
+      FROM room_members
+      WHERE (standby_transport = 'cmux' AND standby_workspace_id IS NOT NULL AND standby_surface_id IS NOT NULL)
+         OR (wake_workspace_id IS NOT NULL AND wake_surface_id IS NOT NULL AND wake_endpoint_session_id = harness_session_id);
+    `
   }
 ];
 
@@ -269,7 +288,19 @@ export function resolveDatabasePath(options: OpenDatabaseOptions = {}): string {
 export function openDatabase(options: OpenDatabaseOptions = {}): SqliteDatabase {
   const dbPath = resolveDatabasePath(options);
   assertLocalFilesystem(path.dirname(dbPath), options.filesystemTypeOptions);
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
+  try { fs.closeSync(fs.openSync(dbPath, "wx", 0o600)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  if (process.platform !== "win32") {
+    for (const filename of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      try {
+        if ((fs.statSync(filename).mode & 0o077) !== 0) {
+          fs.chmodSync(filename, 0o600);
+          process.stderr.write("Talking Stick restricted state file permissions to owner-only.\n");
+        }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+  }
 
   const db = new DatabaseConstructor(dbPath);
   applyPragmas(db);

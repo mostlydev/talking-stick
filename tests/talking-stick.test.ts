@@ -4487,7 +4487,7 @@ describe("interrupt delivery", () => {
     return joined;
   }
 
-  test("directed interrupt prefers a live receiver and skips the wake transport", () => {
+  test("directed interrupt prefers a live receiver and skips the wake transport", async () => {
     const { requests, transport } = recordingTransport();
     const harness = createHarness({ wakeTransport: transport });
     const joined = joinTwo(harness);
@@ -4503,7 +4503,7 @@ describe("interrupt delivery", () => {
       cursor_event_seq: joined.cursor_event_seq
     });
 
-    const result = harness.service.sendMessage({
+    const result = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4516,7 +4516,7 @@ describe("interrupt delivery", () => {
     expect(requests).toHaveLength(0);
   });
 
-  test("directed interrupt wakes a verified endpoint once with a body-free prompt", () => {
+  test("directed interrupt wakes a verified endpoint once with a body-free prompt", async () => {
     const { requests, transport } = recordingTransport();
     const harness = createHarness({ wakeTransport: transport });
     const joined = joinTwo(harness);
@@ -4529,7 +4529,7 @@ describe("interrupt delivery", () => {
       harness_session_id: "sess-1"
     });
 
-    const first = harness.service.sendMessage({
+    const first = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4542,11 +4542,11 @@ describe("interrupt delivery", () => {
     expect(requests[0]).toMatchObject({
       workspace_id: "ws-1",
       surface_id: "surface-1",
-      reason: "interrupt"
+      reason: "actionable_room_update"
     });
     expect(JSON.stringify(requests[0])).not.toContain("rm -rf");
 
-    const coalesced = harness.service.sendMessage({
+    const coalesced = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4561,7 +4561,8 @@ describe("interrupt delivery", () => {
       room_id: joined.room_id,
       agent_id: "codex:target"
     });
-    const rewake = harness.service.sendMessage({
+    await harness.service.waitForTurn({ room_id: joined.room_id, agent_id: "codex:target", max_wait_ms: 0, auto_claim: false, after_event_seq: coalesced.event_seq });
+    const rewake = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4572,7 +4573,7 @@ describe("interrupt delivery", () => {
     expect(requests).toHaveLength(2);
   });
 
-  test("normal directed chatter never uses the wake endpoint", () => {
+  test("normal directed chatter preserves the unparked terminal composer", async () => {
     const { requests, transport } = recordingTransport();
     const harness = createHarness({ wakeTransport: transport });
     const joined = joinTwo(harness);
@@ -4585,7 +4586,7 @@ describe("interrupt delivery", () => {
       harness_session_id: "sess-1"
     });
 
-    const result = harness.service.sendMessage({
+    const result = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4638,7 +4639,7 @@ describe("interrupt delivery", () => {
       harness_session_id: "parked-sess"
     });
 
-    const broadcast = harness.service.sendMessage({
+    const broadcast = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       body: "room interrupt for a stalled owner",
@@ -4650,7 +4651,7 @@ describe("interrupt delivery", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0].surface_id).toBe("surface-owner");
 
-    const normalBroadcast = harness.service.sendMessage({
+    const normalBroadcast = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       body: "normal room chatter",
@@ -4660,7 +4661,7 @@ describe("interrupt delivery", () => {
     expect(requests).toHaveLength(1);
   });
 
-  test("session change invalidates a recorded endpoint", () => {
+  test("session change invalidates a recorded endpoint", async () => {
     const { requests, transport } = recordingTransport();
     const harness = createHarness({ wakeTransport: transport });
     const joined = joinTwo(harness);
@@ -4673,7 +4674,7 @@ describe("interrupt delivery", () => {
       harness_session_id: "stale-session"
     });
 
-    const result = harness.service.sendMessage({
+    const result = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4685,7 +4686,7 @@ describe("interrupt delivery", () => {
     expect(requests).toHaveLength(0);
   });
 
-  test("wake endpoint registration requires a harness session", () => {
+  test("wake endpoint registration requires a harness session", async () => {
     const harness = createHarness();
     const joined = joinTwo(harness);
 
@@ -4700,7 +4701,7 @@ describe("interrupt delivery", () => {
     ).toThrowProtocolError("invalid_input");
   });
 
-  test("endpoint replacement during delivery cannot coalesce the new generation", () => {
+  test("endpoint replacement during delivery cannot coalesce the new generation", async () => {
     const requests: WakeRequest[] = [];
     let replaceEndpoint: (() => void) | null = null;
     const transport: WakeTransport = {
@@ -4732,7 +4733,7 @@ describe("interrupt delivery", () => {
       expect(replacement.generation).toBe(2);
     };
 
-    const raced = harness.service.sendMessage({
+    const raced = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4740,15 +4741,14 @@ describe("interrupt delivery", () => {
       delivery_hint: "interrupt"
     });
     expect(raced).toMatchObject({
-      delivery_status: "pending",
-      delivery_error: "Wake endpoint changed during interrupt delivery."
+      delivery_status: "pending"
     });
     expect(requests[0]).toMatchObject({
       surface_id: "surface-1",
       generation: 1
     });
 
-    const retry = harness.service.sendMessage({
+    const retry = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4762,7 +4762,7 @@ describe("interrupt delivery", () => {
     });
   });
 
-  test("failed endpoint delivery reports pending with the transport error", () => {
+  test("ambiguous endpoint delivery reports a redacted failure without fallback", async () => {
     const { requests, transport } = recordingTransport(false);
     const harness = createHarness({ wakeTransport: transport });
     const joined = joinTwo(harness);
@@ -4775,7 +4775,7 @@ describe("interrupt delivery", () => {
       harness_session_id: "sess-1"
     });
 
-    const result = harness.service.sendMessage({
+    const result = await harness.service.sendMessageAndWake({
       room_id: joined.room_id,
       agent_id: "claude:sender",
       to_agent_id: "codex:target",
@@ -4783,8 +4783,9 @@ describe("interrupt delivery", () => {
       delivery_hint: "interrupt"
     });
 
-    expect(result.delivery_status).toBe("pending");
-    expect(result.delivery_error).toBe("surface offline");
+    expect(result.delivery_status).toBe("endpoint");
+    expect(result.delivery_error).toBe("cmux_wake_failed");
+    expect(result.delivery_state).toBe("failed");
     expect(requests).toHaveLength(1);
   });
 });
