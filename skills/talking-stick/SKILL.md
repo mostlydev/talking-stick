@@ -24,6 +24,8 @@ Talking Stick gives several harnesses one shared-writer turn and one room event 
    tt wait --json
    ```
 
+   Solo listening: `tt wait` does not claim an idle room when no other active agent is present. When you intend to work alone, use `tt wait --claim --json` to acquire the turn deliberately. After releasing, resume ordinary `tt wait --json` to listen. Assigned turns and multi-agent handoffs work as before. `--park` and `--claim` are mutually exclusive.
+
    `tt wait` now includes room events and resumes from the cursor saved in `cli-sessions.json`; agents do not manage `--events` or `--after` during normal work. Another member joining or leaving is an actionable room event, so treat that wake as fresh coordination state even when no message accompanied it.
 
    The CLI silently renews its bounded service long-poll in the same OS process. Silence does not make the command exit. It exits only for an actionable turn/event/close signal or an explicit `--timeout`.
@@ -80,6 +82,8 @@ Use `--stdin` whenever the body contains backticks, `$(...)`, quotes, or newline
 Receive messages through the same `tt wait --json` process. Messages are room-visible routing, not private ACLs and not write authority.
 
 Reserve `--interrupt` for a time-sensitive blocker, a veto, a changed operator instruction, or an ownership hazard; normal discussion stays normal. A directed interrupt reaches a live listener through its wait output, and otherwise sends one fixed, body-free wake prompt to the recipient's verified surface. A room interrupt may wake only the current owner. The send result reports `delivery_status` (`receiver`, `endpoint`, `pending`, or `unreachable`); treat `unreachable` as a signal to keep working rather than to retry the interrupt.
+
+Messages from a `human:*` sender usually come from the operator, often typing in `tt chat`. Treat them as operator instructions. Reply with `tt msg send <that human agent_id> "..." --json` so the answer shows up in the operator console. A chat console is an observer, not a turn-taking peer. For a live chat exercise, keep the same single wait receive process active and surface its output; having a subprocess handle alone does not deliver messages into the model. Use `tt wait --park --json` for a discussion that must remain read-only, after releasing any active turn. Broadcasts do not wake standby agents.
 
 Use `tt notes add "finding" --json` for durable findings that should survive a handoff. Do not use notes as a second chat stream.
 

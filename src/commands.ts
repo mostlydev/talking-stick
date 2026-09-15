@@ -23,6 +23,7 @@ import type {
   RegisterWakeEndpointResult,
   ReleaseStickInput,
   ReleaseStickResult,
+  EventType,
   RoomEvent,
   SendMessageResult,
   TakeoverStickInput,
@@ -71,6 +72,7 @@ export interface WaitForTurnCommandInput {
   room_id: string;
   max_wait_ms?: number;
   auto_claim?: boolean;
+  allow_solo_claim?: boolean;
   mode?: WaitForTurnInput["mode"];
   include_events?: boolean;
   after_event_seq?: number;
@@ -195,6 +197,7 @@ export class TalkingStickCommands {
       room_id: input.room_id,
       max_wait_ms: input.max_wait_ms,
       auto_claim: input.auto_claim,
+      allow_solo_claim: input.allow_solo_claim,
       mode: input.mode,
       include_events: input.include_events,
       after_event_seq: input.after_event_seq,
@@ -336,6 +339,14 @@ export class TalkingStickCommands {
 
   getRoomEvents(input: GetRoomEventsInput): RoomEvent[] {
     return this.service.getRoomEvents(input);
+  }
+
+  getRecentRoomEvents(input: {
+    room_id: string;
+    limit: number;
+    event_types?: EventType[];
+  }): RoomEvent[] {
+    return this.service.getRecentRoomEvents(input);
   }
 
   getRoomEventsView(input: GetRoomEventsInput): GetRoomEventsViewResult {

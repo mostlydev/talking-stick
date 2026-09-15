@@ -6,12 +6,15 @@ import {
 } from "../src/cli/parser.js";
 
 describe("parseCommand", () => {
-  test("known boolean flags do not consume following positionals", () => {
-    const parsed = parseCommand(["state", "--json", "/repo"]);
+  test.each(["json", "no-mouse"])(
+    "boolean --%s preserves the following path",
+    (flag) => {
+      const parsed = parseCommand(["chat", `--${flag}`, "/repo"]);
 
-    expect(parsed.options.get("json")).toBe(true);
-    expect(parsed.positionals).toEqual(["/repo"]);
-  });
+      expect(parsed.options.get(flag)).toBe(true);
+      expect(parsed.positionals).toEqual(["/repo"]);
+    }
+  );
 
   test("leading global boolean flags do not become the command name", () => {
     const parsed = parseCommand(["--json", "wait", "--help"]);

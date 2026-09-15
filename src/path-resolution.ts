@@ -93,12 +93,20 @@ export function ancestorPaths(
   // A linked Git worktree's coordination root is the main repository root,
   // which is a sibling rather than a filesystem ancestor. Keep real ancestors
   // first so an explicitly forced per-worktree room still wins, then add the
-  // shared repository root as the default fallback.
+  // shared repository root and its ancestors as the default fallback.
   if (
     !ancestors.some((candidate) => samePath(candidate, workspaceRoot)) &&
     (!homeBoundary || !samePath(workspaceRoot, homeBoundary))
   ) {
-    ancestors.push(workspaceRoot);
+    const sharedHomeBoundary = resolveHomeMarkerBoundary(workspaceRoot);
+    let candidate = workspaceRoot;
+    while ((!sharedHomeBoundary || !samePath(candidate, sharedHomeBoundary)) &&
+      !samePath(path.dirname(candidate), candidate)) {
+      if (!ancestors.some((existing) => samePath(existing, candidate))) {
+        ancestors.push(candidate);
+      }
+      candidate = path.dirname(candidate);
+    }
   }
 
   return ancestors;

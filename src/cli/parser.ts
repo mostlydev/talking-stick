@@ -7,6 +7,7 @@ export interface ParsedCommand {
 const BOOLEAN_FLAGS = new Set([
   "all",
   "copy",
+  "claim",
   "events",
   "explain",
   "follow",
@@ -17,6 +18,7 @@ const BOOLEAN_FLAGS = new Set([
   "json",
   "link",
   "no-guard",
+  "no-mouse",
   "operator-requested",
   "park",
   "print",

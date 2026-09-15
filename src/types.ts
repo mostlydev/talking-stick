@@ -13,8 +13,11 @@ export type RoomState =
 export type SessionKind =
   | "human_guardian"
   | "human_cli"
+  | "human_chat"
   | "harness_cli"
   | string;
+
+export const HUMAN_CHAT_SESSION_KIND = "human_chat";
 
 export type WaitIntent = "active" | "parked";
 export type WaitMode = WaitIntent;
@@ -219,6 +222,7 @@ export interface WaitForTurnInput {
   room_id: string;
   max_wait_ms?: number;
   auto_claim?: boolean;
+  allow_solo_claim?: boolean;
   mode?: WaitMode;
   include_events?: boolean;
   after_event_seq?: number;
@@ -329,7 +333,7 @@ export type WaitForTurnCoreResult =
       reserved_for?: AgentId;
       lease_expires_at?: string;
       claim_expires_at?: string;
-      reason?: "auto_claim_disabled" | "lost_turn";
+      reason?: "auto_claim_disabled" | "lost_turn" | "solo_room";
       hint?: string;
     }
   | {

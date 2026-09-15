@@ -168,6 +168,7 @@ tt wait --json
 - A tool yield is not a wait timeout. If the harness returns a running process handle, poll that same process instead of starting another wait. When the process actually exits, start one successor if shared work remains. Do not add short explicit timeouts.
 - `tt events --wait`, `tt events --follow`, and `tt msg recv` remain available for human audit and debugging. Agents should not run them beside `tt wait` as a second receive loop.
 - The wait loop can claim or receive a turn. An event wake by itself grants no authority.
+- Solo listening: `tt wait` does not claim an idle room when no other active agent is present. When you intend to work alone, use `tt wait --claim --json` to acquire the turn deliberately. After releasing, resume ordinary `tt wait --json` to listen. Assigned turns and multi-agent handoffs work as before. `--park` and `--claim` are mutually exclusive.
 - Membership is checked again on every turn-wait poll and immediately before a grant, so a kicked, superseded, or otherwise removed waiter cannot acquire the stick from an already-running command.
 - A successful `tt wait` or `tt take` result with `status: "your_turn"` and a live `guardian_pid` grants authority to edit shared files.
 - Ordinary non-guardian `tt` commands refresh a detected harness member's presence. Lease renewal is carried by the local guardian spawned by `tt wait`/`tt take`; reads such as `tt health` do not extend owner authority.
@@ -211,13 +212,14 @@ tt whoami [--explain]                                      # show the resolved C
 tt list [path]                                            # list rooms
 tt join [path] [--force-new]                              # join the room for path
 tt leave [path]                                           # leave the room for path
-tt wait [path] [--timeout 110s] [--park] [--after N]          # ownership + events; saved cursor by default
+tt wait [path] [--timeout 110s] [--park|--claim] [--after N]  # ownership + events; saved cursor by default
 tt standby [path] [--wake cmux|manual]                     # return immediately; wake later on directed action
 tt try [path] [--park] [--after N]                        # non-blocking claim/event check
 tt state [path] [--all]                                  # compact room state; --all shows older rows
 tt health [path] [--verbose|--all]                       # concise safety/action check; verbose shows diagnostics
 tt status [path] [--verbose|--all]                       # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # audit/debug event log; --wait/--follow lower-level streams
+tt chat [path] [--history N] [--events] [--no-mouse]                   # operator chat console for the room
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
 tt instructions show [path] [--harness claude|codex|antigravity|gemini|grok|opencode|all] [--scope effective|bundled|user|project]  # show collaboration prompt
@@ -234,6 +236,48 @@ tt install <harness...> | --all [--print] [--copy] [--link] [--replace] # instal
 tt uninstall <harness...|agents> | --all | --shared [--print]            # remove skill
 tt self-update [--print] [--manager npm|pnpm|yarn|bun]    # update to the latest published tt
 ```
+
+### Operator chat
+
+Run `tt chat` in the workspace to talk with agents across harnesses. The console uses a full-screen conversation buffer with the input and status fixed at the bottom. Each message has a sender and timestamp above the body, with a blank line separating messages:
+
+```text
+codex  12:04
+  Rebased onto master. Running the suite now.
+
+claude → you  12:05
+  The review is ready.
+
+─────────────────────────────────────────────────────
+> @claude please summarize the changes
+─────────────────────────────────────────────────────
+3 members │ codex holding 12m · claude idle 3m
+```
+
+Scroll with the mouse wheel, Page Up/Page Down, or Shift+Up/Down. The input stays fixed and editable. New messages do not pull you away from older history; a count appears in the footer. Ctrl+End or `/bottom` returns to live messages. The in-memory buffer retains up to 2,000 message/notice blocks and rewraps on resize. Use `--no-mouse` for keyboard-only scrolling and native text selection; otherwise hold your terminal's selection modifier (usually Shift) when dragging.
+
+Type `/` to see matching commands, and Tab to complete a command or member name. Ctrl+C and Escape clear the draft and never quit. Pasted multiline text stays in the draft until Enter. On exit, the console restores the original terminal screen.
+
+The dim footer below the lower input rule is the room status: how many room members are present (including operator consoles), then each agent's most useful state. `holding 12m` means the agent has had the stick for 12 minutes. The other states are `up next` (reserved for the next turn), `standby`, `away` (no longer active), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its last `tt` command). The stick holder is listed first. The line refreshes on room events and every 10 seconds, and it is trimmed to the terminal width with a `+N` count for agents that don't fit.
+
+Names use consistent harness colors in the conversation and participant list: Claude is orange, Codex green, and the operator yellow. Directed messages remain visible to the room; addressing a member changes the recipient, not privacy. Colors require an interactive terminal and are disabled when `NO_COLOR` is set to a nonempty value. If an existing console was opened before a local rebuild, quit and reopen `tt chat` to load the new display.
+
+| Input | Result |
+| --- | --- |
+| Plain text or `/all <message>` | Broadcast to the room |
+| `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case; `@codex, hello` also works |
+| `/who` | Show members and the current stick holder |
+| `/events` | Toggle turn and handoff events, hidden by default |
+| `/interrupt [@agent] <message>` | Send an urgent interrupt through the existing wake mechanism |
+| `/help` | Show chat commands |
+| `/quit`, `/exit`, or Ctrl+D on an empty draft | Exit and remove this console's membership |
+| Ctrl+C or Escape | Clear the draft without quitting |
+| `/bottom` or Ctrl+End | Return to the latest messages |
+| `//text` | Send a message beginning with `/` |
+
+`tt chat [path] --history N` loads up to N recent conversation entries (default 20, maximum 500); `--history 0` starts without history. `--events` also shows turn events at startup. Agents must keep their normal `tt wait` receive process active to respond live. Broadcasts do not wake a harness in standby; a directed message may use its registered wake endpoint. A message being stored in the room is not an acknowledgement that an agent has read it.
+
+Each console uses a separate `human:<username>:chat:<id>` identity. Agents reply to the sender ID from the received message or a unique display name. Replies addressed to the console ring the terminal bell. The console is an observer: it cannot acquire the stick, receive a handoff, make a lone agent eligible for an automatic claim, or keep an abandoned room alive. Opening and closing the console do not emit agent join/leave wakes. Message text is stripped of terminal escape sequences before display.
 
 `[path]` defaults to the current working directory. Omit it for normal in-repo coordination; pass it only when you intentionally want a different or nested room.
 

@@ -64,7 +64,10 @@ export function deriveHumanCliIdentity(
   const agentId =
     options.agentId ?? `human:${sanitizeIdentityComponent(username)}`;
   const sessionKind = options.sessionKind ?? "human_cli";
-  const includesExactProcessIdentity = sessionKind === "human_guardian";
+  // Guardians and chat observers are long-lived processes, so their exact pid
+  // lets liveness reap a crashed session instead of waiting out presence TTL.
+  const includesExactProcessIdentity =
+    sessionKind === "human_guardian" || sessionKind === "human_chat";
 
   let hostId: string | null = null;
   let pid: number | null = null;

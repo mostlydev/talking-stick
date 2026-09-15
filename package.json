@@ -1,6 +1,6 @@
 {
   "name": "talking-stick",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "description": "CLI coordination tool for path-scoped agent handoffs.",
   "type": "module",
   "bin": {
@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
+    "string-width": "^8.2.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
