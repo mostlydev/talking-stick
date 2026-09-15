@@ -17,6 +17,8 @@ export interface ChatFormatContext {
   name_of: (agentId: AgentId) => string;
   color: boolean;
   show_turn_events: boolean;
+  now?: Date;
+  history_before?: string;
 }
 
 const ANSI_PATTERN =
@@ -223,7 +225,13 @@ export function formatChatEvent(
   event: RoomEvent,
   context: ChatFormatContext
 ): string | null {
-  const time = formatClock(event.created_at);
+  const historical = isHistoricalChatEvent(event, context);
+  const text = formatCurrentChatEvent(event, historical ? { ...context, color: false } : context);
+  return text === null || !historical ? text : paint(context, "2;90", text);
+}
+
+function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): string | null {
+  const time = formatChatTime(event.created_at, context.now);
   const from = event.from_agent_id;
   const to = event.to_agent_id;
 
@@ -300,6 +308,45 @@ function describeSystemEvent(
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+export function chatDayLabel(iso: string, now: Date): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "Unknown date";
+  const day = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  if (day(date) === day(now)) return "Today";
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (day(date) === day(yesterday)) return "Yesterday";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export function formatChatTime(iso: string, now?: Date): string {
+  const clock = formatClock(iso);
+  if (!now || clock === "--:--") return clock;
+  const day = chatDayLabel(iso, now);
+  return day === "Today" ? clock : `${day} at ${clock}`;
+}
+
+export function isHistoricalChatEvent(event: RoomEvent, context: ChatFormatContext): boolean {
+  const timestamp = Date.parse(event.created_at);
+  const today = context.now && new Date(context.now.getFullYear(), context.now.getMonth(), context.now.getDate()).getTime();
+  return (today !== undefined && timestamp < today) ||
+    (context.history_before !== undefined && timestamp < Date.parse(context.history_before));
+}
+
+// A long pause followed by a join is a conversation boundary, not evidence
+// that an idle harness has died. Presence is handled separately by the roster.
+export const CHAT_CONVERSATION_GAP_MS = 4 * 60 * 60 * 1000;
+
+export function startsChatConversation(previous: RoomEvent | undefined, event: RoomEvent): boolean {
+  return previous !== undefined && event.event_type === "join" &&
+    Date.parse(event.created_at) - Date.parse(previous.created_at) >= CHAT_CONVERSATION_GAP_MS;
+}
+
+export function chatSectionLabel(event: RoomEvent, context: ChatFormatContext): string {
+  const day = chatDayLabel(event.created_at, context.now ?? new Date());
+  return isHistoricalChatEvent(event, context) ? `Earlier activity · ${day}` : day;
 }
 
 function formatClock(iso: string): string {

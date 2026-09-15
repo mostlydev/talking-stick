@@ -2,6 +2,8 @@ import stringWidth from "string-width";
 import type { RoomEvent } from "../types.js";
 import {
   formatChatEvent,
+  chatSectionLabel,
+  startsChatConversation,
   formatChatStatus,
   type ChatFormatContext,
   type ChatStatusInput
@@ -342,13 +344,15 @@ export class ChatTranscript {
   }
 
   private layout(width: number, context: ChatFormatContext): Layout {
-    const key = `${width}|${this.epoch}|${context.show_turn_events}|${context.color}`;
+    const key = `${width}|${this.epoch}|${context.show_turn_events}|${context.color}|${context.now?.toDateString()}|${context.history_before}`;
     if (this.layoutCache?.key === key) return this.layoutCache.layout;
 
     const rows: string[] = [];
     const starts = new Map<number, number>();
     const order: number[] = [];
     let previous: "message" | "other" | null = null;
+    let previousEvent: RoomEvent | undefined;
+    let section: string | undefined;
 
     for (const block of this.blocks) {
       const lines = this.wrapBlock(block, width, context, key);
@@ -360,6 +364,15 @@ export class ChatTranscript {
       }
       starts.set(block.id, rows.length);
       order.push(block.id);
+      if (block.kind === "event" && context.now) {
+        const label = chatSectionLabel(block.event, context);
+        const newConversation = startsChatConversation(previousEvent, block.event);
+        if (label !== section || newConversation) {
+          rows.push(...wrapStyledLine(dim(context, `── ${newConversation ? "New conversation · " : ""}${label} ──`), width));
+          section = label;
+        }
+        previousEvent = block.event;
+      }
       rows.push(...lines);
       previous = isMessage ? "message" : "other";
     }

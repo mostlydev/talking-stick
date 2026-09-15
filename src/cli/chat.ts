@@ -23,6 +23,8 @@ import {
 import {
   buildNameResolver,
   formatChatEvent,
+  chatSectionLabel,
+  startsChatConversation,
   formatChatAgent,
   parseChatInput,
   resolveChatRecipients,
@@ -133,6 +135,9 @@ export async function runChatSession(
   let closed = false;
   let lastPresenceRefresh = 0;
   let namesSignature = "";
+  let historyBefore: string | undefined;
+  let previousConversationEvent: RoomEvent | undefined;
+  let printedSection: string | undefined;
   let exitReason: string | null = null;
 
   const transcript = new ChatTranscript();
@@ -152,7 +157,9 @@ export async function runChatSession(
     self_agent_id: selfId,
     name_of: nameOf,
     color: options.color,
-    show_turn_events: showTurnEvents
+    show_turn_events: showTurnEvents,
+    now: new Date(),
+    history_before: historyBefore
   });
   const redraw = () => {
     if (!terminal || closed || frameTimer) return;
@@ -258,13 +265,7 @@ export async function runChatSession(
     lastPresenceRefresh = Date.now();
   };
 
-  const render = (event: RoomEvent) =>
-    formatChatEvent(event, {
-      self_agent_id: selfId,
-      name_of: nameOf,
-      color: options.color,
-      show_turn_events: showTurnEvents
-    });
+  const render = (event: RoomEvent) => formatChatEvent(event, formatContext());
 
   const coloredName = (agentId: string) =>
     formatChatAgent(
@@ -366,6 +367,14 @@ export async function runChatSession(
   // lines stay compact underneath the message they follow.
   let lastPrinted: "message" | "system" | "info" = "info";
   const printEvent = (event: RoomEvent) => {
+    if (render(event) !== null) {
+      if (startsChatConversation(previousConversationEvent, event) &&
+          (!historyBefore || Date.parse(event.created_at) > Date.parse(historyBefore))) {
+        historyBefore = event.created_at;
+        transcript.invalidate();
+      }
+      previousConversationEvent = event;
+    }
     if (event.event_type === "leave" && event.from_agent_id) {
       departedAgents.add(event.from_agent_id);
     } else if (event.event_type === "kick" && event.to_agent_id) {
@@ -387,6 +396,11 @@ export async function runChatSession(
     const line = render(event);
     if (line === null) {
       return;
+    }
+    const section = chatSectionLabel(event, formatContext());
+    if (section !== printedSection) {
+      print(`── ${section} ──`);
+      printedSection = section;
     }
     const isMessage = event.event_type === "message_sent";
     if (isMessage || lastPrinted === "message") {
@@ -526,6 +540,13 @@ export async function runChatSession(
               (event) => event.event_seq <= head && render(event) !== null
             )
             .slice(-Math.max(0, options.history));
+    // Determine the latest conversation before rendering so its predecessor
+    // is dimmed even on the first frame (including non-terminal output).
+    for (let index = 1; index < historyEvents.length; index += 1) {
+      if (startsChatConversation(historyEvents[index - 1], historyEvents[index])) {
+        historyBefore = historyEvents[index].created_at;
+      }
+    }
     for (const event of historyEvents) {
       printEvent(event);
     }

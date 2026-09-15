@@ -81,6 +81,19 @@ describe("text measurement", () => {
 });
 
 describe("transcript scrolling", () => {
+  test("separates earlier days and refreshes the divider across midnight", () => {
+    const transcript = new ChatTranscript();
+    transcript.appendEvent({ ...message("old"), created_at: new Date(2026, 8, 14, 12).toISOString() });
+    transcript.appendEvent({ ...message("current"), created_at: new Date(2026, 8, 15, 12).toISOString() });
+    const first = transcript.viewport(20, 80, { ...context, now: new Date(2026, 8, 15, 14) }).join("\n");
+    expect(first).toContain("Earlier activity · Yesterday");
+    expect(first).toContain("── Today ──");
+    const next = transcript.viewport(20, 80, { ...context, now: new Date(2026, 8, 16, 1) }).join("\n");
+    expect(next).toContain("Earlier activity · 2026-09-14");
+    expect(next).toContain("Yesterday at 12:00");
+    expect(next).not.toContain("── Today ──");
+  });
+
   function filled(count: number) {
     const transcript = new ChatTranscript();
     for (let index = 1; index <= count; index++) {

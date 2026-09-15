@@ -9,6 +9,9 @@ import { TalkingStickService, type TalkingStickServiceOptions, type ProcessLiven
 import type { ProcessMetadata, RoomEvent } from "../src/types.js";
 import {
   agentColor,
+  chatDayLabel,
+  formatChatTime,
+  startsChatConversation,
   buildNameResolver,
   formatChatStatus,
   formatDuration,
@@ -202,6 +205,26 @@ describe("chat rendering", () => {
         { ...context, show_turn_events: false }
       )
     ).toBeNull();
+  });
+
+  test("dates older activity and dims the entire historical message", () => {
+    const now = new Date(2026, 8, 15, 10, 0);
+    const yesterday = new Date(2026, 8, 14, 9, 5).toISOString();
+    const context = { self_agent_id: "human:op", name_of: () => "codex", color: true, show_turn_events: false, now };
+    const text = formatChatEvent(event({ event_type: "message_sent", from_agent_id: "codex:aa", created_at: yesterday,
+      payload: { body: "old message", delivery_hint: "normal" } }), context)!;
+    expect(text).toBe("\u001b[2;90mcodex  Yesterday at 09:05\n  old message\u001b[0m");
+    expect(chatDayLabel(new Date(2026, 8, 13).toISOString(), now)).toBe("2026-09-13");
+    expect(formatChatTime(now.toISOString(), now)).toBe("10:00");
+    expect(formatChatTime("invalid", now)).toBe("--:--");
+    expect(formatChatEvent(event({ event_type: "claim", created_at: yesterday }), context)).toBeNull();
+  });
+
+  test("a join after four quiet hours separates conversations without declaring agents dead", () => {
+    const before = event({ created_at: "2026-09-15T08:00:00Z" });
+    expect(startsChatConversation(before, event({ event_type: "join", created_at: "2026-09-15T12:00:00Z" }))).toBe(true);
+    expect(startsChatConversation(before, event({ event_type: "join", created_at: "2026-09-15T11:59:59Z" }))).toBe(false);
+    expect(startsChatConversation(before, event({ event_type: "message_sent", created_at: "2026-09-15T12:00:00Z" }))).toBe(false);
   });
 
   test("colors each member by harness so names stay recognizable", () => {
