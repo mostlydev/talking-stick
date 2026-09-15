@@ -547,7 +547,7 @@ export interface SendMessageResult {
   delivery_error?: string;
   delivery_transport?: NativeWakeTransportName;
   delivery_state?: "woken" | "queued" | "ambiguous" | "failed";
-  interrupt_status?: "requested" | "injected" | "unsupported";
+  interrupt_status?: "injected" | "unsupported";
 }
 
 export interface RegisterNativeWakeEndpointInput {

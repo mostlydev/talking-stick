@@ -125,7 +125,10 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
       written = true;
       socket.end(
         JSON.stringify({ type: "auth", token: request.secret }) + "\n" +
-        JSON.stringify({ type: "user", ...(request.interrupt ? { priority: "now" } : {}), message: { role: "user", content: request.text } }) + "\n",
+        // Interrupts ask for "next", not "now": in interactive Claude Code "now"
+        // doesn't abort a running tool (verified live), and other hosts may abort
+        // one. "next" steers the active turn at its next tool boundary.
+        JSON.stringify({ type: "user", ...(request.interrupt ? { priority: "next" } : {}), message: { role: "user", content: request.text } }) + "\n",
         () => finish({ outcome: "queued" })
       );
     });

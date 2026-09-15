@@ -269,11 +269,10 @@ interface NativeAwareDelivery {
   error?: string;
   transport?: NativeWakeTransportName;
   state?: NativeWakeState | "failed";
-  interrupt_status?: "requested" | "injected" | "unsupported";
+  interrupt_status?: "injected" | "unsupported";
 }
 
 interface InterruptDeliveryRow {
-  cancel_requested: number;
   room_id: string;
   agent_id: AgentId;
   event_seq: number;
@@ -1817,10 +1816,10 @@ export class TalkingStickService {
         if (deliveryHint === "interrupt" && wakeTargetId !== input.agent_id) {
           const target = this.getMember(input.room_id, wakeTargetId)!;
           this.db.prepare(`INSERT INTO interrupt_deliveries
-            (room_id, agent_id, event_seq, harness_session_id, host_id, cancel_requested) VALUES (?, ?, ?, ?, ?, ?)`)
+            (room_id, agent_id, event_seq, harness_session_id, host_id) VALUES (?, ?, ?, ?, ?)`)
             .run(input.room_id, wakeTargetId, eventSeq,
               target.harness_session_id ?? `member:${target.agent_id}`,
-              target.harness_host_id ?? target.host_id ?? this.hostId, input.agent_id.startsWith("human:") ? 1 : 0);
+              target.harness_host_id ?? target.host_id ?? this.hostId);
         } else {
           this.queueNativeWake(input.room_id, wakeTargetId, "message", input.agent_id, eventSeq);
         }
@@ -2294,7 +2293,7 @@ export class TalkingStickService {
       }
       // The per-event reservation survives wait/standby and suppresses only
       // repeat dispatches of this exact interrupt, never a later urgent event.
-      last = await this.deliverWakeEndpoint(endpoint, reservation.text, row.cancel_requested === 1);
+      last = await this.deliverWakeEndpoint(endpoint, reservation.text, true);
       transport = endpoint.transport;
       if (last.outcome !== "failed") break;
       if (this.getNativeWakeEndpoint(row.room_id, row.agent_id, endpoint.transport)?.generation !== endpoint.generation) {
@@ -2417,7 +2416,7 @@ export class TalkingStickService {
         transport: attempt.transport ?? undefined,
         state: attempt.status === "pending" || attempt.status === "dispatching" ? undefined : attempt.status,
         error: attempt.error ?? undefined,
-        interrupt_status: attempt.transport ? attempt.transport === "claude_inbox" ? attempt.cancel_requested ? "requested" : "injected" : "unsupported" : undefined
+        interrupt_status: attempt.transport ? attempt.transport === "claude_inbox" ? "injected" : "unsupported" : undefined
       };
     }
     const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
