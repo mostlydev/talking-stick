@@ -139,6 +139,7 @@ Changes from the design above, as built:
 - **Codex success is always `queued`.** Tested against Codex CLI 0.154.0. In rust-v0.154.0, `codex queue` prints the same "Queued message" line whether or not a turn started. Only a missing binary or a "no rollout found"/thread-not-found rejection is a definite failure; every other error is ambiguous.
 - **Codex limits (source-verified).** `wake_if_loaded` and the external DB watcher both skip interrupted threads. Enqueueing to an unloaded thread persists the message but doesn't load the thread, so no turn starts until the user resumes it.
 - **Database permissions.** The database and its WAL/SHM files are set to 0600 before the first secret is written.
+- **Claude inbox presentation.** The installed Claude handler adds an "another Claude session" preamble and permission guidance to the fixed wake prompt, including wakes triggered by a human in `tt chat`. Its documented socket protocol has no wrapper-suppression option. Talking Stick supplies only the wake prompt; `tt wait` returns the actual human or agent sender. This was observed during the operator chat test and confirmed in the installed handler.
 
 ### Other harnesses investigated
 
