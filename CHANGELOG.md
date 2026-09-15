@@ -11,6 +11,14 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.18.1] — 2026-09-15
+
+Full notes: [`docs/releases/0.18.1.md`](docs/releases/0.18.1.md).
+
+### Fixed
+
+- **Native text selection in chat.** Mouse capture is off by default, restoring terminal drag selection, double-click word selection, and normal copying. Use `--mouse` to opt into chat wheel scrolling; `--no-mouse` retains native selection.
+
 ## [0.18.0] — 2026-09-15
 
 Full notes: [`docs/releases/0.18.0.md`](docs/releases/0.18.0.md).
@@ -554,6 +562,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.18.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.1
 [0.18.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.0
 [0.17.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.17.0
 [0.16.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.16.0

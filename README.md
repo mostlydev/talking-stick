@@ -274,7 +274,7 @@ tt state [path] [--all]                                  # compact room state; -
 tt health [path] [--verbose|--all]                       # concise safety/action check; verbose shows diagnostics
 tt status [path] [--verbose|--all]                       # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # audit/debug event log; --wait/--follow lower-level streams
-tt chat [path] [--history N] [--events] [--no-mouse]                   # operator chat console for the room
+tt chat [path] [--history N] [--events] [--mouse|--no-mouse]                   # operator chat console for the room
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
 tt kick <agent_id> [path] [--reason TEXT] [--force]      # remove a member (live ones need --force)
@@ -310,7 +310,7 @@ claude → you  12:05
 3 members │ codex holding 12m · claude idle 3m
 ```
 
-Scroll with the mouse wheel, Page Up/Page Down, or Shift+Up/Down. The input stays fixed and editable. New messages do not pull you away from older history; a count appears in the footer. Ctrl+End or `/bottom` returns to live messages. The in-memory buffer retains up to 2,000 message/notice blocks and rewraps on resize. Use `--no-mouse` for keyboard-only scrolling and native text selection; otherwise hold your terminal's selection modifier (usually Shift) when dragging.
+Scroll with Page Up/Page Down or Shift+Up/Down. The input stays fixed and editable. New messages do not pull you away from older history; a count appears in the footer. Ctrl+End or `/bottom` returns to live messages. The in-memory buffer retains up to 2,000 message/notice blocks and rewraps on resize. Mouse capture is off by default: drag to select text, double-click to select a word, and copy using your terminal's usual shortcut or menu. For wheel scrolling inside the conversation, opt in with `tt chat --mouse`; this captures mouse gestures, so native selection then requires your terminal's selection modifier (often Shift). `--no-mouse` explicitly restores the default and wins if both flags are supplied.
 
 Typing `/`, `@`, or `!@` opens a suggestion list drawn over the bottom of the conversation, so nothing moves while you type. Up/Down choose, Tab or Enter accept, and Enter still sends once the word is complete (an exact `/quit` still quits). Escape closes the list first and clears the draft on a second press; Ctrl+C clears the draft. Neither quits. Alt+Enter (or Shift+Enter where the terminal supports it) adds a new line, and with the list closed Up/Down move through a multi-line draft at the same column. Pasted multiline text stays in the draft until Enter. On exit, the console restores the original terminal screen.
 

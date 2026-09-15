@@ -1289,3 +1289,18 @@ test("chat kicks a persistently ended member without force and protects live mem
     await until(() => transcript.includes("In the room: codex"));
   } finally { input.write("/quit\n"); await session; }
 });
+
+test.each([undefined, false, true])("chat enables terminal mouse capture only when requested (mouse=%s)", async (mouse) => {
+  const { root, service } = setupService();
+  const input = new PassThrough(); const output = new PassThrough(); let captured = "";
+  output.on("data", (chunk) => { captured += chunk.toString(); });
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, color: false, history: 0,
+    show_turn_events: false, poll_ms: 5, mouse });
+  try {
+    await until(() => captured.includes("Room · "));
+    expect(captured.includes("\u001b[?1000h")).toBe(mouse === true);
+    expect(captured.includes("\u001b[?1006h")).toBe(mouse === true);
+  } finally { input.write("/quit\r"); await session; }
+  expect(captured).toContain("\u001b[?1000l\u001b[?1006l");
+});

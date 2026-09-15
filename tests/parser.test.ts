@@ -6,7 +6,7 @@ import {
 } from "../src/cli/parser.js";
 
 describe("parseCommand", () => {
-  test.each(["json", "no-mouse"])(
+  test.each(["json", "no-mouse", "mouse"])(
     "boolean --%s preserves the following path",
     (flag) => {
       const parsed = parseCommand(["chat", `--${flag}`, "/repo"]);
