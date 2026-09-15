@@ -13,7 +13,7 @@ We want the harness to wake natively, with no keystrokes, no model polling, and 
 - A directed message, assignment, pass, or pending handoff for a member with no live receiver wakes that member once.
 - It works for Claude Code and Codex without cmux. cmux remains the fallback, and Grok follows later.
 - The wake text is fixed and body-free. The agent reads the real message through `tt wait`, with sender attribution, so wake delivery can't carry injected instructions.
-- Delivery status is honest: `woken` only when the harness confirmed a turn started, `queued` when it accepted the wake without confirmation.
+- Delivery status is honest: `woken` only when the harness confirmed a turn started, `queued` when the transport submitted the wake without confirmation, `ambiguous` when submission itself is unknown.
 
 Non-goals: waking a harness that isn't running at all (no live session to deliver into), cross-machine delivery, and broadcasts waking anyone.
 
@@ -31,7 +31,7 @@ Documented in [cross-session messaging](https://code.claude.com/docs/en/cross-se
 
 Verified on 2026-09-15 by posting the auth line plus a user line to the running session's socket from a child process. The message arrived in a bypass-permissions session.
 
-### Codex: `codex queue` (source-verified, live test outstanding)
+### Codex: `codex queue` (source-verified, live-verified 2026-09-15)
 
 Codex's installed CLI exposes `codex queue --thread <thread-id> --message <text>`, which calls the app-server's `thread/queue/add`. In the matching source, `QueueService.enqueue` calls `wake_if_loaded`, which dispatches through `start_turn_if_idle`. A loaded idle thread therefore starts a turn, and a busy one receives the message after its current turn. What happens for an unloaded or interrupted thread is not yet validated. A probe against a nonexistent thread ID reached `thread/queue/add` and was rejected with "no rollout found", so the command can reach a server without the persistent daemon socket.
 

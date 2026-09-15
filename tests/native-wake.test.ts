@@ -736,3 +736,15 @@ test("the codex child never inherits Claude inbox credentials", async () => {
   expect(env).toContain("KEEP=1");
   expect(env).not.toContain("CLAUDE_CODE_MESSAGING");
 });
+
+test("a sender whose display name is its agent id is named by harness", async () => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  service.joinPath({
+    agent_id: "codex:bb",
+    context_path: project,
+    process_metadata: { ...metadata("codex", "codex-session"), display_name: "codex:bb" }
+  });
+  await service.sendMessageAndWake({ agent_id: "codex:bb", room_id: roomId, to_agent_id: "claude:aa", body: "hi" });
+  expect(nativeRequests[0].text).toContain("New message from codex in ");
+});

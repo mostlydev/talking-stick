@@ -2283,7 +2283,10 @@ export class TalkingStickService {
 
   private describeWakeSender(roomId: string, agentId: AgentId): string {
     const sender = this.getMember(roomId, agentId);
-    return sender?.display_name ?? (agentId.startsWith("human:") ? "the operator" : agentId.split(":", 1)[0]);
+    const name = sender?.display_name;
+    // Display names that are just the agent id read as "claude", not a hash.
+    if (name && name !== agentId) return name;
+    return agentId.startsWith("human:") ? "the operator" : agentId.split(":", 1)[0];
   }
 
   private resolveMessageDelivery(roomId: string, targetId: AgentId, eventSeq: number, hint: DeliveryHint = "normal"): NativeAwareDelivery {
