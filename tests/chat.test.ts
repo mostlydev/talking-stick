@@ -15,6 +15,7 @@ import {
   formatChatEvent,
   parseChatInput,
   resolveChatRecipient,
+  resolveChatRecipients,
   sanitizeChatText
 } from "../src/cli/chat-format.js";
 import { createChatIdentity, runChatSession } from "../src/cli/chat.js";
@@ -31,36 +32,56 @@ describe("chat input parsing", () => {
   test("plain text broadcasts and @name directs", () => {
     expect(parseChatInput("hello all")).toEqual({
       kind: "send",
-      to: null,
+      to: [],
       body: "hello all",
       interrupt: false
     });
     expect(parseChatInput("@codex please rebase")).toEqual({
       kind: "send",
-      to: "codex",
+      to: ["codex"],
       body: "please rebase",
       interrupt: false
     });
     expect(parseChatInput("@codex, hello")).toMatchObject({
-      to: "codex",
+      to: ["codex"],
       body: "hello"
     });
     expect(parseChatInput("/to claude:1234 look")).toMatchObject({
       kind: "send",
-      to: "claude:1234",
+      to: ["claude:1234"],
       body: "look"
     });
+  });
+
+  test("mentions anywhere in the message add recipients", () => {
+    expect(parseChatInput("@claude @codex, review this")).toEqual({
+      kind: "send",
+      to: ["claude", "codex"],
+      body: "review this",
+      interrupt: false
+    });
+    expect(parseChatInput("hey @codex and @Claude: can you check this?")).toEqual({
+      kind: "send",
+      to: ["codex", "claude"],
+      body: "hey @codex and @Claude: can you check this?",
+      interrupt: false
+    });
+    expect(parseChatInput("(@codex) ping @codex again")).toMatchObject({ to: ["codex"] });
+    expect(parseChatInput("mail ops@example.com about it")).toMatchObject({ to: [], body: "mail ops@example.com about it" });
+    expect(parseChatInput("run `git log @codex` please")).toMatchObject({ to: [] });
+    expect(parseChatInput("/to @claude also @codex look")).toMatchObject({ to: ["claude", "codex"], body: "also @codex look" });
   });
 
   test("interrupts, commands, escapes, and errors", () => {
     expect(parseChatInput("/interrupt @codex stop now")).toEqual({
       kind: "send",
-      to: "codex",
+      to: ["codex"],
       body: "stop now",
       interrupt: true
     });
+    expect(parseChatInput("/interrupt @codex @claude stop")).toMatchObject({ to: ["codex", "claude"], interrupt: true });
     expect(parseChatInput("/interrupt stop everyone")).toMatchObject({
-      to: null,
+      to: [],
       interrupt: true
     });
     expect(parseChatInput("/WHO")).toEqual({
@@ -74,7 +95,9 @@ describe("chat input parsing", () => {
     });
     expect(parseChatInput("   ")).toEqual({ kind: "empty" });
     expect(parseChatInput("@codex")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("@codex @claude")).toMatchObject({ kind: "error" });
     expect(parseChatInput("@, hello")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("/to")).toMatchObject({ kind: "error" });
   });
 });
 
@@ -197,6 +220,13 @@ describe("chat rendering", () => {
     expect(resolveChatRecipient("gemini", members, "human:op")).toHaveProperty(
       "error"
     );
+    expect(resolveChatRecipients(["codex", "claude", "claude:c"], members, "human:op")).toEqual({
+      agent_ids: ["codex:aa", "claude:bb", "claude:cc"]
+    });
+    expect(resolveChatRecipients(["codex", "gemini", "grok"], members, "human:op")).toEqual({
+      error: "No room member matches '@gemini', '@grok'.",
+      unmatched: ["gemini", "grok"]
+    });
   });
 });
 
@@ -600,11 +630,14 @@ describe("tt chat session", () => {
     input.write("hello team\n");
     input.write("@codex please rebase\n");
     input.write("@nobody hi\n");
+    input.write("partial @codex and @nobody\n");
     await until(() =>
       /you → codex  \d\d:\d\d\n  please rebase/.test(transcript)
     );
     expect(transcript).toMatch(/\n\nyou  \d\d:\d\d\n  hello team\n/);
-    expect(transcript).toContain("! No room member matches 'nobody'.");
+    expect(transcript).toContain("! No room member matches '@nobody'.");
+    // One unknown mention blocks the whole send; nothing reaches codex.
+    expect(transcript).not.toContain("partial @codex and @nobody");
 
     service.sendMessage({
       agent_id: "codex:aa",
@@ -631,6 +664,18 @@ describe("tt chat session", () => {
         .sort()
     ).toEqual(["codex:aa", "codex:bb"]);
     service.leaveRoom({ agent_id: "codex:bb", room_id: joined.room_id });
+
+    service.joinPath({ agent_id: "claude:cc", context_path: root });
+    input.write("ping @codex:aa and @claude about it\n");
+    const mentioned = () =>
+      service
+        .getRoomEvents({ room_id: joined.room_id, include_all: true })
+        .filter((event) => event.payload?.body === "ping @codex:aa and @claude about it")
+        .map((event) => event.to_agent_id)
+        .sort();
+    await until(() => mentioned().length === 2);
+    expect(mentioned()).toEqual(["claude:cc", "codex:aa"]);
+    service.leaveRoom({ agent_id: "claude:cc", room_id: joined.room_id });
 
     input.write("/quit\n");
     await session;

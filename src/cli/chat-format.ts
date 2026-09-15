@@ -7,7 +7,8 @@ import {
 
 export type ChatInput =
   | { kind: "empty" }
-  | { kind: "send"; to: string | null; body: string; interrupt: boolean }
+  // to lists every @name selector in the message; empty means broadcast.
+  | { kind: "send"; to: string[]; body: string; interrupt: boolean }
   | { kind: "command"; name: string; args: string }
   | { kind: "error"; message: string };
 
@@ -52,13 +53,9 @@ export function parseChatInput(line: string): ChatInput {
     return { kind: "empty" };
   }
 
-  if (trimmed.startsWith("@")) {
-    return parseDirected(trimmed.slice(1), false);
-  }
-
   if (!trimmed.startsWith("/") || trimmed.startsWith("//")) {
-    const body = trimmed.startsWith("//") ? trimmed.slice(1) : trimmed;
-    return { kind: "send", to: null, body, interrupt: false };
+    const text = trimmed.startsWith("//") ? trimmed.slice(1) : trimmed;
+    return parseMessage(text, false);
   }
 
   const [rawName] = trimmed.slice(1).split(/\s+/);
@@ -68,38 +65,83 @@ export function parseChatInput(line: string): ChatInput {
   switch (name) {
     case "to":
     case "dm":
-    case "msg":
-      return parseDirected(args, false);
+    case "msg": {
+      // The first word names the recipient with or without a leading @.
+      const selector = args.split(/\s+/, 1)[0] ?? "";
+      if (!selector || selector.startsWith("@")) {
+        return parseMessage(args, false, true);
+      }
+      return parseMessage(`@${args}`, false, true);
+    }
     case "all":
     case "room":
       return args.length > 0
-        ? { kind: "send", to: null, body: args, interrupt: false }
+        ? { kind: "send", to: [], body: args, interrupt: false }
         : { kind: "error", message: `Usage: /${name} <message>` };
     case "interrupt":
-    case "int": {
-      if (args.startsWith("@")) {
-        return parseDirected(args.slice(1), true);
-      }
+    case "int":
       return args.length > 0
-        ? { kind: "send", to: null, body: args, interrupt: true }
+        ? parseMessage(args, true)
         : { kind: "error", message: "Usage: /interrupt [@agent] <message>" };
-    }
     default:
       return { kind: "command", name, args };
   }
 }
 
-function parseDirected(text: string, interrupt: boolean): ChatInput {
-  const match = text.match(/^(\S+)\s+([\s\S]+)$/);
-  if (!match || !match[1].replace(/,+$/, "")) {
+// A mention is @name at the start of the text or after a non-word character,
+// so email addresses (a@b.com) stay plain text. Mentions inside `code` spans
+// are ignored. Trailing punctuation (@codex, @claude:) is not part of the name.
+const MENTION_PATTERN = /(^|[^\p{L}\p{N}_@.])@([\p{L}\p{N}_][\p{L}\p{N}_:.-]*)/gu;
+const LEADING_MENTIONS = /^(?:@[\p{L}\p{N}_][\p{L}\p{N}_:.-]*[,;:]?\s*)+/u;
+
+function parseMessage(text: string, interrupt: boolean, requireRecipient = false): ChatInput {
+  const withoutCode = text.replace(/`[^`]*`/g, (span) => " ".repeat(span.length));
+  const selectors: string[] = [];
+  for (const match of withoutCode.matchAll(MENTION_PATTERN)) {
+    const selector = match[2].replace(/[.:-]+$/, "");
+    if (selector && !selectors.includes(selector.toLowerCase())) {
+      selectors.push(selector.toLowerCase());
+    }
+  }
+  if (text.startsWith("@") && selectors.length === 0) {
     return { kind: "error", message: "Usage: @agent <message>" };
   }
-  return {
-    kind: "send",
-    to: match[1].replace(/,+$/, ""),
-    body: match[2].trim(),
-    interrupt
-  };
+  if (requireRecipient && selectors.length === 0) {
+    return { kind: "error", message: "Usage: /to <agent> <message>" };
+  }
+  const body = text.replace(LEADING_MENTIONS, "").trim();
+  if (body.length === 0) {
+    return { kind: "error", message: "Usage: @agent <message>" };
+  }
+  return { kind: "send", to: selectors, body, interrupt };
+}
+
+// Resolves every selector before anything is sent, so one typo can't deliver a
+// message to only some of the intended recipients.
+export function resolveChatRecipients(
+  selectors: string[],
+  members: RoomMember[],
+  selfAgentId: AgentId
+): { agent_ids: AgentId[] } | { error: string; unmatched: string[] } {
+  const agentIds: AgentId[] = [];
+  const unmatched: string[] = [];
+  for (const selector of selectors) {
+    const resolved = resolveChatRecipient(selector, members, selfAgentId);
+    if ("error" in resolved) {
+      unmatched.push(selector);
+      continue;
+    }
+    for (const agentId of resolved.agent_ids) {
+      if (!agentIds.includes(agentId)) agentIds.push(agentId);
+    }
+  }
+  if (unmatched.length > 0) {
+    return {
+      error: `No room member matches ${unmatched.map((selector) => `'@${selector}'`).join(", ")}.`,
+      unmatched
+    };
+  }
+  return { agent_ids: agentIds };
 }
 
 // Short, human names: the harness prefix ("codex") when it is unique among the

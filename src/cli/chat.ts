@@ -25,7 +25,7 @@ import {
   formatChatEvent,
   formatChatAgent,
   parseChatInput,
-  resolveChatRecipient,
+  resolveChatRecipients,
   sanitizeChatText
 } from "./chat-format.js";
 import {
@@ -289,17 +289,18 @@ export async function runChatSession(
     return `In the room: ${who} · ${stick}`;
   };
 
-  const send = (to: string | null, body: string, interrupt: boolean) => {
+  const send = (to: string[], body: string, interrupt: boolean) => {
     let targets: (string | null)[] = [null];
-    if (to) {
+    if (to.length > 0) {
       refreshMembers();
-      const resolved = resolveChatRecipient(to, members, selfId);
+      const resolved = resolveChatRecipients(to, members, selfId);
       if ("error" in resolved) {
-        const selector = to.toLowerCase();
-        const departed = [...departedAgents].filter(
-          (agentId) =>
-            agentId.toLowerCase().startsWith(selector) ||
-            nameOf(agentId).toLowerCase().startsWith(selector)
+        const departed = [...departedAgents].filter((agentId) =>
+          resolved.unmatched.some(
+            (selector) =>
+              agentId.toLowerCase().startsWith(selector) ||
+              nameOf(agentId).toLowerCase().startsWith(selector)
+          )
         );
         print(
           departed.length > 0
@@ -505,7 +506,7 @@ export async function runChatSession(
       print(describeRoom());
     }
     print(
-      "Type to message the room, @agent <text> to message matching agents, /help for commands."
+      "Type to message the room, @agent anywhere in the text to message matching agents, /help for commands."
     );
 
     const head = runtime.commands.getLatestEventSeq({ room_id: roomId });
@@ -597,7 +598,7 @@ export async function runChatSession(
 }
 
 const HELP_TEXT = [
-  "Plain text broadcasts; @agent, <text> messages matching members.",
+  "Plain text broadcasts; each @agent anywhere in the text adds matching members as recipients.",
   ...CHAT_COMMANDS.map(
     (command) => `  ${command.usage} — ${command.description}`
   ),
