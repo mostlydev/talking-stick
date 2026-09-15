@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.15.0] — 2026-09-15
+
+Full notes: [`docs/releases/0.15.0.md`](docs/releases/0.15.0.md).
+
 ### Added
 
 - **`tt chat` operator console.** Talk with agents from any harness in one full-screen terminal conversation. Messages have readable sender labels, timestamps, and consistent harness colors. The input and compact room-status footer stay fixed at the bottom while the conversation scrolls.
@@ -21,6 +25,7 @@ changes will be called out under **Breaking changes**.
 ### Changed
 
 - **Solo waits listen instead of claiming.** With no other turn-taking agent present, ordinary `tt wait` listens and prints a hint. Pass `--claim` to work alone. Assigned turns remain claimable normally. This prevents a listener-only harness from becoming trapped behind its own stop hook. (#68)
+
 ### Fixed
 
 - **Completed self-events do not wake an agent again.** A wait suppresses the caller's completed release/pass and obsolete claim events before pagination. Audit history and takeover warnings remain available. (#68)
@@ -496,6 +501,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.15.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.15.0
 [0.14.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.14.0
 [0.13.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.13.0
 [0.12.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.12.1
