@@ -846,6 +846,13 @@ export class TalkingStickService {
           secret: null, harness_session_id: member.harness_session_id ?? `member:${member.agent_id}`, host_id: this.hostId });
       }
       const generation = member.standby_generation + 1;
+      // Explicit standby starts a new wake epoch, even if the previous wake
+      // wasn't followed by a cursor acknowledgement. It does not mark any
+      // event read. Preserve unsent pending work, but invalidate old I/O so a
+      // late completion cannot reserve or overwrite the new epoch.
+      this.db.prepare(`UPDATE member_wake_endpoints
+        SET awaiting_wait = 0, batch_id = NULL
+        WHERE room_id = ? AND agent_id = ?`).run(input.room_id, input.agent_id);
       this.db
         .prepare(
           `
@@ -2306,7 +2313,7 @@ export class TalkingStickService {
       status: attempted.last_status === "failed" ? "unreachable" :
         attempted.dispatch_event_seq === eventSeq ? "endpoint" : "pending",
       transport: attempted.transport,
-      state: attempted.last_status ?? undefined,
+      state: attempted.dispatch_event_seq === eventSeq ? attempted.last_status ?? undefined : undefined,
       ...(attempted.last_error ? { error: attempted.last_error } : {})
     };
     const failed = endpoints.find((row) => row.dispatch_event_seq === eventSeq && row.last_status === "failed");

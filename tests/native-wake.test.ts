@@ -179,6 +179,7 @@ describe("native wake dispatch", () => {
     });
     expect(nativeRequests).toHaveLength(1);
     expect(second).toMatchObject({ delivery_status: "pending", delivery_transport: "claude_inbox" });
+    expect(second.delivery_state).toBeUndefined();
 
     // A wait resuming from before the batch's newest event has not consumed it.
     await service.waitForTurn({
@@ -587,7 +588,7 @@ describe("concurrent wake batches", () => {
     const roomId = joinPair(service, project);
     await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "first" });
     expect(nativeRequests).toHaveLength(1);
-    service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "cmux", workspace_id: "w", surface_id: "s" });
+    service.registerWakeEndpoint({ room_id: roomId, agent_id: "claude:aa", workspace_id: "w", surface_id: "s", harness_session_id: "claude-session" });
     await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "second" });
     expect(nativeRequests).toHaveLength(1);
     expect(cmuxRequests).toHaveLength(0);
@@ -756,4 +757,52 @@ test("standby reports the transports that can wake the session", () => {
     .toMatchObject({ transport: "manual", can_self_wake: true, wake_transports: ["claude_inbox"] });
   expect(service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "cmux", workspace_id: "w", surface_id: "s" }))
     .toMatchObject({ can_self_wake: true, wake_transports: ["claude_inbox", "cmux"] });
+});
+
+test("explicit standby rearms the next message without consuming unread events", async () => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  const send = (body: string) => service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body });
+  const first = await send("first");
+  service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "manual" });
+  await service.flushWakes();
+  expect(nativeRequests).toHaveLength(1);
+  const second = await send("next standby epoch");
+  expect(second.delivery_state).toBe("queued");
+  expect(nativeRequests).toHaveLength(2);
+  const third = await send("same unread batch");
+  expect(third.delivery_status).toBe("pending");
+  expect(third.delivery_state).toBeUndefined();
+  expect(nativeRequests).toHaveLength(2);
+  const read = await service.waitForTurn({ agent_id: "claude:aa", room_id: roomId, max_wait_ms: 0,
+    mode: "parked", include_events: true, after_event_seq: first.event_seq - 1 });
+  expect(read.events?.filter((event) => event.event_type === "message_sent").map((event) => event.event_seq))
+    .toEqual([first.event_seq, second.event_seq, third.event_seq]);
+});
+
+test("standby invalidates an old in-flight completion without losing a new wake", async () => {
+  let finish!: (result: NativeWakeResult) => void;
+  let calls = 0;
+  const old = new Promise<NativeWakeResult>((resolve) => { finish = resolve; });
+  const { service, project, nativeRequests } = harness({ native: () => ++calls === 1 ? old : { outcome: "queued" } });
+  const roomId = joinPair(service, project);
+  const send = (body: string) => service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body });
+  const first = send("old epoch");
+  service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "manual" });
+  const second = send("new epoch");
+  expect(nativeRequests).toHaveLength(2);
+  finish({ outcome: "failed", error: "claude_inbox_unreachable" });
+  await first;
+  expect((await second).delivery_state).toBe("queued");
+  expect((await send("coalesced")).delivery_status).toBe("pending");
+  expect(nativeRequests).toHaveLength(2);
+});
+
+test("standby preserves a pending wake not yet submitted", async () => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  service.sendMessage({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "pending" });
+  service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "manual" });
+  await service.flushWakes();
+  expect(nativeRequests).toHaveLength(1);
 });

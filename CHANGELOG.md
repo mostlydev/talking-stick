@@ -17,6 +17,7 @@ changes will be called out under **Breaking changes**.
 
 ### Changed
 
+- **Standby rearms native wake.** Returning to standby allows the next directed message to wake the agent again even when the previous batch wasn't acknowledged through `tt wait`. Unread events remain available. Coalesced messages now show `waiting for agent to read` instead of reusing an earlier wake's `queued` status.
 - **Operator chat keeps the room open.** A running `tt chat` console keeps its room alive after every agent leaves, so the operator can wait for agents to rejoin. The room closes when the last console exits with no agents present.
 - **Wake delivery is asynchronous.** Service writes only queue wakes; `TalkingStickCommands.flushWakes()` and `sendMessageAndWake()` deliver them, and `tt chat` stays responsive while a wake is in flight. The skill and bundled instructions now recommend `tt standby --json` instead of hard-coding `--wake cmux`.
 

@@ -949,6 +949,11 @@ test("chat remains responsive while a slow recipient wakes and reports each reci
     expect(transcript).not.toContain("claude:slow: queued");
     finishSlow({ outcome: "queued" });
     await until(() => transcript.includes("claude:slow: queued"));
+    const noticesBefore = transcript.match(/claude:fast: queued/g)?.length;
+    input.write("@claude:fast another message\n");
+    await until(() => transcript.includes("claude:fast: waiting for agent to read"));
+    expect(transcript.match(/claude:fast: queued/g)?.length).toBe(noticesBefore);
+    expect(deliveries).toBe(2);
   } finally {
     finishSlow({ outcome: "queued" });
     input.write("/quit\n");
