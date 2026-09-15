@@ -67,7 +67,7 @@ export function formatChatHelp(width: number, color: boolean, keys = false): str
     ["Esc", "Dismiss suggestions; press again to clear"],
     ["Ctrl+C", "Clear the draft"],
     ["PgUp / PgDn", "Scroll the conversation"],
-    ["Shift+↑ / ↓ · wheel", "Scroll a few lines"],
+    ["Shift+↑ / ↓", "Scroll a few lines (wheel with --mouse)"],
     ["Ctrl+End", "Return to the latest messages"],
     ["Ctrl+D", "Quit when the draft is empty"]
   ] : CHAT_COMMANDS.map((command) => [

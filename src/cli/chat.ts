@@ -102,7 +102,7 @@ export async function handleChatCommand(
     color: terminal && !process.env.NO_COLOR,
     history: parseOptionalInteger(parsed, "history") ?? DEFAULT_HISTORY,
     show_turn_events: hasOption(parsed, "events"),
-    mouse: !hasOption(parsed, "no-mouse")
+    mouse: hasOption(parsed, "mouse") && !hasOption(parsed, "no-mouse")
   });
 }
 
@@ -553,7 +553,7 @@ export async function runChatSession(
       screenActive = true;
       output.write(
         "\u001b[?1049h\u001b[?2004h" +
-          (options.mouse !== false ? "\u001b[?1000h\u001b[?1006h" : "")
+          (options.mouse === true ? "\u001b[?1000h\u001b[?1006h" : "")
       );
       editor = new ChatInputController({
         input: options.input,

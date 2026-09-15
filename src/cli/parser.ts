@@ -19,6 +19,7 @@ const BOOLEAN_FLAGS = new Set([
   "link",
   "no-guard",
   "no-mouse",
+  "mouse",
   "operator-requested",
   "park",
   "print",

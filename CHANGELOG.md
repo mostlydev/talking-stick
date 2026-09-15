@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- **Native text selection in chat.** Mouse capture is off by default, restoring terminal drag selection, double-click word selection, and normal copying. Use `--mouse` to opt into chat wheel scrolling; `--no-mouse` retains native selection.
+
 ## [0.18.0] — 2026-09-15
 
 Full notes: [`docs/releases/0.18.0.md`](docs/releases/0.18.0.md).
