@@ -96,7 +96,7 @@ Dispatch runs after the write transaction commits, in the sending process, like 
 | --- | --- | --- | --- |
 | `claude_inbox` | Unix socket connect, auth line, user line, end | 2 s | Written and flushed: `queued`. `ENOENT` / `ECONNREFUSED` / `EACCES`: definite failure, fall back. Timeout after write: ambiguous, no fallback, `last_error` set. |
 | `codex_queue` | `codex queue --thread <id> --message <text>` | 10 s | Exit 0: `queued`, or `woken` if the output confirms a started turn. Non-zero with a thread-not-found error: definite failure, fall back. Timeout: ambiguous, no fallback. |
-| `cmux` | existing `cmux send` + Enter | 5 s | Existing semantics. |
+| `cmux` | existing `cmux send` + Enter | 5 s | Only for a parked cmux standby member or an explicit interrupt, never for a plain directed message to an unparked member. |
 
 Fall back only on definite non-delivery, so a slow success can't produce two wakes. Claude's inbox never acknowledges delivery, so its best status is `queued`. Whether the session held or refused the message isn't observable, and the docs say so.
 
@@ -104,7 +104,7 @@ For `tt chat`, dispatch must not freeze the UI: run it off the input path with t
 
 ### Status surface
 
-`SendMessageResult.delivery_status` keeps `receiver | endpoint | pending | unreachable` and gains `delivery_transport` plus `delivery_state` (`woken | queued | failed`). `tt chat` renders these per recipient.
+`SendMessageResult.delivery_status` keeps `receiver | endpoint | pending | unreachable` and gains `delivery_transport` plus `delivery_state` (`woken | queued | ambiguous | failed`). `queued` means the socket write flushed or `codex queue` exited 0. `ambiguous` means a timeout or cut-off write left delivery unknown. `tt chat` renders these per recipient.
 
 ## Security notes
 
@@ -144,3 +144,9 @@ Changes from the design above, as built:
 
 - **Herdr** (0.9.0, protocol 22): `herdr agent prompt <pane> <text>` submits bracketed paste plus Enter atomically and rejects blocked agents. Its protocol has no expected-session guard, so a pane whose agent was replaced between lookup and submit would receive the prompt. It is not wired in as a fallback until that race can be closed.
 - **Grok** (1.0.30): exposes leader IPC and ACP `session/prompt` forwarding, but no queue CLI. Hooks fire only on lifecycle events. Native Grok wake needs a live Grok member to validate.
+
+### Live verification (2026-09-15)
+
+- **Codex idle wake.** Codex had no `tt wait` process, was parked with a native endpoint, and Herdr reported pane `w8:p1` as `idle`, with the /goal continuation paused. A directed `tt msg send` returned `delivery_status: endpoint`, `delivery_transport: codex_queue`, `delivery_state: queued`. Herdr showed `working` within 8 seconds. Codex received exactly ``[talking-stick] New message from claude:0705e896 in /Users/wojtek/dev/ai/talking-stick. Run `tt wait --json` to read it.``, ran `tt wait`, and read event 16845.
+- **Claude refuse mode.** A disposable session started with `--settings '{"crossSessionInbound":"refuse"}'` was parked with no receiver, and Herdr reported `w8:pG` as `idle`. A directed send returned `claude_inbox` / `queued`, and the pane stayed `idle` for 30 seconds with no wake. This matches the documented silent drop.
+- **Claude bypass-permissions session.** This Claude session runs with permission prompts bypassed. It received several native inbox wakes from Codex while between tool calls.
