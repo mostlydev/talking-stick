@@ -217,6 +217,40 @@ const migrations: Migration[] = [
       ALTER TABLE room_members
         ADD COLUMN wake_endpoint_generation INTEGER NOT NULL DEFAULT 0;
     `
+  },
+  {
+    id: 12,
+    name: "native_wake_endpoints",
+    up: `
+      CREATE TABLE member_wake_endpoints (
+        room_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        transport TEXT NOT NULL,
+        address TEXT NOT NULL,
+        secret TEXT,
+        harness_session_id TEXT NOT NULL,
+        host_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        recorded_at TEXT NOT NULL,
+        wake_pending INTEGER NOT NULL DEFAULT 0,
+        wake_reason TEXT,
+        wake_from_agent_id TEXT,
+        awaiting_wait INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT,
+        last_status TEXT,
+        last_error TEXT,
+        PRIMARY KEY (room_id, agent_id, transport),
+        FOREIGN KEY (room_id, agent_id)
+          REFERENCES room_members(room_id, agent_id) ON DELETE CASCADE
+      );
+    `
+  },
+  {
+    id: 13,
+    name: "native_wake_batch_cursor",
+    up: `
+      ALTER TABLE member_wake_endpoints ADD COLUMN wake_event_seq INTEGER;
+    `
   }
 ];
 

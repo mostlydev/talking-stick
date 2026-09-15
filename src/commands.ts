@@ -1,3 +1,5 @@
+import os from "node:os";
+import { detectNativeWakeEndpoints } from "./native-wake.js";
 import { TalkingStickService } from "./service.js";
 import type {
   AddNoteResult,
@@ -18,6 +20,7 @@ import type {
   PassStickInput,
   PassStickResult,
   RelinquishOwnershipResult,
+  RegisterNativeWakeEndpointResult,
   RegisterStandbyResult,
   RegisterReceiverResult,
   RegisterWakeEndpointResult,
@@ -249,6 +252,30 @@ export class TalkingStickCommands {
       harness_session_id:
         identity.process_metadata.harness_session_id ?? ""
     });
+  }
+
+  registerNativeWakeEndpoints(
+    identity: DerivedIdentity,
+    input: { room_id: string; env?: NodeJS.ProcessEnv; host_id?: string }
+  ): RegisterNativeWakeEndpointResult[] {
+    const harnessSessionId = identity.process_metadata.harness_session_id;
+    if (!harnessSessionId) {
+      return [];
+    }
+    return detectNativeWakeEndpoints(input.env ?? process.env, {
+      agent_id: identity.agent_id,
+      harness_session_id: harnessSessionId
+    }).map((endpoint) =>
+      this.service.registerNativeWakeEndpoint({
+        agent_id: identity.agent_id,
+        room_id: input.room_id,
+        transport: endpoint.transport,
+        address: endpoint.address,
+        secret: endpoint.secret,
+        harness_session_id: harnessSessionId,
+        host_id: input.host_id ?? os.hostname()
+      })
+    );
   }
 
   registerStandby(

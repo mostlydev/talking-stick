@@ -193,6 +193,21 @@ export {
   type WakeTransport
 } from "./wake.js";
 export {
+  CLAUDE_INBOX_TIMEOUT_MS,
+  CODEX_QUEUE_TIMEOUT_MS,
+  createSystemNativeWakeTransport,
+  detectNativeWakeEndpoints,
+  formatNativeWakeText,
+  type NativeWakeExec,
+  type NativeWakeReason,
+  type NativeWakeRegistration,
+  type NativeWakeRequest,
+  type NativeWakeResult,
+  type NativeWakeState,
+  type NativeWakeTransport,
+  type NativeWakeTransportName
+} from "./native-wake.js";
+export {
   waitForActionableSignal,
   type SignalWaitOptions
 } from "./wait-loop.js";

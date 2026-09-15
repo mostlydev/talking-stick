@@ -44,7 +44,7 @@ import {
   requireLeaseSession,
   upsertSessionFromJoin
 } from "./session.js";
-import type { Runtime } from "./runtime.js";
+import { registerNativeWake, type Runtime } from "./runtime.js";
 
 export async function handleWaitCommand(
   runtime: Runtime,
@@ -96,6 +96,7 @@ export async function handleWaitCommand(
       process_started_at: getCurrentProcessStartedAt(),
       cursor_event_seq: currentCursor
     });
+    registerNativeWake(runtime, identity, joined.room_id);
     const harnessSessionId = identity.process_metadata.harness_session_id;
     try {
       if (!harnessSessionId) {
@@ -306,6 +307,7 @@ export function handleStandbyCommand(
     context_path: contextPath
   });
   upsertSessionFromJoin(identity, joined);
+  registerNativeWake(runtime, identity, joined.room_id);
   const requestedTransport = getStringOption(parsed, "wake");
   if (
     requestedTransport !== undefined &&

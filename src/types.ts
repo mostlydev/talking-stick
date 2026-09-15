@@ -1,3 +1,4 @@
+import type { NativeWakeState, NativeWakeTransportName } from "./native-wake.js";
 export type AgentId = string;
 
 export type StoredRoomState = "idle" | "owned" | "reserved" | "closed";
@@ -489,6 +490,7 @@ export interface GetRoomHealthResult {
   room: PathRoom;
   members: RoomMember[];
   receivers: RoomReceiver[];
+  wake_endpoints: NativeWakeEndpointSummary[];
   cursor_event_seq: number;
   pending_handoff: RoomEvent | null;
   takeover: RoomHealthTakeover;
@@ -532,6 +534,34 @@ export interface SendMessageResult {
   delivery_status?: MessageDeliveryStatus;
   delivery_target?: AgentId;
   delivery_error?: string;
+  delivery_transport?: NativeWakeTransportName;
+  delivery_state?: NativeWakeState;
+}
+
+export interface RegisterNativeWakeEndpointInput {
+  agent_id: AgentId;
+  room_id: string;
+  transport: NativeWakeTransportName;
+  address: string;
+  secret: string | null;
+  harness_session_id: string;
+  host_id: string;
+}
+
+export interface RegisterNativeWakeEndpointResult {
+  status: "native_wake_endpoint_registered";
+  transport: NativeWakeTransportName;
+  generation: number;
+}
+
+// Public view of a native wake endpoint: never carries the address or secret.
+export interface NativeWakeEndpointSummary {
+  agent_id: AgentId;
+  transport: NativeWakeTransportName;
+  recorded_at: string;
+  last_attempt_at: string | null;
+  last_status: NativeWakeState | "failed" | null;
+  last_error: string | null;
 }
 
 export interface RegisterWakeEndpointInput {
