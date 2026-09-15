@@ -7,7 +7,8 @@ import {
 
 export type ChatInput =
   | { kind: "empty" }
-  | { kind: "send"; to: string | null; body: string; interrupt: boolean }
+  // to lists every @name selector in the message; empty means broadcast.
+  | { kind: "send"; to: string[]; body: string; interrupt: boolean }
   | { kind: "command"; name: string; args: string }
   | { kind: "error"; message: string };
 
@@ -16,6 +17,8 @@ export interface ChatFormatContext {
   name_of: (agentId: AgentId) => string;
   color: boolean;
   show_turn_events: boolean;
+  now?: Date;
+  history_before?: string;
 }
 
 const ANSI_PATTERN =
@@ -52,13 +55,9 @@ export function parseChatInput(line: string): ChatInput {
     return { kind: "empty" };
   }
 
-  if (trimmed.startsWith("@")) {
-    return parseDirected(trimmed.slice(1), false);
-  }
-
   if (!trimmed.startsWith("/") || trimmed.startsWith("//")) {
-    const body = trimmed.startsWith("//") ? trimmed.slice(1) : trimmed;
-    return { kind: "send", to: null, body, interrupt: false };
+    const text = trimmed.startsWith("//") ? trimmed.slice(1) : trimmed;
+    return parseMessage(text, false);
   }
 
   const [rawName] = trimmed.slice(1).split(/\s+/);
@@ -68,38 +67,103 @@ export function parseChatInput(line: string): ChatInput {
   switch (name) {
     case "to":
     case "dm":
-    case "msg":
-      return parseDirected(args, false);
+    case "msg": {
+      // The first word names the recipient with or without a leading @.
+      const selector = args.split(/\s+/, 1)[0] ?? "";
+      if (!selector || selector.startsWith("@")) {
+        return parseMessage(args, false, true);
+      }
+      return parseMessage(`@${args}`, false, true);
+    }
     case "all":
     case "room":
       return args.length > 0
-        ? { kind: "send", to: null, body: args, interrupt: false }
+        ? { kind: "send", to: [], body: args, interrupt: false }
         : { kind: "error", message: `Usage: /${name} <message>` };
     case "interrupt":
-    case "int": {
-      if (args.startsWith("@")) {
-        return parseDirected(args.slice(1), true);
-      }
+    case "int":
       return args.length > 0
-        ? { kind: "send", to: null, body: args, interrupt: true }
+        ? parseMessage(args, true)
         : { kind: "error", message: "Usage: /interrupt [@agent] <message>" };
-    }
     default:
       return { kind: "command", name, args };
   }
 }
 
-function parseDirected(text: string, interrupt: boolean): ChatInput {
-  const match = text.match(/^(\S+)\s+([\s\S]+)$/);
-  if (!match || !match[1].replace(/,+$/, "")) {
+// A mention is @name at the start of the text or after a non-word character,
+// so email addresses (a@b.com) stay plain text. Mentions inside `code` spans
+// are ignored. Trailing punctuation (@codex, @claude:) is not part of the name.
+// !@name marks the whole message as an interrupt; a bare !@ interrupts without
+// naming anyone. @everyone (or @all) addresses every agent in the room.
+const NAME = "[\\p{L}\\p{N}_][\\p{L}\\p{N}_:.-]*";
+const MENTION_PATTERN = new RegExp(`(^|[^\\p{L}\\p{N}_@.!])(!?)@(${NAME})?`, "gu");
+const LEADING_MENTIONS = new RegExp(`^(?:!?@(?:${NAME})?[,;:]?(?:\\s+|$))+`, "u");
+const ADJACENT_MENTIONS = new RegExp(`(?:^|[^\\p{L}\\p{N}_@.!])!?@${NAME}!?@`, "u");
+export const EVERYONE_SELECTORS: readonly string[] = ["everyone", "all"];
+
+function parseMessage(text: string, interrupt: boolean, requireRecipient = false): ChatInput {
+  const withoutCode = text.replace(/`[^`]*`/g, (span) => " ".repeat(span.length));
+  if (ADJACENT_MENTIONS.test(withoutCode)) {
+    return { kind: "error", message: "Separate mentions with spaces, like @claude @codex." };
+  }
+  const selectors: string[] = [];
+  let urgent = interrupt;
+  let mentioned = false;
+  for (const match of withoutCode.matchAll(MENTION_PATTERN)) {
+    const bang = match[2] === "!";
+    const selector = (match[3] ?? "").replace(/[.:-]+$/, "").toLowerCase();
+    if (!bang && !selector) continue;
+    mentioned = true;
+    if (bang) urgent = true;
+    if (selector && !selectors.includes(selector)) selectors.push(selector);
+  }
+  if (/^!?@/.test(text) && !mentioned) {
     return { kind: "error", message: "Usage: @agent <message>" };
   }
-  return {
-    kind: "send",
-    to: match[1].replace(/,+$/, ""),
-    body: match[2].trim(),
-    interrupt
-  };
+  if (requireRecipient && selectors.length === 0) {
+    return { kind: "error", message: "Usage: /to <agent> <message>" };
+  }
+  const body = text.replace(LEADING_MENTIONS, "").trim();
+  if (body.length === 0) {
+    return { kind: "error", message: "Usage: @agent <message>" };
+  }
+  return { kind: "send", to: selectors, body, interrupt: urgent };
+}
+
+// Resolves every selector before anything is sent, so one typo can't deliver a
+// message to only some of the intended recipients.
+export function resolveChatRecipients(
+  selectors: string[],
+  members: RoomMember[],
+  selfAgentId: AgentId
+): { agent_ids: AgentId[] } | { error: string; unmatched: string[] } {
+  const agentIds: AgentId[] = [];
+  const unmatched: string[] = [];
+  const endedDetails: string[] = [];
+  for (const selector of selectors) {
+    const resolved = EVERYONE_SELECTORS.includes(selector)
+      ? everyoneIn(members, selfAgentId)
+      : resolveChatRecipient(selector, members, selfAgentId);
+    if ("error" in resolved) {
+      unmatched.push(selector);
+      const ended = members.filter((member) => member.agent_id !== selfAgentId &&
+        member.process_liveness === "gone" &&
+        (member.agent_id.toLowerCase().startsWith(selector.toLowerCase()) ||
+          member.display_name?.toLowerCase().startsWith(selector.toLowerCase())));
+      if (ended.length > 0) endedDetails.push(resolved.error);
+      continue;
+    }
+    for (const agentId of resolved.agent_ids) {
+      if (!agentIds.includes(agentId)) agentIds.push(agentId);
+    }
+  }
+  if (unmatched.length > 0) {
+    return {
+      error: `No room member matches ${unmatched.map((selector) => `'@${selector}'`).join(", ")}.${endedDetails.length > 0 ? ` ${endedDetails.join(" ")}` : ""}`,
+      unmatched
+    };
+  }
+  return { agent_ids: agentIds };
 }
 
 // Short, human names: the harness prefix ("codex") when it is unique among the
@@ -137,22 +201,50 @@ export function resolveChatRecipient(
   selfAgentId: AgentId
 ): { agent_ids: AgentId[] } | { error: string } {
   const lowered = selector.toLowerCase();
-  const matches = members.filter(
+  const named = members.filter(
     (member) =>
       member.agent_id !== selfAgentId &&
       (member.agent_id.toLowerCase().startsWith(lowered) ||
         member.display_name?.toLowerCase().startsWith(lowered))
   );
-  return matches.length > 0
-    ? { agent_ids: matches.map((member) => member.agent_id) }
+  // Agents whose process has ended can't receive anything; leave them out of
+  // fan-out, but say so when they are the only match.
+  const matches = named.filter((member) => member.process_liveness !== "gone");
+  if (matches.length > 0) {
+    return { agent_ids: matches.map((member) => member.agent_id) };
+  }
+  return named.length > 0
+    ? { error: `'${selector}' only matches agents that have ended: ${named.map((member) => member.agent_id).join(", ")}.` }
     : { error: `No room member matches '${selector}'.` };
+}
+
+function everyoneIn(
+  members: RoomMember[],
+  selfAgentId: AgentId
+): { agent_ids: AgentId[] } | { error: string } {
+  const agents = members.filter(
+    (member) =>
+      member.agent_id !== selfAgentId &&
+      member.session_kind !== HUMAN_CHAT_SESSION_KIND &&
+      member.process_liveness !== "gone" &&
+      (member.status === "active" || member.process_liveness === "alive")
+  );
+  return agents.length > 0
+    ? { agent_ids: agents.map((member) => member.agent_id) }
+    : { error: "No agents are in the room." };
 }
 
 export function formatChatEvent(
   event: RoomEvent,
   context: ChatFormatContext
 ): string | null {
-  const time = formatClock(event.created_at);
+  const historical = isHistoricalChatEvent(event, context);
+  const text = formatCurrentChatEvent(event, historical ? { ...context, color: false } : context);
+  return text === null || !historical ? text : text.split("\n").map((line) => paint(context, "2;90", line)).join("\n");
+}
+
+function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): string | null {
+  const time = formatChatTime(event.created_at, context.now);
   const from = event.from_agent_id;
   const to = event.to_agent_id;
 
@@ -231,6 +323,49 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+export function chatDayLabel(iso: string, now: Date): string {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "Unknown date";
+  const day = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  if (day(date) === day(now)) return "Today";
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (day(date) === day(yesterday)) return "Yesterday";
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+export function formatChatTime(iso: string, now?: Date): string {
+  const clock = formatClock(iso);
+  if (!now || clock === "--:--") return clock;
+  const day = chatDayLabel(iso, now);
+  return day === "Today" ? clock : `${day} at ${clock}`;
+}
+
+export function isHistoricalChatEvent(event: RoomEvent, context: ChatFormatContext): boolean {
+  const timestamp = Date.parse(event.created_at);
+  const today = context.now && new Date(context.now.getFullYear(), context.now.getMonth(), context.now.getDate()).getTime();
+  return (today !== undefined && timestamp < today) ||
+    (context.history_before !== undefined && timestamp < Date.parse(context.history_before));
+}
+
+// A long pause followed by a join is a conversation boundary, not evidence
+// that an idle harness has died. Presence is handled separately by the roster.
+export const CHAT_CONVERSATION_GAP_MS = 4 * 60 * 60 * 1000;
+
+export function isChatConversationActivity(event: RoomEvent): boolean {
+  return !(event.event_type === "leave" && event.reason === "process_ended");
+}
+
+export function startsChatConversation(previous: RoomEvent | undefined, event: RoomEvent): boolean {
+  return previous !== undefined && event.event_type === "join" &&
+    Date.parse(event.created_at) - Date.parse(previous.created_at) >= CHAT_CONVERSATION_GAP_MS;
+}
+
+export function chatSectionLabel(event: RoomEvent, context: ChatFormatContext): string {
+  const day = chatDayLabel(event.created_at, context.now ?? new Date());
+  return isHistoricalChatEvent(event, context) ? `Earlier activity · ${day}` : day;
+}
+
 function formatClock(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) {
@@ -287,14 +422,21 @@ export function formatChatStatus(
   input: ChatStatusInput,
   context: ChatFormatContext
 ): string {
-  const agents = input.members
+  // Agents whose harness process has ended are history, not members.
+  const present = input.members.filter(
+    (member) =>
+      member.process_liveness !== "gone" ||
+      member.agent_id === input.owner ||
+      member.agent_id === input.reserved_for
+  );
+  const agents = present
     .filter((member) => member.session_kind !== HUMAN_CHAT_SESSION_KIND)
     .sort((left, right) => rankMember(left, input) - rankMember(right, input));
 
-  const count = `${input.members.length} ${input.members.length === 1 ? "member" : "members"}`;
+  const count = `${present.length} ${present.length === 1 ? "member" : "members"}`;
   const budget = Math.max(0, input.columns - 1);
   if (count.length > budget) {
-    return paint(context, "2", String(input.members.length).slice(0, budget));
+    return paint(context, "2", String(present.length).slice(0, budget));
   }
   const safeContext = {
     ...context,
@@ -352,11 +494,11 @@ function describeMemberState(
   if (member.agent_id === input.reserved_for) {
     return "up next";
   }
-  if (member.status !== "active") {
-    return "away";
-  }
   if (member.standby_transport) {
     return "standby";
+  }
+  if (member.status !== "active" && member.process_liveness !== "alive") {
+    return "away";
   }
   const idleMs = input.now.getTime() - Date.parse(member.last_seen_at);
   return idleMs < 60_000

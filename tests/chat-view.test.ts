@@ -4,6 +4,7 @@ import { buildNameResolver } from "../src/cli/chat-format.js";
 import {
   ChatTranscript,
   completeChatInput,
+  getChatCompletions,
   diffChatFrame,
   graphemeWidth,
   layoutComposer,
@@ -81,6 +82,30 @@ describe("text measurement", () => {
 });
 
 describe("transcript scrolling", () => {
+  test("dims body rows and preserves a conversation gap across automatic cleanup", () => {
+    const transcript = new ChatTranscript();
+    transcript.appendEvent({ ...message("older body"), created_at: new Date(2026, 8, 15, 8).toISOString() });
+    transcript.appendEvent({ ...stickEvent("claim"), event_type: "leave", reason: "process_ended", created_at: new Date(2026, 8, 15, 13).toISOString() });
+    transcript.appendEvent({ ...stickEvent("claim"), event_type: "join", created_at: new Date(2026, 8, 15, 13, 1).toISOString() });
+    const rows = transcript.viewport(30, 100, { ...context, color: true,
+      now: new Date(2026, 8, 15, 14), history_before: new Date(2026, 8, 15, 13, 1).toISOString() });
+    expect(rows.find((row) => row.includes("older body"))).toContain("\u001b[2;90m");
+    expect(rows.join("\n")).toContain("New conversation · Today");
+  });
+
+  test("separates earlier days and refreshes the divider across midnight", () => {
+    const transcript = new ChatTranscript();
+    transcript.appendEvent({ ...message("old"), created_at: new Date(2026, 8, 14, 12).toISOString() });
+    transcript.appendEvent({ ...message("current"), created_at: new Date(2026, 8, 15, 12).toISOString() });
+    const first = transcript.viewport(20, 80, { ...context, now: new Date(2026, 8, 15, 14) }).join("\n");
+    expect(first).toContain("Earlier activity · Yesterday");
+    expect(first).toContain("── Today ──");
+    const next = transcript.viewport(20, 80, { ...context, now: new Date(2026, 8, 16, 1) }).join("\n");
+    expect(next).toContain("Earlier activity · 2026-09-14");
+    expect(next).toContain("Yesterday at 12:00");
+    expect(next).not.toContain("── Today ──");
+  });
+
   function filled(count: number) {
     const transcript = new ChatTranscript();
     for (let index = 1; index <= count; index++) {
@@ -133,6 +158,16 @@ describe("transcript scrolling", () => {
     expect(narrow).toContain(`number ${anchoredNumber}`);
   });
 
+  test("rewrites a notice in place without adding a block", () => {
+    const transcript = new ChatTranscript();
+    const id = transcript.appendNotice("codex: queued");
+    transcript.appendEvent(message("later"));
+    expect(transcript.updateNotice(id, "codex: queued → received")).toBe(true);
+    expect(transcript.size).toBe(2);
+    expect(transcript.viewport(10, 40, context).join("\n")).toContain("codex: queued → received");
+    expect(transcript.updateNotice(999, "gone")).toBe(false);
+  });
+
   test("evicts the oldest blocks beyond the cap", () => {
     const transcript = new ChatTranscript(3);
     for (let index = 1; index <= 5; index++) {
@@ -180,6 +215,16 @@ describe("commands and completion", () => {
     expect(matchChatCommands("hello")).toEqual([]);
   });
 
+  test("mention suggestions respect token boundaries and replace a token around the cursor", () => {
+    const names = ["codex", "claude"];
+    expect(getChatCompletions({ line: "hello !@c", cursor: 9 }, names).map((item) => item.label)).toEqual(["!@codex", "!@claude"]);
+    expect(getChatCompletions({ line: "x@y", cursor: 3 }, names)).toEqual([]);
+    expect(getChatCompletions({ line: "`@c", cursor: 3 }, names)).toEqual([]);
+    expect(getChatCompletions({ line: "hi (@clxde), ok", cursor: 7 }, names)[0].draft.line).toBe("hi (@claude), ok");
+    expect(getChatCompletions({ line: "hey @codex.", cursor: 7 }, names)[0].draft.line).toBe("hey @codex.");
+    expect(getChatCompletions({ line: "@ev", cursor: 3 }, names)[0].draft.line).toBe("@everyone ");
+  });
+
   test("tab completes commands and @names", () => {
     expect(completeChatInput({ line: "/qu", cursor: 3 }, [])).toEqual({
       line: "/quit ",
@@ -202,6 +247,16 @@ describe("screen rendering", () => {
     reserved_for: null,
     now: new Date()
   };
+
+  test("keeps the selected mention visible and reserves menu space in a small terminal", () => {
+    const draft = { line: "@", cursor: 1 };
+    const completions = getChatCompletions(draft, ["a", "b", "c", "d"]);
+    const frame = renderChatScreen({ transcript: new ChatTranscript(), format: context,
+      status, draft, hint: null, completions, completion_index: 3, columns: 40, rows: 8 });
+    expect(frame.lines).toHaveLength(8);
+    expect(frame.lines.join("\n")).toContain("› @d");
+    expect(frame.cursor.row).toBe(5);
+  });
 
   test("pins rules, composer, and footer to the bottom", () => {
     const transcript = new ChatTranscript();
@@ -272,6 +327,69 @@ describe("screen rendering", () => {
     });
     expect(frame.lines.join("\n")).toContain("/quit  leave the chat");
     expect(frame.lines.at(-1)).toContain("↓ 1 new · ctrl+end");
+  });
+
+  test("short overlays keep the selected suggestion visible without moving the composer", () => {
+    const transcript = new ChatTranscript();
+    const draft = { line: "@", cursor: 1 };
+    const completions = getChatCompletions(draft, ["a", "b", "c", "d"]);
+    for (const rows of [5, 6, 7]) {
+      const base = { transcript, draft, format: context, status, hint: null, columns: 40, rows };
+      const closed = renderChatScreen({ ...base, completions: [] });
+      const open = renderChatScreen({ ...base, completions, completion_index: completions.length - 1 });
+      expect(open.lines.join("\n")).toContain("› @everyone");
+      expect(open.cursor).toEqual(closed.cursor);
+      expect(open.lines).toHaveLength(rows);
+    }
+  });
+
+  test("the suggestion menu overlays the transcript without shifting it", () => {
+    const transcript = new ChatTranscript();
+    for (let index = 0; index < 20; index++) {
+      transcript.appendEvent(message(`m${index}`));
+    }
+    const frame = (line: string) =>
+      renderChatScreen({
+        transcript,
+        format: context,
+        status,
+        draft: { line, cursor: line.length },
+        hint: null,
+        columns: 40,
+        rows: 16
+      });
+    const closed = frame("hello");
+    const open = frame("/");
+    const menuSize = open.lines.filter((row) => /^[›\s] \//.test(row)).length;
+    expect(menuSize).toBeGreaterThan(1);
+    const fixedRows = 4;
+    const transcriptRows = closed.lines.length - fixedRows;
+    const covered = menuSize + 1;
+    // Rows above the overlay are byte-identical with the menu open or closed.
+    expect(open.lines.slice(0, transcriptRows - covered)).toEqual(
+      closed.lines.slice(0, transcriptRows - covered)
+    );
+    expect(open.lines[transcriptRows - covered]).toBe("");
+    expect(open.lines[transcriptRows - covered + 1]).toMatch(/^› \//);
+    expect(open.cursor.row).toBe(closed.cursor.row);
+    // Narrowing the candidates doesn't move anything above the overlay either.
+    const narrowed = frame("/q");
+    expect(narrowed.lines.slice(0, transcriptRows - covered)).toEqual(
+      closed.lines.slice(0, transcriptRows - covered)
+    );
+    transcript.scrollBy(-6, transcriptRows, 39, context);
+    const scrolled = frame("hello");
+    expect(frame("/").lines.slice(0, transcriptRows - covered)).toEqual(scrolled.lines.slice(0, transcriptRows - covered));
+    expect(frame("hello").lines).toEqual(scrolled.lines);
+    expect(transcript.following).toBe(false);
+    for (let rows = 4; rows <= 9; rows++) {
+      const tiny = renderChatScreen({
+        transcript, format: context, status, draft: { line: "/", cursor: 1 },
+        hint: null, columns: 30, rows
+      });
+      expect(tiny.lines).toHaveLength(rows);
+      expect(tiny.cursor.row).toBeLessThan(rows);
+    }
   });
 
   test("shows a transient hint in place of the command hint", () => {

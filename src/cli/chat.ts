@@ -5,7 +5,8 @@ import {
   ChatTranscript,
   renderChatScreen,
   diffChatFrame,
-  completeChatInput,
+  getChatCompletions,
+  formatChatHelp,
   chatTranscriptHeight,
   CHAT_COMMANDS,
   type ChatFrame
@@ -23,9 +24,12 @@ import {
 import {
   buildNameResolver,
   formatChatEvent,
+  chatSectionLabel,
+  startsChatConversation,
+  isChatConversationActivity,
   formatChatAgent,
   parseChatInput,
-  resolveChatRecipient,
+  resolveChatRecipients,
   sanitizeChatText
 } from "./chat-format.js";
 import {
@@ -41,6 +45,9 @@ const HISTORY_SCAN_EVENTS = 500;
 const DEFAULT_POLL_MS = 250;
 const PRESENCE_REFRESH_MS = 30_000;
 const STATUS_REFRESH_MS = 10_000;
+const RECEIPT_POLL_MS = 1_000;
+const RECEIPT_BATCH = 200;
+const MAX_AWAITED_RECEIPTS = 1_000;
 const STATE_CHANGE_EVENTS = new Set<EventType>([
   "join",
   "leave",
@@ -133,6 +140,9 @@ export async function runChatSession(
   let closed = false;
   let lastPresenceRefresh = 0;
   let namesSignature = "";
+  let historyBefore: string | undefined;
+  let previousConversationEvent: RoomEvent | undefined;
+  let printedSection: string | undefined;
   let exitReason: string | null = null;
 
   const transcript = new ChatTranscript();
@@ -152,8 +162,13 @@ export async function runChatSession(
     self_agent_id: selfId,
     name_of: nameOf,
     color: options.color,
-    show_turn_events: showTurnEvents
+    show_turn_events: showTurnEvents,
+    now: new Date(),
+    history_before: historyBefore
   });
+  const completionsFor = (draft: { line: string; cursor: number }) => getChatCompletions(draft,
+    members.filter((member) => member.agent_id !== selfId && member.process_liveness !== "gone")
+      .flatMap((member) => [nameOf(member.agent_id), member.agent_id]));
   const redraw = () => {
     if (!terminal || closed || frameTimer) return;
     frameTimer = setTimeout(() => {
@@ -172,6 +187,8 @@ export async function runChatSession(
           },
           draft: editor?.draft ?? { line: "", cursor: 0 },
           hint,
+          completions: editor?.completionVisible ? completionsFor(editor.draft) : [],
+          completion_index: editor?.completionIndex ?? 0,
           ...dimensions()
         });
         output.write(diffChatFrame(previousFrame, frame));
@@ -182,11 +199,48 @@ export async function runChatSession(
       }
     }, 16);
   };
-  const print = (text: string) => {
+  const print = (text: string): number | null => {
     if (terminal) {
-      transcript.appendNotice(text);
+      const id = transcript.appendNotice(text);
       redraw();
-    } else output.write(`${text}\n`);
+      return id;
+    }
+    output.write(`${text}\n`);
+    return null;
+  };
+  // Directed messages whose recipient hasn't received them yet, keyed by event
+  // seq. A receipt means the recipient's own tt wait returned the message.
+  const awaitingReceipt = new Map<number, { notice: number | null; text: string }>();
+  let lastReceiptCheck = 0;
+  const trackReceipt = (eventSeq: number, pending: { notice: number | null; text: string }) => {
+    awaitingReceipt.set(eventSeq, pending);
+    // Oldest first: a recipient that never reads can't grow this without bound.
+    while (awaitingReceipt.size > MAX_AWAITED_RECEIPTS) {
+      awaitingReceipt.delete(awaitingReceipt.keys().next().value!);
+    }
+  };
+  const checkReceipts = () => {
+    if (awaitingReceipt.size === 0 || Date.now() - lastReceiptCheck < RECEIPT_POLL_MS) return;
+    lastReceiptCheck = Date.now();
+    const seqs = [...awaitingReceipt.keys()];
+    const receipts = [];
+    for (let start = 0; start < seqs.length; start += RECEIPT_BATCH) {
+      receipts.push(...runtime.commands.getMessageReceipts({
+        room_id: roomId,
+        event_seqs: seqs.slice(start, start + RECEIPT_BATCH)
+      }));
+    }
+    for (const receipt of receipts) {
+      const pending = awaitingReceipt.get(receipt.event_seq);
+      if (!pending) continue;
+      awaitingReceipt.delete(receipt.event_seq);
+      const text = `${sanitizeChatText(nameOf(receipt.agent_id))}: received`;
+      if (pending.notice !== null && transcript.updateNotice(pending.notice, `${pending.text} → received`)) {
+        redraw();
+      } else {
+        print(text);
+      }
+    }
   };
   const reportRoomClosed = () => {
     exitReason = "tt chat: the room has closed.";
@@ -258,13 +312,7 @@ export async function runChatSession(
     lastPresenceRefresh = Date.now();
   };
 
-  const render = (event: RoomEvent) =>
-    formatChatEvent(event, {
-      self_agent_id: selfId,
-      name_of: nameOf,
-      color: options.color,
-      show_turn_events: showTurnEvents
-    });
+  const render = (event: RoomEvent) => formatChatEvent(event, formatContext());
 
   const coloredName = (agentId: string) =>
     formatChatAgent(
@@ -279,27 +327,34 @@ export async function runChatSession(
 
   const describeRoom = () => {
     const others = members.filter((member) => member.agent_id !== selfId);
+    const present = others.filter((member) => member.process_liveness !== "gone");
+    const ended = others.filter((member) => member.process_liveness === "gone");
     const who =
-      others.length > 0
-        ? others.map((member) => coloredName(member.agent_id)).join(", ")
+      present.length > 0
+        ? present.map((member) => coloredName(member.agent_id)).join(", ")
         : "no agents yet";
     const stick = owner
       ? `${coloredName(owner)} has the stick`
       : "nobody has the stick";
-    return `In the room: ${who} · ${stick}`;
+    const endedNote =
+      ended.length > 0
+        ? ` · ended: ${ended.map((member) => coloredName(member.agent_id)).join(", ")}`
+        : "";
+    return `In the room: ${who} · ${stick}${endedNote}`;
   };
 
-  const send = (to: string | null, body: string, interrupt: boolean) => {
+  const send = (to: string[], body: string, interrupt: boolean) => {
     let targets: (string | null)[] = [null];
-    if (to) {
+    if (to.length > 0) {
       refreshMembers();
-      const resolved = resolveChatRecipient(to, members, selfId);
+      const resolved = resolveChatRecipients(to, members, selfId);
       if ("error" in resolved) {
-        const selector = to.toLowerCase();
-        const departed = [...departedAgents].filter(
-          (agentId) =>
-            agentId.toLowerCase().startsWith(selector) ||
-            nameOf(agentId).toLowerCase().startsWith(selector)
+        const departed = [...departedAgents].filter((agentId) =>
+          resolved.unmatched.some(
+            (selector) =>
+              agentId.toLowerCase().startsWith(selector) ||
+              nameOf(agentId).toLowerCase().startsWith(selector)
+          )
         );
         print(
           departed.length > 0
@@ -321,16 +376,27 @@ export async function runChatSession(
         if (closed || !result.delivery_target) return;
         const state = result.delivery_status === "receiver" ? "listening" :
           result.delivery_status === "pending" ? "waiting for agent to read" :
+          result.delivery_state === "queued" && result.interrupt_status === "unsupported" ? "queued; immediate interrupt unavailable" :
+          result.delivery_state === "queued" && result.interrupt_status === "injected" ? "urgent prompt injected" :
           result.delivery_state === "queued" || result.delivery_state === "woken" ? result.delivery_state :
           result.delivery_state === "ambiguous" ? "wake unconfirmed" :
           "not listening";
-        print(`${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`);
+        const text = `${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`;
+        const notice = print(text);
+        const received = runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: [result.event_seq] });
+        if (received.length > 0) {
+          if (notice !== null) transcript.updateNotice(notice, `${text} → received`);
+          else print(`${sanitizeChatText(nameOf(result.delivery_target))}: received`);
+          redraw();
+        } else {
+          trackReceipt(result.event_seq, { notice, text });
+        }
       })
       .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
     }
   };
 
-  const runCommand = (name: string) => {
+  const runCommand = (name: string, args = "") => {
     switch (name) {
       case "quit":
       case "exit":
@@ -351,7 +417,7 @@ export async function runChatSession(
         print(`Stick events ${showTurnEvents ? "shown" : "hidden"}.`);
         return;
       case "help":
-        print(HELP_TEXT);
+        print(formatChatHelp(dimensions().columns - 1, options.color, args.trim() === "keys"));
         return;
       default:
         print(`! Unknown command /${name}. Try /help.`);
@@ -362,6 +428,14 @@ export async function runChatSession(
   // lines stay compact underneath the message they follow.
   let lastPrinted: "message" | "system" | "info" = "info";
   const printEvent = (event: RoomEvent) => {
+    if (render(event) !== null && isChatConversationActivity(event)) {
+      if (startsChatConversation(previousConversationEvent, event) &&
+          (!historyBefore || Date.parse(event.created_at) > Date.parse(historyBefore))) {
+        historyBefore = event.created_at;
+        transcript.invalidate();
+      }
+      previousConversationEvent = event;
+    }
     if (event.event_type === "leave" && event.from_agent_id) {
       departedAgents.add(event.from_agent_id);
     } else if (event.event_type === "kick" && event.to_agent_id) {
@@ -383,6 +457,11 @@ export async function runChatSession(
     const line = render(event);
     if (line === null) {
       return;
+    }
+    const section = chatSectionLabel(event, formatContext());
+    if (section !== printedSection) {
+      print(`── ${section} ──`);
+      printedSection = section;
     }
     const isMessage = event.event_type === "message_sent";
     if (isMessage || lastPrinted === "message") {
@@ -406,7 +485,7 @@ export async function runChatSession(
         return;
       case "command":
         transcript.scrollToBottom();
-        runCommand(parsed.name);
+        runCommand(parsed.name, parsed.args);
         return;
       case "send":
         transcript.scrollToBottom();
@@ -475,13 +554,11 @@ export async function runChatSession(
           );
           redraw();
         },
-        complete: (draft) =>
-          completeChatInput(
-            draft,
-            members
-              .filter((member) => member.agent_id !== selfId)
-              .flatMap((member) => [nameOf(member.agent_id), member.agent_id])
-          )
+        completionCount: (draft) => completionsFor(draft).length,
+        complete: (draft, index) => {
+          const matches = completionsFor(draft);
+          return matches[Math.min(index, matches.length - 1)]?.draft ?? null;
+        }
       });
     } else {
       rl = readline.createInterface({ input: options.input, terminal: false });
@@ -505,7 +582,7 @@ export async function runChatSession(
       print(describeRoom());
     }
     print(
-      "Type to message the room, @agent <text> to message matching agents, /help for commands."
+      "Type to message the room, @agent anywhere in the text to message matching agents, /help for commands."
     );
 
     const head = runtime.commands.getLatestEventSeq({ room_id: roomId });
@@ -522,6 +599,14 @@ export async function runChatSession(
               (event) => event.event_seq <= head && render(event) !== null
             )
             .slice(-Math.max(0, options.history));
+    // Determine the latest conversation before rendering so its predecessor
+    // is dimmed even on the first frame (including non-terminal output).
+    const conversationEvents = historyEvents.filter(isChatConversationActivity);
+    for (let index = 1; index < conversationEvents.length; index += 1) {
+      if (startsChatConversation(conversationEvents[index - 1], conversationEvents[index])) {
+        historyBefore = conversationEvents[index].created_at;
+      }
+    }
     for (const event of historyEvents) {
       printEvent(event);
     }
@@ -569,6 +654,7 @@ export async function runChatSession(
         }
       }
       cursor = result.cursor_event_seq;
+      if (!closed) checkReceipts();
       if ((stateChanged || statusStale) && !closed) {
         redraw();
         lastStatusDraw = Date.now();
@@ -596,15 +682,6 @@ export async function runChatSession(
   }
 }
 
-const HELP_TEXT = [
-  "Plain text broadcasts; @agent, <text> messages matching members.",
-  ...CHAT_COMMANDS.map(
-    (command) => `  ${command.usage} — ${command.description}`
-  ),
-  "PgUp/PgDn, Shift+↑/↓, mouse wheel: scroll messages. Ctrl+End: latest.",
-  "Ctrl+C / Esc: clear draft. Ctrl+D on empty: quit. Tab: complete.",
-  "Paste stays in the draft until Enter. //text sends a leading slash."
-].join("\n");
 
 function isRoomGone(error: unknown): boolean {
   return error instanceof ProtocolError && error.code === "room_not_found";

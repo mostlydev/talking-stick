@@ -9,12 +9,16 @@ import { TalkingStickService, type TalkingStickServiceOptions, type ProcessLiven
 import type { ProcessMetadata, RoomEvent } from "../src/types.js";
 import {
   agentColor,
+  chatDayLabel,
+  formatChatTime,
+  startsChatConversation,
   buildNameResolver,
   formatChatStatus,
   formatDuration,
   formatChatEvent,
   parseChatInput,
   resolveChatRecipient,
+  resolveChatRecipients,
   sanitizeChatText
 } from "../src/cli/chat-format.js";
 import { createChatIdentity, runChatSession } from "../src/cli/chat.js";
@@ -31,36 +35,81 @@ describe("chat input parsing", () => {
   test("plain text broadcasts and @name directs", () => {
     expect(parseChatInput("hello all")).toEqual({
       kind: "send",
-      to: null,
+      to: [],
       body: "hello all",
       interrupt: false
     });
     expect(parseChatInput("@codex please rebase")).toEqual({
       kind: "send",
-      to: "codex",
+      to: ["codex"],
       body: "please rebase",
       interrupt: false
     });
     expect(parseChatInput("@codex, hello")).toMatchObject({
-      to: "codex",
+      to: ["codex"],
       body: "hello"
     });
     expect(parseChatInput("/to claude:1234 look")).toMatchObject({
       kind: "send",
-      to: "claude:1234",
+      to: ["claude:1234"],
       body: "look"
     });
+  });
+
+  test("mentions anywhere in the message add recipients", () => {
+    expect(parseChatInput("@claude @codex, review this")).toEqual({
+      kind: "send",
+      to: ["claude", "codex"],
+      body: "review this",
+      interrupt: false
+    });
+    expect(parseChatInput("hey @codex and @Claude: can you check this?")).toEqual({
+      kind: "send",
+      to: ["codex", "claude"],
+      body: "hey @codex and @Claude: can you check this?",
+      interrupt: false
+    });
+    expect(parseChatInput("(@codex) ping @codex again")).toMatchObject({ to: ["codex"] });
+    expect(parseChatInput("mail ops@example.com about it")).toMatchObject({ to: [], body: "mail ops@example.com about it" });
+    expect(parseChatInput("run `git log @codex` please")).toMatchObject({ to: [] });
+    expect(parseChatInput("/to @claude also @codex look")).toMatchObject({ to: ["claude", "codex"], body: "also @codex look" });
+    expect(parseChatInput("@claude@codex hello")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("meet @ 5pm")).toMatchObject({ to: [], body: "meet @ 5pm", interrupt: false });
+  });
+
+  test("!@ marks an interrupt, for named agents or on its own", () => {
+    expect(parseChatInput("!@codex stop now")).toEqual({
+      kind: "send",
+      to: ["codex"],
+      body: "stop now",
+      interrupt: true
+    });
+    expect(parseChatInput("!@codex !@claude, stop")).toMatchObject({ to: ["codex", "claude"], body: "stop", interrupt: true });
+    expect(parseChatInput("!@codex @claude stop")).toMatchObject({ to: ["codex", "claude"], interrupt: true });
+    expect(parseChatInput("!@everyone stop")).toEqual({
+      kind: "send",
+      to: ["everyone"],
+      body: "stop",
+      interrupt: true
+    });
+    expect(parseChatInput("!@ stop")).toMatchObject({ to: [], body: "stop", interrupt: true });
+    expect(parseChatInput("please stop !@codex")).toMatchObject({ to: ["codex"], interrupt: true });
+    expect(parseChatInput("!@")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("wow!@codex")).toMatchObject({ to: [], interrupt: false });
+    expect(parseChatInput("!important")).toMatchObject({ to: [], body: "!important", interrupt: false });
+    expect(parseChatInput("!@claude!@codex hi")).toMatchObject({ kind: "error" });
   });
 
   test("interrupts, commands, escapes, and errors", () => {
     expect(parseChatInput("/interrupt @codex stop now")).toEqual({
       kind: "send",
-      to: "codex",
+      to: ["codex"],
       body: "stop now",
       interrupt: true
     });
+    expect(parseChatInput("/interrupt @codex @claude stop")).toMatchObject({ to: ["codex", "claude"], interrupt: true });
     expect(parseChatInput("/interrupt stop everyone")).toMatchObject({
-      to: null,
+      to: [],
       interrupt: true
     });
     expect(parseChatInput("/WHO")).toEqual({
@@ -74,7 +123,9 @@ describe("chat input parsing", () => {
     });
     expect(parseChatInput("   ")).toEqual({ kind: "empty" });
     expect(parseChatInput("@codex")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("@codex @claude")).toMatchObject({ kind: "error" });
     expect(parseChatInput("@, hello")).toMatchObject({ kind: "error" });
+    expect(parseChatInput("/to")).toMatchObject({ kind: "error" });
   });
 });
 
@@ -156,6 +207,26 @@ describe("chat rendering", () => {
     ).toBeNull();
   });
 
+  test("dates older activity and dims the entire historical message", () => {
+    const now = new Date(2026, 8, 15, 10, 0);
+    const yesterday = new Date(2026, 8, 14, 9, 5).toISOString();
+    const context = { self_agent_id: "human:op", name_of: () => "codex", color: true, show_turn_events: false, now };
+    const text = formatChatEvent(event({ event_type: "message_sent", from_agent_id: "codex:aa", created_at: yesterday,
+      payload: { body: "old message", delivery_hint: "normal" } }), context)!;
+    expect(text).toBe("\u001b[2;90mcodex  Yesterday at 09:05\u001b[0m\n\u001b[2;90m  old message\u001b[0m");
+    expect(chatDayLabel(new Date(2026, 8, 13).toISOString(), now)).toBe("2026-09-13");
+    expect(formatChatTime(now.toISOString(), now)).toBe("10:00");
+    expect(formatChatTime("invalid", now)).toBe("--:--");
+    expect(formatChatEvent(event({ event_type: "claim", created_at: yesterday }), context)).toBeNull();
+  });
+
+  test("a join after four quiet hours separates conversations without declaring agents dead", () => {
+    const before = event({ created_at: "2026-09-15T08:00:00Z" });
+    expect(startsChatConversation(before, event({ event_type: "join", created_at: "2026-09-15T12:00:00Z" }))).toBe(true);
+    expect(startsChatConversation(before, event({ event_type: "join", created_at: "2026-09-15T11:59:59Z" }))).toBe(false);
+    expect(startsChatConversation(before, event({ event_type: "message_sent", created_at: "2026-09-15T12:00:00Z" }))).toBe(false);
+  });
+
   test("colors each member by harness so names stay recognizable", () => {
     expect(agentColor("claude:aa")).toBe(agentColor("claude:bb"));
     expect(agentColor("codex:aa")).not.toBe(agentColor("claude:aa"));
@@ -197,6 +268,34 @@ describe("chat rendering", () => {
     expect(resolveChatRecipient("gemini", members, "human:op")).toHaveProperty(
       "error"
     );
+    expect(resolveChatRecipients(["codex", "claude", "claude:c"], members, "human:op")).toEqual({
+      agent_ids: ["codex:aa", "claude:bb", "claude:cc"]
+    });
+    const liveness = [
+      { agent_id: "codex:aa", status: "active", session_kind: "harness_cli" },
+      { agent_id: "claude:bb", status: "inactive", process_liveness: "alive", session_kind: "harness_cli" },
+      { agent_id: "claude:ee", status: "inactive", process_liveness: "gone", session_kind: "harness_cli" },
+      { agent_id: "grok:ff", status: "active", process_liveness: "gone", session_kind: "harness_cli" }
+    ] as never;
+    expect(resolveChatRecipients(["everyone"], liveness, "human:op")).toEqual({ agent_ids: ["codex:aa", "claude:bb"] });
+    expect(resolveChatRecipients(["claude"], liveness, "human:op")).toEqual({ agent_ids: ["claude:bb"] });
+    expect(resolveChatRecipients(["codex", "grok"], liveness, "human:op")).toMatchObject({
+      error: "No room member matches '@grok'. 'grok' only matches agents that have ended: grok:ff.", unmatched: ["grok"]
+    });
+    expect(resolveChatRecipient("grok", liveness, "human:op")).toEqual({
+      error: "'grok' only matches agents that have ended: grok:ff."
+    });
+    expect(resolveChatRecipients(["everyone"], [
+      { agent_id: "codex:aa", status: "active", session_kind: "harness_cli" },
+      { agent_id: "claude:bb", status: "active", session_kind: "harness_cli" },
+      { agent_id: "gemini:dd", status: "inactive", session_kind: "harness_cli" },
+      { agent_id: "human:op:chat:2", status: "active", session_kind: "human_chat" },
+      { agent_id: "human:op", status: "active", session_kind: "human_chat" }
+    ] as never, "human:op")).toEqual({ agent_ids: ["codex:aa", "claude:bb"] });
+    expect(resolveChatRecipients(["codex", "gemini", "grok"], members, "human:op")).toEqual({
+      error: "No room member matches '@gemini', '@grok'.",
+      unmatched: ["gemini", "grok"]
+    });
   });
 });
 
@@ -246,6 +345,22 @@ describe("chat status line", () => {
     ).toBe(
       "6 members │ codex holding 12m · claude up next · gemini idle 1h · opencode standby · grok away"
     );
+  });
+
+  test("ended agents leave the footer; live silent agents read as idle", () => {
+    const members = [
+      member({ agent_id: "codex:aa", status: "inactive", process_liveness: "alive", last_seen_at: minutesAgo(180) }),
+      member({ agent_id: "claude:bb", status: "inactive", process_liveness: "gone", last_seen_at: minutesAgo(30) }),
+      member({ agent_id: "gemini:cc", status: "inactive", process_liveness: "unknown", last_seen_at: minutesAgo(30) }),
+      member({ agent_id: "grok:dd", status: "inactive", process_liveness: "unknown", standby_transport: "manual" })
+    ];
+    const ids = members.map((row: { agent_id: string }) => row.agent_id);
+    expect(
+      formatChatStatus(
+        { members, owner: null, owner_since: null, reserved_for: null, now, columns: 200 },
+        context(ids)
+      )
+    ).toBe("3 members │ codex idle 3h · gemini away · grok standby");
   });
 
   test("fits the terminal width and counts what it had to drop", () => {
@@ -600,11 +715,14 @@ describe("tt chat session", () => {
     input.write("hello team\n");
     input.write("@codex please rebase\n");
     input.write("@nobody hi\n");
+    input.write("partial @codex and @nobody\n");
     await until(() =>
       /you → codex  \d\d:\d\d\n  please rebase/.test(transcript)
     );
     expect(transcript).toMatch(/\n\nyou  \d\d:\d\d\n  hello team\n/);
-    expect(transcript).toContain("! No room member matches 'nobody'.");
+    expect(transcript).toContain("! No room member matches '@nobody'.");
+    // One unknown mention blocks the whole send; nothing reaches codex.
+    expect(transcript).not.toContain("partial @codex and @nobody");
 
     service.sendMessage({
       agent_id: "codex:aa",
@@ -631,6 +749,18 @@ describe("tt chat session", () => {
         .sort()
     ).toEqual(["codex:aa", "codex:bb"]);
     service.leaveRoom({ agent_id: "codex:bb", room_id: joined.room_id });
+
+    service.joinPath({ agent_id: "claude:cc", context_path: root });
+    input.write("ping @codex:aa and @claude about it\n");
+    const mentioned = () =>
+      service
+        .getRoomEvents({ room_id: joined.room_id, include_all: true })
+        .filter((event) => event.payload?.body === "ping @codex:aa and @claude about it")
+        .map((event) => event.to_agent_id)
+        .sort();
+    await until(() => mentioned().length === 2);
+    expect(mentioned()).toEqual(["claude:cc", "codex:aa"]);
+    service.leaveRoom({ agent_id: "claude:cc", room_id: joined.room_id });
 
     input.write("/quit\n");
     await session;
@@ -959,4 +1089,142 @@ test("chat remains responsive while a slow recipient wakes and reports each reci
     input.write("/quit\n");
     await session;
   }
+});
+
+describe("message receipts", () => {
+  test("record only addressed messages actually returned to the recipient's own stream", async () => {
+    const { root, service } = setupService();
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    service.joinPath({ agent_id: "claude:bb", context_path: root });
+    const roomId = joined.room_id;
+    const first = service.sendMessage({ agent_id: "claude:bb", room_id: roomId, to_agent_id: "codex:aa", body: "one" });
+    const skipped = service.sendMessage({ agent_id: "claude:bb", room_id: roomId, to_agent_id: "codex:aa", body: "two" });
+    const broadcast = service.sendMessage({ agent_id: "claude:bb", room_id: roomId, body: "all" });
+    const receipts = () =>
+      service.getMessageReceipts({ room_id: roomId, event_seqs: [first.event_seq, skipped.event_seq, broadcast.event_seq] });
+
+    // An audit wait of someone else's stream is not delivery.
+    await service.waitForEvents({ agent_id: "claude:bb", room_id: roomId, after_event_seq: 0, target_agent_id: "any", max_wait_ms: 0 });
+    expect(receipts()).toEqual([]);
+
+    // A cursor that skips a message never marks it delivered.
+    await service.waitForEvents({ agent_id: "codex:aa", room_id: roomId, after_event_seq: skipped.event_seq, max_wait_ms: 0 });
+    expect(receipts()).toEqual([]);
+
+    await service.waitForTurn({
+      agent_id: "codex:aa", room_id: roomId, max_wait_ms: 0, mode: "parked",
+      include_events: true, after_event_seq: first.event_seq - 1
+    });
+    expect(receipts().map((receipt) => [receipt.event_seq, receipt.agent_id])).toEqual([
+      [first.event_seq, "codex:aa"],
+      [skipped.event_seq, "codex:aa"]
+    ]);
+  });
+
+  test("chat advances a delivery notice once the recipient's wait returns the message", async () => {
+    const { root, service } = setupService();
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let transcript = "";
+    output.on("data", (chunk) => { transcript += chunk.toString(); });
+    const session = runChatSession({
+      runtime: { commands: new TalkingStickCommands(service), close: () => {} },
+      identity: observerIdentity(),
+      context_path: root,
+      input,
+      output,
+      terminal: false,
+      color: false,
+      history: 0,
+      show_turn_events: false,
+      poll_ms: 5
+    });
+    await until(() => transcript.includes("In the room"));
+    input.write("@codex please look\n");
+    await until(() => /codex: \S/.test(transcript));
+    expect(transcript).not.toContain("codex: received");
+    await service.waitForTurn({
+      agent_id: "codex:aa", room_id: joined.room_id, max_wait_ms: 0, mode: "parked",
+      include_events: true, after_event_seq: 0
+    });
+    await until(() => transcript.includes("codex: received"));
+    input.write("/quit\n");
+    await session;
+  });
+});
+
+test("receipts for later messages still arrive with more than one batch awaiting", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let transcript = "";
+  output.on("data", (chunk) => { transcript += chunk.toString(); });
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close: () => {} },
+    identity: observerIdentity(),
+    context_path: root,
+    input,
+    output,
+    terminal: false,
+    color: false,
+    history: 0,
+    show_turn_events: false,
+    poll_ms: 5
+  });
+  await until(() => transcript.includes("In the room"));
+  const count = 205;
+  input.write(Array.from({ length: count }, (_, index) => `@codex m${index}\n`).join(""));
+  await until(() => (transcript.match(/codex: /g)?.length ?? 0) >= count, 10_000);
+  const last = service.getLatestEventSeq({ room_id: joined.room_id });
+  await service.waitForTurn({
+    agent_id: "codex:aa", room_id: joined.room_id, max_wait_ms: 0, mode: "parked",
+    include_events: true, after_event_seq: last - 1
+  });
+  await until(() => transcript.includes("codex: received"), 5_000);
+  expect(transcript.match(/codex: received/g)).toHaveLength(1);
+  input.write("/quit\n");
+  await session;
+}, 20_000);
+
+describe("ended member pruning", () => {
+  test("removes definitely ended agents after the grace period and keeps everyone else", () => {
+    let clock = new Date("2026-09-15T10:00:00.000Z");
+    const liveness: Record<string, ProcessLiveness> = {
+      "gone-old": "gone",
+      "gone-recent": "gone",
+      "alive-old": "alive",
+      "unknown-old": "unknown",
+      "gone-owner": "gone"
+    };
+    const { root, service } = setupService({
+      now: () => clock,
+      // Room expiry disabled: ended-member cleanup must still run.
+      policy: { waitForEventsPollMs: 1, idleRoomTtlMs: 0 },
+      processLivenessChecker: (metadata: ProcessMetadata) =>
+        liveness[metadata.harness_session_id ?? ""] ?? "unknown"
+    });
+    const meta = (session: string): ProcessMetadata => ({
+      host_id: "h", pid: 1, process_started_at: "t", session_kind: "harness_cli",
+      harness_name: "codex", harness_session_id: session, harness_host_id: "h",
+      harness_pid: 2, harness_process_started_at: "t"
+    });
+    const owner = service.joinPath({ agent_id: "codex:owner", context_path: root, process_metadata: meta("gone-owner") });
+    service.joinPath({ agent_id: "codex:old", context_path: root, process_metadata: meta("gone-old") });
+    service.joinPath({ agent_id: "codex:alive", context_path: root, process_metadata: meta("alive-old") });
+    service.joinPath({ agent_id: "codex:unknown", context_path: root, process_metadata: meta("unknown-old") });
+    service.db.prepare("UPDATE path_rooms SET owner = 'codex:owner', state = 'owned' WHERE room_id = ?").run(owner.room_id);
+
+    clock = new Date("2026-09-15T11:30:00.000Z");
+    service.joinPath({ agent_id: "codex:recent", context_path: root, process_metadata: meta("gone-recent") });
+    const state = service.getRoomState({ room_id: owner.room_id, include_all: true });
+    expect(state.members.map((member) => member.agent_id).sort()).toEqual([
+      "codex:alive", "codex:owner", "codex:recent", "codex:unknown"
+    ]);
+    expect(state.members.find((member) => member.agent_id === "codex:alive")?.process_liveness).toBe("alive");
+    const leave = service.getRoomEvents({ room_id: owner.room_id, include_all: true })
+      .find((event) => event.event_type === "leave");
+    expect(leave).toMatchObject({ from_agent_id: "codex:old", reason: "process_ended" });
+  });
 });

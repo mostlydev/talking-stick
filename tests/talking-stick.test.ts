@@ -4487,7 +4487,7 @@ describe("interrupt delivery", () => {
     return joined;
   }
 
-  test("directed interrupt prefers a live receiver and skips the wake transport", async () => {
+  test("directed interrupt reports unavailable injection even when a receiver is alive", async () => {
     const { requests, transport } = recordingTransport();
     const harness = createHarness({ wakeTransport: transport });
     const joined = joinTwo(harness);
@@ -4511,7 +4511,7 @@ describe("interrupt delivery", () => {
       delivery_hint: "interrupt"
     });
 
-    expect(result.delivery_status).toBe("receiver");
+    expect(result.delivery_status).toBe("unreachable");
     expect(result.delivery_target).toBe("codex:target");
     expect(requests).toHaveLength(0);
   });
@@ -4553,8 +4553,8 @@ describe("interrupt delivery", () => {
       body: "second urgent ping",
       delivery_hint: "interrupt"
     });
-    expect(coalesced.delivery_status).toBe("pending");
-    expect(requests).toHaveLength(1);
+    expect(coalesced.delivery_status).toBe("endpoint");
+    expect(requests).toHaveLength(2);
 
     harness.clock.advance(1000);
     harness.service.getRoomState({
@@ -4570,7 +4570,7 @@ describe("interrupt delivery", () => {
       delivery_hint: "interrupt"
     });
     expect(rewake.delivery_status).toBe("endpoint");
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(3);
   });
 
   test("normal directed chatter preserves the unparked terminal composer", async () => {
@@ -4741,7 +4741,7 @@ describe("interrupt delivery", () => {
       delivery_hint: "interrupt"
     });
     expect(raced).toMatchObject({
-      delivery_status: "pending"
+      delivery_status: "endpoint"
     });
     expect(requests[0]).toMatchObject({
       surface_id: "surface-1",

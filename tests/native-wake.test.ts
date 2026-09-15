@@ -571,14 +571,14 @@ describe("concurrent wake batches", () => {
     service.registerWakeEndpoint({
       room_id: roomId, agent_id: "claude:aa", workspace_id: "w", surface_id: "s", harness_session_id: "claude-session"
     });
-    const interrupt = (body: string) => service.sendMessageAndWake({
-      agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body, delivery_hint: "interrupt"
+    const send = (body: string) => service.sendMessageAndWake({
+      agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body
     });
-    const first = await interrupt("first");
+    const first = await send("first");
     await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "second" });
     service.registerReceiver({ room_id: roomId, agent_id: "claude:aa", receiver_id: "r", host_id: HOST, pid: 77, process_started_at: "t", cursor_event_seq: 0 });
     service.unregisterReceiver({ room_id: roomId, agent_id: "claude:aa", receiver_id: "r", cursor_event_seq: first.event_seq });
-    await interrupt("third");
+    await send("third");
     expect(nativeRequests).toHaveLength(1);
     expect(cmuxRequests).toHaveLength(0);
   });
@@ -805,4 +805,100 @@ test("standby preserves a pending wake not yet submitted", async () => {
   service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "manual" });
   await service.flushWakes();
   expect(nativeRequests).toHaveLength(1);
+});
+
+describe("forced interrupts", () => {
+  test("a live receiver and an older normal batch do not suppress explicit interrupts", async () => {
+    const { service, project, nativeRequests } = harness({ receiverAlive: true });
+    const roomId = joinPair(service, project);
+    await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "normal" });
+    service.registerReceiver({ room_id: roomId, agent_id: "claude:aa", receiver_id: "live", host_id: HOST, pid: 77, process_started_at: "t", cursor_event_seq: 0 });
+    for (const body of ["first urgent", "second urgent"]) {
+      const result = await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body, delivery_hint: "interrupt" });
+      expect(result).toMatchObject({ delivery_status: "endpoint", delivery_state: "queued", interrupt_status: "injected" });
+    }
+    expect(nativeRequests).toHaveLength(3);
+    expect(nativeRequests.slice(1).every((r) => r.interrupt === true)).toBe(true);
+    expect(nativeRequests[1].text).not.toContain("first urgent");
+    await service.flushWakes();
+    expect(nativeRequests).toHaveLength(3);
+  });
+
+  test("concurrent senders reserve each urgent event once with independent outcomes", async () => {
+    let finish!: (result: NativeWakeResult) => void;
+    const pending = new Promise<NativeWakeResult>((resolve) => { finish = resolve; });
+    const { service, project, nativeRequests } = harness({ native: () => pending });
+    const roomId = joinPair(service, project);
+    const other = new TalkingStickService({ dbPath: service.db.name, hostId: HOST,
+      processLivenessChecker: () => "alive", receiverLivenessChecker: () => "alive",
+      nativeWakeTransport: { deliver(request) { nativeRequests.push(request); return { outcome: "queued" }; } } });
+    services.push(other);
+    const first = service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "first", delivery_hint: "interrupt" });
+    await other.flushWakes();
+    expect(nativeRequests).toHaveLength(1);
+    const second = await other.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "second", delivery_hint: "interrupt" });
+    expect(second.delivery_state).toBe("queued");
+    finish({ outcome: "ambiguous", error: "claude_inbox_timeout" });
+    expect((await first).delivery_state).toBe("ambiguous");
+    const health = service.getRoomHealth({ context_path: project, agent_id: "claude:aa" });
+    expect(health.wake_endpoints?.[0]).toMatchObject({ last_status: "ambiguous", last_error: "claude_inbox_timeout" });
+    expect(JSON.stringify(health)).not.toContain("s3cret-token");
+    await other.flushWakes();
+    expect(nativeRequests).toHaveLength(2);
+  });
+
+  test("a queued interrupt cannot migrate to a replacement harness session", async () => {
+    const { service, project, nativeRequests } = harness();
+    const roomId = joinPair(service, project);
+    service.sendMessage({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "old session", delivery_hint: "interrupt" });
+    service.joinPath({ agent_id: "claude:aa", context_path: project, process_metadata: metadata("claude", "replacement") });
+    await service.flushWakes();
+    expect(nativeRequests).toHaveLength(0);
+  });
+
+  test("Claude urgent wire steers at the next tool boundary and keeps the body out of the wake", async () => {
+    const socketPath = path.join(tempRoot(), "urgent.sock");
+    let received!: (body: string) => void;
+    const wire = new Promise<string>((resolve) => { received = resolve; });
+    const server = net.createServer((socket) => {
+      let data = "";
+      socket.on("data", (chunk) => { data += chunk; });
+      socket.on("end", () => received(data));
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    try {
+      await createSystemNativeWakeTransport().deliver({ transport: "claude_inbox", address: socketPath,
+        secret: "token", text: "fixed urgent prompt", interrupt: true });
+      const messages = (await wire).trim().split("\n").map((line) => JSON.parse(line));
+      expect(messages).toEqual([{ type: "auth", token: "token" },
+        { type: "user", priority: "next", message: { role: "user", content: "fixed urgent prompt" } }]);
+    } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  });
+});
+
+test("an expired queued interrupt cannot cancel later work", async () => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  const sent = service.sendMessage({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "old urgent message", delivery_hint: "interrupt" });
+  service.db.prepare("UPDATE room_events SET created_at = ? WHERE event_seq = ?")
+    .run(new Date(Date.now() - 61_000).toISOString(), sent.event_seq);
+  await service.flushWakes();
+  expect(nativeRequests).toHaveLength(0);
+  expect(service.db.prepare("SELECT status, error FROM interrupt_deliveries WHERE event_seq = ?").get(sent.event_seq))
+    .toEqual({ status: "failed", error: "interrupt_expired" });
+  expect(service.db.prepare("SELECT event_seq FROM room_events WHERE event_seq = ?").get(sent.event_seq)).toBeDefined();
+});
+
+test("agent and human interrupts inject the same way", async () => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  service.joinPath({ agent_id: "codex:bb", context_path: project, process_metadata: metadata("codex", "codex-session") });
+  const result = await service.sendMessageAndWake({ agent_id: "codex:bb", room_id: roomId, to_agent_id: "claude:aa", body: "review blocker", delivery_hint: "interrupt" });
+  expect(result.interrupt_status).toBe("injected");
+  expect(nativeRequests).toHaveLength(1);
+  expect(nativeRequests[0].interrupt).toBe(true);
+  expect(nativeRequests[0].text).not.toContain("review blocker");
+  const human = await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "operator steer", delivery_hint: "interrupt" });
+  expect(human.interrupt_status).toBe("injected");
+  expect(nativeRequests[1].interrupt).toBe(true);
 });

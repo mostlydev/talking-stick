@@ -23,6 +23,7 @@ export interface NativeWakeRegistration {
 
 export interface NativeWakeRequest extends NativeWakeRegistration {
   text: string;
+  interrupt?: boolean;
 }
 
 // failed: the harness definitely did not receive the wake, so a fallback may
@@ -69,6 +70,7 @@ export function formatNativeWakeText(input: {
   const place = sanitizeWakeLabel(input.path, 200) || "the room";
   switch (input.reason) {
     case "interrupt":
+      return `[talking-stick] URGENT room message from ${sender} in ${place}. Run \`tt wait --json\` now to read it.`;
     case "message":
       return `[talking-stick] New message from ${sender} in ${place}. Run \`tt wait --json\` to read it.`;
     case "turn":
@@ -123,7 +125,10 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
       written = true;
       socket.end(
         JSON.stringify({ type: "auth", token: request.secret }) + "\n" +
-        JSON.stringify({ type: "user", message: { role: "user", content: request.text } }) + "\n",
+        // Interrupts ask for "next", not "now": in interactive Claude Code "now"
+        // doesn't abort a running tool (verified live), and other hosts may abort
+        // one. "next" steers the active turn at its next tool boundary.
+        JSON.stringify({ type: "user", ...(request.interrupt ? { priority: "next" } : {}), message: { role: "user", content: request.text } }) + "\n",
         () => finish({ outcome: "queued" })
       );
     });

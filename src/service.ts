@@ -35,6 +35,7 @@ import type {
   AddNoteResult,
   AgentId,
   DeliveryHint,
+  MessageReceipt,
   NativeWakeEndpointSummary,
   RegisterNativeWakeEndpointInput,
   RegisterNativeWakeEndpointResult,
@@ -196,6 +197,7 @@ interface NoteRow {
 }
 
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
+const ENDED_MEMBER_GRACE_MS = 60 * 60 * 1000;
 const MAX_MESSAGE_BODY_BYTES = 4096;
 // Bare `tt events` returns a bounded recent tail; --all / --limit widen it.
 const DEFAULT_EVENT_VIEW_LIMIT = 50;
@@ -267,6 +269,18 @@ interface NativeAwareDelivery {
   error?: string;
   transport?: NativeWakeTransportName;
   state?: NativeWakeState | "failed";
+  interrupt_status?: "injected" | "unsupported";
+}
+
+interface InterruptDeliveryRow {
+  room_id: string;
+  agent_id: AgentId;
+  event_seq: number;
+  harness_session_id: string;
+  host_id: string;
+  status: "pending" | "dispatching" | NativeWakeState | "failed";
+  transport: NativeWakeTransportName | null;
+  error: string | null;
 }
 
 interface NativeWakeEndpointRow {
@@ -768,6 +782,7 @@ export class TalkingStickService {
       });
 
       if (waitResult.status === "closed") {
+        if (targetFilter === "self") this.recordDelivered(input.room_id, input.agent_id, events);
         return this.withWaitEvents(waitResult, events, afterEventSeq, "closed");
       }
 
@@ -778,14 +793,17 @@ export class TalkingStickService {
           input.advisory_takeover_wake ?? true
         )
       ) {
+        if (targetFilter === "self") this.recordDelivered(input.room_id, input.agent_id, events);
         return this.withWaitEvents(waitResult, events, afterEventSeq, "turn");
       }
 
       if (events.length > 0) {
+        if (targetFilter === "self") this.recordDelivered(input.room_id, input.agent_id, events);
         return this.withWaitEvents(waitResult, events, afterEventSeq, "event");
       }
 
       if (Date.now() >= deadline) {
+        if (targetFilter === "self") this.recordDelivered(input.room_id, input.agent_id, events);
         return this.withWaitEvents(waitResult, events, afterEventSeq, "timeout");
       }
 
@@ -1795,7 +1813,16 @@ export class TalkingStickService {
           ? room.owner
           : null);
       if (wakeTargetId) {
-        this.queueNativeWake(input.room_id, wakeTargetId, deliveryHint === "interrupt" ? "interrupt" : "message", input.agent_id, eventSeq);
+        if (deliveryHint === "interrupt" && wakeTargetId !== input.agent_id) {
+          const target = this.getMember(input.room_id, wakeTargetId)!;
+          this.db.prepare(`INSERT INTO interrupt_deliveries
+            (room_id, agent_id, event_seq, harness_session_id, host_id) VALUES (?, ?, ?, ?, ?)`)
+            .run(input.room_id, wakeTargetId, eventSeq,
+              target.harness_session_id ?? `member:${target.agent_id}`,
+              target.harness_host_id ?? target.host_id ?? this.hostId);
+        } else {
+          this.queueNativeWake(input.room_id, wakeTargetId, "message", input.agent_id, eventSeq);
+        }
       }
 
       return {
@@ -2074,14 +2101,23 @@ export class TalkingStickService {
   }
 
   private listNativeWakeEndpoints(roomId: string): NativeWakeEndpointSummary[] {
-    return this.db
-      .prepare<[string], NativeWakeEndpointSummary>(
-        `SELECT agent_id, transport, recorded_at, last_attempt_at, last_status, last_error
-         FROM member_wake_endpoints
-         WHERE room_id = ?
-         ORDER BY agent_id, transport`
+    return this.db.prepare<[string, string], NativeWakeEndpointSummary>(`
+      WITH attempts AS (
+        SELECT agent_id, transport, recorded_at, last_attempt_at, last_status, last_error
+        FROM member_wake_endpoints WHERE room_id = ?
+        UNION ALL
+        SELECT i.agent_id, i.transport, e.recorded_at, i.attempted_at, i.status, i.error
+        FROM interrupt_deliveries i JOIN member_wake_endpoints e
+          ON e.room_id = i.room_id AND e.agent_id = i.agent_id AND e.transport = i.transport
+          AND e.harness_session_id = i.harness_session_id AND e.host_id = i.host_id
+        WHERE i.room_id = ? AND i.status IN ('queued', 'woken', 'ambiguous', 'failed')
+      ), ranked AS (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY agent_id, transport ORDER BY last_attempt_at DESC) AS rank
+        FROM attempts
       )
-      .all(roomId);
+      SELECT agent_id, transport, recorded_at, last_attempt_at, last_status, last_error
+      FROM ranked WHERE rank = 1 ORDER BY agent_id, transport
+    `).all(roomId, roomId);
   }
 
   // Endpoints that belong to the member's current harness session on this
@@ -2172,12 +2208,21 @@ export class TalkingStickService {
     // never delivered (killed after commit, or a long wait that queued them).
     const rooms = roomId ? [roomId] : [...new Set([...this.wakeRooms,
       ...this.db.prepare<[], { room_id: string }>(
-        "SELECT DISTINCT room_id FROM member_wake_endpoints WHERE wake_pending = 1"
+        "SELECT room_id FROM member_wake_endpoints WHERE wake_pending = 1 UNION SELECT room_id FROM interrupt_deliveries WHERE status = 'pending'"
       ).all().map((row) => row.room_id)])];
     for (const room of rooms) {
       // A recipient-scoped flush leaves other recipients queued for a later
       // room-wide flush.
       if (!agentId) this.wakeRooms.delete(room);
+      const interrupts = this.db.prepare<[string], InterruptDeliveryRow>(
+        "SELECT * FROM interrupt_deliveries WHERE room_id = ? AND status = 'pending' ORDER BY event_seq"
+      ).all(room);
+      for (const row of interrupts) {
+        if (agentId && row.agent_id !== agentId) continue;
+        const job = this.dispatchInterrupt(row);
+        this.wakeJobs.set(job, { room, agent: row.agent_id });
+        void job.finally(() => this.wakeJobs.delete(job)).catch(() => {});
+      }
       const pending = this.db.prepare<[string], { agent_id: string }>(
         "SELECT DISTINCT agent_id FROM member_wake_endpoints WHERE wake_pending = 1 AND room_id = ?"
       ).all(room);
@@ -2201,8 +2246,62 @@ export class TalkingStickService {
       const delivery = this.resolveMessageDelivery(input.room_id, target, result.event_seq, input.delivery_hint);
       return { ...result, delivery_status: delivery.status,
         delivery_transport: delivery.transport, delivery_state: delivery.state,
-        delivery_error: delivery.error };
+        delivery_error: delivery.error, interrupt_status: delivery.interrupt_status };
     });
+  }
+
+  private async dispatchInterrupt(row: InterruptDeliveryRow): Promise<void> {
+    const key = [row.room_id, row.agent_id, row.event_seq] as const;
+    const finish = (result: NativeWakeResult, transport?: NativeWakeTransportName) => {
+      this.db.prepare(`UPDATE interrupt_deliveries SET status = ?, transport = ?, error = ?, attempted_at = ?
+        WHERE room_id = ? AND agent_id = ? AND event_seq = ? AND status = 'dispatching'`)
+        .run(result.outcome, transport ?? null, result.error ?? null, this.now().toISOString(), ...key);
+    };
+    const reservation = withImmediateTransaction(this.db, () => {
+      const changed = this.db.prepare(`UPDATE interrupt_deliveries SET status = 'dispatching'
+        WHERE room_id = ? AND agent_id = ? AND event_seq = ? AND status = 'pending'`).run(...key);
+      if (changed.changes !== 1) return null;
+      const member = this.getMember(row.room_id, row.agent_id);
+      if (!member || (member.harness_session_id ?? `member:${member.agent_id}`) !== row.harness_session_id ||
+          (member.harness_host_id ?? member.host_id ?? this.hostId) !== row.host_id) {
+        finish({ outcome: "failed", error: "interrupt_session_changed" });
+        return null;
+      }
+      const endpoints = this.usableNativeWakeEndpoints(row.room_id, member);
+      const event = this.db.prepare<[number], { from_agent_id: string | null; created_at: string }>(
+        "SELECT from_agent_id, created_at FROM room_events WHERE event_seq = ?"
+      ).get(row.event_seq);
+      if (!event || this.now().getTime() - Date.parse(event.created_at) > 60_000) {
+        finish({ outcome: "failed", error: "interrupt_expired" });
+        return null;
+      }
+      const text = formatNativeWakeText({ reason: "interrupt",
+        sender: event?.from_agent_id ? this.describeWakeSender(row.room_id, event.from_agent_id) : null,
+        path: this.requireRoom(row.room_id).canonical_path });
+      return { endpoints, text };
+    });
+    if (!reservation) return;
+    let last: NativeWakeResult = { outcome: "failed", error: "interrupt_endpoint_unavailable" };
+    let transport: NativeWakeTransportName | undefined;
+    for (const endpoint of reservation.endpoints) {
+      const current = this.getNativeWakeEndpoint(row.room_id, row.agent_id, endpoint.transport);
+      const member = this.getMember(row.room_id, row.agent_id);
+      if (!member || current?.generation !== endpoint.generation ||
+          current.harness_session_id !== row.harness_session_id || current.host_id !== row.host_id) {
+        finish({ outcome: "failed", error: "interrupt_session_changed" }, transport);
+        return;
+      }
+      // The per-event reservation survives wait/standby and suppresses only
+      // repeat dispatches of this exact interrupt, never a later urgent event.
+      last = await this.deliverWakeEndpoint(endpoint, reservation.text, true);
+      transport = endpoint.transport;
+      if (last.outcome !== "failed") break;
+      if (this.getNativeWakeEndpoint(row.room_id, row.agent_id, endpoint.transport)?.generation !== endpoint.generation) {
+        finish({ outcome: "failed", error: "interrupt_session_changed" }, transport);
+        return;
+      }
+    }
+    finish(last, transport);
   }
 
   private async dispatchWake(roomId: string, agentId: AgentId): Promise<void> {
@@ -2240,32 +2339,10 @@ export class TalkingStickService {
       if (current?.batch_id !== batchId || current.generation !== endpoint.generation) return;
       const member = this.getMember(roomId, agentId);
       if (!member || !this.usableNativeWakeEndpoints(roomId, member).some((row) => row.transport === endpoint.transport)) return;
-      let result: NativeWakeResult;
-      try {
-        if (endpoint.transport === "cmux") {
-          if (wakeReason !== "interrupt" && !(member.wait_intent === "parked" && member.standby_transport === "cmux")) return;
-          const address = JSON.parse(endpoint.address) as { workspace_id: string; surface_id: string };
-          const delivery = this.wakeTransport ? await this.wakeTransport.deliver({
-            room_id: roomId, agent_id: agentId, transport: "cmux", ...address,
-            generation: endpoint.generation, reason: "actionable_room_update"
-          }) : null;
-          result = delivery?.delivered ? { outcome: "queued" } :
-            { outcome: delivery?.definite_failure || !delivery ? "failed" : "ambiguous", error: "cmux_wake_failed" };
-        } else {
-          result = this.nativeWakeTransport ? await this.nativeWakeTransport.deliver({
-            transport: endpoint.transport, address: endpoint.address, secret: endpoint.secret, text
-          }) : { outcome: "failed", error: "native_wake_unavailable" };
-        }
-      } catch {
-        result = { outcome: "ambiguous", error: "wake_delivery_unconfirmed" };
-      }
-      // Even injected transports must not leak raw errors through public JSON.
-      const safeError = result.error && [
-        "claude_inbox_timeout", "claude_inbox_unreachable", "claude_inbox_write_failed", "claude_inbox_closed",
-        "invalid_codex_thread", "codex_unavailable", "codex_thread_not_found", "codex_queue_timeout", "codex_queue_failed",
-        "cmux_wake_failed", "native_wake_unavailable", "wake_delivery_unconfirmed"
-      ].includes(result.error)
-        ? result.error : result.error ? "wake_delivery_failed" : null;
+      if (endpoint.transport === "cmux" && wakeReason !== "interrupt" &&
+          !(member.wait_intent === "parked" && member.standby_transport === "cmux")) return;
+      const result = await this.deliverWakeEndpoint(endpoint, text);
+      const safeError = result.error ?? null;
       const recorded = this.db.prepare(`UPDATE member_wake_endpoints
         SET last_attempt_at = ?, last_status = ?, last_error = ?
         WHERE room_id = ? AND agent_id = ? AND transport = ? AND generation = ? AND batch_id = ?`
@@ -2290,6 +2367,36 @@ export class TalkingStickService {
     ).run(roomId, agentId, standbyGeneration);
   }
 
+  private async deliverWakeEndpoint(endpoint: NativeWakeEndpointRow, text: string, interrupt = false): Promise<NativeWakeResult> {
+    const { room_id: roomId, agent_id: agentId } = endpoint;
+    let result: NativeWakeResult;
+    try {
+      if (endpoint.transport === "cmux") {
+        const address = JSON.parse(endpoint.address) as { workspace_id: string; surface_id: string };
+        const delivery = this.wakeTransport ? await this.wakeTransport.deliver({
+          room_id: roomId, agent_id: agentId, transport: "cmux", ...address,
+          generation: endpoint.generation, reason: "actionable_room_update"
+        }) : null;
+        result = delivery?.delivered ? { outcome: "queued" } :
+          { outcome: delivery?.definite_failure || !delivery ? "failed" : "ambiguous", error: "cmux_wake_failed" };
+      } else {
+        result = this.nativeWakeTransport ? await this.nativeWakeTransport.deliver({
+          transport: endpoint.transport, address: endpoint.address, secret: endpoint.secret, text, interrupt
+        }) : { outcome: "failed", error: "native_wake_unavailable" };
+      }
+    } catch {
+      result = { outcome: "ambiguous", error: "wake_delivery_unconfirmed" };
+    }
+    // Even injected transports must not leak raw errors through public JSON.
+    const safeError = result.error && [
+      "claude_inbox_timeout", "claude_inbox_unreachable", "claude_inbox_write_failed", "claude_inbox_closed",
+      "invalid_codex_thread", "codex_unavailable", "codex_thread_not_found", "codex_queue_timeout", "codex_queue_failed",
+      "cmux_wake_failed", "native_wake_unavailable", "wake_delivery_unconfirmed"
+    ].includes(result.error)
+      ? result.error : result.error ? "wake_delivery_failed" : null;
+    return { outcome: result.outcome, ...(safeError ? { error: safeError } : {}) };
+  }
+
   private describeWakeSender(roomId: string, agentId: AgentId): string {
     const sender = this.getMember(roomId, agentId);
     const name = sender?.display_name;
@@ -2299,6 +2406,19 @@ export class TalkingStickService {
   }
 
   private resolveMessageDelivery(roomId: string, targetId: AgentId, eventSeq: number, hint: DeliveryHint = "normal"): NativeAwareDelivery {
+    if (hint === "interrupt") {
+      const attempt = this.db.prepare<[string, string, number], InterruptDeliveryRow>(
+        "SELECT * FROM interrupt_deliveries WHERE room_id = ? AND agent_id = ? AND event_seq = ?"
+      ).get(roomId, targetId, eventSeq);
+      if (attempt) return {
+        status: attempt.status === "failed" ? "unreachable" :
+          attempt.status === "pending" || attempt.status === "dispatching" ? "pending" : "endpoint",
+        transport: attempt.transport ?? undefined,
+        state: attempt.status === "pending" || attempt.status === "dispatching" ? undefined : attempt.status,
+        error: attempt.error ?? undefined,
+        interrupt_status: attempt.transport ? attempt.transport === "claude_inbox" ? "injected" : "unsupported" : undefined
+      };
+    }
     const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
       "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
     ).get(roomId, targetId);
@@ -2379,6 +2499,9 @@ export class TalkingStickService {
           events.length > 0
             ? events[events.length - 1].event_seq
             : afterEventSeq;
+        if (targetFilter === "self") {
+          this.recordDelivered(input.room_id, input.agent_id, events);
+        }
         return { events, cursor_event_seq: lastSeq };
       }
 
@@ -4345,10 +4468,7 @@ export class TalkingStickService {
   }
 
   private purgeExpiredIdleRooms(now: Date): void {
-    if (this.policy.idleRoomTtlMs <= 0) {
-      return;
-    }
-
+    const expireRooms = this.policy.idleRoomTtlMs > 0;
     const cutoffMs = now.getTime() - this.policy.idleRoomTtlMs;
 
     withImmediateTransaction(this.db, () => {
@@ -4357,6 +4477,9 @@ export class TalkingStickService {
         .all();
 
       for (const room of rooms) {
+        // Ended-member cleanup runs even when idle room expiry is disabled.
+        this.pruneEndedMembers(room, now);
+        if (!expireRooms) continue;
         const members = this.getMembers(room.room_id);
         if (this.latestRoomActivityMs(room, members) > cutoffMs) {
           continue;
@@ -4369,6 +4492,40 @@ export class TalkingStickService {
         this.deleteRoom(room.room_id);
       }
     });
+  }
+
+  // A member whose harness process is definitely gone on this host, and who
+  // hasn't run a tt command for ENDED_MEMBER_GRACE_MS, has ended for good; its
+  // row would otherwise linger as "away" forever. The owner and the reserved
+  // recipient are left to the takeover and reservation rules, and unknown
+  // liveness (another host, no process identity) is never pruned.
+  private pruneEndedMembers(room: PathRoomRow, now: Date): void {
+    const cutoffMs = now.getTime() - ENDED_MEMBER_GRACE_MS;
+    const ended = this.getMembers(room.room_id).filter(
+      (member) =>
+        member.agent_id !== room.owner &&
+        member.agent_id !== room.reserved_for &&
+        parseTimestampMs(member.last_seen_at) < cutoffMs &&
+        this.getMemberProcessLiveness(member) === "gone"
+    );
+    const timestamp = now.toISOString();
+    for (const member of ended) {
+      this.db
+        .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
+        .run(room.room_id, member.agent_id);
+      if (!isObserverMember(member)) {
+        this.appendEvent({
+          room_id: room.room_id,
+          turn_id: room.turn_id,
+          event_type: "leave",
+          from_agent_id: member.agent_id,
+          to_agent_id: null,
+          handoff: null,
+          reason: "process_ended",
+          created_at: timestamp
+        });
+      }
+    }
   }
 
   private latestRoomActivityMs(
@@ -4781,11 +4938,47 @@ export class TalkingStickService {
   }
 
   private mapMember(row: RoomMemberRow, now: Date): RoomMember {
+    const liveness = this.getMemberProcessLiveness(row);
     return {
       ...row,
       standby_wake_pending: row.standby_wake_pending === 1,
-      status: this.isMemberActive(row, now) ? "active" : "inactive"
+      status: liveness !== "gone" && this.hasRecentPresence(row, now) ? "active" : "inactive",
+      process_liveness: liveness
     };
+  }
+
+  // Receipts are per message and recorded only for messages addressed to the
+  // member that its own event stream actually returned, so a skipped cursor or
+  // a filtered wait can never mark an unseen message delivered. A receipt
+  // proves delivery to the member's receiver, not that a model read it.
+  private recordDelivered(roomId: string, agentId: AgentId | undefined, events: RoomEvent[]): void {
+    if (!agentId) return;
+    const addressed = events.filter(
+      (event) => event.event_type === "message_sent" && event.to_agent_id === agentId
+    );
+    if (addressed.length === 0) return;
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO message_receipts (room_id, agent_id, event_seq, delivered_at)
+       SELECT ?, ?, ?, ? WHERE EXISTS (
+         SELECT 1 FROM room_members WHERE room_id = ? AND agent_id = ?)`
+    );
+    const deliveredAt = this.now().toISOString();
+    for (const event of addressed) {
+      insert.run(roomId, agentId, event.event_seq, deliveredAt, roomId, agentId);
+    }
+  }
+
+  getMessageReceipts(input: { room_id: string; event_seqs: number[] }): MessageReceipt[] {
+    assertNonEmpty(input.room_id, "room_id");
+    const seqs = input.event_seqs.filter((seq) => Number.isInteger(seq)).slice(0, 200);
+    if (seqs.length === 0) return [];
+    return this.db
+      .prepare<unknown[], MessageReceipt>(
+        `SELECT event_seq, agent_id, delivered_at FROM message_receipts
+         WHERE room_id = ? AND event_seq IN (${seqs.map(() => "?").join(", ")})
+         ORDER BY event_seq`
+      )
+      .all(input.room_id, ...seqs);
   }
 
   private mapEvent(row: RoomEventRow): RoomEvent {

@@ -20,6 +20,7 @@ import type {
   PassStickInput,
   PassStickResult,
   RelinquishOwnershipResult,
+  MessageReceipt,
   RegisterNativeWakeEndpointResult,
   RegisterStandbyResult,
   RegisterReceiverResult,
@@ -389,6 +390,10 @@ export class TalkingStickCommands {
       agent_id: identity?.agent_id ?? input.agent_id,
       process_metadata: identity?.process_metadata ?? input.process_metadata
     });
+  }
+
+  getMessageReceipts(input: { room_id: string; event_seqs: number[] }): MessageReceipt[] {
+    return this.service.getMessageReceipts(input);
   }
 
   flushWakes(roomId?: string): Promise<void> {
