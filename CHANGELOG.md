@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.18.0] — 2026-09-15
+
+Full notes: [`docs/releases/0.18.0.md`](docs/releases/0.18.0.md).
+
 ### Added
 
 - **Persistent room context.** Chat shows the room path in a fixed top bar and lists agent states below without a confusing member count.
@@ -550,6 +554,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.18.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.0
 [0.17.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.17.0
 [0.16.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.16.0
 [0.15.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.15.0
