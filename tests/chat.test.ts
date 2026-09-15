@@ -302,7 +302,7 @@ describe("chat status line", () => {
 });
 
 describe("human_chat observer membership", () => {
-  test("an observer is invisible to turn scheduling and room retention", async () => {
+  test("an observer retains the room without participating in turn scheduling", async () => {
     const { root, service } = setupService();
     const joined = service.joinPath({
       agent_id: "claude:solo",
@@ -394,8 +394,8 @@ describe("human_chat observer membership", () => {
     ).toMatchObject({ room_id: joined.room_id, joined_existing_room: true });
   });
 
-  test("a dead console does not keep an abandoned room", () => {
-    const { root, service } = setupService({ observerLiveness: "gone" });
+  test.each(["gone", "unknown"] as const)("a %s console does not keep an abandoned room", (observerLiveness) => {
+    const { root, service } = setupService({ observerLiveness });
     const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
     service.joinPath({
       agent_id: "human:op:chat:1",
@@ -405,6 +405,30 @@ describe("human_chat observer membership", () => {
     expect(
       service.leaveRoom({ agent_id: "codex:aa", room_id: joined.room_id })
     ).toMatchObject({ status: "room_deleted" });
+  });
+
+  test("the last owner leaving clears ownership while retaining chat history", async () => {
+    const { root, service } = setupService({ observerLiveness: "alive" });
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    service.joinPath({
+      agent_id: "human:op:chat:1",
+      context_path: root,
+      process_metadata: observerIdentity().process_metadata
+    });
+    const turn = await service.waitForTurn({
+      agent_id: "codex:aa", room_id: joined.room_id,
+      max_wait_ms: 0, allow_solo_claim: true
+    });
+    expect(turn.status).toBe("your_turn");
+    service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: "preserve me" });
+    service.leaveRoom({ agent_id: "codex:aa", room_id: joined.room_id });
+    expect(service.getRoomState({ room_id: joined.room_id }).room).toMatchObject({
+      state: "idle", owner: null, lease_expires_at: null
+    });
+    expect(service.joinPath({ agent_id: "codex:aa", context_path: root }).room_id).toBe(joined.room_id);
+    expect(service.getRoomEvents({ room_id: joined.room_id }).some(
+      (event) => event.payload?.body === "preserve me"
+    )).toBe(true);
   });
 
   test("the last console closing an agent-less room deletes it", () => {
