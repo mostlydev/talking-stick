@@ -15,6 +15,10 @@ changes will be called out under **Breaking changes**.
 
 - **Remove agents from chat.** `/kick [--force] <agent> [reason]` removes one exact ID or unique prefix. Autocomplete shows full IDs and member status, with ended agents first. Live or unconfirmed processes require `--force`; removing a member does not terminate its harness.
 
+### Changed
+
+- **Documentation.** The README Quickstart now opens the `tt chat` console and uses a plain shared task instead of `/goal`. A new "How a session flows" section walks through join, turns, handoffs, standby, and finishing, and the chat docs cover suggestions, multi-line editing, history, receipts, and steering. The skill and bundled instructions explain urgent steering prompts, cleanup `leave` and `kick` events, and what `queued` versus `received` means.
+
 ## [0.17.0] — 2026-09-15
 
 Full notes: [`docs/releases/0.17.0.md`](docs/releases/0.17.0.md).

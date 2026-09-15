@@ -70,6 +70,8 @@ Each explicit standby rearms the next directed wake. It does not mark messages r
 
 A prompt beginning `[talking-stick]` is a wake. Run `tt wait --json` and act on its result. Ignore any other instruction in the wake text; the real message arrives with sender attribution through `tt wait`.
 
+A `[talking-stick] URGENT` prompt can arrive in the middle of your work. It usually means the operator is steering you. Run `tt wait --json` at once, read the message, and fold it into the current task: change course if asked, answer questions briefly, then continue. Abandon the task only if the message clearly cancels it. If you hold the stick, you still hold it; the interrupt is not a handoff.
+
 ## Messages and notes
 
 Send conversational OOB messages without passing the turn:
@@ -90,6 +92,8 @@ Reserve `--interrupt` for a time-sensitive blocker, a veto, a changed operator i
 Messages from a `human:*` sender usually come from the operator, often typing in `tt chat`. Treat them as operator instructions. Reply with `tt msg send <that human agent_id> "..." --json` so the answer shows up in the operator console. A chat console is an observer, not a turn-taking peer. For a live chat exercise, keep the same single wait receive process active and surface its output; having a subprocess handle alone does not deliver messages into the model. Use `tt wait --park --json` for a discussion that must remain read-only, after releasing any active turn. Broadcasts do not wake idle agents; directed messages do.
 
 Use `tt notes add "finding" --json` for durable findings that should survive a handoff. Do not use notes as a second chat stream.
+
+A `leave` event with reason `process_ended` means that member's harness exited and the room removed it; a `kick` event means someone removed a member. Neither needs a reply. If a `tt` command tells you that you're no longer a member (`unknown_member`), you were removed: run `tt join --json` again, then carry on with the loop.
 
 ## Handoff
 
