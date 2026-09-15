@@ -11,6 +11,25 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.16.0] — 2026-09-15
+
+Full notes: [`docs/releases/0.16.0.md`](docs/releases/0.16.0.md).
+
+### Added
+
+- **Native harness wake.** A directed message, assignment, pass, or pending handoff now wakes an idle Claude Code session (through its inbox socket) or Codex session (through `codex queue`) that isn't running `tt wait`. No cmux, keystrokes, or idle model polling is needed. The wake is a fixed prompt without the message body, sent once per unread batch and never for broadcasts. Delivery tries a live receiver, then the native transport, then eligible cmux, falling back only after a definite failure. Credentials stay in an owner-only private table and never appear in any output. (#69)
+- **Wake status everywhere.** `tt msg send` reports `delivery_transport` and `delivery_state` (`queued`, `ambiguous`, or `failed`). `tt chat` shows a per-recipient notice such as `claude: queued` or `codex: waiting for agent to read`. `tt standby` reports `wake_transports`, and `tt health` shows the last wake status.
+
+### Changed
+
+- **Operator chat keeps its room open.** A running `tt chat` console keeps the room when the last agent leaves or is kicked, so the operator can stay and agents rejoin the same room. The room is deleted when the last console closes an agent-less room, and a crashed console never keeps a room alive. Addressing an agent that left explains that it can't receive messages until it rejoins. Agents finish with `tt standby` instead of `tt leave` while an operator console is present.
+- **Standby rearms native wake.** Returning to standby lets the next directed message wake the agent again, even when the previous wake wasn't followed by `tt wait`. Unread events stay unread.
+- **Wake delivery is asynchronous.** Service writes only queue wakes; `TalkingStickCommands.flushWakes()` and `sendMessageAndWake()` deliver them, and `tt chat` stays responsive while a wake is in flight. The skill and bundled instructions recommend `tt standby --json` instead of hard-coding `--wake cmux`.
+
+### Fixed
+
+- CLI tests no longer open the user's real data directory.
+
 ## [0.15.0] — 2026-09-15
 
 Full notes: [`docs/releases/0.15.0.md`](docs/releases/0.15.0.md).
@@ -501,6 +520,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.16.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.16.0
 [0.15.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.15.0
 [0.14.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.14.0
 [0.13.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.13.0

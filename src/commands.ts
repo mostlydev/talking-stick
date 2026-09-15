@@ -1,3 +1,5 @@
+import os from "node:os";
+import { detectNativeWakeEndpoints } from "./native-wake.js";
 import { TalkingStickService } from "./service.js";
 import type {
   AddNoteResult,
@@ -18,6 +20,7 @@ import type {
   PassStickInput,
   PassStickResult,
   RelinquishOwnershipResult,
+  RegisterNativeWakeEndpointResult,
   RegisterStandbyResult,
   RegisterReceiverResult,
   RegisterWakeEndpointResult,
@@ -251,6 +254,30 @@ export class TalkingStickCommands {
     });
   }
 
+  registerNativeWakeEndpoints(
+    identity: DerivedIdentity,
+    input: { room_id: string; env?: NodeJS.ProcessEnv; host_id?: string }
+  ): RegisterNativeWakeEndpointResult[] {
+    const harnessSessionId = identity.process_metadata.harness_session_id;
+    if (!harnessSessionId) {
+      return [];
+    }
+    return detectNativeWakeEndpoints(input.env ?? process.env, {
+      agent_id: identity.agent_id,
+      harness_session_id: harnessSessionId
+    }).map((endpoint) =>
+      this.service.registerNativeWakeEndpoint({
+        agent_id: identity.agent_id,
+        room_id: input.room_id,
+        transport: endpoint.transport,
+        address: endpoint.address,
+        secret: endpoint.secret,
+        harness_session_id: harnessSessionId,
+        host_id: input.host_id ?? os.hostname()
+      })
+    );
+  }
+
   registerStandby(
     identity: DerivedIdentity,
     input: RegisterStandbyCommandInput
@@ -362,6 +389,15 @@ export class TalkingStickCommands {
       agent_id: identity?.agent_id ?? input.agent_id,
       process_metadata: identity?.process_metadata ?? input.process_metadata
     });
+  }
+
+  flushWakes(roomId?: string): Promise<void> {
+    return this.service.flushWakes(roomId);
+  }
+
+  sendMessageAndWake(identity: DerivedIdentity, input: SendMessageCommandInput): Promise<SendMessageResult> {
+    return this.service.sendMessageAndWake({ ...input, agent_id: identity.agent_id,
+      process_metadata: identity.process_metadata });
   }
 
   sendMessage(

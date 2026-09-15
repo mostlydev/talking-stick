@@ -93,10 +93,10 @@ Once installed, each agent harness has a skill that tells it to coordinate throu
 ```
 tt list            — which rooms exist under a path
 tt join            — join the room for this workspace
-tt leave           — explicitly leave a room; deletes it when no active members remain
+tt leave           — explicitly leave a room; deletes it when no active agents or live consoles remain
 tt wait            — long-poll for ownership and room events; cursor is saved automatically
 tt wait --park      — stay coordinated without auto-claiming idle rooms
-tt standby          — park, return immediately, and optionally wake the cmux surface later
+tt standby          — park, return immediately, and wake this harness session later
 tt release         — normal handoff to the next fair waiter, with structured Handoff
 tt assign          — explicit handoff to a named agent
 tt take            — deliberate claim when the prior holder is gone/stuck
@@ -180,11 +180,33 @@ tt wait --json
 - **Note** (`tt notes add`) — durable, resolvable artifacts. Leave a note when the next holder should consider something at handoff, or when the observation should outlive the conversation.
 - **Handoff** (`tt release` / `tt pass`) — transfer of work. Messages do not replace handoffs; they live alongside them.
 
+### Waking idle agents
+
+When a directed message, assignment, pass, or pending handoff targets an agent that has no live `tt wait`, Talking Stick wakes that agent's harness session directly. For Claude Code and Codex, no keystrokes are typed and no model polls while idle.
+
+| Harness | Transport | Registered from |
+| --- | --- | --- |
+| Claude Code (v2.1.224+, macOS/Linux) | The session's inbox socket | `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` |
+| Codex (tested with 0.154.0) | `codex queue --thread <id>` | `CODEX_THREAD_ID` |
+| Any harness in cmux | `cmux send` plus Enter, only for parked standby or an explicit interrupt | `cmux identify` |
+
+- Endpoints register automatically on `tt join`, `tt wait`, and `tt standby`. They're tied to the harness session and host, and removed on leave, kick, or session change. The Claude token and socket path are stored owner-only and never appear in state, health, events, or errors.
+- The wake is a fixed prompt, such as ``[talking-stick] New message from codex in /repo. Run `tt wait --json` to read it.`` It never carries the message body. The agent reads the real message, with sender attribution, through `tt wait`.
+- Claude Code wraps inbox prompts in its own "another Claude session" preamble and permission guidance, even when an operator sent the room message. Talking Stick sends only the short wake prompt; the documented inbox protocol does not offer a way to suppress that wrapper. The sender returned by `tt wait` identifies the actual room author.
+- Each agent is woken once per unread batch. More messages join that batch until the agent's wait has read past them or the agent explicitly enters standby again. A new standby rearms future wakes without marking any messages read; previously submitted wakes are not replayed. Broadcasts never wake anyone; a room `--interrupt` may wake only the current owner.
+- Order: a live receiver first, then the native transport, then cmux where eligible. The next transport is tried only after a definite failure, such as a missing socket or an unknown Codex thread. A timeout or unconfirmed write stops there, so an agent is never woken twice.
+- `tt msg send` reports `delivery_status` plus `delivery_transport` and `delivery_state`. `tt chat` shows one dim notice per recipient, such as `claude: queued` or `codex: listening`. `delivery_state` is `queued` when the transport submitted the prompt (the socket write flushed, or `codex queue` exited 0; Claude may still hold or refuse it per its inbound settings), `ambiguous` (shown as `wake unconfirmed`) when a timeout or cut-off write left it unknown, and `failed` when every eligible transport definitely failed. A definite failure releases the batch so a later sender can retry. Neither harness confirms that a turn started.
+- `tt standby` reports `wake_transports`, such as `["claude_inbox"]`, and `can_self_wake`. Its `transport` field names only the cmux-or-manual fallback, so `transport: manual` with `can_self_wake: true` means native wake is active.
+- `tt health` shows a `Wake:` line with the last delivery status and a fixed error code.
+- A message coalesced behind an earlier wake reports `delivery_status: pending` without reusing that wake's `delivery_state`. Chat shows `waiting for agent to read`, rather than implying a new wake was queued.
+- Limits: same machine and OS user only. Claude's `crossSessionInbound: refuse` setting drops the prompt silently. A Codex thread that isn't loaded or was interrupted keeps the queued message but doesn't start a turn. Grok, Gemini, OpenCode, and Antigravity wake only through cmux for now.
+- API users: service writes queue wakes, and `TalkingStickCommands.flushWakes()` or `sendMessageAndWake()` delivers them asynchronously.
+
 **`to_agent_id` is routing, not ACL.** Any room member can read any message via `tt events --target any`. Messages are not private. They also do not grant the stick — a non-holder paging the holder gets attention, not write authority.
 
 ## Post-turn closeout
 
-After a handoff, an agent keeps the wait loop alive while work is pending, runs `tt standby --wake cmux --json` when it is only waiting on an external signal, or — when the shared task is genuinely complete — stops and sends a final closeout instead of churning the room. Standby records parked intent, returns immediately, and wakes the same verified cmux surface once for a directed actionable update. `--wake manual` is available outside cmux but cannot self-wake. Final handoffs include the tests, build checks, runtime checks, release checks, dogfood checks, or an explicit reason the task was not testable. The exact completion evidence an agent must see before declaring done lives in the skill ([`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md)).
+After a handoff, an agent keeps the wait loop alive while work is pending, runs `tt standby --json` when it is only waiting on an external signal, or — when the shared task is genuinely complete — stops and sends a final closeout instead of churning the room. Standby records parked intent, returns immediately, and wakes the agent once for a directed actionable update: natively in Claude Code and Codex, otherwise through the verified cmux surface (see [Waking idle agents](#waking-idle-agents)). Outside cmux, standby falls back to `manual`; a manual standby without a native endpoint cannot self-wake. Final handoffs include the tests, build checks, runtime checks, release checks, dogfood checks, or an explicit reason the task was not testable. The exact completion evidence an agent must see before declaring done lives in the skill ([`skills/talking-stick/SKILL.md`](skills/talking-stick/SKILL.md)).
 
 ## How installation works per harness
 
@@ -275,9 +297,9 @@ Names use consistent harness colors in the conversation and participant list: Cl
 | `/bottom` or Ctrl+End | Return to the latest messages |
 | `//text` | Send a message beginning with `/` |
 
-`tt chat [path] --history N` loads up to N recent conversation entries (default 20, maximum 500); `--history 0` starts without history. `--events` also shows turn events at startup. Agents must keep their normal `tt wait` receive process active to respond live. Broadcasts do not wake a harness in standby; a directed message may use its registered wake endpoint. A message being stored in the room is not an acknowledgement that an agent has read it.
+`tt chat [path] --history N` loads up to N recent conversation entries (default 20, maximum 500); `--history 0` starts without history. `--events` also shows turn events at startup. Agents must keep their normal `tt wait` receive process active to respond live. Broadcasts do not wake anyone; a directed message wakes an idle Claude Code or Codex session (see [Waking idle agents](#waking-idle-agents)). A message being stored in the room is not an acknowledgement that an agent has read it.
 
-Each console uses a separate `human:<username>:chat:<id>` identity. Agents reply to the sender ID from the received message or a unique display name. Replies addressed to the console ring the terminal bell. The console is an observer: it cannot acquire the stick, receive a handoff, make a lone agent eligible for an automatic claim, or keep an abandoned room alive. Opening and closing the console do not emit agent join/leave wakes. Message text is stripped of terminal escape sequences before display.
+Each console uses a separate `human:<username>:chat:<id>` identity. Agents reply to the sender ID from the received message or a unique display name. Replies addressed to the console ring the terminal bell. The console is an observer: it cannot acquire the stick, receive a handoff, or make a lone agent eligible for an automatic claim. A running console does keep its room open: when the last agent leaves, the conversation stays up so agents can rejoin the same room, and an agent-less room is deleted once the last console closes. A crashed console (its process is gone) never keeps a room alive. Agents that see a console in the room finish with `tt standby` instead of `tt leave`, so a directed `@agent` message can wake them when a verified cmux endpoint is registered. Outside cmux, manual standby requires the operator to resume the harness; an agent that has left can't receive messages until it rejoins. Opening and closing the console do not emit agent join/leave wakes. Message text is stripped of terminal escape sequences before display.
 
 `[path]` defaults to the current working directory. Omit it for normal in-repo coordination; pass it only when you intentionally want a different or nested room.
 
@@ -311,7 +333,7 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 - **Structured handoffs.** `tt release` and `tt pass` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
 - **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest without holding the stick; if the best-known candidate is between wait polls, a short grace window prevents immediate recycling to a less-fair claimant.
 - **No immediate take-backs.** If release leaves a handoff idle, the prior owner waits through the short grace window before reclaiming while another member exists.
-- **Ephemeral rooms.** `tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
+- **Ephemeral rooms.** `tt leave` removes membership, rooms with no active agents or live consoles are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
 - **Conservative harness identity upgrades.** A verified `harness:<session>` identity may replace a provisional `pid:`, `term:`, or `userhost:` identity only when both belong to the same harness process. Distinct verified sessions coexist; one cannot delete another merely because their short-lived `tt` subprocesses share a parent harness.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.

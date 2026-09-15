@@ -16,7 +16,16 @@ import {
 } from "./db.js";
 import { ProtocolError } from "./errors.js";
 import { HUMAN_CHAT_SESSION_KIND } from "./types.js";
-import type { WakeDeliveryResult, WakeRequest, WakeTransport } from "./wake.js";
+import type { WakeTransport } from "./wake.js";
+import {
+  NATIVE_WAKE_TRANSPORTS,
+  formatNativeWakeText,
+  type NativeWakeReason,
+  type NativeWakeResult,
+  type NativeWakeState,
+  type NativeWakeTransport,
+  type NativeWakeTransportName
+} from "./native-wake.js";
 import {
   createSystemProcessInspector,
   type ProcessInspector
@@ -26,6 +35,9 @@ import type {
   AddNoteResult,
   AgentId,
   DeliveryHint,
+  NativeWakeEndpointSummary,
+  RegisterNativeWakeEndpointInput,
+  RegisterNativeWakeEndpointResult,
   EventType,
   EventTypeFilter,
   GetRoomEventsInput,
@@ -247,17 +259,50 @@ export interface TalkingStickServiceOptions extends OpenDatabaseOptions {
   receiverLivenessChecker?: ProcessLivenessChecker;
   hostId?: string;
   wakeTransport?: WakeTransport;
+  nativeWakeTransport?: NativeWakeTransport;
+}
+
+interface NativeAwareDelivery {
+  status: MessageDeliveryStatus;
+  error?: string;
+  transport?: NativeWakeTransportName;
+  state?: NativeWakeState | "failed";
+}
+
+interface NativeWakeEndpointRow {
+  room_id: string;
+  agent_id: AgentId;
+  transport: NativeWakeTransportName;
+  address: string;
+  secret: string | null;
+  harness_session_id: string;
+  host_id: string;
+  generation: number;
+  recorded_at: string;
+  wake_pending: number;
+  wake_reason: NativeWakeReason | null;
+  wake_from_agent_id: AgentId | null;
+  wake_event_seq: number | null;
+  awaiting_wait: number;
+  batch_id: string | null;
+  dispatch_event_seq: number | null;
+  last_attempt_at: string | null;
+  last_status: NativeWakeState | "failed" | null;
+  last_error: string | null;
 }
 
 export class TalkingStickService {
   readonly db: SqliteDatabase;
   readonly policy: Policy;
+  private readonly wakeRooms = new Set<string>();
+  private readonly wakeJobs = new Map<Promise<void>, { room: string; agent: string }>();
   private readonly now: () => Date;
   private readonly ownsDatabase: boolean;
   private readonly processLivenessChecker: ProcessLivenessChecker;
   private readonly receiverLivenessChecker: ProcessLivenessChecker;
   private readonly hostId: string;
   private readonly wakeTransport: WakeTransport | null;
+  private readonly nativeWakeTransport: NativeWakeTransport | null;
 
   constructor(options: TalkingStickServiceOptions = {}) {
     this.db = options.db ?? openDatabase(options);
@@ -272,6 +317,7 @@ export class TalkingStickService {
       options.receiverLivenessChecker ??
       createExactProcessLivenessChecker(this.hostId);
     this.wakeTransport = options.wakeTransport ?? null;
+    this.nativeWakeTransport = options.nativeWakeTransport ?? null;
   }
 
   close(): void {
@@ -417,7 +463,25 @@ export class TalkingStickService {
         .run(input.room_id, input.agent_id);
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (isObserverMember(member) && room.owner !== input.agent_id && room.reserved_for !== input.agent_id) {
+      if (
+        isObserverMember(member) &&
+        room.owner !== input.agent_id &&
+        room.reserved_for !== input.agent_id
+      ) {
+        // The last console closing an agent-less room cleans it up now. Any
+        // remaining agent rows, even stale ones, are left to idle purge.
+        if (
+          !remainingMembers.some((remaining) => !isObserverMember(remaining)) &&
+          !this.hasLiveObserver(remainingMembers)
+        ) {
+          this.deleteRoom(input.room_id);
+          return {
+            status: "room_deleted",
+            room_id: input.room_id,
+            canonical_path: room.canonical_path,
+            remaining_members: 0
+          };
+        }
         return {
           status: "left",
           room_id: input.room_id,
@@ -425,7 +489,7 @@ export class TalkingStickService {
           remaining_members: remainingMembers.length
         };
       }
-      if (!this.hasActiveTurnTakingMember(remainingMembers, now)) {
+      if (!this.shouldKeepRoom(remainingMembers, now)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -554,7 +618,7 @@ export class TalkingStickService {
       });
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (!this.hasActiveTurnTakingMember(remainingMembers, now)) {
+      if (!this.shouldKeepRoom(remainingMembers, now)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -776,7 +840,19 @@ export class TalkingStickService {
           { agent_id: input.agent_id }
         );
       }
+      if (input.transport === "cmux") {
+        this.registerNativeWakeEndpoint({ room_id: input.room_id, agent_id: input.agent_id,
+          transport: "cmux", address: JSON.stringify({ workspace_id: input.workspace_id, surface_id: input.surface_id }),
+          secret: null, harness_session_id: member.harness_session_id ?? `member:${member.agent_id}`, host_id: this.hostId });
+      }
       const generation = member.standby_generation + 1;
+      // Explicit standby starts a new wake epoch, even if the previous wake
+      // wasn't followed by a cursor acknowledgement. It does not mark any
+      // event read. Preserve unsent pending work, but invalidate old I/O so a
+      // late completion cannot reserve or overwrite the new epoch.
+      this.db.prepare(`UPDATE member_wake_endpoints
+        SET awaiting_wait = 0, batch_id = NULL
+        WHERE room_id = ? AND agent_id = ?`).run(input.room_id, input.agent_id);
       this.db
         .prepare(
           `
@@ -804,6 +880,9 @@ export class TalkingStickService {
           input.agent_id
         );
 
+      const wakeTransports = this.usableNativeWakeEndpoints(input.room_id, member)
+        .map((row) => row.transport)
+        .filter((transport) => transport !== "cmux" || input.transport === "cmux");
       return {
         status: "standby_registered",
         room_id: input.room_id,
@@ -811,7 +890,8 @@ export class TalkingStickService {
         wait_intent: "parked",
         transport: input.transport,
         generation,
-        can_self_wake: input.transport === "cmux"
+        can_self_wake: wakeTransports.length > 0,
+        wake_transports: wakeTransports
       };
     });
   }
@@ -898,6 +978,10 @@ export class TalkingStickService {
         .map((member) => member.agent_id);
       for (const agentId of parkedHinted) {
         this.queueStandbyWake(input.room_id, agentId);
+        this.queueNativeWake(input.room_id, agentId, "room_update", input.agent_id, eventSeq);
+      }
+      if (reservedFor) {
+        this.queueNativeWake(input.room_id, reservedFor, "turn", input.agent_id, eventSeq);
       }
       const claimExpiresAt = reservedFor
         ? this.expiresAt(now, this.policy.claimTtlMs)
@@ -938,7 +1022,6 @@ export class TalkingStickService {
         parked_hinted: parkedHinted
       };
     });
-    this.flushPendingWakes(input.room_id);
     return result;
   }
 
@@ -1056,6 +1139,7 @@ export class TalkingStickService {
         created_at: timestamp
       });
       this.queueStandbyWake(input.room_id, input.to_agent_id);
+      this.queueNativeWake(input.room_id, input.to_agent_id, "turn", input.agent_id, eventSeq);
 
       this.db
         .prepare(
@@ -1090,7 +1174,6 @@ export class TalkingStickService {
         routed_to_parked: target.wait_intent === "parked"
       };
     });
-    this.flushPendingWakes(input.room_id);
     return result;
   }
 
@@ -1247,7 +1330,6 @@ export class TalkingStickService {
       );
     }
 
-    this.flushPendingWakes(room.room_id);
 
     const now = this.now();
     const timestamp = now.toISOString();
@@ -1291,6 +1373,7 @@ export class TalkingStickService {
       room: this.mapRoom(inspection, now),
       members: memberView.rows,
       receivers: this.listRoomReceivers(refreshedRoom.room_id),
+      wake_endpoints: this.listNativeWakeEndpoints(refreshedRoom.room_id),
       cursor_event_seq: this.latestEventSeq(refreshedRoom.room_id),
       pending_handoff: pendingHandoff ? this.mapEvent(pendingHandoff) : null,
       takeover: this.describeTakeoverAvailability(
@@ -1424,57 +1507,75 @@ export class TalkingStickService {
   }
 
   heartbeatReceiver(input: HeartbeatReceiverInput): HeartbeatReceiverResult {
-    assertEventCursor(input.cursor_event_seq);
-    const existing = this.db
-      .prepare<[string, string], RoomReceiverRow>(
-        "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
-      )
-      .get(input.room_id, input.agent_id);
-    if (!existing || existing.receiver_id !== input.receiver_id) {
-      return { status: "receiver_replaced", updated: false };
-    }
+    return withImmediateTransaction(this.db, () => {
+      assertEventCursor(input.cursor_event_seq);
+      const existing = this.db
+        .prepare<[string, string], RoomReceiverRow>(
+          "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
+        )
+        .get(input.room_id, input.agent_id);
+      if (!existing || existing.receiver_id !== input.receiver_id) {
+        return { status: "receiver_replaced", updated: false };
+      }
 
-    const now = this.now();
-    const heartbeatDue =
-      now.getTime() - Date.parse(existing.heartbeat_at) >=
-      this.policy.heartbeatIntervalMs;
-    if (!heartbeatDue && existing.cursor_event_seq === input.cursor_event_seq) {
-      return { status: "receiver_heartbeat", updated: false };
-    }
+      const now = this.now();
+      const heartbeatDue =
+        now.getTime() - Date.parse(existing.heartbeat_at) >=
+        this.policy.heartbeatIntervalMs;
+      if (!heartbeatDue && existing.cursor_event_seq === input.cursor_event_seq) {
+        return { status: "receiver_heartbeat", updated: false };
+      }
 
-    const result = this.db
-      .prepare(
-        `UPDATE room_receivers
-         SET cursor_event_seq = ?, heartbeat_at = ?
-         WHERE room_id = ? AND agent_id = ? AND receiver_id = ?`
-      )
-      .run(
-        input.cursor_event_seq,
-        now.toISOString(),
-        input.room_id,
-        input.agent_id,
-        input.receiver_id
-      );
-    return {
-      status: result.changes === 1 ? "receiver_heartbeat" : "receiver_replaced",
-      updated: result.changes === 1
-    };
+      const result = this.db
+        .prepare(
+          `UPDATE room_receivers
+           SET cursor_event_seq = ?, heartbeat_at = ?
+           WHERE room_id = ? AND agent_id = ? AND receiver_id = ?`
+        )
+        .run(
+          input.cursor_event_seq,
+          now.toISOString(),
+          input.room_id,
+          input.agent_id,
+          input.receiver_id
+        );
+      if (result.changes === 1) this.resetNativeWakeBatch(input.room_id, input.agent_id, input.cursor_event_seq);
+      return {
+        status: result.changes === 1 ? "receiver_heartbeat" : "receiver_replaced",
+        updated: result.changes === 1
+      };
+    });
   }
 
   unregisterReceiver(
     input: UnregisterReceiverInput
   ): UnregisterReceiverResult {
-    assertEventCursor(input.cursor_event_seq);
-    const result = this.db
-      .prepare(
-        `DELETE FROM room_receivers
-         WHERE room_id = ? AND agent_id = ? AND receiver_id = ?`
-      )
-      .run(input.room_id, input.agent_id, input.receiver_id);
-    return {
-      status: result.changes === 1 ? "receiver_unregistered" : "receiver_replaced",
-      removed: result.changes === 1
-    };
+    return withImmediateTransaction(this.db, () => {
+      assertEventCursor(input.cursor_event_seq);
+      const result = this.db
+        .prepare(
+          `DELETE FROM room_receivers
+           WHERE room_id = ? AND agent_id = ? AND receiver_id = ?`
+        )
+        .run(input.room_id, input.agent_id, input.receiver_id);
+      if (result.changes === 1) {
+        // The exiting receiver has surfaced everything up to its cursor.
+        this.resetNativeWakeBatch(input.room_id, input.agent_id, input.cursor_event_seq);
+        // A wake skipped because this receiver was still alive, for an event
+        // past its cursor, is due again now that nothing will surface it.
+        const requeued = this.db.prepare(
+          `UPDATE member_wake_endpoints SET wake_pending = 1
+           WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 0
+             AND wake_pending = 0 AND wake_reason IS NOT NULL
+             AND COALESCE(wake_event_seq, 0) > ?`
+        ).run(input.room_id, input.agent_id, input.cursor_event_seq);
+        if (requeued.changes > 0) this.wakeRooms.add(input.room_id);
+      }
+      return {
+        status: result.changes === 1 ? "receiver_unregistered" : "receiver_replaced",
+        removed: result.changes === 1
+      };
+    });
   }
 
   private listRoomReceivers(roomId: string): RoomReceiver[] {
@@ -1693,6 +1794,9 @@ export class TalkingStickService {
         room.owner !== input.agent_id
           ? room.owner
           : null);
+      if (wakeTargetId) {
+        this.queueNativeWake(input.room_id, wakeTargetId, deliveryHint === "interrupt" ? "interrupt" : "message", input.agent_id, eventSeq);
+      }
 
       return {
         event_seq: eventSeq,
@@ -1701,7 +1805,6 @@ export class TalkingStickService {
         wake_target_id: wakeTargetId
       };
     });
-    this.flushPendingWakes(input.room_id);
 
     const { wake_target_id: wakeTargetId, ...sendResult } = result;
     if (!wakeTargetId) {
@@ -1710,14 +1813,16 @@ export class TalkingStickService {
     const delivery = this.resolveMessageDelivery(
       input.room_id,
       wakeTargetId,
-      deliveryHint,
-      timestamp
+      result.event_seq,
+      deliveryHint
     );
     return {
       ...sendResult,
       delivery_status: delivery.status,
       delivery_target: wakeTargetId,
-      ...(delivery.error ? { delivery_error: delivery.error } : {})
+      ...(delivery.error ? { delivery_error: delivery.error } : {}),
+      ...(delivery.transport ? { delivery_transport: delivery.transport } : {}),
+      ...(delivery.state ? { delivery_state: delivery.state } : {})
     };
   }
 
@@ -1804,6 +1909,9 @@ export class TalkingStickService {
           { agent_id: input.agent_id }
         );
       }
+      this.registerNativeWakeEndpoint({ room_id: input.room_id, agent_id: input.agent_id,
+        transport: "cmux", address: JSON.stringify({ workspace_id: input.workspace_id, surface_id: input.surface_id }),
+        secret: null, harness_session_id: input.harness_session_id, host_id: this.hostId });
       const generation = member.wake_endpoint_generation + 1;
       this.db
         .prepare(
@@ -1831,128 +1939,391 @@ export class TalkingStickService {
     });
   }
 
-  private resolveMessageDelivery(
-    roomId: string,
-    targetId: AgentId,
-    deliveryHint: DeliveryHint,
-    sentAt: string
-  ): { status: MessageDeliveryStatus; error?: string } {
-    const receiver = this.db
-      .prepare<[string, string], RoomReceiverRow>(
-        "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
-      )
-      .get(roomId, targetId);
-    if (receiver && this.receiverLiveness(receiver) === "alive") {
-      return { status: "receiver" };
+  registerNativeWakeEndpoint(
+    input: RegisterNativeWakeEndpointInput
+  ): RegisterNativeWakeEndpointResult {
+    assertNonEmpty(input.address, "address");
+    assertNonEmpty(input.harness_session_id, "harness_session_id");
+    assertNonEmpty(input.host_id, "host_id");
+    if (!NATIVE_WAKE_TRANSPORTS.includes(input.transport)) {
+      throw new ProtocolError(
+        "invalid_input",
+        "Native wake transport must be claude_inbox or codex_queue."
+      );
     }
-
-    const member = this.getMember(roomId, targetId);
-    if (!member) {
-      return { status: "unreachable" };
-    }
-
-    if (member.standby_transport === "cmux" && member.standby_registered_at) {
-      if (member.standby_delivered_at && member.standby_delivered_at >= sentAt) {
-        return { status: "endpoint" };
+    const register = (): RegisterNativeWakeEndpointResult => {
+      const member = this.getMember(input.room_id, input.agent_id);
+      if (!member) {
+        throw new ProtocolError(
+          "unknown_member",
+          "Agent must join the room before registering a wake endpoint.",
+          { agent_id: input.agent_id }
+        );
       }
-      if (member.standby_delivered_at || member.standby_wake_pending) {
+      const timestamp = this.now().toISOString();
+      const existing = this.getNativeWakeEndpoint(
+        input.room_id,
+        input.agent_id,
+        input.transport
+      );
+      if (
+        existing &&
+        existing.address === input.address &&
+        existing.secret === input.secret &&
+        existing.harness_session_id === input.harness_session_id &&
+        existing.host_id === input.host_id
+      ) {
+        this.db
+          .prepare(
+            `UPDATE member_wake_endpoints SET recorded_at = ?
+             WHERE room_id = ? AND agent_id = ? AND transport = ?`
+          )
+          .run(timestamp, input.room_id, input.agent_id, input.transport);
         return {
-          status: "pending",
-          ...(member.standby_last_error
-            ? { error: member.standby_last_error }
-            : {})
+          status: "native_wake_endpoint_registered",
+          transport: input.transport,
+          generation: existing.generation
         };
       }
-    }
-
-    if (deliveryHint === "interrupt") {
-      return this.attemptInterruptWake(roomId, member);
-    }
-
-    if (member.standby_transport === "manual" && member.standby_registered_at) {
-      return { status: "pending", error: "Manual standby requires an operator to resume." };
-    }
-
-    return { status: "unreachable" };
+      // A different session, host, or address replaces the row wholesale, so a
+      // stale secret never survives into the new generation.
+      const generation = (existing?.generation ?? 0) + 1;
+      this.db
+        .prepare(
+          `
+          INSERT INTO member_wake_endpoints (
+            room_id, agent_id, transport, address, secret,
+            harness_session_id, host_id, generation, recorded_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (room_id, agent_id, transport) DO UPDATE SET
+            address = excluded.address,
+            secret = excluded.secret,
+            harness_session_id = excluded.harness_session_id,
+            host_id = excluded.host_id,
+            generation = excluded.generation,
+            recorded_at = excluded.recorded_at,
+            wake_pending = 0,
+            wake_reason = NULL,
+            wake_from_agent_id = NULL,
+            awaiting_wait = 0,
+            last_attempt_at = NULL,
+            last_status = NULL,
+            last_error = NULL,
+            wake_event_seq = NULL,
+            batch_id = NULL
+        `
+        )
+        .run(
+          input.room_id,
+          input.agent_id,
+          input.transport,
+          input.address,
+          input.secret,
+          input.harness_session_id,
+          input.host_id,
+          generation,
+          timestamp
+        );
+      // A transport added to the same harness session joins the member's
+      // outstanding batch, so it can't re-wake an agent already nudged.
+      const outstanding = this.db
+        .prepare<[string, string, string, string], NativeWakeEndpointRow>(
+          `SELECT * FROM member_wake_endpoints
+           WHERE room_id = ? AND agent_id = ? AND transport != ?
+             AND harness_session_id = ? AND awaiting_wait = 1
+           LIMIT 1`
+        )
+        .get(input.room_id, input.agent_id, input.transport, input.harness_session_id);
+      if (outstanding) {
+        this.db
+          .prepare(
+            `UPDATE member_wake_endpoints
+             SET awaiting_wait = 1, batch_id = ?, wake_event_seq = ?, dispatch_event_seq = ?
+             WHERE room_id = ? AND agent_id = ? AND transport = ?`
+          )
+          .run(
+            outstanding.batch_id,
+            outstanding.wake_event_seq,
+            outstanding.dispatch_event_seq,
+            input.room_id,
+            input.agent_id,
+            input.transport
+          );
+      }
+      return {
+        status: "native_wake_endpoint_registered",
+        transport: input.transport,
+        generation
+      };
+    };
+    return this.db.inTransaction ? register() : withImmediateTransaction(this.db, register);
   }
 
-  private attemptInterruptWake(
+  private getNativeWakeEndpoint(
+    roomId: string,
+    agentId: AgentId,
+    transport: NativeWakeTransportName
+  ): NativeWakeEndpointRow | undefined {
+    return this.db
+      .prepare<[string, string, string], NativeWakeEndpointRow>(
+        `SELECT * FROM member_wake_endpoints
+         WHERE room_id = ? AND agent_id = ? AND transport = ?`
+      )
+      .get(roomId, agentId, transport);
+  }
+
+  private listNativeWakeEndpoints(roomId: string): NativeWakeEndpointSummary[] {
+    return this.db
+      .prepare<[string], NativeWakeEndpointSummary>(
+        `SELECT agent_id, transport, recorded_at, last_attempt_at, last_status, last_error
+         FROM member_wake_endpoints
+         WHERE room_id = ?
+         ORDER BY agent_id, transport`
+      )
+      .all(roomId);
+  }
+
+  // Endpoints that belong to the member's current harness session on this
+  // host, in delivery preference order.
+  private usableNativeWakeEndpoints(
     roomId: string,
     member: RoomMemberRow
-  ): { status: MessageDeliveryStatus; error?: string } {
-    const sessionMatches =
-      member.wake_endpoint_session_id === member.harness_session_id;
-    if (
-      !member.wake_workspace_id ||
-      !member.wake_surface_id ||
-      !sessionMatches
-    ) {
-      return { status: "unreachable" };
-    }
+  ): NativeWakeEndpointRow[] {
+    return this.db
+      .prepare<[string, string], NativeWakeEndpointRow>(
+        "SELECT * FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ?"
+      )
+      .all(roomId, member.agent_id)
+      .filter(
+        (row) =>
+          row.harness_session_id === (member.harness_session_id ?? `member:${member.agent_id}`) &&
+          row.host_id === this.hostId
+      )
+      .sort(
+        (a, b) =>
+          NATIVE_WAKE_TRANSPORTS.indexOf(a.transport) -
+          NATIVE_WAKE_TRANSPORTS.indexOf(b.transport)
+      );
+  }
 
-    const alreadyPrompted =
-      member.wake_interrupt_delivered_at !== null &&
-      (!member.last_seen_at ||
-        member.wake_interrupt_delivered_at >= member.last_seen_at);
-    if (alreadyPrompted) {
-      return { status: "pending" };
+  private queueNativeWake(
+    roomId: string,
+    agentId: AgentId,
+    reason: NativeWakeReason,
+    fromAgentId: AgentId | null,
+    eventSeq: number
+  ): void {
+    if (agentId === fromAgentId) {
+      return;
     }
-
-    if (!this.wakeTransport) {
-      return { status: "pending", error: "No wake transport is configured." };
-    }
-
-    const request: WakeRequest = {
-      room_id: roomId,
-      agent_id: member.agent_id,
-      transport: "cmux",
-      workspace_id: member.wake_workspace_id,
-      surface_id: member.wake_surface_id,
-      generation: member.wake_endpoint_generation,
-      reason: "interrupt"
-    };
-    let delivery: WakeDeliveryResult;
-    try {
-      delivery = this.wakeTransport.deliver(request);
-    } catch (error) {
-      delivery = {
-        delivered: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-    if (!delivery.delivered) {
-      return {
-        status: "pending",
-        error: delivery.error ?? "Interrupt wake delivery failed."
-      };
-    }
-    const stamped = this.db
+    this.wakeRooms.add(roomId);
+    // wake_event_seq tracks the newest event in the unread batch even while a
+    // wake is outstanding, so the batch only closes once the member's wait
+    // cursor has moved past everything it was woken for.
+    this.db
       .prepare(
         `
-        UPDATE room_members
-        SET wake_interrupt_delivered_at = ?
-        WHERE room_id = ?
-          AND agent_id = ?
-          AND wake_endpoint_generation = ?
-          AND wake_endpoint_session_id = ?
-          AND harness_session_id = ?
+        UPDATE member_wake_endpoints
+        SET wake_pending = CASE WHEN awaiting_wait = 0 THEN 1 ELSE wake_pending END,
+            wake_reason = CASE WHEN awaiting_wait = 0 THEN ? ELSE wake_reason END,
+            wake_from_agent_id = CASE WHEN awaiting_wait = 0 THEN ? ELSE wake_from_agent_id END,
+            wake_event_seq = MAX(COALESCE(wake_event_seq, 0), ?)
+        WHERE room_id = ? AND agent_id = ?
+          AND (transport != 'cmux' OR ? = 'interrupt' OR EXISTS (
+            SELECT 1 FROM room_members m WHERE m.room_id = member_wake_endpoints.room_id
+            AND m.agent_id = member_wake_endpoints.agent_id AND m.wait_intent = 'parked' AND m.standby_transport = 'cmux'))
       `
       )
-      .run(
-        this.now().toISOString(),
-        roomId,
-        member.agent_id,
-        member.wake_endpoint_generation,
-        member.wake_endpoint_session_id,
-        member.wake_endpoint_session_id
-      );
-    if (stamped.changes !== 1) {
-      return {
-        status: "pending",
-        error: "Wake endpoint changed during interrupt delivery."
-      };
+      .run(reason, fromAgentId, eventSeq, roomId, agentId, reason);
+  }
+
+  // A wait that resumes from a cursor at or past the batch's newest event has
+  // consumed everything the member was woken for.
+  private resetNativeWakeBatch(
+    roomId: string,
+    agentId: AgentId,
+    afterEventSeq: number
+  ): void {
+    this.db
+      .prepare(
+        `
+        UPDATE member_wake_endpoints
+        SET awaiting_wait = 0, wake_pending = 0, wake_event_seq = NULL, batch_id = NULL, wake_reason = NULL, wake_from_agent_id = NULL
+        WHERE room_id = ? AND agent_id = ?
+          AND (awaiting_wait = 1 OR wake_pending = 1)
+          -- One batch per member across transports: close it only when the
+          -- cursor has passed the newest event queued on any endpoint.
+          AND (
+            SELECT COALESCE(MAX(wake_event_seq), 0)
+            FROM member_wake_endpoints
+            WHERE room_id = ? AND agent_id = ?
+              AND (awaiting_wait = 1 OR wake_pending = 1)
+          ) <= ?
+      `
+      )
+      .run(roomId, agentId, roomId, agentId, afterEventSeq);
+  }
+
+  // Writes only queue work. Call flushWakes after committing, before closing
+  // the sending process. Separate recipients dispatch concurrently.
+  async flushWakes(roomId?: string, agentId?: string): Promise<void> {
+    // An unscoped flush also sweeps pending rows another process queued but
+    // never delivered (killed after commit, or a long wait that queued them).
+    const rooms = roomId ? [roomId] : [...new Set([...this.wakeRooms,
+      ...this.db.prepare<[], { room_id: string }>(
+        "SELECT DISTINCT room_id FROM member_wake_endpoints WHERE wake_pending = 1"
+      ).all().map((row) => row.room_id)])];
+    for (const room of rooms) {
+      // A recipient-scoped flush leaves other recipients queued for a later
+      // room-wide flush.
+      if (!agentId) this.wakeRooms.delete(room);
+      const pending = this.db.prepare<[string], { agent_id: string }>(
+        "SELECT DISTINCT agent_id FROM member_wake_endpoints WHERE wake_pending = 1 AND room_id = ?"
+      ).all(room);
+      for (const row of pending) {
+        if (agentId && row.agent_id !== agentId) continue;
+        const job = this.dispatchWake(room, row.agent_id);
+        this.wakeJobs.set(job, { room, agent: row.agent_id });
+        void job.finally(() => this.wakeJobs.delete(job)).catch(() => {});
+      }
     }
-    return { status: "endpoint" };
+    await Promise.all([...this.wakeJobs].filter(([, target]) => (!roomId || target.room === roomId) && (!agentId || target.agent === agentId)).map(([job]) => job));
+  }
+
+  // Not async on purpose: send errors (closed room, unknown recipient) throw
+  // synchronously so callers can tell them apart from wake delivery.
+  sendMessageAndWake(input: SendMessageInput): Promise<SendMessageResult> {
+    const result = this.sendMessage(input);
+    const target = result.delivery_target;
+    if (!target) return Promise.resolve(result);
+    return this.flushWakes(input.room_id, target).then(() => {
+      const delivery = this.resolveMessageDelivery(input.room_id, target, result.event_seq, input.delivery_hint);
+      return { ...result, delivery_status: delivery.status,
+        delivery_transport: delivery.transport, delivery_state: delivery.state,
+        delivery_error: delivery.error };
+    });
+  }
+
+  private async dispatchWake(roomId: string, agentId: AgentId): Promise<void> {
+    const reservation = withImmediateTransaction(this.db, () => {
+      const member = this.getMember(roomId, agentId);
+      if (!member) return null;
+      const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
+        "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
+      ).get(roomId, agentId);
+      const usable = this.usableNativeWakeEndpoints(roomId, member);
+      const wakeReason = usable.find((row) => row.wake_pending && !row.awaiting_wait)?.wake_reason;
+      const endpoints = usable.filter((row) => row.transport !== "cmux" || wakeReason === "interrupt" ||
+        (member.wait_intent === "parked" && member.standby_transport === "cmux"));
+      if (receiver && this.receiverLiveness(receiver) === "alive") {
+        this.db.prepare(`UPDATE member_wake_endpoints SET wake_pending = 0 WHERE room_id = ? AND agent_id = ?`).run(roomId, agentId);
+        return null;
+      }
+      if (!endpoints.some((row) => row.wake_pending && !row.awaiting_wait)) return null;
+      const batchId = randomUUID();
+      this.db.prepare(`UPDATE member_wake_endpoints SET wake_pending = 0, awaiting_wait = 1,
+        batch_id = ?, dispatch_event_seq = wake_event_seq, last_status = NULL, last_error = NULL
+        WHERE room_id = ? AND agent_id = ?`).run(batchId, roomId, agentId);
+      const reason = endpoints.find((row) => row.wake_pending && row.wake_reason);
+      const text = formatNativeWakeText({ reason: reason?.wake_reason ?? "room_update",
+        sender: reason?.wake_from_agent_id ? this.describeWakeSender(roomId, reason.wake_from_agent_id) : null,
+        path: this.requireRoom(roomId).canonical_path });
+      return { endpoints, batchId, text, wakeReason, standbyGeneration: member.standby_generation };
+    });
+    if (!reservation) return;
+    const { endpoints, batchId, text, wakeReason, standbyGeneration } = reservation;
+    for (const endpoint of endpoints) {
+      // Another wait, leave, or session replacement may have invalidated this
+      // batch while a previous transport was in flight. Never fall back then.
+      const current = this.getNativeWakeEndpoint(roomId, agentId, endpoint.transport);
+      if (current?.batch_id !== batchId || current.generation !== endpoint.generation) return;
+      const member = this.getMember(roomId, agentId);
+      if (!member || !this.usableNativeWakeEndpoints(roomId, member).some((row) => row.transport === endpoint.transport)) return;
+      let result: NativeWakeResult;
+      try {
+        if (endpoint.transport === "cmux") {
+          if (wakeReason !== "interrupt" && !(member.wait_intent === "parked" && member.standby_transport === "cmux")) return;
+          const address = JSON.parse(endpoint.address) as { workspace_id: string; surface_id: string };
+          const delivery = this.wakeTransport ? await this.wakeTransport.deliver({
+            room_id: roomId, agent_id: agentId, transport: "cmux", ...address,
+            generation: endpoint.generation, reason: "actionable_room_update"
+          }) : null;
+          result = delivery?.delivered ? { outcome: "queued" } :
+            { outcome: delivery?.definite_failure || !delivery ? "failed" : "ambiguous", error: "cmux_wake_failed" };
+        } else {
+          result = this.nativeWakeTransport ? await this.nativeWakeTransport.deliver({
+            transport: endpoint.transport, address: endpoint.address, secret: endpoint.secret, text
+          }) : { outcome: "failed", error: "native_wake_unavailable" };
+        }
+      } catch {
+        result = { outcome: "ambiguous", error: "wake_delivery_unconfirmed" };
+      }
+      // Even injected transports must not leak raw errors through public JSON.
+      const safeError = result.error && [
+        "claude_inbox_timeout", "claude_inbox_unreachable", "claude_inbox_write_failed", "claude_inbox_closed",
+        "invalid_codex_thread", "codex_unavailable", "codex_thread_not_found", "codex_queue_timeout", "codex_queue_failed",
+        "cmux_wake_failed", "native_wake_unavailable", "wake_delivery_unconfirmed"
+      ].includes(result.error)
+        ? result.error : result.error ? "wake_delivery_failed" : null;
+      const recorded = this.db.prepare(`UPDATE member_wake_endpoints
+        SET last_attempt_at = ?, last_status = ?, last_error = ?
+        WHERE room_id = ? AND agent_id = ? AND transport = ? AND generation = ? AND batch_id = ?`
+      ).run(this.now().toISOString(), result.outcome, safeError, roomId, agentId, endpoint.transport, endpoint.generation, batchId);
+      if (recorded.changes !== 1) return;
+      if (result.outcome !== "failed") {
+        this.db.prepare(`UPDATE room_members SET standby_wake_pending = 0,
+          standby_delivered_at = ?, standby_last_error = ?
+          WHERE room_id = ? AND agent_id = ? AND standby_generation = ?`
+        ).run(this.now().toISOString(), safeError, roomId, agentId, standbyGeneration);
+        return;
+      }
+    }
+    // Every eligible transport definitely failed, so nothing reached the
+    // harness. Release the batch: the failure may be local to this sender (no
+    // codex on PATH), and a later sender or an interrupt may reach cmux.
+    this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0
+      WHERE room_id = ? AND agent_id = ? AND batch_id = ?`
+    ).run(roomId, agentId, batchId);
+    this.db.prepare(`UPDATE room_members SET standby_last_error = 'wake_delivery_failed'
+      WHERE room_id = ? AND agent_id = ? AND standby_generation = ?`
+    ).run(roomId, agentId, standbyGeneration);
+  }
+
+  private describeWakeSender(roomId: string, agentId: AgentId): string {
+    const sender = this.getMember(roomId, agentId);
+    const name = sender?.display_name;
+    // Display names that are just the agent id read as "claude", not a hash.
+    if (name && name !== agentId) return name;
+    return agentId.startsWith("human:") ? "the operator" : agentId.split(":", 1)[0];
+  }
+
+  private resolveMessageDelivery(roomId: string, targetId: AgentId, eventSeq: number, hint: DeliveryHint = "normal"): NativeAwareDelivery {
+    const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
+      "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
+    ).get(roomId, targetId);
+    if (receiver && this.receiverLiveness(receiver) === "alive") return { status: "receiver" };
+    const member = this.getMember(roomId, targetId);
+    if (!member) return { status: "unreachable" };
+    const endpoints = this.usableNativeWakeEndpoints(roomId, member).filter((row) =>
+      row.transport !== "cmux" || hint === "interrupt" || (member.wait_intent === "parked" && member.standby_transport === "cmux"));
+    const attempted = endpoints.find((row) => row.awaiting_wait && row.last_status && row.last_status !== "failed")
+      ?? endpoints.find((row) => row.awaiting_wait && row.last_status);
+    if (attempted) return {
+      status: attempted.last_status === "failed" ? "unreachable" :
+        attempted.dispatch_event_seq === eventSeq ? "endpoint" : "pending",
+      transport: attempted.transport,
+      state: attempted.dispatch_event_seq === eventSeq ? attempted.last_status ?? undefined : undefined,
+      ...(attempted.last_error ? { error: attempted.last_error } : {})
+    };
+    const failed = endpoints.find((row) => row.dispatch_event_seq === eventSeq && row.last_status === "failed");
+    if (failed) return {
+      status: "unreachable", transport: failed.transport, state: "failed",
+      ...(failed.last_error ? { error: failed.last_error } : {})
+    };
+    if (endpoints.length > 0) return { status: "pending" };
+    if (member.standby_transport === "manual") return { status: "pending", error: "manual_standby" };
+    return { status: "unreachable" };
   }
 
   async waitForEvents(input: WaitForEventsInput): Promise<WaitForEventsResult> {
@@ -2895,6 +3266,11 @@ export class TalkingStickService {
       hasExactProcessIdentity(normalized) ||
       hasHarnessProcessIdentity(normalized);
 
+    if (existing && hasIdentity && normalized.harness_session_id &&
+      (normalized.harness_session_id !== existing.harness_session_id ||
+       normalized.harness_host_id !== existing.harness_host_id)) {
+      this.db.prepare("DELETE FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ?").run(roomId, agentId);
+    }
     if (existing) {
       const sets = ["last_seen_at = ?", "status = 'active'"];
       const params: Array<string | number | null> = [timestamp];
@@ -3302,6 +3678,9 @@ export class TalkingStickService {
         input.process_metadata,
         mode
       );
+      if (input.after_event_seq !== undefined) {
+        this.resetNativeWakeBatch(input.room_id, input.agent_id, input.after_event_seq);
+      }
     });
   }
 
@@ -3569,7 +3948,7 @@ export class TalkingStickService {
     }
 
     const timestamp = now.toISOString();
-    this.appendEvent({
+    const expiredEventSeq = this.appendEvent({
       room_id: room.room_id,
       turn_id: room.turn_id,
       event_type: "reservation_expired",
@@ -3613,6 +3992,7 @@ export class TalkingStickService {
 
     if (reservedFor) {
       this.queueStandbyWake(room.room_id, reservedFor);
+      this.queueNativeWake(room.room_id, reservedFor, "turn", null, expiredEventSeq);
     }
     return this.requireRoom(room.room_id);
   }
@@ -3707,6 +4087,9 @@ export class TalkingStickService {
     if (receiver && this.receiverLiveness(receiver) === "alive") {
       return true;
     }
+    if (this.usableNativeWakeEndpoints(roomId, member).length > 0) {
+      return true;
+    }
 
     return (
       member.wait_intent === "parked" &&
@@ -3788,7 +4171,7 @@ export class TalkingStickService {
         `
         UPDATE room_members
         SET standby_wake_pending = 1,
-            standby_last_error = NULL
+            standby_last_error = CASE WHEN standby_transport = 'manual' THEN 'Manual standby cannot self-wake; run tt wait --json to resume.' ELSE NULL END
         WHERE room_id = ?
           AND agent_id = ?
           AND wait_intent = 'parked'
@@ -3800,126 +4183,6 @@ export class TalkingStickService {
       .run(roomId, agentId);
   }
 
-  private flushPendingWakes(roomId: string): void {
-    const pending = this.db
-      .prepare<
-        [string],
-        Pick<
-          RoomMemberRow,
-          | "agent_id"
-          | "standby_transport"
-          | "standby_workspace_id"
-          | "standby_surface_id"
-          | "standby_generation"
-        >
-      >(
-        `
-        SELECT agent_id,
-               standby_transport,
-               standby_workspace_id,
-               standby_surface_id,
-               standby_generation
-        FROM room_members
-        WHERE room_id = ? AND standby_wake_pending = 1
-      `
-      )
-      .all(roomId);
-
-    for (const member of pending) {
-      if (member.standby_transport === "manual") {
-        this.recordWakeFailure(
-          roomId,
-          member.agent_id,
-          member.standby_generation,
-          "Manual standby cannot self-wake; run tt wait --json to resume."
-        );
-        continue;
-      }
-      if (
-        member.standby_transport !== "cmux" ||
-        !member.standby_workspace_id ||
-        !member.standby_surface_id
-      ) {
-        this.recordWakeFailure(
-          roomId,
-          member.agent_id,
-          member.standby_generation,
-          "Standby wake endpoint is incomplete."
-        );
-        continue;
-      }
-      if (!this.wakeTransport) {
-        this.recordWakeFailure(
-          roomId,
-          member.agent_id,
-          member.standby_generation,
-          "No wake transport is configured."
-        );
-        continue;
-      }
-
-      const request: WakeRequest = {
-        room_id: roomId,
-        agent_id: member.agent_id,
-        transport: "cmux",
-        workspace_id: member.standby_workspace_id,
-        surface_id: member.standby_surface_id,
-        generation: member.standby_generation,
-        reason: "actionable_room_update"
-      };
-      let delivery;
-      try {
-        delivery = this.wakeTransport.deliver(request);
-      } catch (error) {
-        delivery = {
-          delivered: false,
-          error: error instanceof Error ? error.message : String(error)
-        };
-      }
-      if (delivery.delivered) {
-        this.db
-          .prepare(
-            `
-            UPDATE room_members
-            SET standby_wake_pending = 0,
-                standby_delivered_at = ?,
-                standby_last_error = NULL
-            WHERE room_id = ? AND agent_id = ? AND standby_generation = ?
-          `
-          )
-          .run(
-            this.now().toISOString(),
-            roomId,
-            member.agent_id,
-            member.standby_generation
-          );
-      } else {
-        this.recordWakeFailure(
-          roomId,
-          member.agent_id,
-          member.standby_generation,
-          delivery.error ?? "Wake delivery failed."
-        );
-      }
-    }
-  }
-
-  private recordWakeFailure(
-    roomId: string,
-    agentId: AgentId,
-    generation: number,
-    error: string
-  ): void {
-    this.db
-      .prepare(
-        `
-        UPDATE room_members
-        SET standby_last_error = ?
-        WHERE room_id = ? AND agent_id = ? AND standby_generation = ?
-      `
-      )
-      .run(error, roomId, agentId, generation);
-  }
 
   private queryEvents(input: {
     room_id: string;
@@ -4181,7 +4444,7 @@ export class TalkingStickService {
 
   private shouldRetainIdleRoom(member: RoomMemberRow, now: Date): boolean {
     if (isObserverMember(member)) {
-      return false;
+      return this.getMemberProcessLiveness(member) === "alive";
     }
     const liveness = this.getMemberProcessLiveness(member);
     if (liveness === "alive") {
@@ -4281,6 +4544,24 @@ export class TalkingStickService {
   ): boolean {
     return members.some(
       (member) => !isObserverMember(member) && this.isMemberActive(member, now)
+    );
+  }
+
+  // An operator chat console keeps its room open after the agents leave, so
+  // the operator can wait for them to come back. Only a console whose exact
+  // process is verifiably alive counts; a crashed console retains nothing.
+  private hasLiveObserver(members: RoomMemberRow[]): boolean {
+    return members.some(
+      (member) =>
+        isObserverMember(member) &&
+        this.getMemberProcessLiveness(member) === "alive"
+    );
+  }
+
+  private shouldKeepRoom(members: RoomMemberRow[], now: Date): boolean {
+    return (
+      this.hasActiveTurnTakingMember(members, now) ||
+      this.hasLiveObserver(members)
     );
   }
 

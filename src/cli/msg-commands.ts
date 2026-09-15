@@ -78,7 +78,7 @@ async function handleMsgSendCommand(
           recipientSelector
         );
 
-  const result = runtime.commands.sendMessage(identity, {
+  const result = await runtime.commands.sendMessageAndWake(identity, {
     room_id: session.room_id,
     body,
     to_agent_id: toAgentId,

@@ -52,7 +52,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   try {
     await command.handler({ parsed, runtime, cliEntryUrl: import.meta.url });
   } finally {
-    runtime.close();
+    try { await runtime.commands.flushWakes(); } finally { runtime.close(); }
   }
 }
 

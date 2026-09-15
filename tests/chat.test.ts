@@ -5,8 +5,8 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, test } from "vitest";
 import { TalkingStickCommands } from "../src/commands.js";
 import { deriveHumanCliIdentity } from "../src/identity.js";
-import { TalkingStickService } from "../src/service.js";
-import type { RoomEvent } from "../src/types.js";
+import { TalkingStickService, type TalkingStickServiceOptions, type ProcessLiveness } from "../src/service.js";
+import type { ProcessMetadata, RoomEvent } from "../src/types.js";
 import {
   agentColor,
   buildNameResolver,
@@ -299,7 +299,7 @@ describe("chat status line", () => {
 });
 
 describe("human_chat observer membership", () => {
-  test("an observer is invisible to turn scheduling and room retention", async () => {
+  test("an observer retains the room without participating in turn scheduling", async () => {
     const { root, service } = setupService();
     const joined = service.joinPath({
       agent_id: "claude:solo",
@@ -355,8 +355,129 @@ describe("human_chat observer membership", () => {
     expect(
       service.leaveRoom({ agent_id: "claude:solo", room_id: joined.room_id })
     ).toMatchObject({
-      status: "room_deleted"
+      status: "left",
+      remaining_members: 1
     });
+  });
+
+  test("a live console keeps the room after the last agent leaves or is kicked", () => {
+    const { root, service } = setupService({ observerLiveness: "alive" });
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    service.joinPath({ agent_id: "claude:bb", context_path: root });
+    service.joinPath({
+      agent_id: "human:op:chat:1",
+      context_path: root,
+      process_metadata: observerIdentity().process_metadata
+    });
+
+    service.leaveRoom({ agent_id: "codex:aa", room_id: joined.room_id });
+    expect(
+      service.kickMember({
+        agent_id: "human:op:chat:1",
+        room_id: joined.room_id,
+        target_agent_id: "claude:bb",
+        force: true
+      })
+    ).toMatchObject({ status: "kicked" });
+    expect(
+      service.getRoomState({ room_id: joined.room_id }).members.map(
+        (member) => member.agent_id
+      )
+    ).toEqual(["human:op:chat:1"]);
+
+    // An agent coming back lands in the same room the operator kept open.
+    expect(
+      service.joinPath({ agent_id: "codex:aa", context_path: root })
+    ).toMatchObject({ room_id: joined.room_id, joined_existing_room: true });
+  });
+
+  test.each(["gone", "unknown"] as const)("a %s console does not keep an abandoned room", (observerLiveness) => {
+    const { root, service } = setupService({ observerLiveness });
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    service.joinPath({
+      agent_id: "human:op:chat:1",
+      context_path: root,
+      process_metadata: observerIdentity().process_metadata
+    });
+    expect(
+      service.leaveRoom({ agent_id: "codex:aa", room_id: joined.room_id })
+    ).toMatchObject({ status: "room_deleted" });
+  });
+
+  test("the last owner leaving clears ownership while retaining chat history", async () => {
+    const { root, service } = setupService({ observerLiveness: "alive" });
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    service.joinPath({
+      agent_id: "human:op:chat:1",
+      context_path: root,
+      process_metadata: observerIdentity().process_metadata
+    });
+    const turn = await service.waitForTurn({
+      agent_id: "codex:aa", room_id: joined.room_id,
+      max_wait_ms: 0, allow_solo_claim: true
+    });
+    expect(turn.status).toBe("your_turn");
+    service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: "preserve me" });
+    service.leaveRoom({ agent_id: "codex:aa", room_id: joined.room_id });
+    expect(service.getRoomState({ room_id: joined.room_id }).room).toMatchObject({
+      state: "idle", owner: null, lease_expires_at: null
+    });
+    expect(service.joinPath({ agent_id: "codex:aa", context_path: root }).room_id).toBe(joined.room_id);
+    expect(service.getRoomEvents({ room_id: joined.room_id }).some(
+      (event) => event.payload?.body === "preserve me"
+    )).toBe(true);
+  });
+
+  test("the last console closing an agent-less room deletes it", () => {
+    const { root, service } = setupService({ observerLiveness: "alive" });
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    for (const id of ["human:op:chat:1", "human:op:chat:2"]) {
+      service.joinPath({
+        agent_id: id,
+        context_path: root,
+        process_metadata: observerIdentity().process_metadata
+      });
+    }
+    service.leaveRoom({ agent_id: "codex:aa", room_id: joined.room_id });
+    expect(
+      service.leaveRoom({ agent_id: "human:op:chat:1", room_id: joined.room_id })
+    ).toMatchObject({ status: "left", remaining_members: 1 });
+    expect(
+      service.leaveRoom({ agent_id: "human:op:chat:2", room_id: joined.room_id })
+    ).toMatchObject({ status: "room_deleted" });
+  });
+
+  test("idle purge keeps a room with a live console and drops one without", () => {
+    const now = { value: new Date("2026-09-01T00:00:00.000Z") };
+    for (const [liveness, survives] of [
+      ["alive", true],
+      ["gone", false]
+    ] as const) {
+      const root = fs.realpathSync.native(
+        fs.mkdtempSync(path.join(os.tmpdir(), "tt-chat-purge-"))
+      );
+      now.value = new Date("2026-09-01T00:00:00.000Z");
+      const service = new TalkingStickService({
+        dbPath: path.join(root, ".state", "rooms.sqlite"),
+        now: () => now.value,
+        processLivenessChecker: (metadata) =>
+          metadata.session_kind === "human_chat" ? liveness : "gone"
+      });
+      cleanups.push(() => {
+        service.close();
+        fs.rmSync(root, { recursive: true, force: true });
+      });
+      const joined = service.joinPath({
+        agent_id: "human:op:chat:1",
+        context_path: root,
+        process_metadata: observerIdentity().process_metadata
+      });
+      now.value = new Date("2026-10-01T00:00:00.000Z");
+      expect(service.listRooms({ context_path: root }).rooms.length).toBe(
+        survives ? 1 : 0
+      );
+      expect(joined.room_id).toBeTruthy();
+    }
   });
 
   test("an observer leaving keeps the room and emits no leave event", () => {
@@ -386,6 +507,60 @@ describe("human_chat observer membership", () => {
 });
 
 describe("tt chat session", () => {
+  test("stays open after the last agent leaves and reconnects with a returning agent", async () => {
+    const { root, service } = setupService({ observerLiveness: "alive" });
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let transcript = "";
+    output.on("data", (chunk) => {
+      transcript += chunk.toString();
+    });
+
+    const session = runChatSession({
+      runtime: { commands: new TalkingStickCommands(service), close: () => {} },
+      identity: createChatIdentity(),
+      context_path: root,
+      input,
+      output,
+      terminal: false,
+      color: false,
+      history: 10,
+      show_turn_events: false,
+      poll_ms: 5
+    });
+    await until(() => transcript.includes("In the room: codex"));
+
+    service.leaveRoom({ agent_id: "codex:aa", room_id: joined.room_id });
+    await until(() => transcript.includes("codex left"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(transcript).not.toContain("The room has closed.");
+
+    input.write("@codex are you there?\n");
+    await until(() =>
+      transcript.includes(
+        "! codex left the room and can't receive messages until it rejoins."
+      )
+    );
+
+    service.joinPath({ agent_id: "codex:aa", context_path: root });
+    service.sendMessage({
+      agent_id: "codex:aa",
+      room_id: joined.room_id,
+      body: "back again"
+    });
+    await until(() => transcript.includes("back again"));
+
+    input.write("/quit\n");
+    await session;
+    expect(
+      service.getRoomState({ room_id: joined.room_id }).members.map(
+        (member) => member.agent_id
+      )
+    ).toEqual(["codex:aa"]);
+  });
+
   test("shows recent history, streams agent messages, sends, and detaches on /quit", async () => {
     const { root, service } = setupService();
     const joined = service.joinPath({
@@ -467,7 +642,7 @@ describe("tt chat session", () => {
   test.each([false, true])(
     "room deletion explains the exit (TTY=%s)",
     async (terminal) => {
-      const { root, service } = setupService();
+      const { root, service } = setupService({ observerLiveness: "gone" });
       const joined = service.joinPath({
         agent_id: "codex:aa",
         context_path: root
@@ -688,13 +863,18 @@ test.each([
   }
 );
 
-function setupService() {
+function setupService(options: TalkingStickServiceOptions & { observerLiveness?: ProcessLiveness } = {}) {
   const root = fs.realpathSync.native(
     fs.mkdtempSync(path.join(os.tmpdir(), "tt-chat-"))
   );
   const service = new TalkingStickService({
     dbPath: path.join(root, ".state", "rooms.sqlite"),
-    policy: { waitForEventsPollMs: 1 }
+    policy: { waitForEventsPollMs: 1 },
+    ...options,
+    ...(options.observerLiveness
+      ? { processLivenessChecker: (metadata: ProcessMetadata) =>
+          metadata.session_kind === "human_chat" ? options.observerLiveness! : "unknown" }
+      : {})
   });
   cleanups.push(() => {
     service.close();
@@ -740,3 +920,43 @@ async function until(
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+test("chat remains responsive while a slow recipient wakes and reports each recipient independently", async () => {
+  let finishSlow!: (result: { outcome: "queued" }) => void;
+  const slow = new Promise<{ outcome: "queued" }>((resolve) => { finishSlow = resolve; });
+  let deliveries = 0;
+  const { root, service } = setupService({ nativeWakeTransport: {
+    deliver(request) { deliveries++; return request.address === "slow" ? slow : { outcome: "queued" }; }
+  } });
+  const joined = service.joinPath({ agent_id: "claude:slow", context_path: root, process_metadata: { harness_session_id: "slow" } });
+  service.joinPath({ agent_id: "claude:fast", context_path: root, process_metadata: { harness_session_id: "fast" } });
+  for (const name of ["slow", "fast"]) service.registerNativeWakeEndpoint({ room_id: joined.room_id,
+    agent_id: `claude:${name}`, transport: "claude_inbox", address: name, secret: "private", harness_session_id: name, host_id: os.hostname() });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let transcript = "";
+  output.on("data", (chunk) => { transcript += chunk.toString(); });
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: false, color: false, history: 0,
+    show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => transcript.includes("Talking Stick chat"));
+    input.write("@claude hello both\n");
+    await until(() => deliveries === 2);
+    input.write("/who\n");
+    await until(() => transcript.split("In the room:").length >= 3);
+    await until(() => transcript.includes("claude:fast: queued"));
+    expect(transcript).not.toContain("claude:slow: queued");
+    finishSlow({ outcome: "queued" });
+    await until(() => transcript.includes("claude:slow: queued"));
+    const noticesBefore = transcript.match(/claude:fast: queued/g)?.length;
+    input.write("@claude:fast another message\n");
+    await until(() => transcript.includes("claude:fast: waiting for agent to read"));
+    expect(transcript.match(/claude:fast: queued/g)?.length).toBe(noticesBefore);
+    expect(deliveries).toBe(2);
+  } finally {
+    finishSlow({ outcome: "queued" });
+    input.write("/quit\n");
+    await session;
+  }
+});

@@ -44,7 +44,7 @@ import {
   requireLeaseSession,
   upsertSessionFromJoin
 } from "./session.js";
-import type { Runtime } from "./runtime.js";
+import { registerNativeWake, type Runtime } from "./runtime.js";
 
 export async function handleWaitCommand(
   runtime: Runtime,
@@ -96,6 +96,7 @@ export async function handleWaitCommand(
       process_started_at: getCurrentProcessStartedAt(),
       cursor_event_seq: currentCursor
     });
+    registerNativeWake(runtime, identity, joined.room_id);
     const harnessSessionId = identity.process_metadata.harness_session_id;
     try {
       if (!harnessSessionId) {
@@ -150,6 +151,9 @@ export async function handleWaitCommand(
               cursor_event_seq: currentCursor
             });
           }
+          // A long wait can queue wakes (an expired reservation moving on);
+          // deliver them now rather than when this wait finally exits.
+          void runtime.commands.flushWakes().catch(() => {});
         }
       }
     );
@@ -306,6 +310,7 @@ export function handleStandbyCommand(
     context_path: contextPath
   });
   upsertSessionFromJoin(identity, joined);
+  registerNativeWake(runtime, identity, joined.room_id);
   const requestedTransport = getStringOption(parsed, "wake");
   if (
     requestedTransport !== undefined &&
@@ -345,7 +350,7 @@ export function handleStandbyCommand(
     fallbackReason ? { ...result, fallback_reason: fallbackReason } : result,
     () => {
       if (result.can_self_wake) {
-        return "Standby registered. This turn may end; cmux will wake this surface for an actionable update.";
+        return `Standby registered. This turn may end; Talking Stick will wake this session through ${result.wake_transports.join(", ")} for a directed update.`;
       }
       if (fallbackReason) {
         return `Manual standby registered because cmux wake is unavailable (${fallbackReason}). It cannot self-wake; run \`tt wait --json\` to resume.`;

@@ -122,6 +122,8 @@ export async function runChatSession(
   });
   const roomId = joined.room_id;
 
+  // Agents seen leaving, so addressing one explains why it can't be reached.
+  const departedAgents = new Set<string>();
   let members: RoomMember[] = [];
   let owner: string | null = null;
   let ownerSince: string | null = null;
@@ -293,27 +295,38 @@ export async function runChatSession(
       refreshMembers();
       const resolved = resolveChatRecipient(to, members, selfId);
       if ("error" in resolved) {
-        print(`! ${sanitizeChatText(resolved.error)}`);
+        const selector = to.toLowerCase();
+        const departed = [...departedAgents].filter(
+          (agentId) =>
+            agentId.toLowerCase().startsWith(selector) ||
+            nameOf(agentId).toLowerCase().startsWith(selector)
+        );
+        print(
+          departed.length > 0
+            ? `! ${sanitizeChatText(departed.map((agentId) => nameOf(agentId)).join(", "))} left the room and can't receive messages until it rejoins.`
+            : `! ${sanitizeChatText(resolved.error)}`
+        );
         return;
       }
       targets = resolved.agent_ids;
     }
     for (const toAgentId of targets) {
-      const result = runtime.commands.sendMessage(identity, {
+      void runtime.commands.sendMessageAndWake(identity, {
         room_id: roomId,
         body,
         to_agent_id: toAgentId,
         delivery_hint: interrupt ? "interrupt" : "normal"
-      });
-      if (
-        result.delivery_target &&
-        (result.delivery_status === "pending" ||
-          result.delivery_status === "unreachable")
-      ) {
-        print(
-          `! ${nameOf(result.delivery_target)} is not listening right now; it will see the message on its next wait.`
-        );
-      }
+      })
+      .then((result) => {
+        if (closed || !result.delivery_target) return;
+        const state = result.delivery_status === "receiver" ? "listening" :
+          result.delivery_status === "pending" ? "waiting for agent to read" :
+          result.delivery_state === "queued" || result.delivery_state === "woken" ? result.delivery_state :
+          result.delivery_state === "ambiguous" ? "wake unconfirmed" :
+          "not listening";
+        print(`${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`);
+      })
+      .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
     }
   };
 
@@ -349,6 +362,13 @@ export async function runChatSession(
   // lines stay compact underneath the message they follow.
   let lastPrinted: "message" | "system" | "info" = "info";
   const printEvent = (event: RoomEvent) => {
+    if (event.event_type === "leave" && event.from_agent_id) {
+      departedAgents.add(event.from_agent_id);
+    } else if (event.event_type === "kick" && event.to_agent_id) {
+      departedAgents.add(event.to_agent_id);
+    } else if (event.event_type === "join" && event.from_agent_id) {
+      departedAgents.delete(event.from_agent_id);
+    }
     if (terminal) {
       transcript.appendEvent(event);
       if (
@@ -567,6 +587,7 @@ export async function runChatSession(
     process.off("uncaughtExceptionMonitor", restore);
     stop();
     if (terminal && exitReason) output.write(`${exitReason}\n`);
+    await runtime.commands.flushWakes(roomId);
     try {
       runtime.commands.leaveRoom(identity, { room_id: roomId });
     } catch {

@@ -31,7 +31,7 @@ import {
   resolveSessionForReads,
   upsertSessionFromJoin
 } from "./session.js";
-import type { Runtime } from "./runtime.js";
+import { registerNativeWake, type Runtime } from "./runtime.js";
 
 export function handleListCommand(
   runtime: Runtime,
@@ -67,6 +67,7 @@ export function handleJoinCommand(
     force_new: parsed.options.has("force-new")
   });
   upsertSessionFromJoin(identity, joined);
+  registerNativeWake(runtime, identity, joined.room_id);
 
   printResult(parsed, joined, () => {
     const lines = [`Joined ${joined.canonical_path} as ${joined.agent_id}`];
@@ -361,6 +362,11 @@ interface HealthSummaryResult {
     active: boolean;
     duplicates: number;
   };
+  wake: Array<{
+    transport: string;
+    last_status: string | null;
+    last_error: string | null;
+  }>;
   git: {
     dirty: boolean;
     summary: string;
@@ -453,6 +459,13 @@ function buildHealthSummary(
       active: listenerActive,
       duplicates: result.local.receivers.duplicate_count
     },
+    wake: (result.wake_endpoints ?? [])
+      .filter((endpoint) => endpoint.agent_id === callerAgentId)
+      .map((endpoint) => ({
+        transport: endpoint.transport,
+        last_status: endpoint.last_status,
+        last_error: endpoint.last_error
+      })),
     git: {
       dirty:
         result.workspace.git.status === "available" &&
@@ -496,6 +509,17 @@ function renderHealthSummaryText(summary: HealthSummaryResult): string {
   lines.push(
     `Listener: ${formatListenerSummary(summary.listener)}`
   );
+  if (summary.wake.length > 0) {
+    lines.push(
+      `Wake:     ${summary.wake
+        .map((endpoint) =>
+          endpoint.last_status
+            ? `${endpoint.transport} (last ${endpoint.last_status}${endpoint.last_error ? `: ${endpoint.last_error}` : ""})`
+            : endpoint.transport
+        )
+        .join(", ")}`
+    );
+  }
   lines.push(`Git:      ${summary.git.summary}`);
   lines.push(`Next:     ${summary.next_action}`);
   return lines.join("\n");
