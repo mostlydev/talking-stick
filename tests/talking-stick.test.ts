@@ -4762,7 +4762,7 @@ describe("interrupt delivery", () => {
     });
   });
 
-  test("ambiguous endpoint delivery reports a redacted failure without fallback", async () => {
+  test("ambiguous endpoint delivery reports a redacted, unconfirmed state without fallback", async () => {
     const { requests, transport } = recordingTransport(false);
     const harness = createHarness({ wakeTransport: transport });
     const joined = joinTwo(harness);
@@ -4785,7 +4785,7 @@ describe("interrupt delivery", () => {
 
     expect(result.delivery_status).toBe("endpoint");
     expect(result.delivery_error).toBe("cmux_wake_failed");
-    expect(result.delivery_state).toBe("failed");
+    expect(result.delivery_state).toBe("ambiguous");
     expect(requests).toHaveLength(1);
   });
 });

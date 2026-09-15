@@ -321,6 +321,7 @@ export async function runChatSession(
         if (closed || !result.delivery_target) return;
         const state = result.delivery_status === "receiver" ? "listening" :
           result.delivery_state === "queued" || result.delivery_state === "woken" ? result.delivery_state :
+          result.delivery_state === "ambiguous" ? "wake unconfirmed" :
           result.delivery_status === "pending" ? "pending" : "not listening";
         print(`${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`);
       })

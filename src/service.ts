@@ -266,7 +266,7 @@ interface NativeAwareDelivery {
   status: MessageDeliveryStatus;
   error?: string;
   transport?: NativeWakeTransportName;
-  state?: "woken" | "queued" | "failed";
+  state?: NativeWakeState | "failed";
 }
 
 interface NativeWakeEndpointRow {
@@ -1552,6 +1552,15 @@ export class TalkingStickService {
       if (result.changes === 1) {
         // The exiting receiver has surfaced everything up to its cursor.
         this.resetNativeWakeBatch(input.room_id, input.agent_id, input.cursor_event_seq);
+        // A wake skipped because this receiver was still alive, for an event
+        // past its cursor, is due again now that nothing will surface it.
+        const requeued = this.db.prepare(
+          `UPDATE member_wake_endpoints SET wake_pending = 1
+           WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 0
+             AND wake_pending = 0 AND wake_reason IS NOT NULL
+             AND COALESCE(wake_event_seq, 0) > ?`
+        ).run(input.room_id, input.agent_id, input.cursor_event_seq);
+        if (requeued.changes > 0) this.wakeRooms.add(input.room_id);
       }
       return {
         status: result.changes === 1 ? "receiver_unregistered" : "receiver_replaced",
@@ -2150,7 +2159,12 @@ export class TalkingStickService {
   // Writes only queue work. Call flushWakes after committing, before closing
   // the sending process. Separate recipients dispatch concurrently.
   async flushWakes(roomId?: string, agentId?: string): Promise<void> {
-    const rooms = roomId ? [roomId] : [...this.wakeRooms];
+    // An unscoped flush also sweeps pending rows another process queued but
+    // never delivered (killed after commit, or a long wait that queued them).
+    const rooms = roomId ? [roomId] : [...new Set([...this.wakeRooms,
+      ...this.db.prepare<[], { room_id: string }>(
+        "SELECT DISTINCT room_id FROM member_wake_endpoints WHERE wake_pending = 1"
+      ).all().map((row) => row.room_id)])];
     for (const room of rooms) {
       // A recipient-scoped flush leaves other recipients queued for a later
       // room-wide flush.
@@ -2168,14 +2182,18 @@ export class TalkingStickService {
     await Promise.all([...this.wakeJobs].filter(([, target]) => (!roomId || target.room === roomId) && (!agentId || target.agent === agentId)).map(([job]) => job));
   }
 
-  async sendMessageAndWake(input: SendMessageInput): Promise<SendMessageResult> {
+  // Not async on purpose: send errors (closed room, unknown recipient) throw
+  // synchronously so callers can tell them apart from wake delivery.
+  sendMessageAndWake(input: SendMessageInput): Promise<SendMessageResult> {
     const result = this.sendMessage(input);
-    if (!result.delivery_target) return result;
-    await this.flushWakes(input.room_id, result.delivery_target);
-    const delivery = this.resolveMessageDelivery(input.room_id, result.delivery_target, result.event_seq, input.delivery_hint);
-    return { ...result, delivery_status: delivery.status,
-      delivery_transport: delivery.transport, delivery_state: delivery.state,
-      delivery_error: delivery.error };
+    const target = result.delivery_target;
+    if (!target) return Promise.resolve(result);
+    return this.flushWakes(input.room_id, target).then(() => {
+      const delivery = this.resolveMessageDelivery(input.room_id, target, result.event_seq, input.delivery_hint);
+      return { ...result, delivery_status: delivery.status,
+        delivery_transport: delivery.transport, delivery_state: delivery.state,
+        delivery_error: delivery.error };
+    });
   }
 
   private async dispatchWake(roomId: string, agentId: AgentId): Promise<void> {
@@ -2252,8 +2270,12 @@ export class TalkingStickService {
         return;
       }
     }
-    // Keep the failed batch reserved too: one bounded attempt per unread batch,
-    // regardless of which legacy wake trigger produced the next event.
+    // Every eligible transport definitely failed, so nothing reached the
+    // harness. Release the batch: the failure may be local to this sender (no
+    // codex on PATH), and a later sender or an interrupt may reach cmux.
+    this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0
+      WHERE room_id = ? AND agent_id = ? AND batch_id = ?`
+    ).run(roomId, agentId, batchId);
     this.db.prepare(`UPDATE room_members SET standby_last_error = 'wake_delivery_failed'
       WHERE room_id = ? AND agent_id = ? AND standby_generation = ?`
     ).run(roomId, agentId, standbyGeneration);
@@ -2279,8 +2301,13 @@ export class TalkingStickService {
       status: attempted.last_status === "failed" ? "unreachable" :
         attempted.dispatch_event_seq === eventSeq ? "endpoint" : "pending",
       transport: attempted.transport,
-      state: attempted.last_status === "ambiguous" ? "failed" : attempted.last_status ?? undefined,
+      state: attempted.last_status ?? undefined,
       ...(attempted.last_error ? { error: attempted.last_error } : {})
+    };
+    const failed = endpoints.find((row) => row.dispatch_event_seq === eventSeq && row.last_status === "failed");
+    if (failed) return {
+      status: "unreachable", transport: failed.transport, state: "failed",
+      ...(failed.last_error ? { error: failed.last_error } : {})
     };
     if (endpoints.length > 0) return { status: "pending" };
     if (member.standby_transport === "manual") return { status: "pending", error: "manual_standby" };

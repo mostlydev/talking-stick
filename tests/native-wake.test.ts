@@ -251,6 +251,7 @@ describe("native wake dispatch", () => {
     service = setup.service;
     roomId = joinPair(service, setup.project);
     await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "first" });
+    await service.flushWakes();
     expect(nested).toBe(true);
     expect(setup.nativeRequests).toHaveLength(1);
   });
@@ -334,7 +335,7 @@ describe("native wake dispatch", () => {
       agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "x"
     });
     expect(cmuxRequests).toHaveLength(0);
-    expect(result).toMatchObject({ delivery_status: "endpoint", delivery_state: "failed" });
+    expect(result).toMatchObject({ delivery_status: "endpoint", delivery_state: "ambiguous" });
   });
 
   test("endpoints from another harness session or host are ignored", async () => {
@@ -607,6 +608,78 @@ describe("concurrent wake batches", () => {
     expect(nativeRequests.map((request) => request.transport)).toEqual(["claude_inbox", "codex_queue"]);
   });
 
+  test("an interrupt reaches cmux after a normal wake definitely failed", async () => {
+    const { service, project, nativeRequests, cmuxRequests } = harness({
+      native: () => ({ outcome: "failed", error: "claude_inbox_unreachable" })
+    });
+    const roomId = joinPair(service, project);
+    service.registerWakeEndpoint({
+      room_id: roomId, agent_id: "claude:aa", workspace_id: "w", surface_id: "s", harness_session_id: "claude-session"
+    });
+    const normal = await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "normal" });
+    expect(normal.delivery_status).toBe("unreachable");
+    expect(cmuxRequests).toHaveLength(0);
+    const urgent = await service.sendMessageAndWake({
+      agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "urgent", delivery_hint: "interrupt"
+    });
+    expect(nativeRequests).toHaveLength(2);
+    expect(cmuxRequests).toHaveLength(1);
+    expect(urgent).toMatchObject({ delivery_status: "endpoint", delivery_transport: "cmux" });
+  });
+
+  test("a sender-side definite failure does not block a later sender", async () => {
+    let fail = true;
+    const { service, project, nativeRequests } = harness({
+      native: () => (fail ? { outcome: "failed", error: "codex_unavailable" } : { outcome: "queued" })
+    });
+    const roomId = joinPair(service, project);
+    await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "one" });
+    fail = false;
+    const second = await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "two" });
+    expect(nativeRequests).toHaveLength(2);
+    expect(second).toMatchObject({ delivery_status: "endpoint", delivery_state: "queued" });
+  });
+
+  test("a message past the cursor of an exiting receiver is woken after it exits", async () => {
+    let alive = true;
+    const root = harness();
+    const { project, nativeRequests } = root;
+    const service = new TalkingStickService({
+      dbPath: root.service.db.name, hostId: HOST, processLivenessChecker: () => "alive",
+      receiverLivenessChecker: () => (alive ? "alive" : "gone"),
+      nativeWakeTransport: { deliver(request) { nativeRequests.push(request); return { outcome: "queued" }; } }
+    });
+    services.push(service);
+    const roomId = joinPair(service, project);
+    service.registerReceiver({ room_id: roomId, agent_id: "claude:aa", receiver_id: "r", host_id: HOST, pid: 77, process_started_at: "t", cursor_event_seq: 0 });
+    const late = await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "late" });
+    expect(late.delivery_status).toBe("receiver");
+    expect(nativeRequests).toHaveLength(0);
+    alive = false;
+    service.unregisterReceiver({ room_id: roomId, agent_id: "claude:aa", receiver_id: "r", cursor_event_seq: late.event_seq - 1 });
+    await service.flushWakes();
+    expect(nativeRequests).toHaveLength(1);
+  });
+
+  test("an unscoped flush sweeps pending wakes queued by another process", async () => {
+    const { service, project, nativeRequests } = harness();
+    const roomId = joinPair(service, project);
+    const other = new TalkingStickService({ dbPath: service.db.name, hostId: HOST, processLivenessChecker: () => "alive", receiverLivenessChecker: () => "gone" });
+    services.push(other);
+    other.sendMessage({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "queued then killed" });
+    other.close();
+    await service.flushWakes();
+    expect(nativeRequests).toHaveLength(1);
+  });
+
+  test("send errors throw synchronously instead of as wake failures", () => {
+    const { service, project } = harness();
+    const roomId = joinPair(service, project);
+    expect(() => service.sendMessageAndWake({
+      agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "nobody:zz", body: "x"
+    })).toThrow();
+  });
+
   test("heartbeat cursor acknowledgement enables the next batch without rejoining", async () => {
     const { service, project, nativeRequests } = harness();
     const roomId = joinPair(service, project);
@@ -649,4 +722,17 @@ test("even a transport error shaped like a code cannot expose a secret", async (
   const result = await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "hello" });
   expect(result.delivery_error).toBe("wake_delivery_failed");
   expect(JSON.stringify(service.getRoomHealth({ context_path: project, agent_id: "claude:aa" }))).not.toContain("supersecret");
+});
+
+test("the codex child never inherits Claude inbox credentials", async () => {
+  const bin = path.join(tempRoot(), "bin");
+  fs.mkdirSync(bin);
+  const envFile = path.join(bin, "env.txt");
+  fs.writeFileSync(path.join(bin, "codex"), `#!/bin/sh\nenv > ${JSON.stringify(envFile)}\n`, { mode: 0o755 });
+  await createSystemNativeWakeTransport({
+    env: { PATH: `${bin}${path.delimiter}/usr/bin:/bin`, CLAUDE_CODE_MESSAGING_TOKEN: "leak", CLAUDE_CODE_MESSAGING_SOCKET: "/s", KEEP: "1" }
+  }).deliver({ transport: "codex_queue", address: "01a0a0ce-e4f1-7f52-956e-7784930bbdf8", secret: null, text: "t" });
+  const env = fs.readFileSync(envFile, "utf8");
+  expect(env).toContain("KEEP=1");
+  expect(env).not.toContain("CLAUDE_CODE_MESSAGING");
 });

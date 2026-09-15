@@ -535,7 +535,7 @@ export interface SendMessageResult {
   delivery_target?: AgentId;
   delivery_error?: string;
   delivery_transport?: NativeWakeTransportName;
-  delivery_state?: "woken" | "queued" | "failed";
+  delivery_state?: "woken" | "queued" | "ambiguous" | "failed";
 }
 
 export interface RegisterNativeWakeEndpointInput {

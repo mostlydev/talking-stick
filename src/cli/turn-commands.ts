@@ -151,6 +151,9 @@ export async function handleWaitCommand(
               cursor_event_seq: currentCursor
             });
           }
+          // A long wait can queue wakes (an expired reservation moving on);
+          // deliver them now rather than when this wait finally exits.
+          void runtime.commands.flushWakes().catch(() => {});
         }
       }
     );

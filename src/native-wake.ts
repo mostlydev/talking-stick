@@ -139,7 +139,7 @@ export function deliverCodexQueue(request: NativeWakeRequest, options: NativeWak
     const child = execFile("codex", ["queue", "--thread", request.address, "--message", request.text], {
       encoding: "utf8", timeout: options.timeout_ms ?? CODEX_QUEUE_TIMEOUT_MS,
       killSignal: "SIGKILL", maxBuffer: 64 * 1024, windowsHide: true,
-      env: options.env ?? process.env
+      env: withoutClaudeInboxCredentials(options.env ?? process.env)
     }, (error, _stdout, stderr) => {
       if (!error) { resolve({ outcome: "queued" }); return; }
       if (error.code === "ENOENT" || error.code === "EACCES") {
@@ -153,4 +153,14 @@ export function deliverCodexQueue(request: NativeWakeRequest, options: NativeWak
     });
     child.stdin?.end();
   });
+}
+
+// The sender may itself run inside Claude Code; its own inbox credentials must
+// not leak into the codex child.
+function withoutClaudeInboxCredentials(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const copy = { ...env };
+  for (const key of Object.keys(copy)) {
+    if (key.startsWith("CLAUDE_CODE_MESSAGING_")) delete copy[key];
+  }
+  return copy;
 }
