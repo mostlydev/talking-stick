@@ -195,14 +195,20 @@ export function resolveChatRecipient(
   selfAgentId: AgentId
 ): { agent_ids: AgentId[] } | { error: string } {
   const lowered = selector.toLowerCase();
-  const matches = members.filter(
+  const named = members.filter(
     (member) =>
       member.agent_id !== selfAgentId &&
       (member.agent_id.toLowerCase().startsWith(lowered) ||
         member.display_name?.toLowerCase().startsWith(lowered))
   );
-  return matches.length > 0
-    ? { agent_ids: matches.map((member) => member.agent_id) }
+  // Agents whose process has ended can't receive anything; leave them out of
+  // fan-out, but say so when they are the only match.
+  const matches = named.filter((member) => member.process_liveness !== "gone");
+  if (matches.length > 0) {
+    return { agent_ids: matches.map((member) => member.agent_id) };
+  }
+  return named.length > 0
+    ? { error: `'${selector}' only matches agents that have ended: ${named.map((member) => member.agent_id).join(", ")}.` }
     : { error: `No room member matches '${selector}'.` };
 }
 
@@ -213,8 +219,9 @@ function everyoneIn(
   const agents = members.filter(
     (member) =>
       member.agent_id !== selfAgentId &&
-      member.status === "active" &&
-      member.session_kind !== HUMAN_CHAT_SESSION_KIND
+      member.session_kind !== HUMAN_CHAT_SESSION_KIND &&
+      member.process_liveness !== "gone" &&
+      (member.status === "active" || member.process_liveness === "alive")
   );
   return agents.length > 0
     ? { agent_ids: agents.map((member) => member.agent_id) }

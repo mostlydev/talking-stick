@@ -45,6 +45,8 @@ const DEFAULT_POLL_MS = 250;
 const PRESENCE_REFRESH_MS = 30_000;
 const STATUS_REFRESH_MS = 10_000;
 const RECEIPT_POLL_MS = 1_000;
+const RECEIPT_BATCH = 200;
+const MAX_AWAITED_RECEIPTS = 1_000;
 const STATE_CHANGE_EVENTS = new Set<EventType>([
   "join",
   "leave",
@@ -204,13 +206,24 @@ export async function runChatSession(
   // seq. A receipt means the recipient's own tt wait returned the message.
   const awaitingReceipt = new Map<number, { notice: number | null; text: string }>();
   let lastReceiptCheck = 0;
+  const trackReceipt = (eventSeq: number, pending: { notice: number | null; text: string }) => {
+    awaitingReceipt.set(eventSeq, pending);
+    // Oldest first: a recipient that never reads can't grow this without bound.
+    while (awaitingReceipt.size > MAX_AWAITED_RECEIPTS) {
+      awaitingReceipt.delete(awaitingReceipt.keys().next().value!);
+    }
+  };
   const checkReceipts = () => {
     if (awaitingReceipt.size === 0 || Date.now() - lastReceiptCheck < RECEIPT_POLL_MS) return;
     lastReceiptCheck = Date.now();
-    const receipts = runtime.commands.getMessageReceipts({
-      room_id: roomId,
-      event_seqs: [...awaitingReceipt.keys()]
-    });
+    const seqs = [...awaitingReceipt.keys()];
+    const receipts = [];
+    for (let start = 0; start < seqs.length; start += RECEIPT_BATCH) {
+      receipts.push(...runtime.commands.getMessageReceipts({
+        room_id: roomId,
+        event_seqs: seqs.slice(start, start + RECEIPT_BATCH)
+      }));
+    }
     for (const receipt of receipts) {
       const pending = awaitingReceipt.get(receipt.event_seq);
       if (!pending) continue;
@@ -371,7 +384,7 @@ export async function runChatSession(
           else print(`${sanitizeChatText(nameOf(result.delivery_target))}: received`);
           redraw();
         } else {
-          awaitingReceipt.set(result.event_seq, { notice, text });
+          trackReceipt(result.event_seq, { notice, text });
         }
       })
       .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
@@ -540,7 +553,7 @@ export async function runChatSession(
           completeChatInput(
             draft,
             members
-              .filter((member) => member.agent_id !== selfId)
+              .filter((member) => member.agent_id !== selfId && member.process_liveness !== "gone")
               .flatMap((member) => [nameOf(member.agent_id), member.agent_id])
           )
       });

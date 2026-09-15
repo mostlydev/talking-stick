@@ -4469,10 +4469,7 @@ export class TalkingStickService {
   }
 
   private purgeExpiredIdleRooms(now: Date): void {
-    if (this.policy.idleRoomTtlMs <= 0) {
-      return;
-    }
-
+    const expireRooms = this.policy.idleRoomTtlMs > 0;
     const cutoffMs = now.getTime() - this.policy.idleRoomTtlMs;
 
     withImmediateTransaction(this.db, () => {
@@ -4481,7 +4478,9 @@ export class TalkingStickService {
         .all();
 
       for (const room of rooms) {
+        // Ended-member cleanup runs even when idle room expiry is disabled.
         this.pruneEndedMembers(room, now);
+        if (!expireRooms) continue;
         const members = this.getMembers(room.room_id);
         if (this.latestRoomActivityMs(room, members) > cutoffMs) {
           continue;

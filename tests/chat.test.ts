@@ -271,6 +271,17 @@ describe("chat rendering", () => {
     expect(resolveChatRecipients(["codex", "claude", "claude:c"], members, "human:op")).toEqual({
       agent_ids: ["codex:aa", "claude:bb", "claude:cc"]
     });
+    const liveness = [
+      { agent_id: "codex:aa", status: "active", session_kind: "harness_cli" },
+      { agent_id: "claude:bb", status: "inactive", process_liveness: "alive", session_kind: "harness_cli" },
+      { agent_id: "claude:ee", status: "inactive", process_liveness: "gone", session_kind: "harness_cli" },
+      { agent_id: "grok:ff", status: "active", process_liveness: "gone", session_kind: "harness_cli" }
+    ] as never;
+    expect(resolveChatRecipients(["everyone"], liveness, "human:op")).toEqual({ agent_ids: ["codex:aa", "claude:bb"] });
+    expect(resolveChatRecipients(["claude"], liveness, "human:op")).toEqual({ agent_ids: ["claude:bb"] });
+    expect(resolveChatRecipient("grok", liveness, "human:op")).toEqual({
+      error: "'grok' only matches agents that have ended: grok:ff."
+    });
     expect(resolveChatRecipients(["everyone"], [
       { agent_id: "codex:aa", status: "active", session_kind: "harness_cli" },
       { agent_id: "claude:bb", status: "active", session_kind: "harness_cli" },
@@ -1140,6 +1151,40 @@ describe("message receipts", () => {
   });
 });
 
+test("receipts for later messages still arrive with more than one batch awaiting", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let transcript = "";
+  output.on("data", (chunk) => { transcript += chunk.toString(); });
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close: () => {} },
+    identity: observerIdentity(),
+    context_path: root,
+    input,
+    output,
+    terminal: false,
+    color: false,
+    history: 0,
+    show_turn_events: false,
+    poll_ms: 5
+  });
+  await until(() => transcript.includes("In the room"));
+  const count = 205;
+  input.write(Array.from({ length: count }, (_, index) => `@codex m${index}\n`).join(""));
+  await until(() => (transcript.match(/codex: /g)?.length ?? 0) >= count, 10_000);
+  const last = service.getLatestEventSeq({ room_id: joined.room_id });
+  await service.waitForTurn({
+    agent_id: "codex:aa", room_id: joined.room_id, max_wait_ms: 0, mode: "parked",
+    include_events: true, after_event_seq: last - 1
+  });
+  await until(() => transcript.includes("codex: received"), 5_000);
+  expect(transcript.match(/codex: received/g)).toHaveLength(1);
+  input.write("/quit\n");
+  await session;
+}, 20_000);
+
 describe("ended member pruning", () => {
   test("removes definitely ended agents after the grace period and keeps everyone else", () => {
     let clock = new Date("2026-09-15T10:00:00.000Z");
@@ -1152,7 +1197,8 @@ describe("ended member pruning", () => {
     };
     const { root, service } = setupService({
       now: () => clock,
-      policy: { waitForEventsPollMs: 1, idleRoomTtlMs: 7 * 24 * 60 * 60 * 1000 },
+      // Room expiry disabled: ended-member cleanup must still run.
+      policy: { waitForEventsPollMs: 1, idleRoomTtlMs: 0 },
       processLivenessChecker: (metadata: ProcessMetadata) =>
         liveness[metadata.harness_session_id ?? ""] ?? "unknown"
     });
