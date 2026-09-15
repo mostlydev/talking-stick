@@ -146,6 +146,16 @@ describe("transcript scrolling", () => {
     expect(narrow).toContain(`number ${anchoredNumber}`);
   });
 
+  test("rewrites a notice in place without adding a block", () => {
+    const transcript = new ChatTranscript();
+    const id = transcript.appendNotice("codex: queued");
+    transcript.appendEvent(message("later"));
+    expect(transcript.updateNotice(id, "codex: queued → received")).toBe(true);
+    expect(transcript.size).toBe(2);
+    expect(transcript.viewport(10, 40, context).join("\n")).toContain("codex: queued → received");
+    expect(transcript.updateNotice(999, "gone")).toBe(false);
+  });
+
   test("evicts the oldest blocks beyond the cap", () => {
     const transcript = new ChatTranscript(3);
     for (let index = 1; index <= 5; index++) {

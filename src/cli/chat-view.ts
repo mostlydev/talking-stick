@@ -259,8 +259,21 @@ export class ChatTranscript {
     }
   }
 
-  appendNotice(text: string): void {
-    this.push({ id: this.nextId++, kind: "notice", text });
+  appendNotice(text: string): number {
+    const id = this.nextId++;
+    this.push({ id, kind: "notice", text });
+    return id;
+  }
+
+  // Rewrites a notice in place (e.g. a delivery status that later advances).
+  // Returns false once the notice has been evicted.
+  updateNotice(id: number, text: string): boolean {
+    const block = this.blocks.find((candidate) => candidate.id === id);
+    if (!block || block.kind !== "notice") return false;
+    block.text = text;
+    this.wrapCache.delete(id);
+    this.layoutCache = null;
+    return true;
   }
 
   scrollBy(

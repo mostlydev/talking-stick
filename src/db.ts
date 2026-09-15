@@ -292,6 +292,21 @@ const migrations: Migration[] = [
       );
       CREATE INDEX interrupt_deliveries_pending ON interrupt_deliveries(status, room_id);
     `
+  },
+  {
+    id: 16,
+    name: "message_receipts",
+    up: `
+      CREATE TABLE message_receipts (
+        room_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        event_seq INTEGER NOT NULL,
+        delivered_at TEXT NOT NULL,
+        PRIMARY KEY (room_id, agent_id, event_seq),
+        FOREIGN KEY (room_id, agent_id) REFERENCES room_members(room_id, agent_id) ON DELETE CASCADE,
+        FOREIGN KEY (event_seq) REFERENCES room_events(event_seq) ON DELETE CASCADE
+      );
+    `
   }
 ];
 

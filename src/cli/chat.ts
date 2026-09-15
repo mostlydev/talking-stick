@@ -43,6 +43,7 @@ const HISTORY_SCAN_EVENTS = 500;
 const DEFAULT_POLL_MS = 250;
 const PRESENCE_REFRESH_MS = 30_000;
 const STATUS_REFRESH_MS = 10_000;
+const RECEIPT_POLL_MS = 1_000;
 const STATE_CHANGE_EVENTS = new Set<EventType>([
   "join",
   "leave",
@@ -189,11 +190,37 @@ export async function runChatSession(
       }
     }, 16);
   };
-  const print = (text: string) => {
+  const print = (text: string): number | null => {
     if (terminal) {
-      transcript.appendNotice(text);
+      const id = transcript.appendNotice(text);
       redraw();
-    } else output.write(`${text}\n`);
+      return id;
+    }
+    output.write(`${text}\n`);
+    return null;
+  };
+  // Directed messages whose recipient hasn't received them yet, keyed by event
+  // seq. A receipt means the recipient's own tt wait returned the message.
+  const awaitingReceipt = new Map<number, { notice: number | null; text: string }>();
+  let lastReceiptCheck = 0;
+  const checkReceipts = () => {
+    if (awaitingReceipt.size === 0 || Date.now() - lastReceiptCheck < RECEIPT_POLL_MS) return;
+    lastReceiptCheck = Date.now();
+    const receipts = runtime.commands.getMessageReceipts({
+      room_id: roomId,
+      event_seqs: [...awaitingReceipt.keys()]
+    });
+    for (const receipt of receipts) {
+      const pending = awaitingReceipt.get(receipt.event_seq);
+      if (!pending) continue;
+      awaitingReceipt.delete(receipt.event_seq);
+      const text = `${sanitizeChatText(nameOf(receipt.agent_id))}: received`;
+      if (pending.notice !== null && transcript.updateNotice(pending.notice, `${pending.text} → received`)) {
+        redraw();
+      } else {
+        print(text);
+      }
+    }
   };
   const reportRoomClosed = () => {
     exitReason = "tt chat: the room has closed.";
@@ -280,14 +307,20 @@ export async function runChatSession(
 
   const describeRoom = () => {
     const others = members.filter((member) => member.agent_id !== selfId);
+    const present = others.filter((member) => member.process_liveness !== "gone");
+    const ended = others.filter((member) => member.process_liveness === "gone");
     const who =
-      others.length > 0
-        ? others.map((member) => coloredName(member.agent_id)).join(", ")
+      present.length > 0
+        ? present.map((member) => coloredName(member.agent_id)).join(", ")
         : "no agents yet";
     const stick = owner
       ? `${coloredName(owner)} has the stick`
       : "nobody has the stick";
-    return `In the room: ${who} · ${stick}`;
+    const endedNote =
+      ended.length > 0
+        ? ` · ended: ${ended.map((member) => coloredName(member.agent_id)).join(", ")}`
+        : "";
+    return `In the room: ${who} · ${stick}${endedNote}`;
   };
 
   const send = (to: string[], body: string, interrupt: boolean) => {
@@ -329,7 +362,16 @@ export async function runChatSession(
           result.delivery_state === "queued" || result.delivery_state === "woken" ? result.delivery_state :
           result.delivery_state === "ambiguous" ? "wake unconfirmed" :
           "not listening";
-        print(`${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`);
+        const text = `${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`;
+        const notice = print(text);
+        const received = runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: [result.event_seq] });
+        if (received.length > 0) {
+          if (notice !== null) transcript.updateNotice(notice, `${text} → received`);
+          else print(`${sanitizeChatText(nameOf(result.delivery_target))}: received`);
+          redraw();
+        } else {
+          awaitingReceipt.set(result.event_seq, { notice, text });
+        }
       })
       .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
     }
@@ -594,6 +636,7 @@ export async function runChatSession(
         }
       }
       cursor = result.cursor_event_seq;
+      if (!closed) checkReceipts();
       if ((stateChanged || statusStale) && !closed) {
         redraw();
         lastStatusDraw = Date.now();

@@ -333,6 +333,22 @@ describe("chat status line", () => {
     );
   });
 
+  test("ended agents leave the footer; live silent agents read as idle", () => {
+    const members = [
+      member({ agent_id: "codex:aa", status: "inactive", process_liveness: "alive", last_seen_at: minutesAgo(180) }),
+      member({ agent_id: "claude:bb", status: "inactive", process_liveness: "gone", last_seen_at: minutesAgo(30) }),
+      member({ agent_id: "gemini:cc", status: "inactive", process_liveness: "unknown", last_seen_at: minutesAgo(30) }),
+      member({ agent_id: "grok:dd", status: "inactive", process_liveness: "unknown", standby_transport: "manual" })
+    ];
+    const ids = members.map((row: { agent_id: string }) => row.agent_id);
+    expect(
+      formatChatStatus(
+        { members, owner: null, owner_since: null, reserved_for: null, now, columns: 200 },
+        context(ids)
+      )
+    ).toBe("3 members │ codex idle 3h · gemini away · grok standby");
+  });
+
   test("fits the terminal width and counts what it had to drop", () => {
     const members = ["codex:aa", "claude:bb", "gemini:cc"].map((agent_id) =>
       member({ agent_id })
@@ -1059,4 +1075,107 @@ test("chat remains responsive while a slow recipient wakes and reports each reci
     input.write("/quit\n");
     await session;
   }
+});
+
+describe("message receipts", () => {
+  test("record only addressed messages actually returned to the recipient's own stream", async () => {
+    const { root, service } = setupService();
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    service.joinPath({ agent_id: "claude:bb", context_path: root });
+    const roomId = joined.room_id;
+    const first = service.sendMessage({ agent_id: "claude:bb", room_id: roomId, to_agent_id: "codex:aa", body: "one" });
+    const skipped = service.sendMessage({ agent_id: "claude:bb", room_id: roomId, to_agent_id: "codex:aa", body: "two" });
+    const broadcast = service.sendMessage({ agent_id: "claude:bb", room_id: roomId, body: "all" });
+    const receipts = () =>
+      service.getMessageReceipts({ room_id: roomId, event_seqs: [first.event_seq, skipped.event_seq, broadcast.event_seq] });
+
+    // An audit wait of someone else's stream is not delivery.
+    await service.waitForEvents({ agent_id: "claude:bb", room_id: roomId, after_event_seq: 0, target_agent_id: "any", max_wait_ms: 0 });
+    expect(receipts()).toEqual([]);
+
+    // A cursor that skips a message never marks it delivered.
+    await service.waitForEvents({ agent_id: "codex:aa", room_id: roomId, after_event_seq: skipped.event_seq, max_wait_ms: 0 });
+    expect(receipts()).toEqual([]);
+
+    await service.waitForTurn({
+      agent_id: "codex:aa", room_id: roomId, max_wait_ms: 0, mode: "parked",
+      include_events: true, after_event_seq: first.event_seq - 1
+    });
+    expect(receipts().map((receipt) => [receipt.event_seq, receipt.agent_id])).toEqual([
+      [first.event_seq, "codex:aa"],
+      [skipped.event_seq, "codex:aa"]
+    ]);
+  });
+
+  test("chat advances a delivery notice once the recipient's wait returns the message", async () => {
+    const { root, service } = setupService();
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let transcript = "";
+    output.on("data", (chunk) => { transcript += chunk.toString(); });
+    const session = runChatSession({
+      runtime: { commands: new TalkingStickCommands(service), close: () => {} },
+      identity: observerIdentity(),
+      context_path: root,
+      input,
+      output,
+      terminal: false,
+      color: false,
+      history: 0,
+      show_turn_events: false,
+      poll_ms: 5
+    });
+    await until(() => transcript.includes("In the room"));
+    input.write("@codex please look\n");
+    await until(() => /codex: \S/.test(transcript));
+    expect(transcript).not.toContain("codex: received");
+    await service.waitForTurn({
+      agent_id: "codex:aa", room_id: joined.room_id, max_wait_ms: 0, mode: "parked",
+      include_events: true, after_event_seq: 0
+    });
+    await until(() => transcript.includes("codex: received"));
+    input.write("/quit\n");
+    await session;
+  });
+});
+
+describe("ended member pruning", () => {
+  test("removes definitely ended agents after the grace period and keeps everyone else", () => {
+    let clock = new Date("2026-09-15T10:00:00.000Z");
+    const liveness: Record<string, ProcessLiveness> = {
+      "gone-old": "gone",
+      "gone-recent": "gone",
+      "alive-old": "alive",
+      "unknown-old": "unknown",
+      "gone-owner": "gone"
+    };
+    const { root, service } = setupService({
+      now: () => clock,
+      policy: { waitForEventsPollMs: 1, idleRoomTtlMs: 7 * 24 * 60 * 60 * 1000 },
+      processLivenessChecker: (metadata: ProcessMetadata) =>
+        liveness[metadata.harness_session_id ?? ""] ?? "unknown"
+    });
+    const meta = (session: string): ProcessMetadata => ({
+      host_id: "h", pid: 1, process_started_at: "t", session_kind: "harness_cli",
+      harness_name: "codex", harness_session_id: session, harness_host_id: "h",
+      harness_pid: 2, harness_process_started_at: "t"
+    });
+    const owner = service.joinPath({ agent_id: "codex:owner", context_path: root, process_metadata: meta("gone-owner") });
+    service.joinPath({ agent_id: "codex:old", context_path: root, process_metadata: meta("gone-old") });
+    service.joinPath({ agent_id: "codex:alive", context_path: root, process_metadata: meta("alive-old") });
+    service.joinPath({ agent_id: "codex:unknown", context_path: root, process_metadata: meta("unknown-old") });
+    service.db.prepare("UPDATE path_rooms SET owner = 'codex:owner', state = 'owned' WHERE room_id = ?").run(owner.room_id);
+
+    clock = new Date("2026-09-15T11:30:00.000Z");
+    service.joinPath({ agent_id: "codex:recent", context_path: root, process_metadata: meta("gone-recent") });
+    const state = service.getRoomState({ room_id: owner.room_id, include_all: true });
+    expect(state.members.map((member) => member.agent_id).sort()).toEqual([
+      "codex:alive", "codex:owner", "codex:recent", "codex:unknown"
+    ]);
+    expect(state.members.find((member) => member.agent_id === "codex:alive")?.process_liveness).toBe("alive");
+    const leave = service.getRoomEvents({ room_id: owner.room_id, include_all: true })
+      .find((event) => event.event_type === "leave");
+    expect(leave).toMatchObject({ from_agent_id: "codex:old", reason: "process_ended" });
+  });
 });

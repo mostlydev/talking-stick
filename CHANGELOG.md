@@ -11,14 +11,17 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
-### Changed
-
-- **Forced urgent delivery.** Each `/interrupt` or `!@` message has its own durable delivery reservation and submits a native prompt even when the recipient has a live listener or an earlier unread wake. Human-origin Claude interrupts use `priority: now` to request active-turn cancellation; agent-origin Claude interrupts inject at the next tool boundary, and Codex remains queued without cancellation. Unsent urgent deliveries expire after 60 seconds without discarding room messages. Chat distinguishes an interrupt request from transports that cannot interrupt immediately. Message bodies remain in the room event stream.
-
 ### Added
 
 - **Mention several agents anywhere in a chat message.** `@claude @codex, review this` and `hey @codex and @claude, check this` both send to every matching member. Leading mentions are stripped from the message text; an unknown `@name` blocks the whole send instead of delivering to some recipients; email addresses and `code` spans are not treated as mentions.
 - **Interrupt shortcut and @everyone in chat.** `!@codex stop` interrupts the named agent, `!@everyone stop` interrupts every agent, and `!@ stop` sends an interrupt without naming anyone, the same as `/interrupt`. Any `!@` makes the whole message an interrupt. `@everyone` (or `@all`) addresses every agent in the room.
+- **Delivery receipts in chat.** A directed message's notice advances in place, for example `codex: queued → received`, once the recipient's own `tt wait` returns that message. Receipts are recorded per message, so skipped cursors and audit reads never count.
+
+### Changed
+
+- **Forced urgent delivery.** Each `/interrupt` or `!@` message has its own durable delivery reservation and submits a native prompt even when the recipient has a live listener or an earlier unread wake. Human-origin Claude interrupts use `priority: now` to request active-turn cancellation; agent-origin Claude interrupts inject at the next tool boundary, and Codex remains queued without cancellation. Unsent urgent deliveries expire after 60 seconds without discarding room messages. Chat distinguishes an interrupt request from transports that cannot interrupt immediately. Message bodies remain in the room event stream.
+- **Ended agents leave rooms.** An agent whose harness process has definitely exited on this host, and that hasn't run a `tt` command for an hour, is removed with a `leave` event (`reason: process_ended`). The stick holder, the reserved recipient, and agents on other hosts or with unknown liveness are kept. `tt state` members now report `process_liveness`.
+- **Cleaner chat footer.** Ended agents drop out of the footer and member count, and `/who` lists them as ended. A live agent that is just quiet shows `idle` or `standby` instead of `away`.
 
 ## [0.16.0] — 2026-09-15
 

@@ -405,14 +405,21 @@ export function formatChatStatus(
   input: ChatStatusInput,
   context: ChatFormatContext
 ): string {
-  const agents = input.members
+  // Agents whose harness process has ended are history, not members.
+  const present = input.members.filter(
+    (member) =>
+      member.process_liveness !== "gone" ||
+      member.agent_id === input.owner ||
+      member.agent_id === input.reserved_for
+  );
+  const agents = present
     .filter((member) => member.session_kind !== HUMAN_CHAT_SESSION_KIND)
     .sort((left, right) => rankMember(left, input) - rankMember(right, input));
 
-  const count = `${input.members.length} ${input.members.length === 1 ? "member" : "members"}`;
+  const count = `${present.length} ${present.length === 1 ? "member" : "members"}`;
   const budget = Math.max(0, input.columns - 1);
   if (count.length > budget) {
-    return paint(context, "2", String(input.members.length).slice(0, budget));
+    return paint(context, "2", String(present.length).slice(0, budget));
   }
   const safeContext = {
     ...context,
@@ -470,11 +477,11 @@ function describeMemberState(
   if (member.agent_id === input.reserved_for) {
     return "up next";
   }
-  if (member.status !== "active") {
-    return "away";
-  }
   if (member.standby_transport) {
     return "standby";
+  }
+  if (member.status !== "active" && member.process_liveness !== "alive") {
+    return "away";
   }
   const idleMs = input.now.getTime() - Date.parse(member.last_seen_at);
   return idleMs < 60_000

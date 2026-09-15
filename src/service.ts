@@ -35,6 +35,7 @@ import type {
   AddNoteResult,
   AgentId,
   DeliveryHint,
+  MessageReceipt,
   NativeWakeEndpointSummary,
   RegisterNativeWakeEndpointInput,
   RegisterNativeWakeEndpointResult,
@@ -196,6 +197,7 @@ interface NoteRow {
 }
 
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
+const ENDED_MEMBER_GRACE_MS = 60 * 60 * 1000;
 const MAX_MESSAGE_BODY_BYTES = 4096;
 // Bare `tt events` returns a bounded recent tail; --all / --limit widen it.
 const DEFAULT_EVENT_VIEW_LIMIT = 50;
@@ -781,6 +783,7 @@ export class TalkingStickService {
       });
 
       if (waitResult.status === "closed") {
+        if (targetFilter === "self") this.recordDelivered(input.room_id, input.agent_id, events);
         return this.withWaitEvents(waitResult, events, afterEventSeq, "closed");
       }
 
@@ -791,14 +794,17 @@ export class TalkingStickService {
           input.advisory_takeover_wake ?? true
         )
       ) {
+        if (targetFilter === "self") this.recordDelivered(input.room_id, input.agent_id, events);
         return this.withWaitEvents(waitResult, events, afterEventSeq, "turn");
       }
 
       if (events.length > 0) {
+        if (targetFilter === "self") this.recordDelivered(input.room_id, input.agent_id, events);
         return this.withWaitEvents(waitResult, events, afterEventSeq, "event");
       }
 
       if (Date.now() >= deadline) {
+        if (targetFilter === "self") this.recordDelivered(input.room_id, input.agent_id, events);
         return this.withWaitEvents(waitResult, events, afterEventSeq, "timeout");
       }
 
@@ -2494,6 +2500,9 @@ export class TalkingStickService {
           events.length > 0
             ? events[events.length - 1].event_seq
             : afterEventSeq;
+        if (targetFilter === "self") {
+          this.recordDelivered(input.room_id, input.agent_id, events);
+        }
         return { events, cursor_event_seq: lastSeq };
       }
 
@@ -4472,6 +4481,7 @@ export class TalkingStickService {
         .all();
 
       for (const room of rooms) {
+        this.pruneEndedMembers(room, now);
         const members = this.getMembers(room.room_id);
         if (this.latestRoomActivityMs(room, members) > cutoffMs) {
           continue;
@@ -4484,6 +4494,40 @@ export class TalkingStickService {
         this.deleteRoom(room.room_id);
       }
     });
+  }
+
+  // A member whose harness process is definitely gone on this host, and who
+  // hasn't run a tt command for ENDED_MEMBER_GRACE_MS, has ended for good; its
+  // row would otherwise linger as "away" forever. The owner and the reserved
+  // recipient are left to the takeover and reservation rules, and unknown
+  // liveness (another host, no process identity) is never pruned.
+  private pruneEndedMembers(room: PathRoomRow, now: Date): void {
+    const cutoffMs = now.getTime() - ENDED_MEMBER_GRACE_MS;
+    const ended = this.getMembers(room.room_id).filter(
+      (member) =>
+        member.agent_id !== room.owner &&
+        member.agent_id !== room.reserved_for &&
+        parseTimestampMs(member.last_seen_at) < cutoffMs &&
+        this.getMemberProcessLiveness(member) === "gone"
+    );
+    const timestamp = now.toISOString();
+    for (const member of ended) {
+      this.db
+        .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
+        .run(room.room_id, member.agent_id);
+      if (!isObserverMember(member)) {
+        this.appendEvent({
+          room_id: room.room_id,
+          turn_id: room.turn_id,
+          event_type: "leave",
+          from_agent_id: member.agent_id,
+          to_agent_id: null,
+          handoff: null,
+          reason: "process_ended",
+          created_at: timestamp
+        });
+      }
+    }
   }
 
   private latestRoomActivityMs(
@@ -4896,11 +4940,47 @@ export class TalkingStickService {
   }
 
   private mapMember(row: RoomMemberRow, now: Date): RoomMember {
+    const liveness = this.getMemberProcessLiveness(row);
     return {
       ...row,
       standby_wake_pending: row.standby_wake_pending === 1,
-      status: this.isMemberActive(row, now) ? "active" : "inactive"
+      status: liveness !== "gone" && this.hasRecentPresence(row, now) ? "active" : "inactive",
+      process_liveness: liveness
     };
+  }
+
+  // Receipts are per message and recorded only for messages addressed to the
+  // member that its own event stream actually returned, so a skipped cursor or
+  // a filtered wait can never mark an unseen message delivered. A receipt
+  // proves delivery to the member's receiver, not that a model read it.
+  private recordDelivered(roomId: string, agentId: AgentId | undefined, events: RoomEvent[]): void {
+    if (!agentId) return;
+    const addressed = events.filter(
+      (event) => event.event_type === "message_sent" && event.to_agent_id === agentId
+    );
+    if (addressed.length === 0) return;
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO message_receipts (room_id, agent_id, event_seq, delivered_at)
+       SELECT ?, ?, ?, ? WHERE EXISTS (
+         SELECT 1 FROM room_members WHERE room_id = ? AND agent_id = ?)`
+    );
+    const deliveredAt = this.now().toISOString();
+    for (const event of addressed) {
+      insert.run(roomId, agentId, event.event_seq, deliveredAt, roomId, agentId);
+    }
+  }
+
+  getMessageReceipts(input: { room_id: string; event_seqs: number[] }): MessageReceipt[] {
+    assertNonEmpty(input.room_id, "room_id");
+    const seqs = input.event_seqs.filter((seq) => Number.isInteger(seq)).slice(0, 200);
+    if (seqs.length === 0) return [];
+    return this.db
+      .prepare<unknown[], MessageReceipt>(
+        `SELECT event_seq, agent_id, delivered_at FROM message_receipts
+         WHERE room_id = ? AND event_seq IN (${seqs.map(() => "?").join(", ")})
+         ORDER BY event_seq`
+      )
+      .all(input.room_id, ...seqs);
   }
 
   private mapEvent(row: RoomEventRow): RoomEvent {

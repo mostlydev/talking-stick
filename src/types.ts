@@ -130,6 +130,9 @@ export interface RoomMember {
   wake_endpoint_recorded_at: string | null;
   wake_interrupt_delivered_at: string | null;
   status: "active" | "inactive";
+  // Whether the member's harness process is still running on this host;
+  // unknown for other hosts or missing process identity.
+  process_liveness: "alive" | "gone" | "unknown";
 }
 
 export type EventType =
@@ -528,6 +531,12 @@ export type MessageDeliveryStatus =
   | "endpoint"
   | "pending"
   | "unreachable";
+
+export interface MessageReceipt {
+  event_seq: number;
+  agent_id: AgentId;
+  delivered_at: string;
+}
 
 export interface SendMessageResult {
   event_seq: number;
