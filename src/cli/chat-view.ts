@@ -669,10 +669,12 @@ export function renderChatScreen(input: ChatScreenInput): ChatFrame {
     width,
     Math.min(MAX_COMPOSER_ROWS, height - 3)
   );
+  const transcriptHeight = chatTranscriptHeight(input);
+  const menuCapacity = Math.min(MAX_MENU_ROWS, Math.max(0, transcriptHeight - (transcriptHeight > 1 ? 1 : 0)));
   const completions = input.completions ?? getChatCompletions(input.draft, []);
   const selected = Math.max(0, Math.min(input.completion_index ?? 0, completions.length - 1));
-  const first = Math.max(0, selected - MAX_MENU_ROWS + 1);
-  const menuRows = completions.slice(first, first + MAX_MENU_ROWS).map((entry, index) => {
+  const first = Math.max(0, selected - menuCapacity + 1);
+  const menuRows = completions.slice(first, first + menuCapacity).map((entry, index) => {
     const active = first + index === selected;
     const label = active && context.color ? `\u001b[1m${entry.label}\u001b[0m` : entry.label;
     return truncateStyled(`${active ? "›" : " "} ${label}  ${dim(context, entry.description)}`, width);
@@ -682,7 +684,6 @@ export function renderChatScreen(input: ChatScreenInput): ChatFrame {
   const footer = renderFooter(input, width);
 
   const fixed = [rule, ...composer.rows, rule, footer];
-  const transcriptHeight = chatTranscriptHeight(input);
 
   const transcript = input.transcript.viewport(
     transcriptHeight,
@@ -690,9 +691,9 @@ export function renderChatScreen(input: ChatScreenInput): ChatFrame {
     context
   );
   // Occlude the transcript's bottom rows with a blank separator and the menu;
-  // on a very short transcript the menu keeps its first rows.
+  // keep the selection visible even if only one menu row fits.
   if (menuRows.length > 0 && transcript.length > 0) {
-    const overlay = ["", ...menuRows].slice(0, transcript.length);
+    const overlay = [...(transcriptHeight > 1 ? [""] : []), ...menuRows];
     transcript.splice(transcript.length - overlay.length, overlay.length, ...overlay);
   }
   const lines = [...transcript, ...fixed]

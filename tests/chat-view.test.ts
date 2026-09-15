@@ -329,6 +329,20 @@ describe("screen rendering", () => {
     expect(frame.lines.at(-1)).toContain("↓ 1 new · ctrl+end");
   });
 
+  test("short overlays keep the selected suggestion visible without moving the composer", () => {
+    const transcript = new ChatTranscript();
+    const draft = { line: "@", cursor: 1 };
+    const completions = getChatCompletions(draft, ["a", "b", "c", "d"]);
+    for (const rows of [5, 6, 7]) {
+      const base = { transcript, draft, format: context, status, hint: null, columns: 40, rows };
+      const closed = renderChatScreen({ ...base, completions: [] });
+      const open = renderChatScreen({ ...base, completions, completion_index: completions.length - 1 });
+      expect(open.lines.join("\n")).toContain("› @everyone");
+      expect(open.cursor).toEqual(closed.cursor);
+      expect(open.lines).toHaveLength(rows);
+    }
+  });
+
   test("the suggestion menu overlays the transcript without shifting it", () => {
     const transcript = new ChatTranscript();
     for (let index = 0; index < 20; index++) {
@@ -363,6 +377,11 @@ describe("screen rendering", () => {
     expect(narrowed.lines.slice(0, transcriptRows - covered)).toEqual(
       closed.lines.slice(0, transcriptRows - covered)
     );
+    transcript.scrollBy(-6, transcriptRows, 39, context);
+    const scrolled = frame("hello");
+    expect(frame("/").lines.slice(0, transcriptRows - covered)).toEqual(scrolled.lines.slice(0, transcriptRows - covered));
+    expect(frame("hello").lines).toEqual(scrolled.lines);
+    expect(transcript.following).toBe(false);
     for (let rows = 4; rows <= 9; rows++) {
       const tiny = renderChatScreen({
         transcript, format: context, status, draft: { line: "/", cursor: 1 },
