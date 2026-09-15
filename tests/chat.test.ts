@@ -213,7 +213,7 @@ describe("chat rendering", () => {
     const context = { self_agent_id: "human:op", name_of: () => "codex", color: true, show_turn_events: false, now };
     const text = formatChatEvent(event({ event_type: "message_sent", from_agent_id: "codex:aa", created_at: yesterday,
       payload: { body: "old message", delivery_hint: "normal" } }), context)!;
-    expect(text).toBe("\u001b[2;90mcodex  Yesterday at 09:05\n  old message\u001b[0m");
+    expect(text).toBe("\u001b[2;90mcodex  Yesterday at 09:05\u001b[0m\n\u001b[2;90m  old message\u001b[0m");
     expect(chatDayLabel(new Date(2026, 8, 13).toISOString(), now)).toBe("2026-09-13");
     expect(formatChatTime(now.toISOString(), now)).toBe("10:00");
     expect(formatChatTime("invalid", now)).toBe("--:--");

@@ -227,7 +227,7 @@ export function formatChatEvent(
 ): string | null {
   const historical = isHistoricalChatEvent(event, context);
   const text = formatCurrentChatEvent(event, historical ? { ...context, color: false } : context);
-  return text === null || !historical ? text : paint(context, "2;90", text);
+  return text === null || !historical ? text : text.split("\n").map((line) => paint(context, "2;90", line)).join("\n");
 }
 
 function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): string | null {
@@ -338,6 +338,10 @@ export function isHistoricalChatEvent(event: RoomEvent, context: ChatFormatConte
 // A long pause followed by a join is a conversation boundary, not evidence
 // that an idle harness has died. Presence is handled separately by the roster.
 export const CHAT_CONVERSATION_GAP_MS = 4 * 60 * 60 * 1000;
+
+export function isChatConversationActivity(event: RoomEvent): boolean {
+  return !(event.event_type === "leave" && event.reason === "process_ended");
+}
 
 export function startsChatConversation(previous: RoomEvent | undefined, event: RoomEvent): boolean {
   return previous !== undefined && event.event_type === "join" &&

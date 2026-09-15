@@ -4,6 +4,7 @@ import {
   formatChatEvent,
   chatSectionLabel,
   startsChatConversation,
+  isChatConversationActivity,
   formatChatStatus,
   type ChatFormatContext,
   type ChatStatusInput
@@ -384,7 +385,7 @@ export class ChatTranscript {
           rows.push(...wrapStyledLine(dim(context, `── ${newConversation ? "New conversation · " : ""}${label} ──`), width));
           section = label;
         }
-        previousEvent = block.event;
+        if (isChatConversationActivity(block.event)) previousEvent = block.event;
       }
       rows.push(...lines);
       previous = isMessage ? "message" : "other";

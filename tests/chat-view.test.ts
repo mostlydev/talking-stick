@@ -81,6 +81,17 @@ describe("text measurement", () => {
 });
 
 describe("transcript scrolling", () => {
+  test("dims body rows and preserves a conversation gap across automatic cleanup", () => {
+    const transcript = new ChatTranscript();
+    transcript.appendEvent({ ...message("older body"), created_at: new Date(2026, 8, 15, 8).toISOString() });
+    transcript.appendEvent({ ...stickEvent("claim"), event_type: "leave", reason: "process_ended", created_at: new Date(2026, 8, 15, 13).toISOString() });
+    transcript.appendEvent({ ...stickEvent("claim"), event_type: "join", created_at: new Date(2026, 8, 15, 13, 1).toISOString() });
+    const rows = transcript.viewport(30, 100, { ...context, color: true,
+      now: new Date(2026, 8, 15, 14), history_before: new Date(2026, 8, 15, 13, 1).toISOString() });
+    expect(rows.find((row) => row.includes("older body"))).toContain("\u001b[2;90m");
+    expect(rows.join("\n")).toContain("New conversation · Today");
+  });
+
   test("separates earlier days and refreshes the divider across midnight", () => {
     const transcript = new ChatTranscript();
     transcript.appendEvent({ ...message("old"), created_at: new Date(2026, 8, 14, 12).toISOString() });

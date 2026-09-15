@@ -25,6 +25,7 @@ import {
   formatChatEvent,
   chatSectionLabel,
   startsChatConversation,
+  isChatConversationActivity,
   formatChatAgent,
   parseChatInput,
   resolveChatRecipients,
@@ -409,7 +410,7 @@ export async function runChatSession(
   // lines stay compact underneath the message they follow.
   let lastPrinted: "message" | "system" | "info" = "info";
   const printEvent = (event: RoomEvent) => {
-    if (render(event) !== null) {
+    if (render(event) !== null && isChatConversationActivity(event)) {
       if (startsChatConversation(previousConversationEvent, event) &&
           (!historyBefore || Date.parse(event.created_at) > Date.parse(historyBefore))) {
         historyBefore = event.created_at;
@@ -584,9 +585,10 @@ export async function runChatSession(
             .slice(-Math.max(0, options.history));
     // Determine the latest conversation before rendering so its predecessor
     // is dimmed even on the first frame (including non-terminal output).
-    for (let index = 1; index < historyEvents.length; index += 1) {
-      if (startsChatConversation(historyEvents[index - 1], historyEvents[index])) {
-        historyBefore = historyEvents[index].created_at;
+    const conversationEvents = historyEvents.filter(isChatConversationActivity);
+    for (let index = 1; index < conversationEvents.length; index += 1) {
+      if (startsChatConversation(conversationEvents[index - 1], conversationEvents[index])) {
+        historyBefore = conversationEvents[index].created_at;
       }
     }
     for (const event of historyEvents) {
