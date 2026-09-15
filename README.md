@@ -93,7 +93,7 @@ Once installed, each agent harness has a skill that tells it to coordinate throu
 ```
 tt list            — which rooms exist under a path
 tt join            — join the room for this workspace
-tt leave           — explicitly leave a room; deletes it when no active members remain
+tt leave           — explicitly leave a room; deletes it when no active agents or live consoles remain
 tt wait            — long-poll for ownership and room events; cursor is saved automatically
 tt wait --park      — stay coordinated without auto-claiming idle rooms
 tt standby          — park, return immediately, and optionally wake the cmux surface later
@@ -277,7 +277,7 @@ Names use consistent harness colors in the conversation and participant list: Cl
 
 `tt chat [path] --history N` loads up to N recent conversation entries (default 20, maximum 500); `--history 0` starts without history. `--events` also shows turn events at startup. Agents must keep their normal `tt wait` receive process active to respond live. Broadcasts do not wake a harness in standby; a directed message may use its registered wake endpoint. A message being stored in the room is not an acknowledgement that an agent has read it.
 
-Each console uses a separate `human:<username>:chat:<id>` identity. Agents reply to the sender ID from the received message or a unique display name. Replies addressed to the console ring the terminal bell. The console is an observer: it cannot acquire the stick, receive a handoff, make a lone agent eligible for an automatic claim, or keep an abandoned room alive. Opening and closing the console do not emit agent join/leave wakes. Message text is stripped of terminal escape sequences before display.
+Each console uses a separate `human:<username>:chat:<id>` identity. Agents reply to the sender ID from the received message or a unique display name. Replies addressed to the console ring the terminal bell. The console is an observer: it cannot acquire the stick, receive a handoff, or make a lone agent eligible for an automatic claim. A running console does keep its room open: when the last agent leaves, the conversation stays up so agents can rejoin the same room, and an agent-less room is deleted once the last console closes. A crashed console (its process is gone) never keeps a room alive. Agents that see a console in the room finish with `tt standby` instead of `tt leave`, so a directed `@agent` message can wake them when a verified cmux endpoint is registered. Outside cmux, manual standby requires the operator to resume the harness; an agent that has left can't receive messages until it rejoins. Opening and closing the console do not emit agent join/leave wakes. Message text is stripped of terminal escape sequences before display.
 
 `[path]` defaults to the current working directory. Omit it for normal in-repo coordination; pass it only when you intentionally want a different or nested room.
 
@@ -311,7 +311,7 @@ Use `tt whoami --explain` to see which identity path the CLI chose.
 - **Structured handoffs.** `tt release` and `tt pass` carry a typed `Handoff` with required `status` / `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
 - **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest without holding the stick; if the best-known candidate is between wait polls, a short grace window prevents immediate recycling to a less-fair claimant.
 - **No immediate take-backs.** If release leaves a handoff idle, the prior owner waits through the short grace window before reclaiming while another member exists.
-- **Ephemeral rooms.** `tt leave` removes membership, rooms with no active members are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
+- **Ephemeral rooms.** `tt leave` removes membership, rooms with no active agents or live consoles are physically deleted, and long-idle rooms with no recent activity or provably live member process are purged opportunistically on later invocations. The default idle retention is seven days.
 - **Conservative harness identity upgrades.** A verified `harness:<session>` identity may replace a provisional `pid:`, `term:`, or `userhost:` identity only when both belong to the same harness process. Distinct verified sessions coexist; one cannot delete another merely because their short-lived `tt` subprocesses share a parent harness.
 - **Fencing tokens.** `lease_id` + `turn_id` make stale writes impossible — an agent who lost their turn cannot commit anything under the room's name.
 - **Liveness-aware recovery.** Dead or crashed holders are detected with OS-level process checks; claim-timeout takeover skips the prior owner when another active member is waiting.
