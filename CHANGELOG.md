@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- **Operator chat keeps its room open.** A running `tt chat` console keeps the room when the last agent leaves or is kicked, so the operator can stay and agents rejoin the same room. The room is deleted when the last console closes an agent-less room, and a crashed console never keeps a room alive. Addressing an agent that left explains that it can't receive messages until it rejoins. The skill and bundled instructions tell agents to finish with `tt standby --wake cmux` instead of `tt leave` while an operator console is present.
+
 ## [0.15.0] — 2026-09-15
 
 Full notes: [`docs/releases/0.15.0.md`](docs/releases/0.15.0.md).

@@ -80,7 +80,7 @@ Working agreement:
 2. Plan first: debate adversarially in the room, challenge proposals, converge in writing, then implement. Prefer TDD/BDD when behavior can be specified first.
 3. Review independently: reproduce material peer claims and re-run relevant tests before agreeing. Every participating member has an independent voice and an evidence-backed veto.
 4. Test before handoff. Record changes, evidence, risks, and the concrete next action.
-5. After the last action, every participating member independently reviews and explicitly AGREEs or vetoes. Any further action invalidates prior approvals and restarts final review. Close or leave only on unanimous AGREE.
+5. After the last action, every participating member independently reviews and explicitly AGREEs or vetoes. Any further action invalidates prior approvals and restarts final review. Close or leave only on unanimous AGREE. If an operator chat console is in the room, stay reachable with \`tt standby --wake cmux --json\` instead of leaving, unless the operator says to leave.
 
 ## Claude
 
