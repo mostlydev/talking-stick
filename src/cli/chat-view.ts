@@ -683,6 +683,7 @@ function commonPrefix(values: string[]): string {
 // Frame rendering and diffing
 
 export interface ChatScreenInput {
+  room_path?: string;
   transcript: ChatTranscript;
   format: ChatFormatContext;
   status: Omit<ChatStatusInput, "columns">;
@@ -703,7 +704,7 @@ export interface ChatFrame {
 // The suggestion menu overlays the bottom of the transcript instead of
 // shrinking it, so the conversation never shifts while the operator types.
 export function chatTranscriptHeight(
-  input: Pick<ChatScreenInput, "columns" | "rows" | "draft">
+  input: Pick<ChatScreenInput, "columns" | "rows" | "draft" | "room_path">
 ): number {
   const width = Math.max(1, input.columns - 1);
   const height = Math.max(1, input.rows);
@@ -711,9 +712,26 @@ export function chatTranscriptHeight(
   const composer = layoutComposer(
     input.draft,
     width,
-    Math.min(MAX_COMPOSER_ROWS, height - 3)
+    Math.min(MAX_COMPOSER_ROWS, height - 3 - roomHeaderRows(input))
   );
-  return Math.max(0, height - composer.rows.length - 3);
+  return Math.max(0, height - composer.rows.length - 3 - roomHeaderRows(input));
+}
+
+function roomHeaderRows(input: Pick<ChatScreenInput, "rows" | "room_path">): number {
+  return input.room_path && input.rows >= 6 ? 1 : 0;
+}
+
+function roomHeader(path: string, width: number, context: ChatFormatContext): string {
+  const safe = sanitizeChatText(path).replace(/\s+/g, " ");
+  const prefix = width >= 16 ? "Room · " : "";
+  const budget = width - textWidth(prefix);
+  const parts = Array.from(safe);
+  let shortened = false;
+  while (parts.length && textWidth(parts.join("")) + (shortened ? 1 : 0) > budget) {
+    parts.shift();
+    shortened = true;
+  }
+  return dim(context, prefix + (shortened ? "…" : "") + parts.join(""));
 }
 
 // Layout, top to bottom: transcript viewport (with the suggestion menu drawn
@@ -735,7 +753,7 @@ export function renderChatScreen(input: ChatScreenInput): ChatFrame {
   const composer = layoutComposer(
     input.draft,
     width,
-    Math.min(MAX_COMPOSER_ROWS, height - 3)
+    Math.min(MAX_COMPOSER_ROWS, height - 3 - roomHeaderRows(input))
   );
   const transcriptHeight = chatTranscriptHeight(input);
   const menuCapacity = Math.min(MAX_MENU_ROWS, Math.max(0, transcriptHeight - (transcriptHeight > 1 ? 1 : 0)));
@@ -764,7 +782,8 @@ export function renderChatScreen(input: ChatScreenInput): ChatFrame {
     const overlay = [...(transcriptHeight > 1 ? [""] : []), ...menuRows];
     transcript.splice(transcript.length - overlay.length, overlay.length, ...overlay);
   }
-  const lines = [...transcript, ...fixed]
+  const header = roomHeaderRows(input) ? [roomHeader(input.room_path!, width, context)] : [];
+  const lines = [...header, ...transcript, ...fixed]
     .slice(-height)
     .map((line) => truncateStyled(line, width));
   const composerTop = lines.length - composer.rows.length - 2;

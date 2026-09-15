@@ -13,6 +13,8 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
+- **Persistent room context.** Chat shows the room path in a fixed top bar and lists agent states below without a confusing member count.
+
 - **Remove agents from chat.** `/kick [--force] <agent> [reason]` removes one exact ID or unique prefix. Autocomplete shows full IDs and member status, with ended agents first. Live or unconfirmed processes require `--force`; removing a member does not terminate its harness.
 
 ### Changed

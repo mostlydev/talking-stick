@@ -276,7 +276,7 @@ describe("screen rendering", () => {
       "> ",
       "─".repeat(29)
     ]);
-    expect(frame.lines.at(-1)).toMatch(/^0 members\s+\/ for commands$/);
+    expect(frame.lines.at(-1)).toMatch(/^\s*\/ for commands$/);
     expect(frame.lines.slice(0, 4).join("\n")).toContain("  hi");
     expect(frame.cursor).toEqual({ row: 5, col: 2 });
     for (const line of frame.lines) {
@@ -432,4 +432,27 @@ test("kick completion keeps duplicate agents distinct and shows status while pre
   expect(selected.draft.line).toBe("/kick --force @claude:live cleanup");
   expect(getChatCompletions({ line: "/kick claude:live reason", cursor: 24 }, [], members)).toEqual([]);
   expect(matchChatCommands("/ki").map((command) => command.name)).toEqual(["kick"]);
+});
+
+test("room header stays fixed through scrolling, completion and multiline editing", () => {
+  const transcript = new ChatTranscript();
+  for (let i = 0; i < 30; i++) transcript.appendNotice(`history ${i}`);
+  const status = { members: [], owner: null, owner_since: null, reserved_for: null, now: new Date() };
+  for (const rows of [6, 7, 24]) {
+    for (const columns of [12, 40, 80]) {
+      for (const line of ["/", "first\nsecond\nthird\nfourth\nfifth"]) {
+        const input = { transcript, status, format: context, room_path: "/Users/operator/a-long-parent/talking-stick",
+          draft: { line, cursor: line.length }, hint: null, rows, columns };
+        const frame = renderChatScreen(input);
+        expect(frame.lines).toHaveLength(rows);
+        expect(frame.lines[0]).toMatch(/stick$/);
+        expect(frame.lines.every((line) => textWidth(line) < columns)).toBe(true);
+        expect(frame.cursor.row).toBeGreaterThan(0);
+        transcript.scrollBy(-3, 10, columns - 1, context);
+        const scrolled = renderChatScreen(input);
+        expect(scrolled.lines[0]).toBe(frame.lines[0]);
+        expect(scrolled.cursor).toEqual(frame.cursor);
+      }
+    }
+  }
 });

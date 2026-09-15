@@ -343,7 +343,7 @@ describe("chat status line", () => {
         context(ids)
       )
     ).toBe(
-      "6 members │ codex holding 12m · claude up next · gemini idle 1h · opencode standby · grok away"
+      "codex holding 12m · claude up next · gemini idle 1h · opencode standby · grok away"
     );
   });
 
@@ -360,7 +360,7 @@ describe("chat status line", () => {
         { members, owner: null, owner_since: null, reserved_for: null, now, columns: 200 },
         context(ids)
       )
-    ).toBe("3 members │ codex idle 3h · gemini away · grok standby");
+    ).toBe("codex idle 3h · gemini away · grok standby");
   });
 
   test("fits the terminal width and counts what it had to drop", () => {
@@ -378,7 +378,7 @@ describe("chat status line", () => {
       },
       context(members.map((row: { agent_id: string }) => row.agent_id))
     );
-    expect(line).toBe("3 members │ codex active · +2");
+    expect(line).toBe("codex active · claude active · +1");
     expect(line.length).toBeLessThan(36);
   });
 
@@ -966,7 +966,7 @@ test.each([
       show_turn_events: false,
       poll_ms: 5
     });
-    await until(() => transcript.includes("2 members"));
+    await until(() => transcript.includes("Room · "));
     input.write(draft);
     input.write("\u001b[D".repeat(20));
     service.sendMessage({

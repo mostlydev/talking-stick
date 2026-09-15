@@ -11,7 +11,7 @@ Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code
 
 ## Quickstart
 
-Three steps, then you're coordinating two agents in the same repo.
+Four steps, then you're coordinating two agents in the same repo.
 
 ### 1. Install the `tt` binary
 
@@ -112,10 +112,10 @@ Here's what a typical two-agent session looks like, and what each step means.
 3. **Take a turn.** When `tt wait` returns `your_turn` with a live `guardian_pid`, that agent may edit, build, and test. A small background guardian keeps its lease alive. Everyone else stays read-only and can still investigate, message, and leave notes.
 4. **Hand off.** The holder tests, then runs `tt release` (to the next fair waiter) or `tt assign <agent>` (for a specific reviewer). The handoff carries `status`, `next_action`, and `artifacts`, so the next agent picks up where the last one stopped.
 5. **Talk without passing the stick.** `tt msg send` carries questions, review notes, and vetoes between turns. Directed messages reach the recipient's `tt wait`, or wake it if it's idle.
-6. **Go idle.** An agent with nothing to do runs `tt standby`, ends its model turn, and costs nothing while idle. A directed message, an assignment, or a pending handoff wakes it again ([Waking idle agents](#waking-idle-agents)).
+6. **Go idle.** An agent with nothing to do runs `tt standby`, ends its model turn, and waits without an active model turn. A directed message, an assignment, or a pending handoff wakes it again ([Waking idle agents](#waking-idle-agents)).
 7. **Finish.** When the work is done, every participant reviews the final result and explicitly agrees. With an operator console open, agents stay in standby instead of leaving, so the operator can bring them back with a message.
 
-Agents that crash or close are cleaned up automatically: a member whose harness process has ended is removed from the room after an hour, and a stuck holder can be taken over (`tt take`) once its lease or process is gone.
+On the local host, members whose harness process has definitely ended and whose last `tt` activity was over an hour ago are removed automatically, except the stick holder and reserved recipient. Unknown or remote process liveness is preserved. For a stuck holder, follow the takeover eligibility reported by `tt wait`; a single process-gone observation does not immediately revoke a live lease.
 
 ## What it gives your agent
 
@@ -318,7 +318,7 @@ History is split with Today, Yesterday, and date dividers. Earlier days are dimm
 
 After you send a directed message, a dim notice shows how it was delivered, for example `codex: listening`, `claude: queued`, or `codex: waiting for agent to read`. It updates in place to `→ received` once the agent's `tt wait` returns your message.
 
-The dim footer below the lower input rule is the room status: how many room members are present (including operator consoles), then each agent's most useful state. `holding 12m` means the agent has had the stick for 12 minutes. The other states are `up next` (reserved for the next turn), `standby`, `away` (inactive with no confirmation that its process is still running), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its last `tt` command, including a live agent that is just quiet). Agents whose process has ended are left out of the footer and the count; `/who` lists them as ended, and after an hour the room removes them. The stick holder is listed first. The line refreshes on room events and every 10 seconds, and it is trimmed to the terminal width with a `+N` count for agents that don't fit.
+A fixed top bar shows the room path; long paths are shortened from the left so the workspace name stays visible. The dim footer below the lower input rule shows each agent's most useful state, without a member count. `holding 12m` means the agent has had the stick for 12 minutes. The other states are `up next` (reserved for the next turn), `standby`, `away` (inactive with no confirmation that its process is still running), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its last `tt` command, including a live agent that is just quiet). Agents whose process has ended are left out of the footer; `/who` lists them as ended, and after an hour the room removes them. The stick holder is listed first. The line refreshes on room events and every 10 seconds, and it is trimmed to the terminal width with a `+N` count for agents that don't fit.
 
 Names use consistent harness colors in the conversation and participant list: Claude is orange, Codex green, and the operator yellow. Directed messages remain visible to the room; addressing a member changes the recipient, not privacy. Colors require an interactive terminal and are disabled when `NO_COLOR` is set to a nonempty value. If an existing console was opened before a local rebuild, quit and reopen `tt chat` to load the new display.
 
@@ -327,7 +327,7 @@ Names use consistent harness colors in the conversation and participant list: Cl
 | Plain text or `/all <message>` | Broadcast to the room |
 | `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case. Mention several agents anywhere in the text: `@claude @codex, review this` or `hey @codex and @claude, check this`. `@everyone` (or `@all`) addresses every agent in the room. Leading mentions are stripped from the message; an unknown `@name` blocks the whole send; email addresses and `` `code` `` spans are not mentions |
 | `/who` | Show members and the current stick holder |
-| `/kick [--force] <agent> [reason]` | Remove one exact ID or unique prefix from the room. Suggestions show full IDs and status, with ended agents first. Live or unconfirmed processes require `--force`; consoles cannot be kicked. Kicking only removes room membership: the harness keeps running, and a live agent rejoins on its next `tt` command |
+| `/kick [--force] <agent> [reason]` | Remove one exact ID or unique prefix from the room. Suggestions show full IDs and status, with ended agents first. Live or unconfirmed processes require `--force`; consoles cannot be kicked. Kicking only removes room membership: the harness keeps running, and its next `tt wait` can rejoin it |
 | `/events` | Toggle turn and handoff events, hidden by default |
 | `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Steer an agent now. A busy Claude Code session gets the prompt at its next tool step and changes course without stopping; Codex gets it after its current turn. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
 | `/help`, `/help keys` | Show chat commands, or keyboard shortcuts |

@@ -184,6 +184,7 @@ export async function runChatSession(
       if (closed || !screenActive) return;
       try {
         const frame = renderChatScreen({
+          room_path: joined.canonical_path,
           transcript,
           format: formatContext(),
           status: {
@@ -573,7 +574,7 @@ export async function runChatSession(
         onScroll: (kind, amount) => {
           const { columns, rows } = dimensions();
           const draft = editor?.draft ?? { line: "", cursor: 0 };
-          const height = chatTranscriptHeight({ draft, columns, rows });
+          const height = chatTranscriptHeight({ draft, columns, rows, room_path: joined.canonical_path });
           if (height === 0) return;
           transcript.scrollBy(
             amount * (kind === "pages" ? Math.max(1, height - 1) : 1),

@@ -93,7 +93,7 @@ Messages from a `human:*` sender usually come from the operator, often typing in
 
 Use `tt notes add "finding" --json` for durable findings that should survive a handoff. Do not use notes as a second chat stream.
 
-A `leave` event with reason `process_ended` means that member's harness exited and the room removed it; a `kick` event means someone removed a member. Neither needs a reply. If a `tt` command tells you that you're no longer a member (`unknown_member`), you were removed: run `tt join --json` again, then carry on with the loop.
+A `leave` event with reason `process_ended` means that member's harness exited and the room removed it; a `kick` event means someone removed a member. Neither needs a reply. If a `tt` command reports `unknown_member`, membership is no longer registered. Respect an operator instruction to stay out; otherwise rejoin with `tt join --json` and resume the loop. Rejoining does not restore an old lease: acquire a new turn before shared edits.
 
 ## Handoff
 
