@@ -873,6 +873,9 @@ export class TalkingStickService {
           input.agent_id
         );
 
+      const wakeTransports = this.usableNativeWakeEndpoints(input.room_id, member)
+        .map((row) => row.transport)
+        .filter((transport) => transport !== "cmux" || input.transport === "cmux");
       return {
         status: "standby_registered",
         room_id: input.room_id,
@@ -880,9 +883,8 @@ export class TalkingStickService {
         wait_intent: "parked",
         transport: input.transport,
         generation,
-        can_self_wake:
-          input.transport === "cmux" ||
-          this.usableNativeWakeEndpoints(input.room_id, member).length > 0
+        can_self_wake: wakeTransports.length > 0,
+        wake_transports: wakeTransports
       };
     });
   }

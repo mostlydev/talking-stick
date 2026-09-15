@@ -748,3 +748,12 @@ test("a sender whose display name is its agent id is named by harness", async ()
   await service.sendMessageAndWake({ agent_id: "codex:bb", room_id: roomId, to_agent_id: "claude:aa", body: "hi" });
   expect(nativeRequests[0].text).toContain("New message from codex in ");
 });
+
+test("standby reports the transports that can wake the session", () => {
+  const { service, project } = harness();
+  const roomId = joinPair(service, project);
+  expect(service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "manual" }))
+    .toMatchObject({ transport: "manual", can_self_wake: true, wake_transports: ["claude_inbox"] });
+  expect(service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "cmux", workspace_id: "w", surface_id: "s" }))
+    .toMatchObject({ can_self_wake: true, wake_transports: ["claude_inbox", "cmux"] });
+});

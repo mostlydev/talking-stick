@@ -350,7 +350,7 @@ export function handleStandbyCommand(
     fallbackReason ? { ...result, fallback_reason: fallbackReason } : result,
     () => {
       if (result.can_self_wake) {
-        return "Standby registered. This turn may end; Talking Stick will wake this session for a directed update.";
+        return `Standby registered. This turn may end; Talking Stick will wake this session through ${result.wake_transports.join(", ")} for a directed update.`;
       }
       if (fallbackReason) {
         return `Manual standby registered because cmux wake is unavailable (${fallbackReason}). It cannot self-wake; run \`tt wait --json\` to resume.`;

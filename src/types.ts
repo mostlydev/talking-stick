@@ -306,6 +306,8 @@ export interface RegisterStandbyResult {
   transport: StandbyTransport;
   generation: number;
   can_self_wake: boolean;
+  // How this session will be woken, in delivery order; no addresses or secrets.
+  wake_transports: NativeWakeTransportName[];
 }
 
 export type WaitWakeReason = "turn" | "event" | "timeout" | "closed";
