@@ -2007,6 +2007,32 @@ export class TalkingStickService {
           generation,
           timestamp
         );
+      // A transport added to the same harness session joins the member's
+      // outstanding batch, so it can't re-wake an agent already nudged.
+      const outstanding = this.db
+        .prepare<[string, string, string, string], NativeWakeEndpointRow>(
+          `SELECT * FROM member_wake_endpoints
+           WHERE room_id = ? AND agent_id = ? AND transport != ?
+             AND harness_session_id = ? AND awaiting_wait = 1
+           LIMIT 1`
+        )
+        .get(input.room_id, input.agent_id, input.transport, input.harness_session_id);
+      if (outstanding) {
+        this.db
+          .prepare(
+            `UPDATE member_wake_endpoints
+             SET awaiting_wait = 1, batch_id = ?, wake_event_seq = ?, dispatch_event_seq = ?
+             WHERE room_id = ? AND agent_id = ? AND transport = ?`
+          )
+          .run(
+            outstanding.batch_id,
+            outstanding.wake_event_seq,
+            outstanding.dispatch_event_seq,
+            input.room_id,
+            input.agent_id,
+            input.transport
+          );
+      }
       return {
         status: "native_wake_endpoint_registered",
         transport: input.transport,
@@ -2126,7 +2152,9 @@ export class TalkingStickService {
   async flushWakes(roomId?: string, agentId?: string): Promise<void> {
     const rooms = roomId ? [roomId] : [...this.wakeRooms];
     for (const room of rooms) {
-      this.wakeRooms.delete(room);
+      // A recipient-scoped flush leaves other recipients queued for a later
+      // room-wide flush.
+      if (!agentId) this.wakeRooms.delete(room);
       const pending = this.db.prepare<[string], { agent_id: string }>(
         "SELECT DISTINCT agent_id FROM member_wake_endpoints WHERE wake_pending = 1 AND room_id = ?"
       ).all(room);

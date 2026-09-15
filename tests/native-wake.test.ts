@@ -581,6 +581,32 @@ describe("concurrent wake batches", () => {
     expect(cmuxRequests).toHaveLength(0);
   });
 
+  test("a transport registered mid-batch inherits the outstanding batch", async () => {
+    const { service, project, nativeRequests, cmuxRequests } = harness();
+    const roomId = joinPair(service, project);
+    await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "first" });
+    expect(nativeRequests).toHaveLength(1);
+    service.registerStandby({ room_id: roomId, agent_id: "claude:aa", transport: "cmux", workspace_id: "w", surface_id: "s" });
+    await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "second" });
+    expect(nativeRequests).toHaveLength(1);
+    expect(cmuxRequests).toHaveLength(0);
+  });
+
+  test("a recipient-scoped flush keeps other queued recipients for a room-wide flush", async () => {
+    const { service, project, nativeRequests } = harness();
+    const roomId = joinPair(service, project);
+    service.joinPath({ agent_id: "codex:bb", context_path: project, process_metadata: metadata("codex", "codex-session") });
+    service.registerNativeWakeEndpoint({
+      agent_id: "codex:bb", room_id: roomId, transport: "codex_queue", address: "thread-b", secret: null,
+      harness_session_id: "codex-session", host_id: HOST
+    });
+    service.sendMessage({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "codex:bb", body: "queued only" });
+    await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "scoped" });
+    expect(nativeRequests.map((request) => request.transport)).toEqual(["claude_inbox"]);
+    await service.flushWakes();
+    expect(nativeRequests.map((request) => request.transport)).toEqual(["claude_inbox", "codex_queue"]);
+  });
+
   test("heartbeat cursor acknowledgement enables the next batch without rejoining", async () => {
     const { service, project, nativeRequests } = harness();
     const roomId = joinPair(service, project);
