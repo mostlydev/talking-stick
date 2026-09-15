@@ -53,6 +53,9 @@ export async function handleWaitCommand(
   cliEntryUrl: string
 ): Promise<void> {
   const park = hasOption(parsed, "park");
+  if (park && hasOption(parsed, "claim")) {
+    throw new Error("--park and --claim cannot be combined.");
+  }
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const identity = deriveCliIdentity(parsed);
   const joined = runtime.commands.joinPath(identity, { context_path: contextPath });
@@ -71,6 +74,14 @@ export async function handleWaitCommand(
   }
   const targetAgentId = "self" as const;
 
+  if (!park && !hasOption(parsed, "claim") && !joined.room_state.owner && !joined.room_state.reserved_for) {
+    const members = runtime.commands.getRoomState({ room_id: joined.room_id }).members;
+    const hasPeer = members.some((member) => member.agent_id !== identity.agent_id &&
+      member.status === "active" && member.session_kind !== "human_chat");
+    if (!hasPeer) {
+      process.stderr.write("No peers in this room; use tt wait --claim to work alone. Listening for room updates.\n");
+    }
+  }
   const explicitTimeout = hasOption(parsed, "timeout");
   let currentCursor = afterEventSeq;
   const receiverId = isTry ? null : randomUUID();
@@ -113,6 +124,7 @@ export async function handleWaitCommand(
           room_id: joined.room_id,
           max_wait_ms: isTry ? 0 : parseWaitTimeout(parsed),
           auto_claim: park ? false : undefined,
+          allow_solo_claim: hasOption(parsed, "claim"),
           mode: park ? "parked" : "active",
           include_events: true,
           after_event_seq: currentCursor,

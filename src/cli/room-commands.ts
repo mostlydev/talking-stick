@@ -625,7 +625,10 @@ function getNextAction(result: HealthCliResult, callerAgentId: string): string {
   }
 
   if (state === "idle") {
-    return "Run 'tt wait' to claim the stick.";
+    const peers = result.members.some((member) =>
+      member.agent_id !== callerAgentId && member.status === "active" && member.session_kind !== "human_chat"
+    );
+    return peers ? "Run 'tt wait' to claim the stick." : "Use 'tt wait --claim' to work alone, or 'tt wait' to listen.";
   }
 
   if (result.room.owner) {

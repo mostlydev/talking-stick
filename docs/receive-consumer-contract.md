@@ -34,8 +34,11 @@
 ## Filtering and authority
 
 - `target=self` receives direct events plus broadcasts from other agents and excludes the caller's own broadcasts.
-- Member joins and leaves are broadcast lifecycle events. They wake existing self-targeted receivers so an agent does not infer room membership from a silent, stale wait.
-- `target=any` is for audit/debug views.
+- Turn-taking member joins and leaves are broadcast lifecycle events. They wake existing self-targeted receivers so an agent does not infer room membership from a silent, stale wait.
+- `target=any` is for audit/debug views and the operator chat console. A `human_chat` console refreshes its existing observer membership separately; watching the full stream does not register turn interest.
+- Chat observer joins and leaves do not produce agent lifecycle wakes. Observers are excluded from claim eligibility, fair handoff selection, and room retention; direct wait/take attempts by an observer are rejected.
+- Ordinary CLI waits do not open-claim a solo room. An agent deliberately working alone uses `tt wait --claim`; a self reservation can still be claimed normally. The service API retains its compatible default unless `allow_solo_claim: false` is supplied.
+- A wait suppresses the caller's completed release/pass events and obsolete self claim events before applying the batch limit. Incoming takeover warnings remain visible; audit queries retain the original events.
 - Messages are room-visible routing, not private ACLs.
 - Event delivery never grants write authority. Only `status: "your_turn"` with a live `guardian_pid` does.
 - Membership is revalidated throughout a turn wait. A member removed while polling receives `unknown_member` and can never be granted a lease from that stale wait.

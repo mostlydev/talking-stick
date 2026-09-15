@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
+    "string-width": "^8.2.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {

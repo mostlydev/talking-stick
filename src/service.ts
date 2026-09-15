@@ -15,6 +15,7 @@ import {
   type SqliteDatabase
 } from "./db.js";
 import { ProtocolError } from "./errors.js";
+import { HUMAN_CHAT_SESSION_KIND } from "./types.js";
 import type { WakeDeliveryResult, WakeRequest, WakeTransport } from "./wake.js";
 import {
   createSystemProcessInspector,
@@ -344,7 +345,10 @@ export class TalkingStickService {
       );
 
       const freshRoom = this.requireRoom(roomSelection.room.room_id);
-      if (!existingMember && hadOtherMembers) {
+      // An observer opening chat must not wake every waiting agent.
+      const joiningObserver =
+        input.process_metadata?.session_kind === HUMAN_CHAT_SESSION_KIND;
+      if (!existingMember && hadOtherMembers && !joiningObserver) {
         this.appendEvent({
           room_id: freshRoom.room_id,
           turn_id: freshRoom.turn_id,
@@ -413,10 +417,15 @@ export class TalkingStickService {
         .run(input.room_id, input.agent_id);
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (
-        remainingMembers.length === 0 ||
-        !remainingMembers.some((remaining) => this.isMemberActive(remaining, now))
-      ) {
+      if (isObserverMember(member) && room.owner !== input.agent_id && room.reserved_for !== input.agent_id) {
+        return {
+          status: "left",
+          room_id: input.room_id,
+          canonical_path: room.canonical_path,
+          remaining_members: remainingMembers.length
+        };
+      }
+      if (!this.hasActiveTurnTakingMember(remainingMembers, now)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -545,10 +554,7 @@ export class TalkingStickService {
       });
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (
-        remainingMembers.length === 0 ||
-        !remainingMembers.some((remaining) => this.isMemberActive(remaining, now))
-      ) {
+      if (!this.hasActiveTurnTakingMember(remainingMembers, now)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -615,6 +621,7 @@ export class TalkingStickService {
     assertNonEmpty(input.agent_id, "agent_id");
     assertNonEmpty(input.room_id, "room_id");
     this.purgeExpiredIdleRooms(this.now());
+    this.assertTurnTakingMember(input.room_id, input.agent_id);
     this.recordWaitEntry(input);
 
     if (input.include_events) {
@@ -692,7 +699,8 @@ export class TalkingStickService {
         target: targetFilter,
         caller_agent_id: input.agent_id,
         from_agent_id: null,
-        limit: this.policy.waitForEventsBatchLimit
+        limit: this.policy.waitForEventsBatchLimit,
+        suppress_self_turn_events: true
       });
 
       if (waitResult.status === "closed") {
@@ -1019,10 +1027,10 @@ export class TalkingStickService {
       );
 
       const target = this.getMember(input.room_id, input.to_agent_id);
-      if (!target || !this.isMemberActive(target, now)) {
+      if (!target || isObserverMember(target) || !this.isMemberActive(target, now)) {
         throw new ProtocolError(
           "unknown_member",
-          "pass_stick target must be an active room member in the MVP.",
+          "pass_stick target must be an active, turn-taking room member.",
           { to_agent_id: input.to_agent_id }
         );
       }
@@ -1117,6 +1125,8 @@ export class TalkingStickService {
         timestamp,
         input.process_metadata
       );
+
+      this.assertTurnTakingMember(input.room_id, input.agent_id);
 
       const takeoverKind = this.resolveTakeoverKind(
         room,
@@ -1510,6 +1520,40 @@ export class TalkingStickService {
       `
       )
       .all(input.room_id, afterEventSeq, limit)
+      .map((row) => this.mapEvent(row));
+  }
+
+  // Newest-first tail of a room's events (returned oldest-first), for views
+  // that start at "now" and want recent context rather than cursor replay.
+  getRecentRoomEvents(input: {
+    room_id: string;
+    limit: number;
+    event_types?: EventType[];
+  }): RoomEvent[] {
+    assertNonEmpty(input.room_id, "room_id");
+    this.requireRoom(input.room_id);
+    const limit = Math.min(Math.max(input.limit, 0), 500);
+    if (limit === 0) {
+      return [];
+    }
+    const eventTypes = input.event_types ?? [];
+    const typeClause =
+      eventTypes.length > 0
+        ? ` AND event_type IN (${eventTypes.map(() => "?").join(", ")})`
+        : "";
+
+    return this.db
+      .prepare<unknown[], RoomEventRow>(
+        `
+        SELECT *
+        FROM room_events
+        WHERE room_id = ?${typeClause}
+        ORDER BY event_seq DESC
+        LIMIT ?
+      `
+      )
+      .all(input.room_id, ...eventTypes, limit)
+      .reverse()
       .map((row) => this.mapEvent(row));
   }
 
@@ -2420,6 +2464,15 @@ export class TalkingStickService {
           claim_expires_at: room.claim_expires_at ?? undefined
         };
       }
+      if (input.allow_solo_claim === false && !this.hasOtherActiveRoomMember(room.room_id, input.agent_id, now)) {
+        return {
+          status: "not_yet",
+          room_state: inspection.state,
+          turn_id: room.turn_id,
+          reason: "solo_room",
+          hint: "No peers in this room; pass --claim to work alone."
+        };
+      }
       if (this.shouldDeferIdleClaim(room, input.agent_id, now)) {
         return {
           status: "not_yet",
@@ -2453,7 +2506,9 @@ export class TalkingStickService {
           input.mode !== undefined
             ? input.mode === "active"
             : input.auto_claim ?? true;
-        if (autoClaim && !this.shouldDeferIdleClaim(room, input.agent_id, now)) {
+        if (autoClaim &&
+          (input.allow_solo_claim !== false || this.hasOtherActiveRoomMember(room.room_id, input.agent_id, now)) &&
+          !this.shouldDeferIdleClaim(room, input.agent_id, now)) {
           return this.grantTurn(room, input.agent_id, now);
         }
         if (!autoClaim && room.pending_handoff_event_seq) {
@@ -2632,11 +2687,19 @@ export class TalkingStickService {
     };
   }
 
+  private assertTurnTakingMember(roomId: string, agentId: AgentId): void {
+    const member = this.getMember(roomId, agentId);
+    if (member && isObserverMember(member)) {
+      throw new ProtocolError("observer_cannot_hold_turn", "Chat observers cannot acquire the stick.");
+    }
+  }
+
   private grantTurn(
     room: PathRoomRow,
     agentId: AgentId,
     now: Date
   ): WaitForTurnResult {
+    this.assertTurnTakingMember(room.room_id, agentId);
     const timestamp = now.toISOString();
     const nextTurnId = room.turn_id + 1;
     const leaseId = randomUUID();
@@ -3866,9 +3929,22 @@ export class TalkingStickService {
     caller_agent_id: AgentId | null;
     from_agent_id: AgentId | null;
     limit: number;
+    suppress_self_turn_events?: boolean;
   }): RoomEvent[] {
     const clauses = ["room_id = ?", "event_seq > ?"];
     const params: unknown[] = [input.room_id, input.after_event_seq];
+
+    // Wait wakes describe new work, not the caller's completed mutations.
+    // Keep audit queries intact and filter before LIMIT to avoid short pages.
+    if (input.suppress_self_turn_events && input.caller_agent_id) {
+      clauses.push(`NOT (event_type IN ('release', 'pass') AND COALESCE(from_agent_id, '') = ?)`);
+      params.push(input.caller_agent_id);
+      clauses.push(`NOT (event_type = 'claim' AND to_agent_id = ? AND NOT EXISTS (
+        SELECT 1 FROM path_rooms r WHERE r.room_id = room_events.room_id
+          AND r.owner = ? AND r.turn_id = room_events.turn_id AND r.state = 'owned'
+      ))`);
+      params.push(input.caller_agent_id, input.caller_agent_id);
+    }
 
     if (input.event_types) {
       clauses.push(
@@ -4039,6 +4115,9 @@ export class TalkingStickService {
     let latest = parseTimestampMs(room.updated_at);
 
     for (const member of members) {
+      if (isObserverMember(member)) {
+        continue;
+      }
       latest = Math.max(
         latest,
         parseTimestampMs(member.joined_at),
@@ -4101,6 +4180,9 @@ export class TalkingStickService {
   }
 
   private shouldRetainIdleRoom(member: RoomMemberRow, now: Date): boolean {
+    if (isObserverMember(member)) {
+      return false;
+    }
     const liveness = this.getMemberProcessLiveness(member);
     if (liveness === "alive") {
       return true;
@@ -4143,7 +4225,7 @@ export class TalkingStickService {
     member: RoomMemberRow,
     now: Date
   ): boolean {
-    return this.hasRecentPresence(member, now);
+    return !isObserverMember(member) && this.hasRecentPresence(member, now);
   }
 
   private shouldDeferIdleClaim(
@@ -4186,7 +4268,19 @@ export class TalkingStickService {
     now: Date
   ): boolean {
     return this.getMembers(roomId).some(
-      (member) => member.agent_id !== agentId && this.isMemberActive(member, now)
+      (member) =>
+        member.agent_id !== agentId &&
+        !isObserverMember(member) &&
+        this.isMemberActive(member, now)
+    );
+  }
+
+  private hasActiveTurnTakingMember(
+    members: RoomMemberRow[],
+    now: Date
+  ): boolean {
+    return members.some(
+      (member) => !isObserverMember(member) && this.isMemberActive(member, now)
     );
   }
 
@@ -4747,6 +4841,12 @@ function joinWarnings(
     (warning): warning is string => Boolean(warning?.trim())
   );
   return present.length > 0 ? present.join(" ") : undefined;
+}
+
+// Chat observers read and message the room but never take part in turn
+// scheduling, idle-claim deferral, solo detection, or room retention.
+function isObserverMember(member: { session_kind: SessionKind }): boolean {
+  return member.session_kind === HUMAN_CHAT_SESSION_KIND;
 }
 
 function sessionKindPriority(sessionKind: SessionKind): number {

@@ -1,4 +1,5 @@
 import { runGuardCommand } from "./guardian.js";
+import { handleChatCommand } from "./chat.js";
 import { runClaudeStopHookCommand } from "./claude-stop-hook.js";
 import { runGrokSessionHookCommand } from "./grok-session-hook.js";
 import {
@@ -198,7 +199,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt wait [path] [--timeout 110s] [--park] [--after N]",
+    usage: "tt wait [path] [--timeout 110s] [--park|--claim] [--after N]",
     description: "Long-poll for ownership and room events using the saved cursor.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, false, cliEntryUrl)
@@ -218,7 +219,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt try [path] [--park] [--after N] [--target self|any|agent]",
+    usage: "tt try [path] [--park|--claim] [--after N] [--target self|any|agent]",
     description: "Check turn and event availability without waiting.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, true, cliEntryUrl)
@@ -260,6 +261,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt assign <target|next> [path] (--status TEXT --next-action TEXT | --stdin)",
     description: "Assign the next turn to a specific active member.",
     handler: ({ runtime, parsed }) => handleAssignCommand(requireRuntime(runtime), parsed)
+  },
+  {
+    name: "chat",
+    needsRuntime: true,
+    startupMaintenance: true,
+    internal: false,
+    usage: "tt chat [path] [--history N] [--events] [--no-mouse]",
+    description: "Open an operator chat console for a room's agents.",
+    handler: ({ runtime, parsed }) => handleChatCommand(requireRuntime(runtime), parsed)
   },
   {
     name: "notes",

@@ -738,6 +738,18 @@ describe("tt turn commands", () => {
     expect(passed.reserved_for).toBe("human:next");
   });
 
+  test("solo wait listens by default and rejects contradictory claim flags", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const result = JSON.parse(await captureStdout([
+      "wait", project, "--timeout", "0ms", "--agent", "human:solo", "--json"
+    ]));
+    expect(result).toMatchObject({ status: "not_yet", reason: "solo_room" });
+    expect(result.guardian_pid).toBeUndefined();
+    await expect(captureStdout([
+      "wait", project, "--park", "--claim", "--json"
+    ])).rejects.toThrow(/cannot be combined/);
+  });
+
   test("tt wait returns a live guardian pid", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     let guardianPid: number | undefined;
@@ -745,7 +757,7 @@ describe("tt turn commands", () => {
     try {
       await captureStdout(["join", project, "--agent", "human:worker"]);
       const waitOut = await captureStdout([
-        "wait",
+        "wait", "--claim",
         project,
         "--timeout",
         "0ms",
@@ -774,7 +786,7 @@ describe("tt turn commands", () => {
     const { project } = setupIsolatedCli(tempDirs);
     await expect(
       captureStdout([
-        "wait",
+        "wait", "--claim",
         project,
         "--target",
         "any",
@@ -794,7 +806,7 @@ describe("tt turn commands", () => {
     try {
       await captureStdout(["join", project, "--agent", "human:worker"]);
       const waitOut = await captureStdout([
-        "wait",
+        "wait", "--claim",
         project,
         "--events",
         "--after",
@@ -841,7 +853,7 @@ describe("tt turn commands", () => {
     try {
       await captureStdout(["join", project, "--agent", "human:worker"]);
       const first = JSON.parse(await captureStdout([
-        "wait", project, "--timeout", "0ms", "--agent", "human:worker", "--json"
+        "wait", "--claim", project, "--timeout", "0ms", "--agent", "human:worker", "--json"
       ])) as {
         cursor_event_seq: number;
         events: Array<{ event_type: string }>;
@@ -878,7 +890,7 @@ describe("tt turn commands", () => {
     let guardianPid: number | undefined;
     try {
       const first = JSON.parse(await captureStdout([
-        "wait", project, "--timeout", "0ms", "--agent", "human:a", "--json"
+        "wait", "--claim", project, "--timeout", "0ms", "--agent", "human:a", "--json"
       ])) as { guardian_pid: number };
       guardianPid = first.guardian_pid;
 
@@ -886,7 +898,7 @@ describe("tt turn commands", () => {
       await captureStdout(["try", project, "--agent", "human:a", "--json"]);
 
       const listener = spawnCliProcess([
-        "wait", project, "--timeout", "5s", "--agent", "human:a", "--json"
+        "wait", "--claim", project, "--timeout", "5s", "--agent", "human:a", "--json"
       ]);
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(listener.child.exitCode).toBeNull();
@@ -927,7 +939,7 @@ describe("tt turn commands", () => {
       await captureStdout(["join", project, "--agent", "human:owner"]);
       const owner = JSON.parse(
         await captureStdout([
-          "wait",
+          "wait", "--claim",
           project,
           "--timeout",
           "0ms",
@@ -949,7 +961,7 @@ describe("tt turn commands", () => {
       ]);
 
       listener = spawnCliProcess([
-        "wait",
+        "wait", "--claim",
         project,
         "--timeout",
         "5s",
@@ -995,12 +1007,12 @@ describe("tt turn commands", () => {
     let listener: SpawnedCliProcess | undefined;
     try {
       const first = JSON.parse(await captureStdout([
-        "wait", project, "--timeout", "0ms", "--agent", "human:receiver", "--json"
+        "wait", "--claim", project, "--timeout", "0ms", "--agent", "human:receiver", "--json"
       ])) as { guardian_pid: number };
       guardianPid = first.guardian_pid;
 
       listener = spawnCliProcess([
-        "wait", project, "--timeout", "5s", "--agent", "human:receiver", "--json"
+        "wait", "--claim", project, "--timeout", "5s", "--agent", "human:receiver", "--json"
       ]);
       const health = await waitForActiveListener(
         project,
@@ -1014,7 +1026,7 @@ describe("tt turn commands", () => {
       });
 
       const duplicate = spawnCliProcess([
-        "wait", project, "--timeout", "5s", "--agent", "human:receiver", "--json"
+        "wait", "--claim", project, "--timeout", "5s", "--agent", "human:receiver", "--json"
       ]);
       const duplicateClose = await waitForProcessClose(duplicate.child, 3_000);
       expect(duplicateClose.code).toBe(1);
@@ -1041,7 +1053,7 @@ describe("tt turn commands", () => {
     try {
       await captureStdout(["join", project, "--agent", "human:worker"]);
       const firstWaitOut = await captureStdout([
-        "wait",
+        "wait", "--claim",
         project,
         "--timeout",
         "0ms",
@@ -1061,7 +1073,7 @@ describe("tt turn commands", () => {
       await waitForPidGone(firstGuardianPid);
 
       const secondWaitOut = await captureStdout([
-        "wait",
+        "wait", "--claim",
         project,
         "--timeout",
         "0ms",
@@ -1095,7 +1107,7 @@ describe("tt turn commands", () => {
     try {
       await captureStdout(["join", project, "--agent", "human:worker"]);
       const firstWaitOut = await captureStdout([
-        "wait",
+        "wait", "--claim",
         project,
         "--timeout",
         "0ms",
@@ -1116,7 +1128,7 @@ describe("tt turn commands", () => {
       fs.rmSync(resolveCliSessionPath(), { force: true });
 
       const secondWaitOut = await captureStdout([
-        "wait",
+        "wait", "--claim",
         project,
         "--timeout",
         "0ms",
@@ -1799,7 +1811,7 @@ describe("tt notes", () => {
       expect(joined.cursor_event_seq).toBe(0);
 
       const waitOut = await captureStdout([
-        "wait",
+        "wait", "--claim",
         project,
         "--timeout",
         "0ms",

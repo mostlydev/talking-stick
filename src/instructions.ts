@@ -70,7 +70,9 @@ export const DEFAULT_MAX_INSTRUCTION_FILE_BYTES = 256 * 1024;
 
 export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration instructions
 
-Coordinate until the shared task is complete. The Talking Stick skill remains authoritative for ownership, wait, and handoff mechanics.
+Coordinate until the shared task is complete. A solo agent intending to edit must explicitly acquire ownership with \`tt wait --claim --json\`; ordinary \`tt wait\` listens without claiming when no peer is present. The Talking Stick skill remains authoritative for ownership, wait, and handoff mechanics.
+
+Operator chat messages arrive through the same wait event stream. Reply with \`tt msg send <sender-agent-id>\` so the operator sees the answer in the console. A chat observer never grants or participates in write authority. Keep the receive loop active during a live chat exercise; standby does not wake for broadcasts.
 
 Working agreement:
 

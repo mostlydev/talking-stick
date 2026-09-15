@@ -162,7 +162,7 @@ describe("path resolution", () => {
       path.join(os.tmpdir(), "talking-stick-worktree-")
     );
     tempRoots.push(tempRoot);
-    const main = path.join(tempRoot, "main");
+    const main = path.join(tempRoot, "umbrella", "main");
     const linked = path.join(tempRoot, "linked");
     fs.mkdirSync(main, { recursive: true });
     execFileSync("git", ["init", "-b", "main", main]);
@@ -200,6 +200,13 @@ describe("path resolution", () => {
     expect(linkedJoin.room_id).toBe(mainJoin.room_id);
     expect(linkedJoin.canonical_path).toBe(realPath(main));
     expect(service.listRooms({ context_path: linked }).rooms).toHaveLength(1);
+
+    // A room above the main checkout must also be discoverable from an
+    // external linked checkout, where that umbrella is not a real ancestor.
+    const umbrella = service.joinPath({ agent_id: "human:umbrella", context_path: path.dirname(main), force_new: true });
+    service.leaveRoom({ agent_id: "claude:main", room_id: mainJoin.room_id });
+    service.leaveRoom({ agent_id: "codex:linked", room_id: mainJoin.room_id });
+    expect(service.joinPath({ agent_id: "codex:umbrella", context_path: linked }).room_id).toBe(umbrella.room_id);
 
     const isolated = service.joinPath({
       agent_id: "grok:isolated",
