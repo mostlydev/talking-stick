@@ -2,11 +2,16 @@
 
 A CLI coordination tool that lets multiple AI coding agents share a single workspace without stepping on each other. One agent holds the stick at a time; handoffs carry structured context so the next agent doesn't have to re-derive it.
 
-Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Antigravity CLI (`agy`), Grok Build, and OpenCode out of the box. Gemini CLI identity is retained for existing sessions, but Gemini skill installation is deprecated in favor of Antigravity and the shared agents skill directory. One `tt wait --json` long-poll handles ownership and room events using a CLI-managed cursor; agents can chat out-of-band without passing the stick via `tt msg send`.
+Multi-process-safe (SQLite WAL), liveness-aware, no daemon. Supports Claude Code, Codex CLI, Antigravity CLI (`agy`), Grok Build, and OpenCode out of the box. Gemini CLI identity is retained for existing sessions, but Gemini skill installation is deprecated in favor of Antigravity and the shared agents skill directory.
+
+- **One writer at a time.** Agents take turns holding the stick for shared edits and hand off with a structured summary.
+- **One receive loop.** `tt wait --json` delivers turns, messages, and room events from a CLI-managed cursor.
+- **Idle agents wake on their own.** A directed message wakes an idle Claude Code or Codex session natively, with no polling while idle.
+- **An operator console.** `tt chat` lets you talk to every agent in the room, steer them with interrupts, and watch who holds the stick.
 
 ## Quickstart
 
-Three steps, then you're coordinating two agents in the same repo.
+Four steps, then you're coordinating two agents in the same repo.
 
 ### 1. Install the `tt` binary
 
@@ -32,11 +37,21 @@ Open two terminal panes side by side — tmux split, iTerm split, two windows, w
 |---|---|
 | `cd ~/myrepo && claude [--dangerously-skip-permissions]` | `cd ~/myrepo && codex` |
 
-Then give **both** panes the same prompt — a shared goal plus the skill trigger:
+Then give **both** panes the same prompt, a shared task plus the skill trigger:
 
-> `/goal Work together to implement OAuth login. Use the /talking-stick $talking-stick skill for coordination`
+> `Work together to implement OAuth login. Use the /talking-stick $talking-stick skill for coordination.`
 
-`/talking-stick $talking-stick` triggers the skill in either harness, and the goal keeps each agent driving toward the shared objective. You don't script the turn-taking — the skill teaches each agent how to join, wait, listen, hand off, test, and review. Coordination is mandatory while the skill applies: agents take turns for shared edits, keep one receive path active whenever the harness can sustain it, carry structured handoffs (status, next action, artifacts, verification) across transitions, and never edit the repo at the same time.
+`/talking-stick $talking-stick` triggers the skill in either harness. Harness goal modes such as `/goal` are optional; their automatic continuation keeps restarting an agent, which works against `tt standby`, so prefer a plain task when you plan to leave agents idle between requests. You don't script the turn-taking — the skill teaches each agent how to join, wait, listen, hand off, test, and review. Coordination is mandatory while the skill applies: agents take turns for shared edits, keep one receive path active whenever the harness can sustain it, carry structured handoffs (status, next action, artifacts, verification) across transitions, and never edit the repo at the same time.
+
+### 4. Watch and steer from the operator console
+
+In a third pane, from the same repo:
+
+```bash
+tt chat
+```
+
+You'll see the agents' messages as they coordinate, who holds the stick in the footer, and a notice as each of your messages is delivered. Type plain text to talk to the whole room, `@codex …` to address one agent, or `!@claude …` to steer an agent that is busy working. See [Operator chat](#operator-chat).
 
 ### Install options
 
@@ -78,6 +93,8 @@ tt self-update
 
 The package refreshes unedited generated instructions automatically. Customized instruction files and copied skills are preserved and receive an explicit replacement command instead of being overwritten.
 
+After updating, restart running harnesses so they load the new skill, and quit and reopen any `tt chat` console so it uses the new build.
+
 ### Remove
 
 ```bash
@@ -85,6 +102,20 @@ tt uninstall --all
 ```
 
 Single-harness uninstalls for shared-reading harnesses leave `~/.agents/skills/talking-stick` in place because Codex, Antigravity, Grok, and OpenCode share that one skill location. Use `tt uninstall agents` or `tt uninstall --shared` to remove only the shared skill target.
+
+## How a session flows
+
+Here's what a typical two-agent session looks like, and what each step means.
+
+1. **Join.** Each agent runs `tt join` and `tt instructions show`. The join result lists who is already there; later arrivals show up as `join` events.
+2. **Listen.** Each agent keeps one `tt wait --json` running. It returns when there is something to act on: a turn, a message, a join or leave, or a handoff.
+3. **Take a turn.** When `tt wait` returns `your_turn` with a live `guardian_pid`, that agent may edit, build, and test. A small background guardian keeps its lease alive. Everyone else stays read-only and can still investigate, message, and leave notes.
+4. **Hand off.** The holder tests, then runs `tt release` (to the next fair waiter) or `tt assign <agent>` (for a specific reviewer). The handoff carries `status`, `next_action`, and `artifacts`, so the next agent picks up where the last one stopped.
+5. **Talk without passing the stick.** `tt msg send` carries questions, review notes, and vetoes between turns. Directed messages reach the recipient's `tt wait`, or wake it if it's idle.
+6. **Go idle.** An agent with nothing to do runs `tt standby`, ends its model turn, and waits without an active model turn. A directed message, an assignment, or a pending handoff wakes it again ([Waking idle agents](#waking-idle-agents)).
+7. **Finish.** When the work is done, every participant reviews the final result and explicitly agrees. With an operator console open, agents stay in standby instead of leaving, so the operator can bring them back with a message.
+
+On the local host, members whose harness process has definitely ended and whose last `tt` activity was over an hour ago are removed automatically, except the stick holder and reserved recipient. Unknown or remote process liveness is preserved. For a stuck holder, follow the takeover eligibility reported by `tt wait`; a single process-gone observation does not immediately revoke a live lease.
 
 ## What it gives your agent
 
@@ -100,7 +131,8 @@ tt standby          — park, return immediately, and wake this harness session 
 tt release         — normal handoff to the next fair waiter, with structured Handoff
 tt assign          — explicit handoff to a named agent
 tt take            — deliberate claim when the prior holder is gone/stuck
-tt kick            — evict an idle member whose process is gone
+tt kick            — evict a member whose process is gone (or --force)
+tt chat            — operator console: talk to agents, steer, and watch the room
 tt state           — authoritative state projection
 tt health/status   — concise local safety/action check; --verbose shows diagnostics
 tt events          — audit/debug log and lower-level event stream
@@ -245,6 +277,7 @@ tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE
 tt chat [path] [--history N] [--events] [--no-mouse]                   # operator chat console for the room
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
+tt kick <agent_id> [path] [--reason TEXT] [--force]      # remove a member (live ones need --force)
 tt instructions show [path] [--harness claude|codex|antigravity|gemini|grok|opencode|all] [--scope effective|bundled|user|project]  # show collaboration prompt
 tt instructions edit [path] [--user|--project]             # edit user or project prompt
 tt instructions reset [path] (--user|--project)            # delete a user or project prompt
@@ -279,9 +312,13 @@ claude → you  12:05
 
 Scroll with the mouse wheel, Page Up/Page Down, or Shift+Up/Down. The input stays fixed and editable. New messages do not pull you away from older history; a count appears in the footer. Ctrl+End or `/bottom` returns to live messages. The in-memory buffer retains up to 2,000 message/notice blocks and rewraps on resize. Use `--no-mouse` for keyboard-only scrolling and native text selection; otherwise hold your terminal's selection modifier (usually Shift) when dragging.
 
-Type `/` to see matching commands, and Tab to complete a command or member name. Ctrl+C and Escape clear the draft and never quit. Pasted multiline text stays in the draft until Enter. On exit, the console restores the original terminal screen.
+Typing `/`, `@`, or `!@` opens a suggestion list drawn over the bottom of the conversation, so nothing moves while you type. Up/Down choose, Tab or Enter accept, and Enter still sends once the word is complete (an exact `/quit` still quits). Escape closes the list first and clears the draft on a second press; Ctrl+C clears the draft. Neither quits. Alt+Enter (or Shift+Enter where the terminal supports it) adds a new line, and with the list closed Up/Down move through a multi-line draft at the same column. Pasted multiline text stays in the draft until Enter. On exit, the console restores the original terminal screen.
 
-The dim footer below the lower input rule is the room status: how many room members are present (including operator consoles), then each agent's most useful state. `holding 12m` means the agent has had the stick for 12 minutes. The other states are `up next` (reserved for the next turn), `standby`, `away` (inactive with no confirmation that its process is still running), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its last `tt` command, including a live agent that is just quiet). Agents whose process has ended are left out of the footer and the count; `/who` lists them as ended, and after an hour the room removes them. The stick holder is listed first. The line refreshes on room events and every 10 seconds, and it is trimmed to the terminal width with a `+N` count for agents that don't fit.
+History is split with Today, Yesterday, and date dividers. Earlier days are dimmed and their timestamps include the day. When someone joins after four quiet hours, everything before that is dimmed as an earlier conversation; this is a visual boundary, not a sign that a quiet agent has exited.
+
+After you send a directed message, a dim notice shows how it was delivered, for example `codex: listening`, `claude: queued`, or `codex: waiting for agent to read`. It updates in place to `→ received` once the agent's `tt wait` returns your message.
+
+A fixed top bar shows the room path; long paths are shortened from the left so the workspace name stays visible. The dim footer below the lower input rule shows each agent's most useful state, without a member count. `holding 12m` means the agent has had the stick for 12 minutes. The other states are `up next` (reserved for the next turn), `standby`, `away` (inactive with no confirmation that its process is still running), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its last `tt` command, including a live agent that is just quiet). Agents whose process has ended are left out of the footer; `/who` lists them as ended, and after an hour the room removes them. The stick holder is listed first. The line refreshes on room events and every 10 seconds, and it is trimmed to the terminal width with a `+N` count for agents that don't fit.
 
 Names use consistent harness colors in the conversation and participant list: Claude is orange, Codex green, and the operator yellow. Directed messages remain visible to the room; addressing a member changes the recipient, not privacy. Colors require an interactive terminal and are disabled when `NO_COLOR` is set to a nonempty value. If an existing console was opened before a local rebuild, quit and reopen `tt chat` to load the new display.
 
@@ -290,11 +327,13 @@ Names use consistent harness colors in the conversation and participant list: Cl
 | Plain text or `/all <message>` | Broadcast to the room |
 | `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case. Mention several agents anywhere in the text: `@claude @codex, review this` or `hey @codex and @claude, check this`. `@everyone` (or `@all`) addresses every agent in the room. Leading mentions are stripped from the message; an unknown `@name` blocks the whole send; email addresses and `` `code` `` spans are not mentions |
 | `/who` | Show members and the current stick holder |
+| `/kick [--force] <agent> [reason]` | Remove one exact ID or unique prefix from the room. Suggestions show full IDs and status, with ended agents first. Live or unconfirmed processes require `--force`; consoles cannot be kicked. Kicking only removes room membership: the harness keeps running, and its next `tt wait` can rejoin it |
 | `/events` | Toggle turn and handoff events, hidden by default |
-| `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Send an urgent interrupt through the wake mechanism. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
-| `/help` | Show chat commands |
+| `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Steer an agent now. A busy Claude Code session gets the prompt at its next tool step and changes course without stopping; Codex gets it after its current turn. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
+| `/help`, `/help keys` | Show chat commands, or keyboard shortcuts |
 | `/quit`, `/exit`, or Ctrl+D on an empty draft | Exit and remove this console's membership |
-| Ctrl+C or Escape | Clear the draft without quitting |
+| Ctrl+C | Clear the draft without quitting |
+| Escape | Close the suggestion list; press again to clear the draft |
 | `/bottom` or Ctrl+End | Return to the latest messages |
 | `//text` | Send a message beginning with `/` |
 
@@ -377,11 +416,3 @@ adds the GitHub release link before npm commits and tags the version.
 ## License
 
 MIT. See [LICENSE.md](LICENSE.md).
-
-### Conversation history in chat
-
-The chat separates activity with Today, Yesterday, and dated dividers. Previous days are dimmed, and older message timestamps include the day. A join after four hours without visible conversation starts a new conversation; the earlier conversation stays readable in dim text. This is a visual boundary, not a declaration that a quiet agent has exited.
-
-Chat suggests `/` commands and `@` or `!@` recipients as you type. Up/Down chooses a suggestion; Tab or Enter accepts it. Escape dismisses the menu without clearing the draft; a second Escape clears it. An exact command such as `/quit` still runs on Enter. With the menu closed, Up/Down moves through multiline and wrapped drafts at the same visual column; single-line drafts retain history recall. Alt+Enter inserts a newline (Shift+Enter also works in terminals that send a distinct key sequence). Enter sends unless it is accepting an incomplete suggestion.
-
-`/help` shows a spaced command reference; `/help keys` shows keyboard shortcuts.

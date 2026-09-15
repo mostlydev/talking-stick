@@ -343,7 +343,7 @@ describe("chat status line", () => {
         context(ids)
       )
     ).toBe(
-      "6 members │ codex holding 12m · claude up next · gemini idle 1h · opencode standby · grok away"
+      "codex holding 12m · claude up next · gemini idle 1h · opencode standby · grok away"
     );
   });
 
@@ -360,7 +360,7 @@ describe("chat status line", () => {
         { members, owner: null, owner_since: null, reserved_for: null, now, columns: 200 },
         context(ids)
       )
-    ).toBe("3 members │ codex idle 3h · gemini away · grok standby");
+    ).toBe("codex idle 3h · gemini away · grok standby");
   });
 
   test("fits the terminal width and counts what it had to drop", () => {
@@ -378,7 +378,7 @@ describe("chat status line", () => {
       },
       context(members.map((row: { agent_id: string }) => row.agent_id))
     );
-    expect(line).toBe("3 members │ codex active · +2");
+    expect(line).toBe("codex active · claude active · +1");
     expect(line.length).toBeLessThan(36);
   });
 
@@ -966,7 +966,7 @@ test.each([
       show_turn_events: false,
       poll_ms: 5
     });
-    await until(() => transcript.includes("2 members"));
+    await until(() => transcript.includes("Room · "));
     input.write(draft);
     input.write("\u001b[D".repeat(20));
     service.sendMessage({
@@ -1227,4 +1227,65 @@ describe("ended member pruning", () => {
       .find((event) => event.event_type === "leave");
     expect(leave).toMatchObject({ from_agent_id: "codex:old", reason: "process_ended" });
   });
+});
+
+test("chat kick rejects ambiguous and unconfirmed targets, then revokes an exact owner's turn with force", async () => {
+  const { root, service } = setupService({ observerLiveness: "alive" });
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  service.joinPath({ agent_id: "codex:bb", context_path: root });
+  await service.waitForTurn({ agent_id: "codex:aa", room_id: joined.room_id, max_wait_ms: 0 });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let transcript = "";
+  output.on("data", (chunk) => { transcript += chunk.toString(); });
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: false, color: false, history: 0,
+    show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => transcript.includes("Talking Stick chat"));
+    input.write("/kick codex\n");
+    await until(() => transcript.includes("Ambiguous agent codex: codex:aa, codex:bb"));
+    input.write("/kick codex:aa\n");
+    await until(() => transcript.includes("is not confirmed ended"));
+    input.write("/kick --force human:op\n");
+    await until(() => transcript.includes("Chat consoles cannot be kicked"));
+    input.write("/kick --force codex:aa test removal\n");
+    await until(() => transcript.includes("Its turn was revoked."));
+    expect(service.getRoomState({ room_id: joined.room_id }).room.owner).toBeNull();
+    expect(service.getRoomState({ room_id: joined.room_id }).members.map((member) => member.agent_id)).toContain("codex:bb");
+    const events = service.getRoomEvents({ room_id: joined.room_id, limit: 100 });
+    expect(events.find((event) => event.event_type === "kick")).toMatchObject({ to_agent_id: "codex:aa", reason: "test removal" });
+  } finally {
+    input.write("/quit\n");
+    await session;
+  }
+});
+
+test("chat kicks a persistently ended member without force and protects live members", async () => {
+  let now = new Date("2026-09-15T12:00:00Z");
+  const { root, service } = setupService({ now: () => now,
+    processLivenessChecker: (metadata) => metadata.harness_session_id === "ended" ? "gone" : "alive" });
+  const joined = service.joinPath({ agent_id: "claude:ended", context_path: root, process_metadata: {
+    host_id: "host", pid: 1, process_started_at: "t", harness_session_id: "ended", harness_host_id: "host",
+    harness_pid: 1, harness_process_started_at: "t", session_kind: "harness_cli"
+  } });
+  service.joinPath({ agent_id: "codex:live", context_path: root, process_metadata: {
+    host_id: "host", pid: 2, process_started_at: "t", session_kind: "harness_cli"
+  } });
+  now = new Date("2026-09-15T12:11:00Z");
+  const input = new PassThrough(); const output = new PassThrough(); let transcript = "";
+  output.on("data", (chunk) => { transcript += chunk.toString(); });
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: false, color: false, history: 0,
+    show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => transcript.includes("Talking Stick chat"));
+    input.write("/kick codex:live\n");
+    await until(() => transcript.includes("is still running"));
+    input.write("/kick claude:ended cleanup\n");
+    await until(() => transcript.includes("Removed claude:ended"));
+    expect(service.getRoomState({ room_id: joined.room_id }).members.map((member) => member.agent_id)).not.toContain("claude:ended");
+    input.write("/who\n");
+    await until(() => transcript.includes("In the room: codex"));
+  } finally { input.write("/quit\n"); await session; }
 });

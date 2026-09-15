@@ -415,7 +415,7 @@ export interface ChatStatusInput {
   columns: number;
 }
 
-// One dim line of room state for the operator: member count, then each agent
+// One dim line of room state for the operator: each agent
 // with the single most useful fact (holding the stick, up next, standby,
 // away, or how long since its last tt command). Observers are not listed.
 export function formatChatStatus(
@@ -433,11 +433,7 @@ export function formatChatStatus(
     .filter((member) => member.session_kind !== HUMAN_CHAT_SESSION_KIND)
     .sort((left, right) => rankMember(left, input) - rankMember(right, input));
 
-  const count = `${present.length} ${present.length === 1 ? "member" : "members"}`;
   const budget = Math.max(0, input.columns - 1);
-  if (count.length > budget) {
-    return paint(context, "2", String(present.length).slice(0, budget));
-  }
   const safeContext = {
     ...context,
     name_of: (id: AgentId) =>
@@ -447,10 +443,10 @@ export function formatChatStatus(
     plain: `${safeContext.name_of(member.agent_id)} ${describeMemberState(member, input)}`,
     painted: `${formatChatAgent(safeContext, member.agent_id)} ${paint(context, "2", describeMemberState(member, input))}`
   }));
-  let width = count.length;
-  let result = paint(context, "2", count);
+  let width = 0;
+  let result = "";
   for (const [index, segment] of segments.entries()) {
-    const separator = index === 0 ? " │ " : " · ";
+    const separator = index === 0 ? "" : " · ";
     const remaining = segments.length - index - 1;
     const reserve = remaining > 0 ? ` · +${remaining}`.length : 0;
     if (
@@ -482,7 +478,7 @@ function rankMember(member: RoomMember, input: ChatStatusInput): number {
   return member.status === "active" ? 2 : 3;
 }
 
-function describeMemberState(
+export function describeMemberState(
   member: RoomMember,
   input: ChatStatusInput
 ): string {
