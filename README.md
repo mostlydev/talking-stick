@@ -182,19 +182,19 @@ tt wait --json
 
 ### Waking idle agents
 
-When a directed message, assignment, pass, or pending handoff targets an agent that has no live `tt wait`, Talking Stick wakes that agent's harness session directly. No keystrokes are typed and no model polls while idle.
+When a directed message, assignment, pass, or pending handoff targets an agent that has no live `tt wait`, Talking Stick wakes that agent's harness session directly. For Claude Code and Codex, no keystrokes are typed and no model polls while idle.
 
 | Harness | Transport | Registered from |
 | --- | --- | --- |
 | Claude Code (v2.1.224+, macOS/Linux) | The session's inbox socket | `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` |
-| Codex | `codex queue --thread <id>` | `CODEX_THREAD_ID` |
+| Codex (tested with 0.154.0) | `codex queue --thread <id>` | `CODEX_THREAD_ID` |
 | Any harness in cmux | `cmux send` plus Enter, only for parked standby or an explicit interrupt | `cmux identify` |
 
 - Endpoints register automatically on `tt join`, `tt wait`, and `tt standby`. They're tied to the harness session and host, and removed on leave, kick, or session change. The Claude token and socket path are stored owner-only and never appear in state, health, events, or errors.
 - The wake is a fixed prompt, such as ``[talking-stick] New message from codex in /repo. Run `tt wait --json` to read it.`` It never carries the message body. The agent reads the real message, with sender attribution, through `tt wait`.
 - Each agent is woken once per unread batch. More messages join that batch until the agent's wait has read past them. Broadcasts never wake anyone; a room `--interrupt` may wake only the current owner.
 - Order: a live receiver first, then the native transport, then cmux where eligible. The next transport is tried only after a definite failure, such as a missing socket or an unknown Codex thread. A timeout or unconfirmed write stops there, so an agent is never woken twice.
-- `tt msg send` reports `delivery_status` plus `delivery_transport` and `delivery_state`. `tt chat` shows one dim notice per recipient, such as `claude: queued` or `codex: listening`. `delivery_state` is `queued` when the harness accepted the prompt, `ambiguous` (shown as `wake unconfirmed`) when a timeout or cut-off write left it unknown, and `failed` when every eligible transport definitely failed. A definite failure releases the batch so a later sender can retry. Neither harness confirms that a turn started.
+- `tt msg send` reports `delivery_status` plus `delivery_transport` and `delivery_state`. `tt chat` shows one dim notice per recipient, such as `claude: queued` or `codex: listening`. `delivery_state` is `queued` when the transport submitted the prompt (the socket write flushed, or `codex queue` exited 0; Claude may still hold or refuse it per its inbound settings), `ambiguous` (shown as `wake unconfirmed`) when a timeout or cut-off write left it unknown, and `failed` when every eligible transport definitely failed. A definite failure releases the batch so a later sender can retry. Neither harness confirms that a turn started.
 - `tt health` shows a `Wake:` line with the last delivery status and a fixed error code.
 - Limits: same machine and OS user only. Claude's `crossSessionInbound: refuse` setting drops the prompt silently. A Codex thread that isn't loaded or was interrupted keeps the queued message but doesn't start a turn. Grok, Gemini, OpenCode, and Antigravity wake only through cmux for now.
 - API users: service writes queue wakes, and `TalkingStickCommands.flushWakes()` or `sendMessageAndWake()` delivers them asynchronously.

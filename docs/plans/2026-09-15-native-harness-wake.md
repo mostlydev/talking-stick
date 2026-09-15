@@ -128,7 +128,7 @@ For `tt chat`, dispatch must not freeze the UI: run it off the input path with t
 
 Changes from the design above, as built:
 
-- **One registry for all transports.** Migration 14 moves the cmux interrupt and standby endpoints into `member_wake_endpoints` alongside `claude_inbox` and `codex_queue`. cmux keeps its earlier eligibility: parked standby or an explicit interrupt. It never handles a plain directed message, because typed keystrokes can land in a busy composer.
+- **One registry for all transports.** Migration 14 moves the cmux interrupt and standby endpoints into `member_wake_endpoints` alongside `claude_inbox` and `codex_queue`. cmux keeps its earlier eligibility: a parked cmux standby member (for any actionable directed event) or an explicit interrupt. A plain directed message to an unparked member never goes to cmux, because typed keystrokes can land in a busy composer.
 - **Asynchronous dispatch.** Service writes only queue wakes. `flushWakes()` / `sendMessageAndWake()` deliver them, with a `net.Socket` for Claude and async `execFile` for Codex. CLI commands await the flush before closing the database, and `tt chat` tracks it without blocking input.
 - **Batch dedupe.** Dedupe uses `batch_id`, `wake_event_seq`, and `dispatch_event_seq` instead of `last_wake_batch_seq`:
   - One batch per member, across all its transports.
@@ -136,7 +136,7 @@ Changes from the design above, as built:
   - Completion writes are guarded by endpoint generation and batch.
   - The batch closes only when the member acknowledges a cursor past its newest event: wait entry, receiver heartbeat, or receiver unregister.
 - **Error codes.** Errors are fixed codes (`claude_inbox_unreachable`, `claude_inbox_timeout`, `codex_thread_not_found`, `codex_queue_failed`, and so on). Raw stderr and socket errors never reach state, health, events, or chat.
-- **Codex success is always `queued`.** In rust-v0.154.0, `codex queue` prints the same "Queued message" line whether or not a turn started. Only a missing binary or a "no rollout found"/thread-not-found rejection is a definite failure; every other error is ambiguous.
+- **Codex success is always `queued`.** Tested against Codex CLI 0.154.0. In rust-v0.154.0, `codex queue` prints the same "Queued message" line whether or not a turn started. Only a missing binary or a "no rollout found"/thread-not-found rejection is a definite failure; every other error is ambiguous.
 - **Codex limits (source-verified).** `wake_if_loaded` and the external DB watcher both skip interrupted threads. Enqueueing to an unloaded thread persists the message but doesn't load the thread, so no turn starts until the user resumes it.
 - **Database permissions.** The database and its WAL/SHM files are set to 0600 before the first secret is written.
 
