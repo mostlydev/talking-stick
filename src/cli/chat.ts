@@ -199,10 +199,16 @@ export async function runChatSession(
   // Erasing walks back up every row it drew, so a wrapped draft never leaves
   // fragments behind in the scrollback.
   let inlineFrame: ChatFrame | null = null;
+  let inlineFrameColumns = { columns: 80, rows: 24 };
   let inlineActive = false;
+  // Erase with the geometry the panel was drawn at: after a resize the current
+  // width would compute the wrong row count and strand a stale copy.
   const eraseComposer = () => {
     if (!inlineFrame) return;
-    const up = Math.min(dimensions().rows - 1, inlineCursorRow(inlineFrame, dimensions().columns));
+    const up = Math.min(
+      inlineFrameColumns.rows - 1,
+      inlineCursorRow(inlineFrame, inlineFrameColumns.columns)
+    );
     output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}\u001b[J`);
     inlineFrame = null;
   };
@@ -222,6 +228,7 @@ export async function runChatSession(
     eraseComposer();
     output.write(frame.lines.join("\r\n"));
     inlineFrame = frame;
+    inlineFrameColumns = dimensions();
     const up = frame.lines.length - 1 - frame.cursor.row;
     output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}${frame.cursor.col > 0 ? `\u001b[${frame.cursor.col}C` : ""}\u001b[?2026l`);
   };
@@ -338,7 +345,16 @@ export async function runChatSession(
     restore();
   };
   const onResize = () => {
-    if (inline) eraseComposer();
+    // The terminal reflows what is already on screen, so the panel may occupy
+    // more rows than either geometry alone predicts. Erase the larger of the
+    // two before redrawing, bounded by the visible screen.
+    if (inline && inlineFrame) {
+      const previous = inlineCursorRow(inlineFrame, inlineFrameColumns.columns);
+      const reflowed = inlineCursorRow(inlineFrame, dimensions().columns);
+      const up = Math.min(dimensions().rows - 1, Math.max(previous, reflowed));
+      output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}\u001b[J`);
+      inlineFrame = null;
+    }
     editor?.resize(dimensions().columns - 1);
     previousFrame = null;
     redraw();

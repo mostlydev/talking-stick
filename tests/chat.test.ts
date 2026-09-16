@@ -1395,6 +1395,17 @@ test("inline terminal retains history, bars and draft across incoming messages a
     expect(text().match(/draft-first/g)).toHaveLength(1);
     expect(text().match(/draft-second/g)).toHaveLength(1);
     expect(text()).toContain("Room · ");
+    // A sudden shrink in both directions reflows the panel that is already on
+    // screen, so at most one stale copy can be left behind in scrollback; the
+    // live panel and the draft must still be intact and singular afterwards.
+    vt.resize(20, 8); output.columns = 20; output.rows = 8; output.emit("resize");
+    await flush();
+    expect(text().match(/draft-first/g)).toHaveLength(1);
+    expect(text().match(/Room · /g)?.length ?? 0).toBeLessThanOrEqual(2);
+    vt.resize(80, 24); output.columns = 80; output.rows = 24; output.emit("resize");
+    await flush();
+    expect(text().match(/draft-second/g)).toHaveLength(1);
+    expect(text()).toContain("Room · ");
     input.write("\u0003/older\r");
     await until(() => bytes.includes("saved-message-0"));
     await flush();
