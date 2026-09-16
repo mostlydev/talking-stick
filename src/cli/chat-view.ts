@@ -29,6 +29,7 @@ export interface ChatCommandInfo {
 export const CHAT_COMMANDS: ChatCommandInfo[] = [
   { name: "quit", usage: "/quit", description: "leave the chat" },
   { name: "who", usage: "/who", description: "members and who has the stick" },
+  { name: "older", usage: "/older", description: "load an earlier page of saved messages" },
   { name: "kick", usage: "/kick <agent>", description: "remove a member; --force for a live agent" },
   {
     name: "to",
@@ -55,7 +56,7 @@ export const CHAT_COMMANDS: ChatCommandInfo[] = [
 
 // Help is intentionally compact; detailed keyboard controls have their own
 // view so the command list remains readable at ordinary terminal heights.
-export function formatChatHelp(width: number, color: boolean, keys = false): string {
+export function formatChatHelp(width: number, color: boolean, keys = false, inline = false): string {
   const usable = Math.max(12, width);
   const accent = (text: string) => color ? `\u001b[1;38;5;147m${text}\u001b[0m` : text;
   const muted = (text: string) => color ? `\u001b[2m${text}\u001b[0m` : text;
@@ -67,9 +68,14 @@ export function formatChatHelp(width: number, color: boolean, keys = false): str
     ["Alt+Enter", "Insert a new line"],
     ["Esc", "Dismiss suggestions; press again to clear"],
     ["Ctrl+C", "Clear the draft"],
-    ["PgUp / PgDn", "Scroll the conversation"],
-    ["Shift+↑ / ↓", "Scroll a few lines (wheel with --mouse)"],
-    ["Ctrl+End", "Return to the latest messages"],
+    ...(inline ? [
+      ["Wheel / terminal scroll", "Browse messages; drag to select and copy"],
+      ["/older", "Print an earlier page of saved messages"]
+    ] as [string, string][] : [
+      ["PgUp / PgDn", "Scroll the conversation"],
+      ["Shift+↑ / ↓", "Scroll a few lines (wheel with --mouse)"],
+      ["Ctrl+End", "Return to the latest messages"]
+    ] as [string, string][]),
     ["Ctrl+D", "Quit when the draft is empty"]
   ] : CHAT_COMMANDS.map((command) => [
     command.name === "help" ? "/help keys" : command.usage,
@@ -727,6 +733,42 @@ export interface ChatScreenInput {
 export interface ChatFrame {
   lines: string[];
   cursor: { row: number; col: number };
+}
+
+// A bounded live panel beneath ordinary terminal output. Reserve suggestion
+// rows so opening completion does not move the saved conversation.
+export function renderInlinePanel(input: ChatScreenInput): ChatFrame {
+  const width = Math.max(1, input.columns - 1);
+  const height = Math.max(1, input.rows - 1);
+  if (width < 4 || height < 4) {
+    return { lines: [truncateStyled(CHAT_PROMPT + input.draft.line.replace(/\n/g, " "), width)], cursor: { row: 0, col: 0 } };
+  }
+  const header = input.room_path && height >= 5 ? [roomHeader(input.room_path, width, input.format)] : [];
+  const menuCapacity = Math.min(MAX_MENU_ROWS, Math.max(0, height - header.length - 5));
+  const composerCapacity = Math.max(1, Math.min(MAX_COMPOSER_ROWS, height - header.length - menuCapacity - 3));
+  const composer = layoutComposer(input.draft, width, composerCapacity);
+  const matches = input.completions ?? [];
+  const selected = Math.max(0, Math.min(input.completion_index ?? 0, matches.length - 1));
+  const first = Math.max(0, selected - menuCapacity + 1);
+  const menu = Array.from({ length: menuCapacity }, (_, row) => {
+    const entry = matches[first + row];
+    if (!entry) return "";
+    const active = first + row === selected;
+    return truncateStyled(`${active ? "›" : " "} ${entry.label}  ${dim(input.format, entry.description)}`, width);
+  });
+  const rule = dim(input.format, "─".repeat(width));
+  const lines = [...header, ...menu, rule, ...composer.rows, rule, renderFooter(input, width)];
+  return {
+    lines,
+    cursor: { row: header.length + menu.length + 1 + composer.cursor_row, col: Math.min(width - 1, composer.cursor_col) }
+  };
+}
+
+export function inlineCursorRow(frame: ChatFrame, columns: number): number {
+  const width = Math.max(1, columns);
+  return frame.lines.slice(0, frame.cursor.row)
+    .reduce((rows, line) => rows + Math.max(1, Math.ceil(textWidth(line) / width)), 0)
+    + Math.floor(frame.cursor.col / width);
 }
 
 // The suggestion menu overlays the bottom of the transcript instead of

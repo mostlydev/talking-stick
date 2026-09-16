@@ -8,8 +8,8 @@ import {
   diffChatFrame,
   getChatCompletions,
   formatChatHelp,
-  CHAT_PROMPT,
-  layoutComposer,
+  renderInlinePanel,
+  inlineCursorRow,
   chatTranscriptHeight,
   chatWheelRegion,
   CHAT_COMMANDS,
@@ -91,9 +91,8 @@ export interface ChatSessionOptions {
   inline?: boolean;
 }
 
-// Inline is the default: a full-screen pane has no scrollback, so a terminal
-// or multiplexer can neither scroll nor select it. --fullscreen keeps the
-// pinned layout for anyone who prefers it.
+// Native terminal scrollback owns wheel scrolling and selection. --fullscreen
+// retains the alternate-screen viewport and its keyboard scrolling controls.
 export function chatInlineEnabled(parsed: ParsedCommand): boolean {
   return !hasOption(parsed, "fullscreen");
 }
@@ -199,38 +198,42 @@ export async function runChatSession(
   // Inline drawing: the composer occupies the last rows of the normal screen.
   // Erasing walks back up every row it drew, so a wrapped draft never leaves
   // fragments behind in the scrollback.
-  let composerRows = 0;
-  let composerCursorRow = 0;
+  let inlineFrame: ChatFrame | null = null;
   let inlineActive = false;
-  const composerLayout = () =>
-    layoutComposer(
-      editor?.draft ?? { line: "", cursor: 0 },
-      Math.max(2, dimensions().columns - 1)
-    );
   const eraseComposer = () => {
-    if (composerRows === 0) return;
-    output.write(`\r${composerCursorRow > 0 ? `\u001b[${composerCursorRow}A` : ""}\u001b[J`);
-    composerRows = 0;
-    composerCursorRow = 0;
+    if (!inlineFrame) return;
+    const up = Math.min(dimensions().rows - 1, inlineCursorRow(inlineFrame, dimensions().columns));
+    output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}\u001b[J`);
+    inlineFrame = null;
   };
   const drawComposer = () => {
     if (!inline || closed) return;
+    const draft = editor?.draft ?? { line: "", cursor: 0 };
+    const frame = renderInlinePanel({
+      room_path: joined.canonical_path, transcript, format: formatContext(),
+      status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date() },
+      draft, hint,
+      completions: editor?.completionVisible ? completionsFor(draft) : [],
+      completion_index: editor?.completionIndex ?? 0,
+      ...dimensions()
+    });
+    if (inlineFrame && JSON.stringify(inlineFrame) === JSON.stringify(frame)) return;
+    output.write("\u001b[?2026h");
     eraseComposer();
-    const layout = composerLayout();
-    output.write(layout.rows.join("\n"));
-    composerRows = layout.rows.length;
-    composerCursorRow = layout.cursor_row;
-    const up = layout.rows.length - 1 - layout.cursor_row;
-    output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}${layout.cursor_col > 0 ? `\u001b[${layout.cursor_col}C` : ""}`);
+    output.write(frame.lines.join("\r\n"));
+    inlineFrame = frame;
+    const up = frame.lines.length - 1 - frame.cursor.row;
+    output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}${frame.cursor.col > 0 ? `\u001b[${frame.cursor.col}C` : ""}\u001b[?2026l`);
   };
   // Inline output must not land on top of the composer: erase it, print the
   // line, then redraw the draft underneath.
   const writeInline = (text: string) => {
     eraseComposer();
-    output.write(`${text}\n`);
+    output.write(`${text.replace(/\r?\n/g, "\r\n")}\r\n`);
     drawComposer();
   };
   const redraw = () => {
+    if (inline) { drawComposer(); return; }
     if (!fullscreen || closed || frameTimer) return;
     frameTimer = setTimeout(() => {
       frameTimer = null;
@@ -316,7 +319,7 @@ export async function runChatSession(
     editor?.close();
     if (inlineActive) {
       eraseComposer();
-      output.write("\u001b[?2004l");
+      output.write("\u001b[?2026l\u001b[?2004l");
       inlineActive = false;
     }
     if (!screenActive) return;
@@ -335,6 +338,7 @@ export async function runChatSession(
     restore();
   };
   const onResize = () => {
+    if (inline) eraseComposer();
     editor?.resize(dimensions().columns - 1);
     previousFrame = null;
     redraw();
@@ -504,9 +508,36 @@ export async function runChatSession(
         stop();
         return;
       case "bottom":
+        if (inline) {
+          print("Use your terminal's scroll-to-bottom shortcut to return to live messages.");
+          return;
+        }
         transcript.scrollToBottom();
         redraw();
         return;
+      case "older": {
+        if (!inline) { scrollHistory(-100); return; }
+        if (historyExhausted) { print("No older saved messages."); return; }
+        const entries: RoomEvent[] = [];
+        for (let page = 0; page < 10 && !historyExhausted; page++) {
+          const earlier = runtime.commands.getRecentRoomEvents({
+            room_id: roomId, limit: 100, before_event_seq: historyCursor,
+            event_types: showTurnEvents ? undefined : CONVERSATION_EVENTS
+          });
+          // The service applies all filters before LIMIT; a short page is EOF.
+          historyExhausted = earlier.length < 100;
+          if (earlier.length) historyCursor = earlier[0].event_seq;
+          entries.push(...earlier.filter(event => render(event) !== null));
+          if (entries.length) break;
+        }
+        if (!entries.length) {
+          print(historyExhausted ? "No older saved messages." : "No visible messages in this page; use /older to continue.");
+          return;
+        }
+        const lines = entries.map(event => render(event)!).join("\n\n");
+        print(`── Earlier saved messages ──\n${lines}\n── End of earlier page · /older for more ──`);
+        return;
+      }
       case "who":
         refreshMembers();
         print(describeRoom());
@@ -538,7 +569,7 @@ export async function runChatSession(
         print(`Stick events ${showTurnEvents ? "shown" : "hidden"}.`);
         return;
       case "help":
-        print(formatChatHelp(dimensions().columns - 1, options.color, args.trim() === "keys"));
+        print(formatChatHelp(dimensions().columns - 1, options.color, args.trim() === "keys", inline));
         return;
       default:
         print(`! Unknown command /${name}. Try /help.`);

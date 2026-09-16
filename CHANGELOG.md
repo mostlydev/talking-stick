@@ -11,13 +11,15 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+- Restore the room bar, live agent status, and visible suggestions in normal-screen chat while preserving native scrollback and selection. Add `/older` for saved history, preserve draft cursors across messages and resize, and restore terminal modes on exit.
+
 ### Changed
 
-- **Chat renders inline by default.** The console prints into the terminal's normal screen with a single prompt row, so the terminal or multiplexer keeps scrollback, wheel scrolling, selection, and copy — the same behavior as other CLI agents. `tt chat --fullscreen` keeps the pinned layout with its own scrolling keys and suggestion menus.
+- **Chat renders inline by default.** The console prints into the terminal's normal screen with a room bar, multiline composer, suggestions, and live status, so the terminal or multiplexer keeps scrollback, wheel scrolling, selection, and copy — the same behavior as other CLI agents. `tt chat --fullscreen` keeps the pinned layout with its own scrolling keys and suggestion menus.
 
 ### Fixed
 
-- **Older saved chat history.** Scrolling upward now fetches earlier room events beyond the startup history window, preserving the visible message and live receive cursor. Native selection and input bindings are unchanged.
+- **Older saved chat history.** Fullscreen scrolling fetches earlier room events beyond the startup history window, preserving the visible message and live receive cursor. Normal-screen chat offers `/older` to print earlier pages without replacing native scrollback.
 
 ## [0.18.3] — 2026-09-16
 

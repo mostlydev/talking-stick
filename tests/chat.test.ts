@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { Terminal } from "@xterm/headless";
 import { afterEach, describe, expect, test } from "vitest";
 import { TalkingStickCommands } from "../src/commands.js";
 import { deriveHumanCliIdentity } from "../src/identity.js";
@@ -1346,8 +1347,9 @@ test("inline incoming messages erase from the actual draft cursor and restore pa
     out = "";
     service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: "incoming-during-edit" });
     await until(() => out.includes("incoming-during-edit"));
-    // Cursor is on the first draft row: moving up here would erase transcript.
-    expect(out.startsWith("\r\u001b[J")).toBe(true);
+    // First draft row is below the header, three suggestions, and a rule.
+    // Move back only to the panel start, never into the transcript.
+    expect(out.startsWith("\r\u001b[5A\u001b[J")).toBe(true);
     expect(out).toContain("first");
     expect(out).toContain("second");
   } finally {
@@ -1356,6 +1358,69 @@ test("inline incoming messages erase from the actual draft cursor and restore pa
   }
   expect(out).toContain("\u001b[?2004l");
   expect(rawModes).toEqual([true, false]);
+});
+
+test("inline terminal retains history, bars and draft across incoming messages and resize", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  for (let i = 0; i < 30; i++) service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: `saved-message-${i}` });
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 80, rows: 24 });
+  const vt = new Terminal({ cols: 80, rows: 24, allowProposedApi: true, scrollback: 5000 });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("\u001b[0m", resolve));
+  const text = () => Array.from({ length: vt.buffer.active.length }, (_, i) => vt.buffer.active.getLine(i)?.translateToString(true) ?? "").join("\n");
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: true,
+    color: false, history: 20, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("saved-message-29"));
+    await flush();
+    expect(vt.buffer.active.type).toBe("normal");
+    expect(vt.buffer.active.baseY).toBeGreaterThan(0);
+    expect(text()).toContain("Room · ");
+    expect(text()).toContain("codex");
+    input.write("\u001b[200~draft-first\ndraft-second\u001b[201~\u001b[A");
+    service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: "incoming-marker" });
+    await until(() => bytes.includes("incoming-marker"));
+    await flush();
+    expect(text()).toContain("saved-message-29");
+    expect(text()).toContain("incoming-marker");
+    expect(text().match(/draft-first/g)).toHaveLength(1);
+    expect(text().match(/draft-second/g)).toHaveLength(1);
+    vt.resize(40, 24); output.columns = 40; output.emit("resize");
+    await flush();
+    expect(text()).toContain("incoming-marker");
+    expect(text().match(/draft-first/g)).toHaveLength(1);
+    expect(text().match(/draft-second/g)).toHaveLength(1);
+    expect(text()).toContain("Room · ");
+    input.write("\u0003/older\r");
+    await until(() => bytes.includes("saved-message-0"));
+    await flush();
+    expect(text()).toContain("Earlier saved messages");
+    expect(text()).toContain("saved-message-0");
+    const beforeMenu = vt.buffer.active.baseY;
+    input.write("/h");
+    await flush();
+    expect(text()).toContain("› /help");
+    expect(vt.buffer.active.baseY).toBe(beforeMenu);
+    input.write("\u0003" + "Ω".repeat(37));
+    await flush();
+    for (const cols of [20, 80, 40]) {
+      vt.resize(cols, 24); output.columns = cols; output.emit("resize");
+      await flush();
+      expect(text()).toContain("incoming-marker");
+      // Reflow must not leave old draft fragments in the conversation.
+      expect((text().match(/Ω/g) ?? []).length).toBe(37);
+    }
+    expect(bytes).not.toContain("\u001b[?1049h");
+    expect(bytes).not.toContain("\u001b[?1000h");
+  } finally {
+    input.write("\u0003/quit\r");
+    await session;
+    vt.dispose();
+  }
 });
 
 test("the chat CLI renders inline unless --fullscreen is given", () => {

@@ -274,7 +274,7 @@ tt state [path] [--all]                                  # compact room state; -
 tt health [path] [--verbose|--all]                       # concise safety/action check; verbose shows diagnostics
 tt status [path] [--verbose|--all]                       # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]  # audit/debug event log; --wait/--follow lower-level streams
-tt chat [path] [--history N] [--events] [--mouse|--no-mouse]                   # operator chat console for the room
+tt chat [path] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse]                   # operator chat console for the room
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]  # send an OOB message
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]  # receive OOB messages
 tt kick <agent_id> [path] [--reason TEXT] [--force]      # remove a member (live ones need --force)
@@ -295,7 +295,7 @@ tt self-update [--print] [--manager npm|pnpm|yarn|bun]    # update to the latest
 
 ### Operator chat
 
-Run `tt chat` in the workspace to talk with agents across harnesses. By default the console prints into your terminal's normal screen, one line at a time, with a single prompt row at the bottom — so your terminal or multiplexer keeps scrollback, wheel scrolling, text selection, and copy exactly as it does for any other command. Pass `--fullscreen` for the pinned layout instead: a conversation buffer with the input and status fixed at the bottom, its own scrolling keys, and suggestion menus. Each message has a sender and timestamp above the body, with a blank line separating messages:
+Run `tt chat` in the workspace to talk with agents across harnesses. The conversation uses native terminal scrollback, with a live room bar, multiline composer, suggestions, and agent status beneath it. Scrolling, selection, and copying stay with the terminal. `--fullscreen` retains the alternate-screen layout and its application-managed scrolling. Each message has a sender and timestamp above the body, with a blank line separating messages:
 
 ```text
 codex  12:04
@@ -304,21 +304,25 @@ codex  12:04
 claude → you  12:05
   The review is ready.
 
+Room · /path/to/workspace
+
 ─────────────────────────────────────────────────────
 > @claude please summarize the changes
 ─────────────────────────────────────────────────────
 3 members │ codex holding 12m · claude idle 3m
 ```
 
-Scroll with Page Up/Page Down or Shift+Up/Down. Up/Down recall submitted prompts (or navigate suggestions and multiline drafts); Ctrl+P/Ctrl+N also recall prompts. The input stays fixed and editable. New messages do not pull you away from older history; a count appears in the footer. Ctrl+End or `/bottom` returns to live messages. While following live messages, the in-memory buffer retains up to 2,000 message/notice blocks and rewraps on resize. Scrolling upward loads older saved events in pages and keeps the current view anchored; returning to the bottom trims the live buffer again. Mouse capture is off by default: drag to select text, double-click to select a word, and copy using your terminal's usual shortcut or menu. For pointer-based wheel scrolling, opt in with `tt chat --mouse`: over the conversation it scrolls history; over the prompt it navigates draft lines or prompt history; this captures mouse gestures, so native selection then requires your terminal's selection modifier (often Shift). `--no-mouse` explicitly restores the default and wins if both flags are supplied.
+The default chat uses the terminal's normal scrollback. Scroll with the wheel or your terminal's scroll shortcuts; drag-select, double-click selection, and copy remain native. A live panel beneath the conversation shows the room bar, suggestions, multiline input, and agent status. The panel follows new output down to the bottom of the screen; it does not replace the terminal's scrollback or capture the mouse. Use `/older` to print the next page of earlier saved messages, under a clearly marked divider. Use your terminal's scroll-to-bottom shortcut to return to the live panel.
 
-Typing `/`, `@`, or `!@` opens a suggestion list drawn over the bottom of the conversation, so nothing moves while you type. Up/Down choose, Tab or Enter accept, and Enter still sends once the word is complete (an exact `/quit` still quits). Escape closes the list first and clears the draft on a second press; Ctrl+C clears the draft. Neither quits. Alt+Enter (or Shift+Enter where the terminal supports it) adds a new line, and with the list closed Up/Down move through a multi-line draft at the same column. On a single-line or empty draft, Up/Down navigate prompt history. Pasted multiline text stays in the draft until Enter. On exit, the console restores the original terminal screen.
+Typing `/`, `@`, or `!@` shows suggestions in reserved rows above the input without moving the conversation. Up/Down choose, Tab or Enter accept, and Enter sends once the word is complete. Escape closes the list first and clears the draft on a second press; Ctrl+C clears the draft. Neither quits. Alt+Enter (or Shift+Enter where supported) adds a new line. With suggestions closed, Up/Down move through multiline drafts or recall single-line prompt history; Ctrl+P/Ctrl+N also recall prompts. Pasted multiline text stays in the draft until Enter. The conversation remains in terminal scrollback after exit.
+
+`tt chat --fullscreen` retains the alternate-screen layout, with a header pinned to the top and an input/status area pinned below the transcript. In that mode, Page Up/Page Down and Shift+Up/Down scroll the conversation; Ctrl+End or `/bottom` returns to live messages. Scrolling upward fetches earlier saved entries. The live buffer retains up to 2,000 blocks; browsing older history can grow it until returning to the bottom. Mouse capture remains opt-in with `--fullscreen --mouse`, which enables pointer-based wheel scrolling but may prevent native selection. `--no-mouse` wins over `--mouse`. Mouse flags have no effect in the default normal-screen mode. Fullscreen exit restores the previous terminal screen.
 
 History is split with Today, Yesterday, and date dividers. Earlier days are dimmed and their timestamps include the day. When someone joins after four quiet hours, everything before that is dimmed as an earlier conversation; this is a visual boundary, not a sign that a quiet agent has exited.
 
-After you send a directed message, a dim notice shows how it was delivered, for example `codex: listening`, `claude: queued`, or `codex: waiting for agent to read`. It updates in place to `→ received` once the agent's `tt wait` returns your message.
+After you send a directed message, a dim notice shows how it was delivered, for example `codex: listening`, `claude: queued`, or `codex: waiting for agent to read`. A subsequent `received` notice appears once the agent's `tt wait` returns your message.
 
-A fixed top bar shows the room path; long paths are shortened from the left so the workspace name stays visible. The dim footer below the lower input rule shows each agent's most useful state, without a member count. `holding 12m` means the agent has had the stick for 12 minutes. The other states are `up next` (reserved for the next turn), `standby`, `away` (inactive with no confirmation that its process is still running), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its last `tt` command, including a live agent that is just quiet). Agents whose process has ended are left out of the footer; `/who` lists them as ended, and after an hour the room removes them. The stick holder is listed first. The line refreshes on room events and every 10 seconds, and it is trimmed to the terminal width with a `+N` count for agents that don't fit.
+The room bar above the input panel shows the room path (pinned at the screen top with `--fullscreen`); long paths are shortened from the left so the workspace name stays visible. The dim footer below the lower input rule shows each agent's most useful state, without a member count. `holding 12m` means the agent has had the stick for 12 minutes. The other states are `up next` (reserved for the next turn), `standby`, `away` (inactive with no confirmation that its process is still running), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its last `tt` command, including a live agent that is just quiet). Agents whose process has ended are left out of the footer; `/who` lists them as ended, and after an hour the room removes them. The stick holder is listed first. The line refreshes on room events and every 10 seconds, and it is trimmed to the terminal width with a `+N` count for agents that don't fit.
 
 Names use consistent harness colors in the conversation and participant list: Claude is orange, Codex green, and the operator yellow. Directed messages remain visible to the room; addressing a member changes the recipient, not privacy. Colors require an interactive terminal and are disabled when `NO_COLOR` is set to a nonempty value. If an existing console was opened before a local rebuild, quit and reopen `tt chat` to load the new display.
 
@@ -334,10 +338,11 @@ Names use consistent harness colors in the conversation and participant list: Cl
 | `/quit`, `/exit`, or Ctrl+D on an empty draft | Exit and remove this console's membership |
 | Ctrl+C | Clear the draft without quitting |
 | Escape | Close the suggestion list; press again to clear the draft |
-| `/bottom` or Ctrl+End | Return to the latest messages |
+| `/older` | Print an earlier page of saved messages; in fullscreen, scroll into older history |
+| `/bottom` or Ctrl+End | Fullscreen: return to latest messages. Default mode: use the terminal’s scroll-to-bottom shortcut |
 | `//text` | Send a message beginning with `/` |
 
-`tt chat [path] --history N` initially loads up to N recent conversation entries (default 20, maximum 500); `--history 0` starts without history. In the interactive console, scrolling upward fetches older saved entries beyond that initial count. `--events` also shows turn events at startup. Agents must keep their normal `tt wait` receive process active to respond live. Broadcasts do not wake anyone; a directed message wakes an idle Claude Code or Codex session (see [Waking idle agents](#waking-idle-agents)). A message being stored in the room is not an acknowledgement that an agent has read it.
+`tt chat [path] --history N` initially loads up to N recent conversation entries (default 20, maximum 500); `--history 0` starts without history. Use `/older` for saved entries beyond that initial count. In fullscreen mode, scrolling upward also fetches older saved entries. `--events` also shows turn events at startup. Agents must keep their normal `tt wait` receive process active to respond live. Broadcasts do not wake anyone; a directed message wakes an idle Claude Code or Codex session (see [Waking idle agents](#waking-idle-agents)). A message being stored in the room is not an acknowledgement that an agent has read it.
 
 Each console uses a separate `human:<username>:chat:<id>` identity. Agents reply to the sender ID from the received message or a unique display name. Replies addressed to the console ring the terminal bell. The console is an observer: it cannot acquire the stick, receive a handoff, or make a lone agent eligible for an automatic claim. A running console does keep its room open: when the last agent leaves, the conversation stays up so agents can rejoin the same room, and an agent-less room is deleted once the last console closes. A crashed console (its process is gone) never keeps a room alive. Agents that see a console in the room finish with `tt standby` instead of `tt leave`, so a directed `@agent` message can wake them (natively in Claude Code and Codex, see [Waking idle agents](#waking-idle-agents)). An agent that has left can't receive messages until it rejoins. Opening and closing the console do not emit agent join/leave wakes. Message text is stripped of terminal escape sequences before display.
 
