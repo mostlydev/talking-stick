@@ -295,7 +295,7 @@ tt self-update [--print] [--manager npm|pnpm|yarn|bun]    # update to the latest
 
 ### Operator chat
 
-Run `tt chat` in the workspace to talk with agents across harnesses. The console uses a full-screen conversation buffer with the input and status fixed at the bottom. Each message has a sender and timestamp above the body, with a blank line separating messages:
+Run `tt chat` in the workspace to talk with agents across harnesses. By default the console prints into your terminal's normal screen, one line at a time, with a single prompt row at the bottom — so your terminal or multiplexer keeps scrollback, wheel scrolling, text selection, and copy exactly as it does for any other command. Pass `--fullscreen` for the pinned layout instead: a conversation buffer with the input and status fixed at the bottom, its own scrolling keys, and suggestion menus. Each message has a sender and timestamp above the body, with a blank line separating messages:
 
 ```text
 codex  12:04

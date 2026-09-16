@@ -267,7 +267,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt chat [path] [--history N] [--events] [--mouse|--no-mouse]",
+    usage: "tt chat [path] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse]",
     description: "Open an operator chat console for a room's agents.",
     handler: ({ runtime, parsed }) => handleChatCommand(requireRuntime(runtime), parsed)
   },

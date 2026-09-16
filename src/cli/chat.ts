@@ -8,6 +8,7 @@ import {
   diffChatFrame,
   getChatCompletions,
   formatChatHelp,
+  CHAT_PROMPT,
   chatTranscriptHeight,
   chatWheelRegion,
   CHAT_COMMANDS,
@@ -83,6 +84,17 @@ export interface ChatSessionOptions {
   show_turn_events: boolean;
   poll_ms?: number;
   mouse?: boolean;
+  // Inline mode prints into the terminal's normal screen instead of taking it
+  // over, so the terminal (or multiplexer) keeps scrollback, selection, and
+  // copy. The pinned full-screen layout stays available behind --fullscreen.
+  inline?: boolean;
+}
+
+// Inline is the default: a full-screen pane has no scrollback, so a terminal
+// or multiplexer can neither scroll nor select it. --fullscreen keeps the
+// pinned layout for anyone who prefers it.
+export function chatInlineEnabled(parsed: ParsedCommand): boolean {
+  return !hasOption(parsed, "fullscreen");
 }
 
 export async function handleChatCommand(
@@ -103,7 +115,8 @@ export async function handleChatCommand(
     color: terminal && !process.env.NO_COLOR,
     history: parseOptionalInteger(parsed, "history") ?? DEFAULT_HISTORY,
     show_turn_events: hasOption(parsed, "events"),
-    mouse: hasOption(parsed, "mouse") && !hasOption(parsed, "no-mouse")
+    mouse: hasOption(parsed, "mouse") && !hasOption(parsed, "no-mouse"),
+    inline: chatInlineEnabled(parsed)
   });
 }
 
@@ -126,6 +139,8 @@ export async function runChatSession(
   options: ChatSessionOptions
 ): Promise<void> {
   const { runtime, identity, output, terminal } = options;
+  const fullscreen = terminal && options.inline !== true;
+  const inline = terminal && !fullscreen;
   const selfId = identity.agent_id;
   const joined = runtime.commands.joinPath(identity, {
     context_path: options.context_path
@@ -180,8 +195,14 @@ export async function runChatSession(
         status: member.process_liveness === "gone" ? "ended" : describeMemberState(member, {
           members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), columns: dimensions().columns
         }) })));
+  // Inline output must not land on top of the readline prompt: clear the
+  // prompt row, print, then let readline redraw its line.
+  const writeInline = (text: string) => {
+    output.write(`\r\u001b[2K${text}\n`);
+    rl?.prompt(true);
+  };
   const redraw = () => {
-    if (!terminal || closed || frameTimer) return;
+    if (!fullscreen || closed || frameTimer) return;
     frameTimer = setTimeout(() => {
       frameTimer = null;
       if (closed || !screenActive) return;
@@ -212,7 +233,11 @@ export async function runChatSession(
     }, 16);
   };
   const print = (text: string): number | null => {
-    if (terminal) {
+    if (inline) {
+      writeInline(text);
+      return null;
+    }
+    if (fullscreen) {
       const id = transcript.appendNotice(text);
       redraw();
       return id;
@@ -256,7 +281,7 @@ export async function runChatSession(
   };
   const reportRoomClosed = () => {
     exitReason = "tt chat: the room has closed.";
-    if (!terminal) print("The room has closed.");
+    if (!fullscreen) print("The room has closed.");
   };
   const restore = () => {
     editor?.close();
@@ -505,7 +530,7 @@ export async function runChatSession(
     } else if (event.event_type === "join" && event.from_agent_id) {
       departedAgents.delete(event.from_agent_id);
     }
-    if (terminal) {
+    if (fullscreen) {
       transcript.appendEvent(event);
       if (
         event.event_type === "message_sent" &&
@@ -574,14 +599,14 @@ export async function runChatSession(
   const onInterrupt = () => editor?.clear();
   process.on("SIGTERM", onSignal);
   process.on("SIGHUP", onSignal);
-  if (terminal) {
+  if (fullscreen) {
     process.on("SIGINT", onInterrupt);
     process.on("exit", restore);
     process.on("uncaughtExceptionMonitor", restore);
     output.on("resize", onResize);
   }
   try {
-    if (terminal) {
+    if (fullscreen) {
       screenActive = true;
       output.write(
         "\u001b[?1049h\u001b[?2004h" +
@@ -627,6 +652,31 @@ export async function runChatSession(
           return matches[Math.min(index, matches.length - 1)]?.draft ?? null;
         }
       });
+    } else if (inline) {
+      // The terminal keeps its normal screen: readline owns one prompt row,
+      // messages print above it, and scrollback/selection stay native.
+      rl = readline.createInterface({
+        input: options.input,
+        output,
+        terminal: true,
+        prompt: `${CHAT_PROMPT}`,
+        historySize: 100,
+        completer: (line: string): [string[], string] => {
+          const matches = completionsFor({ line, cursor: line.length });
+          return [matches.map((match) => match.draft.line), line];
+        }
+      });
+      rl.on("line", (line) => {
+        submit(line);
+        if (!closed) rl?.prompt();
+      });
+      rl.on("SIGINT", () => {
+        rl?.write(null, { ctrl: true, name: "u" });
+        rl?.prompt(true);
+      });
+      rl.on("close", () => {
+        closed = true;
+      });
     } else {
       rl = readline.createInterface({ input: options.input, terminal: false });
       rl.on("line", submit);
@@ -645,7 +695,7 @@ export async function runChatSession(
         lastGrant?.to_agent_id === owner ? lastGrant.created_at : null;
     }
     print(`Talking Stick chat · ${sanitizeChatText(joined.canonical_path)}`);
-    if (!terminal) {
+    if (!fullscreen) {
       print(describeRoom());
     }
     print(
@@ -740,7 +790,8 @@ export async function runChatSession(
     process.off("exit", restore);
     process.off("uncaughtExceptionMonitor", restore);
     stop();
-    if (terminal && exitReason) output.write(`${exitReason}\n`);
+    if (fullscreen && exitReason) output.write(`${exitReason}\n`);
+    else if (inline && exitReason) output.write(`\r\u001b[2K${exitReason}\n`);
     await runtime.commands.flushWakes(roomId);
     try {
       runtime.commands.leaveRoom(identity, { room_id: roomId });

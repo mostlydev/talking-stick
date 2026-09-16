@@ -21,7 +21,8 @@ import {
   resolveChatRecipients,
   sanitizeChatText
 } from "../src/cli/chat-format.js";
-import { createChatIdentity, runChatSession } from "../src/cli/chat.js";
+import { chatInlineEnabled, createChatIdentity, runChatSession } from "../src/cli/chat.js";
+import { parseCommand } from "../src/cli/parser.js";
 
 const cleanups: Array<() => void> = [];
 
@@ -1288,6 +1289,12 @@ test("chat kicks a persistently ended member without force and protects live mem
     input.write("/who\n");
     await until(() => transcript.includes("In the room: codex"));
   } finally { input.write("/quit\n"); await session; }
+});
+
+test("the chat CLI renders inline unless --fullscreen is given", () => {
+  const inline = (argv: string[]) => chatInlineEnabled(parseCommand(["chat", ...argv]));
+  expect(inline([])).toBe(true);
+  expect(inline(["--fullscreen"])).toBe(false);
 });
 
 test.each([undefined, false, true])("chat enables terminal mouse capture only when requested (mouse=%s)", async (mouse) => {

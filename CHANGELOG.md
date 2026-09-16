@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- **Chat renders inline by default.** The console prints into the terminal's normal screen with a single prompt row, so the terminal or multiplexer keeps scrollback, wheel scrolling, selection, and copy — the same behavior as other CLI agents. `tt chat --fullscreen` keeps the pinned layout with its own scrolling keys and suggestion menus.
+
 ### Fixed
 
 - **Older saved chat history.** Scrolling upward now fetches earlier room events beyond the startup history window, preserving the visible message and live receive cursor. Native selection and input bindings are unchanged.
