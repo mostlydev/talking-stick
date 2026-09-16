@@ -9,6 +9,7 @@ import {
   getChatCompletions,
   formatChatHelp,
   CHAT_PROMPT,
+  layoutComposer,
   chatTranscriptHeight,
   chatWheelRegion,
   CHAT_COMMANDS,
@@ -195,11 +196,35 @@ export async function runChatSession(
         status: member.process_liveness === "gone" ? "ended" : describeMemberState(member, {
           members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), columns: dimensions().columns
         }) })));
-  // Inline output must not land on top of the readline prompt: clear the
-  // prompt row, print, then let readline redraw its line.
+  // Inline drawing: the composer occupies the last rows of the normal screen.
+  // Erasing walks back up every row it drew, so a wrapped draft never leaves
+  // fragments behind in the scrollback.
+  let composerRows = 0;
+  const composerLayout = () =>
+    layoutComposer(
+      editor?.draft ?? { line: "", cursor: 0 },
+      Math.max(2, dimensions().columns - 1)
+    );
+  const eraseComposer = () => {
+    if (composerRows === 0) return;
+    output.write(`\r${composerRows > 1 ? `\u001b[${composerRows - 1}A` : ""}\u001b[J`);
+    composerRows = 0;
+  };
+  const drawComposer = () => {
+    if (!inline || closed) return;
+    eraseComposer();
+    const layout = composerLayout();
+    output.write(layout.rows.join("\n"));
+    composerRows = layout.rows.length;
+    const up = layout.rows.length - 1 - layout.cursor_row;
+    output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}${layout.cursor_col > 0 ? `\u001b[${layout.cursor_col}C` : ""}`);
+  };
+  // Inline output must not land on top of the composer: erase it, print the
+  // line, then redraw the draft underneath.
   const writeInline = (text: string) => {
-    output.write(`\r\u001b[2K${text}\n`);
-    rl?.prompt(true);
+    eraseComposer();
+    output.write(`${text}\n`);
+    drawComposer();
   };
   const redraw = () => {
     if (!fullscreen || closed || frameTimer) return;
@@ -653,30 +678,33 @@ export async function runChatSession(
         }
       });
     } else if (inline) {
-      // The terminal keeps its normal screen: readline owns one prompt row,
-      // messages print above it, and scrollback/selection stay native.
-      rl = readline.createInterface({
+      // The terminal keeps its normal screen and owns scrollback, selection,
+      // and the wheel. The same editor as full-screen mode handles bracketed
+      // paste, multiline drafts, and completion; only the drawing differs.
+      output.write("\u001b[?2004h");
+      editor = new ChatInputController({
         input: options.input,
-        output,
-        terminal: true,
-        prompt: `${CHAT_PROMPT}`,
-        historySize: 100,
-        completer: (line: string): [string[], string] => {
-          const matches = completionsFor({ line, cursor: line.length });
-          return [matches.map((match) => match.draft.line), line];
+        columns: dimensions().columns - 1,
+        onChange: drawComposer,
+        onSubmit: (line) => {
+          eraseComposer();
+          submit(line);
+          drawComposer();
+        },
+        onClear: () => {
+          hint = "type /quit to exit";
+        },
+        onQuit: stop,
+        // Scrollback belongs to the terminal in this mode.
+        onBottom: () => {},
+        onScroll: () => {},
+        completionCount: (draft) => completionsFor(draft).length,
+        complete: (draft, index) => {
+          const matches = completionsFor(draft);
+          return matches[Math.min(index, matches.length - 1)]?.draft ?? null;
         }
       });
-      rl.on("line", (line) => {
-        submit(line);
-        if (!closed) rl?.prompt();
-      });
-      rl.on("SIGINT", () => {
-        rl?.write(null, { ctrl: true, name: "u" });
-        rl?.prompt(true);
-      });
-      rl.on("close", () => {
-        closed = true;
-      });
+      drawComposer();
     } else {
       rl = readline.createInterface({ input: options.input, terminal: false });
       rl.on("line", submit);

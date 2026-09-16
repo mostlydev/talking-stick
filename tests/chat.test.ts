@@ -1291,6 +1291,42 @@ test("chat kicks a persistently ended member without force and protects live mem
   } finally { input.write("/quit\n"); await session; }
 });
 
+test("inline chat keeps a pasted multiline draft and erases wrapped rows", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 40, rows: 12 });
+  let out = "";
+  output.on("data", (chunk) => { out += chunk.toString(); });
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output,
+    terminal: true, inline: true, color: false, history: 0, show_turn_events: false, poll_ms: 5
+  });
+  const bodies = () =>
+    service.getRoomEvents({ room_id: joined.room_id, include_all: true })
+      .filter((event) => event.event_type === "message_sent")
+      .map((event) => event.payload?.body);
+  try {
+    await until(() => out.includes("> "));
+    // Bracketed paste must stay in the draft instead of sending line by line.
+    input.write("\u001b[200~first line\nsecond line\u001b[201~");
+    await until(() => out.includes("second line"));
+    expect(bodies()).toEqual([]);
+    out = "";
+    input.write("x".repeat(70));
+    await until(() => /x{30}/.test(out));
+    // Erasing a wrapped draft walks back up every row it drew.
+    expect(out).toMatch(/\u001b\[\d+A\u001b\[J/);
+    input.write("\u007f".repeat(70) + "\r");
+    await until(() => bodies().length === 1);
+    expect(bodies()).toEqual(["first line\nsecond line"]);
+  } finally {
+    input.write("/quit\r");
+    await session;
+  }
+});
+
 test("the chat CLI renders inline unless --fullscreen is given", () => {
   const inline = (argv: string[]) => chatInlineEnabled(parseCommand(["chat", ...argv]));
   expect(inline([])).toBe(true);
