@@ -1304,3 +1304,25 @@ test.each([undefined, false, true])("chat enables terminal mouse capture only wh
   } finally { input.write("/quit\r"); await session; }
   expect(captured).toContain("\u001b[?1000l\u001b[?1006l");
 });
+
+test("reopened chat pages back beyond its startup history and 500-event scan", async () => {
+  const { root, service } = setupService();
+  const room = service.joinPath({ agent_id: "codex:archive", context_path: root });
+  for (let i = 0; i < 650; i++) service.sendMessage({ agent_id: "codex:archive", room_id: room.room_id, body: `archive-${String(i).padStart(3, "0")}` });
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 80, rows: 24 });
+  let captured = "";
+  output.on("data", (chunk) => { captured += chunk.toString(); });
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, color: false, history: 3,
+    show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => captured.includes("archive-649"));
+    expect(captured).not.toContain("archive-000");
+    input.write("\u001b[5~".repeat(200));
+    await until(() => captured.includes("archive-000"));
+    input.write("\u001b[1;5F");
+    service.sendMessage({ agent_id: "codex:archive", room_id: room.room_id, body: "fresh-live-message" });
+    await until(() => captured.includes("fresh-live-message"));
+  } finally { input.write("/quit\r"); await session; }
+}, 20_000);

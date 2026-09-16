@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- **Older saved chat history.** Scrolling upward now fetches earlier room events beyond the startup history window, preserving the visible message and live receive cursor. Native selection and input bindings are unchanged.
+
 ## [0.18.3] — 2026-09-16
 
 Full notes: [`docs/releases/0.18.3.md`](docs/releases/0.18.3.md).

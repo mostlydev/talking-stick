@@ -144,6 +144,8 @@ export async function runChatSession(
   let lastPresenceRefresh = 0;
   let namesSignature = "";
   let historyBefore: string | undefined;
+  let historyCursor = 0;
+  let historyExhausted = false;
   let previousConversationEvent: RoomEvent | undefined;
   let printedSection: string | undefined;
   let exitReason: string | null = null;
@@ -323,6 +325,35 @@ export async function runChatSession(
   };
 
   const render = (event: RoomEvent) => formatChatEvent(event, formatContext());
+
+  const scrollHistory = (amount: number) => {
+    const { columns, rows } = dimensions();
+    const draft = editor?.draft ?? { line: "", cursor: 0 };
+    const height = chatTranscriptHeight({ draft, columns, rows, room_path: joined.canonical_path });
+    if (!height) return;
+    if (transcript.following && transcript.oldestEventSeq !== undefined) {
+      historyCursor = transcript.oldestEventSeq;
+      historyExhausted = false;
+    }
+    if (amount < 0 && !historyExhausted && transcript.needsEarlier(amount, height, columns - 1, formatContext())) {
+      // Skip pages containing only hidden system events, but bound the work
+      // per keystroke. A later upward scroll continues from the saved cursor.
+      for (let page = 0; page < 10 && !historyExhausted; page++) {
+        const earlier = runtime.commands.getRecentRoomEvents({
+          room_id: roomId, limit: 100, before_event_seq: historyCursor,
+          event_types: showTurnEvents ? undefined : CONVERSATION_EVENTS
+        });
+        if (earlier.length === 0) { historyExhausted = true; break; }
+        historyCursor = earlier[0].event_seq;
+        historyExhausted = earlier.length < 100;
+        const visible = earlier.filter((event) => render(event) !== null);
+        transcript.prependEvents(visible, height, columns - 1, formatContext());
+        if (visible.length) break;
+      }
+    }
+    transcript.scrollBy(amount, height, columns - 1, formatContext());
+    redraw();
+  };
 
   const coloredName = (agentId: string) =>
     formatChatAgent(
@@ -577,13 +608,7 @@ export async function runChatSession(
           const draft = editor?.draft ?? { line: "", cursor: 0 };
           const height = chatTranscriptHeight({ draft, columns, rows, room_path: joined.canonical_path });
           if (height === 0) return;
-          transcript.scrollBy(
-            amount * (kind === "pages" ? Math.max(1, height - 1) : 1),
-            height,
-            columns - 1,
-            formatContext()
-          );
-          redraw();
+          scrollHistory(amount * (kind === "pages" ? Math.max(1, height - 1) : 1));
         },
         onWheel: (row, direction) => {
           const size = dimensions();
@@ -592,7 +617,7 @@ export async function runChatSession(
           const region = chatWheelRegion(layout, row);
           if (region === "prompt") editor?.scrollPrompt(direction);
           else if (region === "transcript") {
-            transcript.scrollBy(direction * 3, chatTranscriptHeight(layout), size.columns - 1, formatContext());
+            scrollHistory(direction * 3);
           }
           redraw();
         },
@@ -641,6 +666,7 @@ export async function runChatSession(
               (event) => event.event_seq <= head && render(event) !== null
             )
             .slice(-Math.max(0, options.history));
+    historyCursor = historyEvents[0]?.event_seq ?? head + 1;
     // Determine the latest conversation before rendering so its predecessor
     // is dimmed even on the first frame (including non-terminal output).
     const conversationEvents = historyEvents.filter(isChatConversationActivity);

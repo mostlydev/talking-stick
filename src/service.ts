@@ -1648,6 +1648,7 @@ export class TalkingStickService {
     room_id: string;
     limit: number;
     event_types?: EventType[];
+    before_event_seq?: number;
   }): RoomEvent[] {
     assertNonEmpty(input.room_id, "room_id");
     this.requireRoom(input.room_id);
@@ -1666,12 +1667,12 @@ export class TalkingStickService {
         `
         SELECT *
         FROM room_events
-        WHERE room_id = ?${typeClause}
+        WHERE room_id = ?${typeClause}${input.before_event_seq === undefined ? "" : " AND event_seq < ?"}
         ORDER BY event_seq DESC
         LIMIT ?
       `
       )
-      .all(input.room_id, ...eventTypes, limit)
+      .all(input.room_id, ...eventTypes, ...(input.before_event_seq === undefined ? [] : [input.before_event_seq]), limit)
       .reverse()
       .map((row) => this.mapEvent(row));
   }

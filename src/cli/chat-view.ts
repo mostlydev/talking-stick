@@ -276,6 +276,7 @@ interface Layout {
 export class ChatTranscript {
   private blocks: ChatBlock[] = [];
   private nextId = 1;
+  private earlierId = 0;
   private anchor: ChatAnchor = { follow: true };
   private unreadCount = 0;
   private epoch = 0;
@@ -297,6 +298,26 @@ export class ChatTranscript {
 
   get size(): number {
     return this.blocks.length;
+  }
+
+  get oldestEventSeq(): number | undefined {
+    const block = this.blocks.find((candidate) => candidate.kind === "event");
+    return block?.kind === "event" ? block.event.event_seq : undefined;
+  }
+
+  needsEarlier(deltaRows: number, height: number, width: number, context: ChatFormatContext): boolean {
+    const layout = this.layout(width, context);
+    return deltaRows < 0 && this.topRow(layout, Math.max(0, layout.rows.length - height)) + deltaRows <= 0;
+  }
+
+  prependEvents(events: RoomEvent[], height: number, width: number, context: ChatFormatContext): void {
+    if (events.length === 0) return;
+    const layout = this.layout(width, context);
+    this.anchor = this.anchorForRow(layout, this.topRow(layout, Math.max(0, layout.rows.length - height)));
+    const start = this.earlierId - events.length + 1;
+    this.blocks.unshift(...events.map((event, index): ChatBlock => ({ id: start + index, kind: "event", event })));
+    this.earlierId -= events.length;
+    this.layoutCache = null;
   }
 
   // Call when names, colors, or event visibility change so blocks re-render.
@@ -351,6 +372,7 @@ export class ChatTranscript {
   scrollToBottom(): void {
     this.anchor = { follow: true };
     this.unreadCount = 0;
+    this.trimLiveBuffer();
   }
 
   // The rows to show in a viewport of `height`, bottom-aligned so a short
@@ -371,6 +393,11 @@ export class ChatTranscript {
 
   private push(block: ChatBlock): void {
     this.blocks.push(block);
+    this.layoutCache = null;
+    if (this.anchor.follow) this.trimLiveBuffer();
+  }
+
+  private trimLiveBuffer(): void {
     this.layoutCache = null;
     while (this.blocks.length > this.maxBlocks) {
       const evicted = this.blocks.shift()!;

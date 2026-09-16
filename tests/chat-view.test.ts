@@ -473,3 +473,22 @@ test("wheel hit testing separates transcript, composer and fixed bars after resi
     }
   }
 });
+
+test("prepending persisted history preserves viewport and unread state until returning live", () => {
+  const transcript = new ChatTranscript(5);
+  const earlier = [message("old1"), message("old2"), message("old3")];
+  for (let i = 0; i < 5; i++) transcript.appendEvent(message(`recent${i}`));
+  transcript.scrollBy(-2, 4, 60, context);
+  const before = transcript.viewport(4, 60, context);
+  transcript.prependEvents(earlier, 4, 60, context);
+  expect(transcript.viewport(4, 60, context)).toEqual(before);
+  expect(transcript.unread).toBe(0);
+  transcript.appendEvent(message("live"));
+  expect(transcript.viewport(4, 60, context)).toEqual(before);
+  expect(transcript.unread).toBe(1);
+  transcript.scrollBy(-1000, 4, 60, context);
+  expect(transcript.viewport(4, 60, context).join("\n")).toContain("old1");
+  transcript.scrollToBottom();
+  expect(transcript.size).toBe(5);
+  expect(transcript.viewport(4, 60, context).join("\n")).toContain("live");
+});

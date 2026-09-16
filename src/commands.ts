@@ -373,6 +373,7 @@ export class TalkingStickCommands {
     room_id: string;
     limit: number;
     event_types?: EventType[];
+    before_event_seq?: number;
   }): RoomEvent[] {
     return this.service.getRecentRoomEvents(input);
   }
