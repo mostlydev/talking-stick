@@ -62,7 +62,7 @@ export function formatChatHelp(width: number, color: boolean, keys = false): str
   const entries: [string, string][] = keys ? [
     ["Enter", "Send; accept an incomplete suggestion first"],
     ["Tab", "Accept the selected suggestion"],
-    ["↑ / ↓", "Scroll when empty; choose suggestions or edit draft lines"],
+    ["↑ / ↓", "Recall prompts; choose suggestions or edit draft lines"],
     ["Ctrl+P / Ctrl+N", "Recall previous / next submitted prompt"],
     ["Alt+Enter", "Insert a new line"],
     ["Esc", "Dismiss suggestions; press again to clear"],
@@ -720,6 +720,20 @@ export function chatTranscriptHeight(
 
 function roomHeaderRows(input: Pick<ChatScreenInput, "rows" | "room_path">): number {
   return input.room_path && input.rows >= 6 ? 1 : 0;
+}
+
+export function chatWheelRegion(
+  input: Pick<ChatScreenInput, "columns" | "rows" | "draft" | "room_path">,
+  row: number
+): "transcript" | "prompt" | null {
+  if (input.columns < 5 || input.rows < 4 || row < 1 || row > input.rows) return null;
+  const header = roomHeaderRows(input);
+  const transcriptEnd = header + chatTranscriptHeight(input);
+  if (row > header && row <= transcriptEnd) return "transcript";
+  // A separator sits between the transcript and composer; the final two
+  // rows are the lower separator and footer.
+  if (row > transcriptEnd + 1 && row <= input.rows - 2) return "prompt";
+  return null;
 }
 
 function roomHeader(path: string, width: number, context: ChatFormatContext): string {

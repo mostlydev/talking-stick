@@ -10,6 +10,7 @@ export interface ChatInputOptions {
   onChange: () => void;
   onSubmit: (line: string) => void;
   onScroll: (kind: "lines" | "pages", amount: number) => void;
+  onWheel?: (row: number, direction: number) => void;
   onBottom: () => void;
   onQuit: () => void;
   onClear: () => void;
@@ -126,6 +127,10 @@ export class ChatInputController {
     this.options.onChange();
   }
 
+  scrollPrompt(direction: number): void {
+    this.moveVertical(direction, direction < 0 ? "\u001b[A" : "\u001b[B");
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
@@ -174,13 +179,6 @@ export class ChatInputController {
     const count = this.completionVisible ? this.options.completionCount!(this.draft) : 0;
     if (count > 0) {
       this.selectedCompletion = (this.completionIndex + direction + count) % count;
-      return;
-    }
-    // With native selection enabled, terminals may translate wheel movement
-    // into ordinary arrows. At an empty prompt, navigate the conversation
-    // instead of replacing the draft with previously submitted messages.
-    if (this.draft.line.length === 0) {
-      this.options.onScroll("lines", direction);
       return;
     }
     const moved = moveChatCursorVertical(this.draft, this.sink.columns, direction, this.verticalColumn);
@@ -242,12 +240,15 @@ export class ChatInputController {
           }
           const sequence = match[0];
           this.pending = this.pending.slice(sequence.length);
-          const mouse = /^\u001b\[<(\d+);\d+;\d+([Mm])$/.exec(sequence);
+          const mouse = /^\u001b\[<(\d+);\d+;(\d+)([Mm])$/.exec(sequence);
           if (mouse) {
-            if (mouse[2] === "M") {
+            if (mouse[3] === "M") {
               const button = Number(mouse[1]);
-              if ((button & 195) === 64 || (button & 195) === 65)
-                this.options.onScroll("lines", button & 1 ? 3 : -3);
+              if ((button & 195) === 64 || (button & 195) === 65) {
+                const direction = button & 1 ? 1 : -1;
+                if (this.options.onWheel) this.options.onWheel(Number(mouse[2]), direction);
+                else this.options.onScroll("lines", direction * 3);
+              }
             }
           } else if (sequence === "\u001b[13;2u" || sequence === "\u001b[27;2;13~") {
             this.insertNewline();

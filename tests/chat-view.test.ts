@@ -3,6 +3,7 @@ import type { RoomEvent } from "../src/types.js";
 import { buildNameResolver } from "../src/cli/chat-format.js";
 import {
   ChatTranscript,
+  chatWheelRegion,
   completeChatInput,
   getChatCompletions,
   diffChatFrame,
@@ -453,6 +454,22 @@ test("room header stays fixed through scrolling, completion and multiline editin
         expect(scrolled.lines[0]).toBe(frame.lines[0]);
         expect(scrolled.cursor).toEqual(frame.cursor);
       }
+    }
+  }
+});
+
+
+test("wheel hit testing separates transcript, composer and fixed bars after resizing", () => {
+  for (const rows of [6, 10, 24]) {
+    for (const line of ["", "a\nb\nc"]) {
+      const input = { room_path: "/repo", rows, columns: 40, draft: { line, cursor: line.length } };
+      expect(chatWheelRegion(input, 1)).toBeNull();
+      expect(chatWheelRegion(input, rows - 2)).toBe("prompt");
+      expect(chatWheelRegion(input, rows - 1)).toBeNull();
+      expect(chatWheelRegion(input, rows)).toBeNull();
+      expect(chatWheelRegion(input, 0)).toBeNull();
+      expect(chatWheelRegion(input, rows + 1)).toBeNull();
+      if (rows >= 10) expect(chatWheelRegion(input, 2)).toBe("transcript");
     }
   }
 });

@@ -3,7 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { ChatInputController } from "../src/cli/chat-input.js";
 import { completeChatInput, getChatCompletions } from "../src/cli/chat-view.js";
 
-function setup(menu = false) {
+function setup(menu = false, wheel?: (row: number, direction: number) => void) {
   const input = Object.assign(new PassThrough(), {
     isRaw: false,
     setRawMode: vi.fn()
@@ -18,6 +18,7 @@ function setup(menu = false) {
     onSubmit: submit,
     onQuit: quit,
     onScroll: scroll,
+    onWheel: wheel,
     onBottom: bottom,
     onChange: vi.fn(),
     onClear: vi.fn(),
@@ -198,19 +199,29 @@ describe("full-screen chat input", () => {
   });
 });
 
-test("empty-draft arrows scroll conversation without recalling prompts; Ctrl+P/N recall history", () => {
+test("empty-draft arrows recall prompts and never use chunk boundaries to guess wheel events", () => {
   const { editor, input, scroll } = setup(true);
   try {
-    input.write("earlier prompt\r");
-    input.write("\u001b[A\u001bOA\u001b[B\u001bOB");
-    expect(editor.draft).toEqual({ line: "", cursor: 0 });
-    expect(scroll.mock.calls).toEqual([["lines", -1], ["lines", -1], ["lines", 1], ["lines", 1]]);
-    input.write("\u0010");
-    expect(editor.draft.line).toBe("earlier prompt");
-    input.write("\u000e");
-    expect(editor.draft.line).toBe("");
-    input.write("@c\u001b[B");
-    expect(editor.completionIndex).toBe(1);
-    expect(scroll).toHaveBeenCalledTimes(4);
+    input.write("first\rsecond\rthird\r");
+    input.write("\u001b[A\u001b[A");
+    expect(editor.draft.line).toBe("second");
+    input.write("\u001bOA");
+    expect(editor.draft.line).toBe("first");
+    input.write("\u001b[B\u001bOB");
+    expect(editor.draft.line).toBe("third");
+    expect(scroll).not.toHaveBeenCalled();
+  } finally { editor.close(); }
+});
+
+test("wheel reports retain pointer row across split input without mutating the draft", () => {
+  const wheel = vi.fn();
+  const { editor, input, scroll } = setup(false, wheel);
+  try {
+    input.write("draft\u001b[<64;12;");
+    input.write("4M\u001b[<65;12;22M\u001b[<64;12;4m");
+    expect(wheel.mock.calls).toEqual([[4, -1], [22, 1]]);
+    expect(scroll).not.toHaveBeenCalled();
+    expect(editor.draft.line).toBe("draft");
+    editor.scrollPrompt(-1);
   } finally { editor.close(); }
 });

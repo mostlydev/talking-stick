@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- Restore Up/Down prompt history at an empty draft. In `--mouse` mode, wheel events scroll conversation history over the transcript and navigate draft lines or prompt history over the composer.
+
 ## [0.18.2] — 2026-09-16
 
 Full notes: [`docs/releases/0.18.2.md`](docs/releases/0.18.2.md).
