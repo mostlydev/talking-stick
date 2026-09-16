@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.18.2] — 2026-09-16
+
+Full notes: [`docs/releases/0.18.2.md`](docs/releases/0.18.2.md).
+
 ### Fixed
 
 - **Scroll history at an empty prompt.** Up/Down now scroll the conversation when the draft is empty, including wheel gestures that terminals translate into arrows. Ctrl+P/Ctrl+N recall submitted prompts; suggestions and multiline editing retain their controls.
@@ -566,6 +570,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.18.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.2
 [0.18.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.1
 [0.18.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.0
 [0.17.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.17.0
