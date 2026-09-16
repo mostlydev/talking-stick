@@ -11,6 +11,14 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.18.3] — 2026-09-16
+
+Full notes: [`docs/releases/0.18.3.md`](docs/releases/0.18.3.md).
+
+### Fixed
+
+- Restore Up/Down prompt history at an empty draft. In `--mouse` mode, wheel events scroll conversation history over the transcript and navigate draft lines or prompt history over the composer.
+
 ## [0.18.2] — 2026-09-16
 
 Full notes: [`docs/releases/0.18.2.md`](docs/releases/0.18.2.md).
@@ -570,6 +578,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.18.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.3
 [0.18.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.2
 [0.18.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.1
 [0.18.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.0

@@ -9,6 +9,7 @@ import {
   getChatCompletions,
   formatChatHelp,
   chatTranscriptHeight,
+  chatWheelRegion,
   CHAT_COMMANDS,
   type ChatFrame
 } from "./chat-view.js";
@@ -582,6 +583,17 @@ export async function runChatSession(
             columns - 1,
             formatContext()
           );
+          redraw();
+        },
+        onWheel: (row, direction) => {
+          const size = dimensions();
+          const draft = editor?.draft ?? { line: "", cursor: 0 };
+          const layout = { ...size, draft, room_path: joined.canonical_path };
+          const region = chatWheelRegion(layout, row);
+          if (region === "prompt") editor?.scrollPrompt(direction);
+          else if (region === "transcript") {
+            transcript.scrollBy(direction * 3, chatTranscriptHeight(layout), size.columns - 1, formatContext());
+          }
           redraw();
         },
         completionCount: (draft) => completionsFor(draft).length,
