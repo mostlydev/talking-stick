@@ -1347,7 +1347,7 @@ test("inline incoming messages erase from the actual draft cursor and restore pa
     out = "";
     service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: "incoming-during-edit" });
     await until(() => out.includes("incoming-during-edit"));
-    // First draft row is below the header, three suggestions, and a rule.
+    // First draft row is below the separator, suggestions, and room bar.
     // Move back only to the panel start, never into the transcript.
     expect(out.startsWith("\r\u001b[5A\u001b[J")).toBe(true);
     expect(out).toContain("first");
@@ -1423,7 +1423,7 @@ test("inline terminal retains history, bars and draft across incoming messages a
       await flush();
       expect(text()).toContain("incoming-marker");
       // Reflow must not leave old draft fragments in the conversation.
-      expect((text().match(/Ω/g) ?? []).length).toBe(37);
+      expect((text().match(/Ω/g) ?? []).length, JSON.stringify({ cols, screen: text().split("\n").slice(-30) })).toBe(37);
     }
     expect(bytes).not.toContain("\u001b[?1049h");
     expect(bytes).not.toContain("\u001b[?1000h");

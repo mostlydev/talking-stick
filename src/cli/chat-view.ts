@@ -735,17 +735,17 @@ export interface ChatFrame {
   cursor: { row: number; col: number };
 }
 
-// A bounded live panel beneath ordinary terminal output. Reserve suggestion
-// rows so opening completion does not move the saved conversation.
+// A bounded live panel beneath ordinary terminal output. Keep suggestions
+// above the room bar so the bar stays adjacent to the prompt in every state.
 export function renderInlinePanel(input: ChatScreenInput): ChatFrame {
   const width = Math.max(1, input.columns - 1);
   const height = Math.max(1, input.rows - 1);
   if (width < 4 || height < 4) {
     return { lines: [truncateStyled(CHAT_PROMPT + input.draft.line.replace(/\n/g, " "), width)], cursor: { row: 0, col: 0 } };
   }
-  const header = input.room_path && height >= 5 ? [roomHeader(input.room_path, width, input.format)] : [];
-  const menuCapacity = Math.min(MAX_MENU_ROWS, Math.max(0, height - header.length - 5));
-  const composerCapacity = Math.max(1, Math.min(MAX_COMPOSER_ROWS, height - header.length - menuCapacity - 3));
+  const topRows = Math.min(5, Math.max(1, height - 4));
+  const menuCapacity = Math.max(0, topRows - 2);
+  const composerCapacity = Math.max(1, Math.min(MAX_COMPOSER_ROWS, height - topRows - 2));
   const composer = layoutComposer(input.draft, width, composerCapacity);
   const matches = input.completions ?? [];
   const selected = Math.max(0, Math.min(input.completion_index ?? 0, matches.length - 1));
@@ -757,10 +757,15 @@ export function renderInlinePanel(input: ChatScreenInput): ChatFrame {
     return truncateStyled(`${active ? "›" : " "} ${entry.label}  ${dim(input.format, entry.description)}`, width);
   });
   const rule = dim(input.format, "─".repeat(width));
-  const lines = [...header, ...menu, rule, ...composer.rows, rule, renderFooter(input, width)];
+  const title = input.room_path ? roomHeader(input.room_path, Math.max(1, width - 4), input.format) : "";
+  const roomBar = title
+    ? truncateStyled(`${dim(input.format, "─ ")}${title}${dim(input.format, " " + "─".repeat(Math.max(0, width - textWidth(title) - 3)))}`, width)
+    : rule;
+  const top = [...(topRows > 1 ? [""] : []), ...menu, roomBar];
+  const lines = [...top, ...composer.rows, rule, renderFooter(input, width)];
   return {
     lines,
-    cursor: { row: header.length + menu.length + 1 + composer.cursor_row, col: Math.min(width - 1, composer.cursor_col) }
+    cursor: { row: topRows + composer.cursor_row, col: Math.min(width - 1, composer.cursor_col) }
   };
 }
 

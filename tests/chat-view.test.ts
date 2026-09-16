@@ -44,6 +44,19 @@ test("inline panels fit narrow and short terminals and keep menu space stable", 
   expect(inlineCursorRow({ lines: ["x".repeat(79), "draft"], cursor: { row: 1, col: 3 } }, 40)).toBe(2);
 });
 
+test("inline room bar sits directly above the prompt with separation from chat", () => {
+  const frame = renderInlinePanel({
+    room_path: "/workspace", transcript: new ChatTranscript(), format: context,
+    status: { members: [], owner: null, owner_since: null, reserved_for: null, now: new Date() },
+    draft: { line: "", cursor: 0 }, hint: null, columns: 80, rows: 24
+  });
+  expect(frame.lines).toHaveLength(8);
+  expect(frame.lines[0]).toBe("");
+  expect(frame.lines[4]).toContain("─ Room · /workspace ─");
+  expect(frame.lines[5]).toBe("> ");
+  expect(frame.cursor.row).toBe(5);
+});
+
 let seq = 0;
 function message(body: string, from = "codex:aa"): RoomEvent {
   seq += 1;
