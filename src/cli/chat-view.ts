@@ -62,7 +62,8 @@ export function formatChatHelp(width: number, color: boolean, keys = false): str
   const entries: [string, string][] = keys ? [
     ["Enter", "Send; accept an incomplete suggestion first"],
     ["Tab", "Accept the selected suggestion"],
-    ["↑ / ↓", "Choose a suggestion, or move through draft lines"],
+    ["↑ / ↓", "Scroll when empty; choose suggestions or edit draft lines"],
+    ["Ctrl+P / Ctrl+N", "Recall previous / next submitted prompt"],
     ["Alt+Enter", "Insert a new line"],
     ["Esc", "Dismiss suggestions; press again to clear"],
     ["Ctrl+C", "Clear the draft"],
