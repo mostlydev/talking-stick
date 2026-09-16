@@ -1327,6 +1327,37 @@ test("inline chat keeps a pasted multiline draft and erases wrapped rows", async
   }
 });
 
+test("inline incoming messages erase from the actual draft cursor and restore paste mode on exit", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  const rawModes: boolean[] = [];
+  const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode(raw: boolean) { rawModes.push(raw); } });
+  const output = Object.assign(new PassThrough(), { columns: 40, rows: 12 });
+  let out = "";
+  output.on("data", chunk => { out += chunk.toString(); });
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output,
+    terminal: true, inline: true, color: false, history: 0, show_turn_events: false, poll_ms: 5
+  });
+  try {
+    await until(() => out.includes("> "));
+    input.write("\u001b[200~first\nsecond\u001b[201~\u001b[A");
+    out = "";
+    service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: "incoming-during-edit" });
+    await until(() => out.includes("incoming-during-edit"));
+    // Cursor is on the first draft row: moving up here would erase transcript.
+    expect(out.startsWith("\r\u001b[J")).toBe(true);
+    expect(out).toContain("first");
+    expect(out).toContain("second");
+  } finally {
+    input.write("\u0003/quit\r");
+    await session;
+  }
+  expect(out).toContain("\u001b[?2004l");
+  expect(rawModes).toEqual([true, false]);
+});
+
 test("the chat CLI renders inline unless --fullscreen is given", () => {
   const inline = (argv: string[]) => chatInlineEnabled(parseCommand(["chat", ...argv]));
   expect(inline([])).toBe(true);

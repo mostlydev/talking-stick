@@ -200,6 +200,8 @@ export async function runChatSession(
   // Erasing walks back up every row it drew, so a wrapped draft never leaves
   // fragments behind in the scrollback.
   let composerRows = 0;
+  let composerCursorRow = 0;
+  let inlineActive = false;
   const composerLayout = () =>
     layoutComposer(
       editor?.draft ?? { line: "", cursor: 0 },
@@ -207,8 +209,9 @@ export async function runChatSession(
     );
   const eraseComposer = () => {
     if (composerRows === 0) return;
-    output.write(`\r${composerRows > 1 ? `\u001b[${composerRows - 1}A` : ""}\u001b[J`);
+    output.write(`\r${composerCursorRow > 0 ? `\u001b[${composerCursorRow}A` : ""}\u001b[J`);
     composerRows = 0;
+    composerCursorRow = 0;
   };
   const drawComposer = () => {
     if (!inline || closed) return;
@@ -216,6 +219,7 @@ export async function runChatSession(
     const layout = composerLayout();
     output.write(layout.rows.join("\n"));
     composerRows = layout.rows.length;
+    composerCursorRow = layout.cursor_row;
     const up = layout.rows.length - 1 - layout.cursor_row;
     output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}${layout.cursor_col > 0 ? `\u001b[${layout.cursor_col}C` : ""}`);
   };
@@ -310,6 +314,11 @@ export async function runChatSession(
   };
   const restore = () => {
     editor?.close();
+    if (inlineActive) {
+      eraseComposer();
+      output.write("\u001b[?2004l");
+      inlineActive = false;
+    }
     if (!screenActive) return;
     screenActive = false;
     output.write(
@@ -317,7 +326,7 @@ export async function runChatSession(
     );
   };
   const stop = () => {
-    if (closed && !screenActive && !rl) return;
+    if (closed && !screenActive && !inlineActive && !rl) return;
     closed = true;
     if (frameTimer) clearTimeout(frameTimer);
     frameTimer = null;
@@ -624,7 +633,7 @@ export async function runChatSession(
   const onInterrupt = () => editor?.clear();
   process.on("SIGTERM", onSignal);
   process.on("SIGHUP", onSignal);
-  if (fullscreen) {
+  if (terminal) {
     process.on("SIGINT", onInterrupt);
     process.on("exit", restore);
     process.on("uncaughtExceptionMonitor", restore);
@@ -681,6 +690,7 @@ export async function runChatSession(
       // The terminal keeps its normal screen and owns scrollback, selection,
       // and the wheel. The same editor as full-screen mode handles bracketed
       // paste, multiline drafts, and completion; only the drawing differs.
+      inlineActive = true;
       output.write("\u001b[?2004h");
       editor = new ChatInputController({
         input: options.input,
