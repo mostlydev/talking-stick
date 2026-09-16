@@ -176,6 +176,13 @@ export class ChatInputController {
       this.selectedCompletion = (this.completionIndex + direction + count) % count;
       return;
     }
+    // With native selection enabled, terminals may translate wheel movement
+    // into ordinary arrows. At an empty prompt, navigate the conversation
+    // instead of replacing the draft with previously submitted messages.
+    if (this.draft.line.length === 0) {
+      this.options.onScroll("lines", direction);
+      return;
+    }
     const moved = moveChatCursorVertical(this.draft, this.sink.columns, direction, this.verticalColumn);
     if (moved) {
       this.rl.cursor = moved.draft.cursor;

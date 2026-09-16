@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- **Scroll history at an empty prompt.** Up/Down now scroll the conversation when the draft is empty, including wheel gestures that terminals translate into arrows. Ctrl+P/Ctrl+N recall submitted prompts; suggestions and multiline editing retain their controls.
+
 ## [0.18.1] — 2026-09-15
 
 Full notes: [`docs/releases/0.18.1.md`](docs/releases/0.18.1.md).

@@ -78,7 +78,7 @@ describe("full-screen chat input", () => {
       expect(submit).not.toHaveBeenCalled();
       input.write("\u0001\u0005\r");
       expect(submit).toHaveBeenLastCalledWith(body);
-      input.write("\u001b[A");
+      input.write("\u0010");
       expect(editor.draft.line).toBe(body);
       input.write("\r");
       expect(submit).toHaveBeenLastCalledWith(body);
@@ -196,4 +196,21 @@ describe("full-screen chat input", () => {
     second.close();
     expect(input.setRawMode).toHaveBeenLastCalledWith(true);
   });
+});
+
+test("empty-draft arrows scroll conversation without recalling prompts; Ctrl+P/N recall history", () => {
+  const { editor, input, scroll } = setup(true);
+  try {
+    input.write("earlier prompt\r");
+    input.write("\u001b[A\u001bOA\u001b[B\u001bOB");
+    expect(editor.draft).toEqual({ line: "", cursor: 0 });
+    expect(scroll.mock.calls).toEqual([["lines", -1], ["lines", -1], ["lines", 1], ["lines", 1]]);
+    input.write("\u0010");
+    expect(editor.draft.line).toBe("earlier prompt");
+    input.write("\u000e");
+    expect(editor.draft.line).toBe("");
+    input.write("@c\u001b[B");
+    expect(editor.completionIndex).toBe(1);
+    expect(scroll).toHaveBeenCalledTimes(4);
+  } finally { editor.close(); }
 });
