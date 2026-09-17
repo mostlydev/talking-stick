@@ -307,6 +307,37 @@ const migrations: Migration[] = [
         FOREIGN KEY (event_seq) REFERENCES room_events(event_seq) ON DELETE CASCADE
       );
     `
+  },
+  {
+    id: 17,
+    name: "native_event_acceptance",
+    up: `
+      CREATE TABLE native_event_receipts (
+        room_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        event_seq INTEGER NOT NULL,
+        consumed_at TEXT,
+        acknowledged_at TEXT,
+        PRIMARY KEY (room_id, agent_id, event_seq),
+        FOREIGN KEY (room_id, agent_id) REFERENCES room_members(room_id, agent_id) ON DELETE CASCADE,
+        FOREIGN KEY (event_seq) REFERENCES room_events(event_seq) ON DELETE CASCADE
+      );
+      CREATE TABLE native_delivery_batches (
+        token TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        harness_session_id TEXT NOT NULL,
+        host_id TEXT NOT NULL,
+        event_seqs_json TEXT NOT NULL,
+        acknowledged_at TEXT,
+        FOREIGN KEY (room_id, agent_id) REFERENCES room_members(room_id, agent_id) ON DELETE CASCADE
+      );
+    `
+  },
+  {
+    id: 18,
+    name: "native_batch_retry_age",
+    up: `ALTER TABLE member_wake_endpoints ADD COLUMN batch_started_at TEXT;`
   }
 ];
 
