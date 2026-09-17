@@ -11,6 +11,37 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.19.0] — 2026-09-17
+
+Full notes: [`docs/releases/0.19.0.md`](docs/releases/0.19.0.md).
+
+This release changes how messages reach agents. An operator's chat now reaches every agent in the room, the message content itself is delivered into the agent's context (no `tt wait` needed), and delivery is shown per recipient in the chat. `/invite` for agents that have not joined, and a guarded herdr wake for idle Grok sessions, are not included.
+
+### Added
+
+- **Native event delivery.** Claude Code and Codex wakes carry the room events themselves, so an agent answers without running `tt wait`. `tt ack <token> --json` durably acknowledges exactly those events without fetching them again or claiming the turn. A batch left unacknowledged for five minutes is retried when new directed work arrives; quiet rooms never retry on a timer. Oversized payloads and cmux keep the body-free pull notification.
+- **Operator room messages reach every agent.** A room message from a `human:*` sender goes to every agent that is a member when it is sent, standby included, as one event; later joiners do not inherit it. Room messages from agents still wake nobody, and an agent's room interrupt still reaches only the owner.
+- **Steering for busy agents.** Operator messages reach a busy Claude Code session at its next tool boundary without cancelling the running tool. Agent-to-agent messages keep default delivery. Codex receives messages after its current turn.
+- **Grok Build integration.** `tt install grok` adds a stop guard (`~/.grok/hooks/talking-stick-stop.json`) and active-turn delivery hooks (`~/.grok/hooks/talking-stick-inbox.json`), so a working Grok session receives room events after a tool call or at a normal turn end and acknowledges them like Claude and Codex. `GROK_AGENT=1` now identifies a Grok session and carries `GROK_SESSION_ID` as its session anchor. Idle Grok sessions still need a live `tt wait` or cmux.
+- **Chat scopes.** A plain chat line or `@everyone` is one room message; `@name` narrows it; several `@names` share one message that lists them. Named scopes are honoured: agents not named do not see the message in their own wait.
+- **Delivery marks in chat.** Each message header lists its recipients with a one-character mark: `…` not delivered yet, `✓` delivered, `!` failed. Marks update in place while the message is on screen and are restored from durable receipts in saved history.
+- **Saved history.** Fullscreen scrolling fetches earlier room events; normal-screen chat offers `/older`.
+
+### Changed
+
+- **Compact envelopes.** Native envelopes are attributed plain text instead of JSON: a short header with the room path and ack command, a `#seq sender → you|room` line per event with its content indented, and a closing boundary. A short chat message costs about 190 characters instead of about 600.
+- **Chat renders inline by default**, in the terminal's normal screen, so the terminal or multiplexer keeps scrollback, wheel scrolling, selection, and copy. `tt chat --fullscreen` keeps the pinned layout.
+- The room path sits in a compact bar directly above the prompt, and the prompt no longer reserves empty suggestion rows.
+
+### Fixed
+
+- A stale wake batch could silently swallow every later message to an agent; new directed work now retries it.
+- Resizing the chat redraws the visible screen instead of guessing the old panel position, so no stale copy of the draft is left behind, and never clears native scrollback.
+- `tt chat` falls back to plain line mode under `TERM=dumb`, where Node's readline cannot edit a draft.
+- The per-turn guardian no longer renames an agent to its full id while it holds the stick, which broke short mentions such as `@claude`.
+- Chat stays open and keeps the draft during transient SQLite contention.
+- Envelope handoffs render plain string artifacts as paths instead of `undefined`, and chat consoles no longer accumulate native receipts they never consume.
+
 ## [0.18.3] — 2026-09-16
 
 Full notes: [`docs/releases/0.18.3.md`](docs/releases/0.18.3.md).
@@ -578,6 +609,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.19.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.19.0
 [0.18.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.3
 [0.18.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.2
 [0.18.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.1

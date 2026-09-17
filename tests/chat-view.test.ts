@@ -11,6 +11,8 @@ import {
   layoutComposer,
   matchChatCommands,
   renderChatScreen,
+  renderInlinePanel,
+  inlineCursorRow,
   textWidth,
   wrapStyledLine
 } from "../src/cli/chat-view.js";
@@ -23,6 +25,37 @@ const context = {
   color: false,
   show_turn_events: false
 };
+
+test("inline panels fit narrow and short terminals without reserving unused menu rows", () => {
+  for (const columns of [1, 4, 8, 20, 40, 80]) {
+    for (const rows of [2, 4, 5, 6, 7, 12, 24]) {
+      const input = { room_path: "/a/long/workspace", transcript: new ChatTranscript(), format: context,
+        status: { members: [], owner: null, owner_since: null, reserved_for: null, now: new Date() },
+        draft: { line: "界".repeat(100), cursor: 10 }, hint: null, columns, rows };
+      const frame = renderInlinePanel(input);
+      expect(frame.lines.length).toBeLessThanOrEqual(Math.max(1, rows - 1));
+      expect(frame.lines.every(line => textWidth(line) <= Math.max(1, columns - 1))).toBe(true);
+      expect(frame.cursor.row).toBeLessThan(frame.lines.length);
+      expect(frame.cursor.col).toBeLessThan(columns);
+      const suggestions = renderInlinePanel({ ...input, completions: getChatCompletions({ line: "/", cursor: 1 }, []) });
+      expect(suggestions.lines.length).toBeLessThanOrEqual(Math.max(1, rows - 1));
+      expect(suggestions.cursor.row).toBeLessThan(suggestions.lines.length);
+    }
+  }
+  expect(inlineCursorRow({ lines: ["x".repeat(79), "draft"], cursor: { row: 1, col: 3 } }, 40)).toBe(2);
+});
+
+test("inline room bar sits directly above the prompt with separation from chat", () => {
+  const frame = renderInlinePanel({
+    room_path: "/workspace", transcript: new ChatTranscript(), format: context,
+    status: { members: [], owner: null, owner_since: null, reserved_for: null, now: new Date() },
+    draft: { line: "", cursor: 0 }, hint: null, columns: 80, rows: 24
+  });
+  expect(frame.lines).toHaveLength(4);
+  expect(frame.lines[0]).toContain("─ Room · /workspace ─");
+  expect(frame.lines[1]).toBe("> ");
+  expect(frame.cursor.row).toBe(1);
+});
 
 let seq = 0;
 function message(body: string, from = "codex:aa"): RoomEvent {
@@ -472,4 +505,23 @@ test("wheel hit testing separates transcript, composer and fixed bars after resi
       if (rows >= 10) expect(chatWheelRegion(input, 2)).toBe("transcript");
     }
   }
+});
+
+test("prepending persisted history preserves viewport and unread state until returning live", () => {
+  const transcript = new ChatTranscript(5);
+  const earlier = [message("old1"), message("old2"), message("old3")];
+  for (let i = 0; i < 5; i++) transcript.appendEvent(message(`recent${i}`));
+  transcript.scrollBy(-2, 4, 60, context);
+  const before = transcript.viewport(4, 60, context);
+  transcript.prependEvents(earlier, 4, 60, context);
+  expect(transcript.viewport(4, 60, context)).toEqual(before);
+  expect(transcript.unread).toBe(0);
+  transcript.appendEvent(message("live"));
+  expect(transcript.viewport(4, 60, context)).toEqual(before);
+  expect(transcript.unread).toBe(1);
+  transcript.scrollBy(-1000, 4, 60, context);
+  expect(transcript.viewport(4, 60, context).join("\n")).toContain("old1");
+  transcript.scrollToBottom();
+  expect(transcript.size).toBe(5);
+  expect(transcript.viewport(4, 60, context).join("\n")).toContain("live");
 });

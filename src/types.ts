@@ -153,6 +153,10 @@ export type DeliveryHint = "normal" | "interrupt";
 export interface MessagePayload {
   body: string;
   delivery_hint: DeliveryHint;
+  // Present when several named agents share one message instead of to_agent_id.
+  recipients?: AgentId[];
+  // Agents an operator's room message was delivered to; display only.
+  sent_to?: AgentId[];
 }
 
 export interface RoomEvent {
@@ -522,8 +526,20 @@ export interface SendMessageInput {
   room_id: string;
   body: string;
   to_agent_id?: AgentId | null;
+  // Several named recipients share one room message instead of one event each.
+  // Mutually exclusive with to_agent_id.
+  to_agent_ids?: AgentId[];
   delivery_hint?: DeliveryHint;
   process_metadata?: ProcessMetadata;
+}
+
+export interface MessageDelivery {
+  agent_id: AgentId;
+  status: MessageDeliveryStatus;
+  transport?: NativeWakeTransportName;
+  state?: "woken" | "queued" | "ambiguous" | "failed";
+  error?: string;
+  interrupt_status?: "injected" | "unsupported";
 }
 
 export type MessageDeliveryStatus =
@@ -548,6 +564,9 @@ export interface SendMessageResult {
   delivery_transport?: NativeWakeTransportName;
   delivery_state?: "woken" | "queued" | "ambiguous" | "failed";
   interrupt_status?: "injected" | "unsupported";
+  // Every agent this message was routed to, in send order. A single directed
+  // message also fills the delivery_* fields above for existing callers.
+  deliveries?: MessageDelivery[];
 }
 
 export interface RegisterNativeWakeEndpointInput {

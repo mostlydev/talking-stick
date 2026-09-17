@@ -29,6 +29,7 @@ export interface ChatCommandInfo {
 export const CHAT_COMMANDS: ChatCommandInfo[] = [
   { name: "quit", usage: "/quit", description: "leave the chat" },
   { name: "who", usage: "/who", description: "members and who has the stick" },
+  { name: "older", usage: "/older", description: "load an earlier page of saved messages" },
   { name: "kick", usage: "/kick <agent>", description: "remove a member; --force for a live agent" },
   {
     name: "to",
@@ -55,7 +56,7 @@ export const CHAT_COMMANDS: ChatCommandInfo[] = [
 
 // Help is intentionally compact; detailed keyboard controls have their own
 // view so the command list remains readable at ordinary terminal heights.
-export function formatChatHelp(width: number, color: boolean, keys = false): string {
+export function formatChatHelp(width: number, color: boolean, keys = false, inline = false): string {
   const usable = Math.max(12, width);
   const accent = (text: string) => color ? `\u001b[1;38;5;147m${text}\u001b[0m` : text;
   const muted = (text: string) => color ? `\u001b[2m${text}\u001b[0m` : text;
@@ -67,9 +68,14 @@ export function formatChatHelp(width: number, color: boolean, keys = false): str
     ["Alt+Enter", "Insert a new line"],
     ["Esc", "Dismiss suggestions; press again to clear"],
     ["Ctrl+C", "Clear the draft"],
-    ["PgUp / PgDn", "Scroll the conversation"],
-    ["Shift+↑ / ↓", "Scroll a few lines (wheel with --mouse)"],
-    ["Ctrl+End", "Return to the latest messages"],
+    ...(inline ? [
+      ["Wheel / terminal scroll", "Browse messages; drag to select and copy"],
+      ["/older", "Print an earlier page of saved messages"]
+    ] as [string, string][] : [
+      ["PgUp / PgDn", "Scroll the conversation"],
+      ["Shift+↑ / ↓", "Scroll a few lines (wheel with --mouse)"],
+      ["Ctrl+End", "Return to the latest messages"]
+    ] as [string, string][]),
     ["Ctrl+D", "Quit when the draft is empty"]
   ] : CHAT_COMMANDS.map((command) => [
     command.name === "help" ? "/help keys" : command.usage,
@@ -96,8 +102,9 @@ export function formatChatHelp(width: number, color: boolean, keys = false): str
     "Paste stays in the draft until sent. Shift+Enter also works in supported terminals.",
     "/help returns to commands."
   ] : [
-    "Type to message the room. Use @agent to address a participant.",
-    "!@agent sends an urgent message; @everyone reaches all agents.",
+    "Type to message every agent in the room. @agent narrows it to that agent.",
+    "!@agent sends an urgent message; !@everyone makes a room message urgent.",
+    "Marks after names in your messages: … not delivered yet, ✓ delivered, ! failed.",
     "Use // to send text beginning with a slash."
   ]) lines.push(...wrapStyledLine(muted(note), usable));
   return lines.join("\n");
@@ -271,11 +278,13 @@ interface Layout {
   rows: string[];
   starts: Map<number, number>;
   order: number[];
+  receipts: Map<number, number>;
 }
 
 export class ChatTranscript {
   private blocks: ChatBlock[] = [];
   private nextId = 1;
+  private earlierId = 0;
   private anchor: ChatAnchor = { follow: true };
   private unreadCount = 0;
   private epoch = 0;
@@ -297,6 +306,26 @@ export class ChatTranscript {
 
   get size(): number {
     return this.blocks.length;
+  }
+
+  get oldestEventSeq(): number | undefined {
+    const block = this.blocks.find((candidate) => candidate.kind === "event");
+    return block?.kind === "event" ? block.event.event_seq : undefined;
+  }
+
+  needsEarlier(deltaRows: number, height: number, width: number, context: ChatFormatContext): boolean {
+    const layout = this.layout(width, context);
+    return deltaRows < 0 && this.topRow(layout, Math.max(0, layout.rows.length - height)) + deltaRows <= 0;
+  }
+
+  prependEvents(events: RoomEvent[], height: number, width: number, context: ChatFormatContext): void {
+    if (events.length === 0) return;
+    const layout = this.layout(width, context);
+    this.anchor = this.anchorForRow(layout, this.topRow(layout, Math.max(0, layout.rows.length - height)));
+    const start = this.earlierId - events.length + 1;
+    this.blocks.unshift(...events.map((event, index): ChatBlock => ({ id: start + index, kind: "event", event })));
+    this.earlierId -= events.length;
+    this.layoutCache = null;
   }
 
   // Call when names, colors, or event visibility change so blocks re-render.
@@ -351,6 +380,7 @@ export class ChatTranscript {
   scrollToBottom(): void {
     this.anchor = { follow: true };
     this.unreadCount = 0;
+    this.trimLiveBuffer();
   }
 
   // The rows to show in a viewport of `height`, bottom-aligned so a short
@@ -371,6 +401,11 @@ export class ChatTranscript {
 
   private push(block: ChatBlock): void {
     this.blocks.push(block);
+    this.layoutCache = null;
+    if (this.anchor.follow) this.trimLiveBuffer();
+  }
+
+  private trimLiveBuffer(): void {
     this.layoutCache = null;
     while (this.blocks.length > this.maxBlocks) {
       const evicted = this.blocks.shift()!;
@@ -409,6 +444,15 @@ export class ChatTranscript {
     };
   }
 
+  // Physical row anchors for message receipts in the same viewport geometry.
+  receiptRows(height: number, width: number, context: ChatFormatContext): Map<number, number> {
+    const layout = this.layout(width, context);
+    const top = this.topRow(layout, Math.max(0, layout.rows.length - height));
+    const padding = Math.max(0, height - Math.min(height, layout.rows.length - top));
+    return new Map([...layout.receipts].filter(([, row]) => row >= top && row < top + height)
+      .map(([seq, row]) => [seq, padding + row - top]));
+  }
+
   private layout(width: number, context: ChatFormatContext): Layout {
     const key = `${width}|${this.epoch}|${context.show_turn_events}|${context.color}|${context.now?.toDateString()}|${context.history_before}`;
     if (this.layoutCache?.key === key) return this.layoutCache.layout;
@@ -416,6 +460,7 @@ export class ChatTranscript {
     const rows: string[] = [];
     const starts = new Map<number, number>();
     const order: number[] = [];
+    const receipts = new Map<number, number>();
     let previous: "message" | "other" | null = null;
     let previousEvent: RoomEvent | undefined;
     let section: string | undefined;
@@ -439,11 +484,14 @@ export class ChatTranscript {
         }
         if (isChatConversationActivity(block.event)) previousEvent = block.event;
       }
+      if (block.kind === "event" && context.tracks_delivery?.(block.event)) {
+        receipts.set(block.event.event_seq, rows.length);
+      }
       rows.push(...lines);
       previous = isMessage ? "message" : "other";
     }
 
-    const layout = { rows, starts, order };
+    const layout = { rows, starts, order, receipts };
     this.layoutCache = { key, layout };
     return layout;
   }
@@ -700,6 +748,47 @@ export interface ChatScreenInput {
 export interface ChatFrame {
   lines: string[];
   cursor: { row: number; col: number };
+}
+
+// A bounded live panel beneath ordinary terminal output. Keep suggestions
+// above the room bar so the bar stays adjacent to the prompt in every state.
+export function renderInlinePanel(input: ChatScreenInput): ChatFrame {
+  const width = Math.max(1, input.columns - 1);
+  const height = Math.max(1, input.rows - 1);
+  if (width < 4 || height < 4) {
+    return { lines: [truncateStyled(CHAT_PROMPT + input.draft.line.replace(/\n/g, " "), width)], cursor: { row: 0, col: 0 } };
+  }
+  const matches = input.completions ?? [];
+  const menuCapacity = Math.min(matches.length, 3, Math.max(0, height - 4));
+  const topRows = menuCapacity + 1;
+  const composerCapacity = Math.max(1, Math.min(MAX_COMPOSER_ROWS, height - topRows - 2));
+  const composer = layoutComposer(input.draft, width, composerCapacity);
+  const selected = Math.max(0, Math.min(input.completion_index ?? 0, matches.length - 1));
+  const first = Math.max(0, selected - menuCapacity + 1);
+  const menu = Array.from({ length: menuCapacity }, (_, row) => {
+    const entry = matches[first + row];
+    if (!entry) return "";
+    const active = first + row === selected;
+    return truncateStyled(`${active ? "›" : " "} ${entry.label}  ${dim(input.format, entry.description)}`, width);
+  });
+  const rule = dim(input.format, "─".repeat(width));
+  const title = input.room_path ? roomHeader(input.room_path, Math.max(1, width - 4), input.format) : "";
+  const roomBar = title
+    ? truncateStyled(`${dim(input.format, "─ ")}${title}${dim(input.format, " " + "─".repeat(Math.max(0, width - textWidth(title) - 3)))}`, width)
+    : rule;
+  const top = [...menu, roomBar];
+  const lines = [...top, ...composer.rows, rule, renderFooter(input, width)];
+  return {
+    lines,
+    cursor: { row: topRows + composer.cursor_row, col: Math.min(width - 1, composer.cursor_col) }
+  };
+}
+
+export function inlineCursorRow(frame: ChatFrame, columns: number): number {
+  const width = Math.max(1, columns);
+  return frame.lines.slice(0, frame.cursor.row)
+    .reduce((rows, line) => rows + Math.max(1, Math.ceil(textWidth(line) / width)), 0)
+    + Math.floor(frame.cursor.col / width);
 }
 
 // The suggestion menu overlays the bottom of the transcript instead of

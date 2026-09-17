@@ -19,6 +19,9 @@ export interface ChatFormatContext {
   show_turn_events: boolean;
   now?: Date;
   history_before?: string;
+  // A single-cell delivery icon for one recipient of a message, if tracked.
+  delivery_icon?: (event: RoomEvent, agentId: AgentId) => string | undefined;
+  tracks_delivery?: (event: RoomEvent) => boolean;
 }
 
 const ANSI_PATTERN =
@@ -254,7 +257,18 @@ function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): s
       ""
     );
     const sender = from ? formatChatAgent(context, from) : "?";
-    const route = to ? ` → ${formatChatAgent(context, to)}` : "";
+    const payload = event.payload as { recipients?: unknown; sent_to?: unknown } | null;
+    const listed = Array.isArray(payload?.recipients) ? payload.recipients : payload?.sent_to;
+    const recipients = Array.isArray(listed) ? listed.filter((id): id is string => typeof id === "string") : [];
+    const named = (id: AgentId) => {
+      const icon = context.delivery_icon?.(event, id);
+      return icon ? `${formatChatAgent(context, id)} ${icon}` : formatChatAgent(context, id);
+    };
+    const route = to
+      ? ` → ${named(to)}`
+      : recipients.length > 0
+        ? ` → ${recipients.map(named).join(", ")}`
+        : "";
     const marker =
       event.payload?.delivery_hint === "interrupt"
         ? ` ${paint(context, "1;31", "‼ interrupt")}`

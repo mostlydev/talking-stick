@@ -18,6 +18,9 @@ export {
 export const GROK_SESSION_HOOK_FILE = "talking-stick-session.json";
 export const DEFAULT_GROK_SESSION_HOOK_COMMAND =
   ": talking-stick-grok-session-hook; if command -v tt >/dev/null 2>&1; then tt grok-session-hook >/dev/null 2>/dev/null || true; fi";
+// Kept separate from the lifecycle recorder so a stop guard can be installed,
+// inspected, and removed without touching the session history file.
+export const GROK_STOP_HOOK_FILE = "talking-stick-stop.json";
 export const GROK_SESSION_HOOK_EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
@@ -235,6 +238,15 @@ export function resolveGrokSessionHookPath(options: InstallOptions = {}): string
     resolveGrokConfigDirFromResolved(resolved),
     "hooks",
     GROK_SESSION_HOOK_FILE
+  );
+}
+
+export function resolveGrokStopHookPath(options: InstallOptions = {}): string {
+  const resolved = resolveOptions(options);
+  return path.join(
+    resolveGrokConfigDirFromResolved(resolved),
+    "hooks",
+    GROK_STOP_HOOK_FILE
   );
 }
 
@@ -522,6 +534,68 @@ export function buildGrokSessionHookConfig(): string {
     ])
   );
   return JSON.stringify({ hooks }, null, 2) + "\n";
+}
+
+// Grok reads Claude's Stop hooks too, so the command is byte-identical to the
+// Claude guard: where both sources load, Grok deduplicates identical handlers,
+// and the guard itself also drops a repeated run for the same turn.
+export function buildGrokStopHookConfig(): string {
+  return (
+    JSON.stringify(
+      { hooks: { Stop: [{ hooks: [buildClaudeStopGuardHook()] }] } },
+      null,
+      2
+    ) + "\n"
+  );
+}
+
+export function buildGrokInboxHookConfig(): string {
+  const hook = { type: "command", command: ": talking-stick-grok-inbox-hook; if command -v tt >/dev/null 2>&1; then tt grok-inbox-hook; fi", timeout: 5 };
+  return JSON.stringify({ hooks: Object.fromEntries(["PostToolUse", "PostToolUseFailure", "Stop"]
+    .map(event => [event, [{ hooks: [hook] }]])) }, null, 2) + "\n";
+}
+
+export function resolveGrokInboxHookPath(options: InstallOptions = {}): string {
+  return path.join(path.dirname(resolveGrokStopHookPath(options)), "talking-stick-inbox.json");
+}
+
+export function planGrokStopHookInstall(options: InstallOptions = {}): InstallAction {
+  return planGrokHookFile(options, resolveGrokStopHookPath(options), buildGrokStopHookConfig());
+}
+
+export function planGrokStopHookUninstall(options: InstallOptions = {}): InstallAction {
+  return planGrokHookFile(options, resolveGrokStopHookPath(options), null);
+}
+
+export function planGrokInboxHookInstall(options: InstallOptions = {}): InstallAction {
+  return planGrokHookFile(options, resolveGrokInboxHookPath(options), buildGrokInboxHookConfig());
+}
+
+export function planGrokInboxHookUninstall(options: InstallOptions = {}): InstallAction {
+  return planGrokHookFile(options, resolveGrokInboxHookPath(options), null);
+}
+
+function planGrokHookFile(options: InstallOptions, filePath: string, content: string | null): InstallAction {
+  const resolved = resolveOptions(options);
+  const grokConfigDir = resolveGrokConfigDirFromResolved(resolved);
+  if (resolved.skipMissing && !resolved.hooks.pathExists(grokConfigDir)) {
+    return skipAction("grok", `grok config directory not found: ${grokConfigDir}`);
+  }
+  return {
+    kind: "file-patch", harness: "grok", filePath,
+    description: `${content === null ? "remove" : "write"} Grok hook ${filePath}`,
+    operation: content === null ? "uninstall" : "install",
+    inspect: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      if (existing === null) return "absent";
+      return content === null || existing === content ? "present" : "different";
+    },
+    apply: () => {
+      if (content === null) { removeGrokSessionHook(filePath, resolved); return; }
+      resolved.hooks.ensureDir(path.dirname(filePath));
+      resolved.hooks.writeFile(filePath, content);
+    }
+  };
 }
 
 function inspectGrokSessionHook(

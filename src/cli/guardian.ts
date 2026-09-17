@@ -60,13 +60,24 @@ export function runGuardTick(input: {
   }
 }
 
+// The guardian's presence outranks the harness's when metadata merges onto the
+// member row, so it must carry the harness's own display name. Using the agent
+// id here renamed `claude` to `claude:0705e896` for as long as a turn was held,
+// which broke short chat mentions like @claude.
+export function guardDisplayName(agentId: string, harnessName: string | null | undefined): string {
+  return harnessName?.trim() || agentId.replace(/^human:/, "");
+}
+
 export async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
+  const harnessMetadata = parseHarnessMetadataOptions(parsed);
   const baseIdentity = deriveHumanCliIdentity({
     agentId: requireStringOption(parsed, "agent"),
-    displayName: requireStringOption(parsed, "agent").replace(/^human:/, ""),
+    displayName: guardDisplayName(
+      requireStringOption(parsed, "agent"),
+      harnessMetadata.harness_name
+    ),
     sessionKind: "human_guardian"
   });
-  const harnessMetadata = parseHarnessMetadataOptions(parsed);
   const identity = {
     ...baseIdentity,
     process_metadata: {

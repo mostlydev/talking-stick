@@ -1,3 +1,6 @@
+import { runGrokInboxHookCommand } from "./grok-inbox-hook.js";
+import { deriveCliIdentity } from "./identity.js";
+import { printResult } from "./output.js";
 import { runGuardCommand } from "./guardian.js";
 import { handleChatCommand } from "./chat.js";
 import { runClaudeStopHookCommand } from "./claude-stop-hook.js";
@@ -49,6 +52,22 @@ export interface CommandEntry {
 }
 
 export const COMMAND_REGISTRY: CommandEntry[] = [
+  {
+    name: "grok-inbox-hook", needsRuntime: false, startupMaintenance: false, internal: true,
+    usage: "tt grok-inbox-hook", description: "Deliver pending room events inside an active Grok session.",
+    handler: () => runGrokInboxHookCommand()
+  },
+  {
+    name: "ack", needsRuntime: true, startupMaintenance: false, internal: false,
+    usage: "tt ack <delivery-token> [--json]",
+    description: "Acknowledge native event delivery without claiming the stick.",
+    handler: ({ parsed, runtime }) => {
+      const token = parsed.positionals[0];
+      if (!token) throw new Error("Usage: tt ack <delivery-token> [--json]");
+      const result = runtime!.commands.acknowledgeNativeDelivery(deriveCliIdentity(parsed), token);
+      printResult(parsed, result, () => result.status);
+    }
+  },
   {
     name: "guard",
     needsRuntime: false,
@@ -267,7 +286,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt chat [path] [--history N] [--events] [--mouse|--no-mouse]",
+    usage: "tt chat [path] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse]",
     description: "Open an operator chat console for a room's agents.",
     handler: ({ runtime, parsed }) => handleChatCommand(requireRuntime(runtime), parsed)
   },

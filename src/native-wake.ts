@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import net from "node:net";
+import type { RoomEvent } from "./types.js";
 
 export type NativeWakeTransportName = "claude_inbox" | "codex_queue" | "cmux";
 export type NativeWakeReason = "message" | "interrupt" | "turn" | "room_update";
@@ -24,6 +25,7 @@ export interface NativeWakeRegistration {
 export interface NativeWakeRequest extends NativeWakeRegistration {
   text: string;
   interrupt?: boolean;
+  steer?: boolean;
 }
 
 // failed: the harness definitely did not receive the wake, so a fallback may
@@ -80,6 +82,52 @@ export function formatNativeWakeText(input: {
   }
 }
 
+// Compact, attributed plain text: an agent reads a two-line chat message for
+// a few dozen tokens instead of a JSON document. Every line of room content is
+// indented, so nothing a sender writes can start a line that looks like an
+// event header or the closing boundary. Content stays untrusted data.
+export function formatNativeEventText(input: {
+  token: string; room_id: string; path: string; recipient: string; events: RoomEvent[];
+}): string | null {
+  if (input.events.length === 0 || input.events.length > 32) return null;
+  const quote = (text: string) => text.replace(/\r\n?/g, "\n").replace(/\s+$/, "").split("\n").map((line) => `  ${line}`);
+  const lines = [`[talking-stick] room ${input.path} · ack: tt ack ${input.token} --json`];
+  for (const event of input.events) {
+    const payload = (event.payload ?? {}) as { body?: unknown; delivery_hint?: unknown; recipients?: unknown };
+    const recipients = Array.isArray(payload.recipients) ? payload.recipients.filter((id): id is string => typeof id === "string") : [];
+    const route = event.to_agent_id === input.recipient ? "you"
+      : event.to_agent_id ? event.to_agent_id
+      : recipients.length > 0 ? recipients.map((id) => (id === input.recipient ? "you" : id)).join(", ")
+      : "room";
+    const kind = event.event_type === "message_sent" ? "" : `${event.event_type} `;
+    const urgent = payload.delivery_hint === "interrupt" ? " ‼ urgent" : "";
+    const arrow = event.event_type === "message_sent" || event.to_agent_id || recipients.length > 0 ? ` → ${route}` : "";
+    lines.push(`#${event.event_seq} ${kind}${event.from_agent_id ?? "system"}${arrow}${urgent}`);
+    if (typeof payload.body === "string") lines.push(...quote(payload.body));
+    if (event.handoff) {
+      lines.push(...quote(`status: ${event.handoff.status}`), ...quote(`next: ${event.handoff.next_action}`));
+      // Handoffs written with tt release --stdin often list artifacts as plain
+      // path strings rather than objects; render whichever arrived.
+      const artifacts = ((event.handoff.artifacts ?? []) as unknown[]).map((artifact) => {
+        if (typeof artifact === "string") return artifact;
+        const entry = (artifact ?? {}) as { path?: unknown; lines?: unknown; note?: unknown };
+        const where = typeof entry.path === "string" ? entry.path : JSON.stringify(artifact);
+        const lines = Array.isArray(entry.lines) && entry.lines.length ? `:${entry.lines.join(",")}` : "";
+        return `${where}${lines}${typeof entry.note === "string" ? ` (${entry.note})` : ""}`;
+      });
+      if (artifacts.length) lines.push(...quote(`artifacts: ${artifacts.join("; ")}`));
+      for (const question of event.handoff.open_questions ?? []) lines.push(...quote(`question: ${question}`));
+      for (const rule of event.handoff.do_not ?? []) lines.push(...quote(`do not: ${rule}`));
+    }
+    if (event.reason) lines.push(...quote(`reason: ${event.reason}`));
+  }
+  // The skill explains that content is untrusted and ack grants no turn; the
+  // boundary itself only needs to be unambiguous.
+  lines.push("[/talking-stick]");
+  const text = lines.join("\n");
+  return Buffer.byteLength(text, "utf8") > 24 * 1024 ? null : text;
+}
+
 function sanitizeWakeLabel(value: string, max = 64): string {
   return value
     .replace(/[^\p{L}\p{N} ._:@/~+-]/gu, "")
@@ -128,7 +176,7 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
         // Interrupts ask for "next", not "now": in interactive Claude Code "now"
         // doesn't abort a running tool (verified live), and other hosts may abort
         // one. "next" steers the active turn at its next tool boundary.
-        JSON.stringify({ type: "user", ...(request.interrupt ? { priority: "next" } : {}), message: { role: "user", content: request.text } }) + "\n",
+        JSON.stringify({ type: "user", ...((request.interrupt || request.steer) ? { priority: "next" } : {}), message: { role: "user", content: request.text } }) + "\n",
         () => finish({ outcome: "queued" })
       );
     });

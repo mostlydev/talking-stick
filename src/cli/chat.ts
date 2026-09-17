@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import readline from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
 import { ChatInputController } from "./chat-input.js";
 import { resolveChatKick } from "./chat-kick.js";
 import {
@@ -8,6 +9,11 @@ import {
   diffChatFrame,
   getChatCompletions,
   formatChatHelp,
+  renderInlinePanel,
+  inlineCursorRow,
+  textWidth,
+  truncateStyled,
+  wrapStyledLine,
   chatTranscriptHeight,
   chatWheelRegion,
   CHAT_COMMANDS,
@@ -15,11 +21,12 @@ import {
 } from "./chat-view.js";
 import type { Readable, Writable } from "node:stream";
 
-import { ProtocolError } from "../errors.js";
+import { ProtocolError, isSqliteBusy } from "../errors.js";
 import { deriveHumanCliIdentity, type DerivedIdentity } from "../identity.js";
 import {
   HUMAN_CHAT_SESSION_KIND,
   type EventType,
+  type MessageDelivery,
   type RoomEvent,
   type RoomMember
 } from "../types.js";
@@ -33,7 +40,8 @@ import {
   describeMemberState,
   parseChatInput,
   resolveChatRecipients,
-  sanitizeChatText
+  sanitizeChatText,
+  EVERYONE_SELECTORS
 } from "./chat-format.js";
 import {
   getStringOption,
@@ -83,6 +91,43 @@ export interface ChatSessionOptions {
   show_turn_events: boolean;
   poll_ms?: number;
   mouse?: boolean;
+  // Inline mode prints into the terminal's normal screen instead of taking it
+  // over, so the terminal (or multiplexer) keeps scrollback, selection, and
+  // copy. The pinned full-screen layout stays available behind --fullscreen.
+  inline?: boolean;
+}
+
+// Native terminal scrollback owns wheel scrolling and selection. --fullscreen
+// retains the alternate-screen viewport and its keyboard scrolling controls.
+export function chatInlineEnabled(parsed: ParsedCommand): boolean {
+  return !hasOption(parsed, "fullscreen");
+}
+
+// A dumb terminal can neither draw the panel's cursor movement nor edit a
+// draft: Node's readline swaps in its dumb line writer whenever TERM=dumb, even
+// with terminal mode requested, so arrows and Ctrl+A arrive as literal text.
+// Plain line mode is the honest experience there.
+export function chatTerminalCapable(
+  stdin: { isTTY?: boolean },
+  stdout: { isTTY?: boolean },
+  env: NodeJS.ProcessEnv
+): boolean {
+  return Boolean(stdin.isTTY && stdout.isTTY) && env.TERM !== "dumb";
+}
+
+// Labels say what is known, never more. "unreachable" needs a definite
+// transport failure; an agent with nothing to wake it yet, such as a Grok that
+// will pick the message up at its next tool call, is only "not acknowledged yet".
+export function describeChatDelivery(delivery: MessageDelivery): string {
+  if (delivery.state === "failed") return "unreachable";
+  if (delivery.status === "receiver") return "queued";
+  if (delivery.error === "manual_standby") return "waiting for resume";
+  if (delivery.state === "queued" && delivery.interrupt_status === "unsupported") return "queued; immediate interrupt unavailable";
+  if (delivery.state === "queued" && delivery.interrupt_status === "injected") return "urgent prompt injected";
+  if (delivery.state === "ambiguous") return "wake unconfirmed";
+  if (delivery.state === "queued" || delivery.state === "woken") return "queued";
+  if (delivery.status === "pending" || delivery.status === "endpoint") return "queued";
+  return "not acknowledged yet";
 }
 
 export async function handleChatCommand(
@@ -91,7 +136,7 @@ export async function handleChatCommand(
 ): Promise<void> {
   const agentId = getStringOption(parsed, "agent");
   const identity = createChatIdentity(agentId);
-  const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const terminal = chatTerminalCapable(process.stdin, process.stdout, process.env);
 
   await runChatSession({
     runtime,
@@ -103,7 +148,8 @@ export async function handleChatCommand(
     color: terminal && !process.env.NO_COLOR,
     history: parseOptionalInteger(parsed, "history") ?? DEFAULT_HISTORY,
     show_turn_events: hasOption(parsed, "events"),
-    mouse: hasOption(parsed, "mouse") && !hasOption(parsed, "no-mouse")
+    mouse: hasOption(parsed, "mouse") && !hasOption(parsed, "no-mouse"),
+    inline: chatInlineEnabled(parsed)
   });
 }
 
@@ -126,6 +172,8 @@ export async function runChatSession(
   options: ChatSessionOptions
 ): Promise<void> {
   const { runtime, identity, output, terminal } = options;
+  const fullscreen = terminal && options.inline !== true;
+  const inline = terminal && !fullscreen;
   const selfId = identity.agent_id;
   const joined = runtime.commands.joinPath(identity, {
     context_path: options.context_path
@@ -144,6 +192,8 @@ export async function runChatSession(
   let lastPresenceRefresh = 0;
   let namesSignature = "";
   let historyBefore: string | undefined;
+  let historyCursor = 0;
+  let historyExhausted = false;
   let previousConversationEvent: RoomEvent | undefined;
   let printedSection: string | undefined;
   let exitReason: string | null = null;
@@ -156,6 +206,26 @@ export async function runChatSession(
   let screenActive = false;
   let failure: unknown;
   let hint: string | null = null;
+  // One room message can reach several agents, so each event keeps a state per
+  // recipient and renders them on a single line under that message.
+  const deliveryStates = new Map<number, Map<string, string>>();
+  const rememberDelivery = (seq: number, agent: string, state: string) => {
+    const states = deliveryStates.get(seq) ?? new Map<string, string>();
+    states.set(agent, state);
+    deliveryStates.set(seq, states);
+    while (deliveryStates.size > 2_000) deliveryStates.delete(deliveryStates.keys().next().value!);
+  };
+  // Every icon is one terminal cell, so a delivery update never changes how
+  // many rows a message header occupies: … pending, ✓ delivered, ! failed.
+  const deliveryIcon = (event: RoomEvent, agent: string) => {
+    const state = deliveryStates.get(event.event_seq)?.get(agent);
+    if (!state || !terminal) return undefined;
+    if (state === "delivered") return options.color ? "\u001b[32m✓\u001b[0m" : "✓";
+    if (state === "unreachable") return options.color ? "\u001b[31m!\u001b[0m" : "!";
+    return options.color ? "\u001b[2m…\u001b[0m" : "…";
+  };
+  // Events whose header shows delivery icons, kept so a receipt can repaint it.
+  const trackedEvents = new Map<number, RoomEvent>();
   let lastStatusDraw = Date.now();
   const dimensions = () => ({
     columns: Math.max(1, (output as { columns?: number }).columns ?? 80),
@@ -167,7 +237,9 @@ export async function runChatSession(
     color: options.color,
     show_turn_events: showTurnEvents,
     now: new Date(),
-    history_before: historyBefore
+    history_before: historyBefore,
+    delivery_icon: deliveryIcon,
+    tracks_delivery: (event: RoomEvent) => terminal && (deliveryStates.get(event.event_seq)?.size ?? 0) > 0
   });
   const completionsFor = (draft: { line: string; cursor: number }) => getChatCompletions(draft,
     members.filter((member) => member.agent_id !== selfId && member.process_liveness !== "gone")
@@ -178,8 +250,60 @@ export async function runChatSession(
         status: member.process_liveness === "gone" ? "ended" : describeMemberState(member, {
           members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), columns: dimensions().columns
         }) })));
+  // Inline drawing: the composer occupies the last rows of the normal screen.
+  // Erasing walks back up every row it drew, so a wrapped draft never leaves
+  // fragments behind in the scrollback.
+  let inlineFrame: ChatFrame | null = null;
+  let inlineFrameColumns = { columns: 80, rows: 24 };
+  let inlineActive = false;
+  let inlineOutputRows = 0;
+  let inlineVisibleFloor = 0;
+  const inlineReceiptRows = new Map<number, number>();
+  // Erase with the geometry the panel was drawn at: after a resize the current
+  // width would compute the wrong row count and strand a stale copy.
+  const eraseComposer = () => {
+    if (!inlineFrame) return;
+    const up = Math.min(
+      inlineFrameColumns.rows - 1,
+      inlineCursorRow(inlineFrame, inlineFrameColumns.columns)
+    );
+    output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}\u001b[J`);
+    inlineFrame = null;
+  };
+  const drawComposer = () => {
+    if (!inline || closed) return;
+    const draft = editor?.draft ?? { line: "", cursor: 0 };
+    const frame = renderInlinePanel({
+      room_path: joined.canonical_path, transcript, format: formatContext(),
+      status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date() },
+      draft, hint,
+      completions: editor?.completionVisible ? completionsFor(draft) : [],
+      completion_index: editor?.completionIndex ?? 0,
+      ...dimensions()
+    });
+    if (inlineFrame && JSON.stringify(inlineFrame) === JSON.stringify(frame)) return;
+    output.write("\u001b[?2026h");
+    eraseComposer();
+    output.write(frame.lines.join("\r\n"));
+    inlineFrame = frame;
+    inlineFrameColumns = dimensions();
+    inlineVisibleFloor = Math.max(inlineVisibleFloor, inlineOutputRows + frame.lines.length - dimensions().rows);
+    for (const [seq, row] of inlineReceiptRows) if (row < inlineVisibleFloor) inlineReceiptRows.delete(seq);
+    const up = frame.lines.length - 1 - frame.cursor.row;
+    output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}${frame.cursor.col > 0 ? `\u001b[${frame.cursor.col}C` : ""}\u001b[?2026l`);
+  };
+  // Inline output must not land on top of the composer: erase it, print the
+  // line, then redraw the draft underneath.
+  const writeInline = (text: string) => {
+    eraseComposer();
+    const lines = text.split(/\r?\n/).flatMap(line => wrapStyledLine(line, Math.max(1, dimensions().columns - 1)));
+    output.write(lines.join("\r\n") + "\r\n");
+    inlineOutputRows += lines.length;
+    drawComposer();
+  };
   const redraw = () => {
-    if (!terminal || closed || frameTimer) return;
+    if (inline) { drawComposer(); return; }
+    if (!fullscreen || closed || frameTimer) return;
     frameTimer = setTimeout(() => {
       frameTimer = null;
       if (closed || !screenActive) return;
@@ -210,7 +334,12 @@ export async function runChatSession(
     }, 16);
   };
   const print = (text: string): number | null => {
-    if (terminal) {
+    if (inline) {
+      transcript.appendNotice(text);
+      writeInline(text);
+      return null;
+    }
+    if (fullscreen) {
       const id = transcript.appendNotice(text);
       redraw();
       return id;
@@ -218,16 +347,35 @@ export async function runChatSession(
     output.write(`${text}\n`);
     return null;
   };
-  // Directed messages whose recipient hasn't received them yet, keyed by event
-  // seq. A receipt means the recipient's own tt wait returned the message.
-  const awaitingReceipt = new Map<number, { notice: number | null; text: string }>();
+  // Receipts belong to event IDs, never to the latest send or the room footer.
+  const awaitingReceipt = new Map<number, Set<string>>();
   let lastReceiptCheck = 0;
-  const trackReceipt = (eventSeq: number, pending: { notice: number | null; text: string }) => {
-    awaitingReceipt.set(eventSeq, pending);
-    // Oldest first: a recipient that never reads can't grow this without bound.
+  const trackReceipt = (eventSeq: number, agent: string) => {
+    awaitingReceipt.set(eventSeq, (awaitingReceipt.get(eventSeq) ?? new Set<string>()).add(agent));
     while (awaitingReceipt.size > MAX_AWAITED_RECEIPTS) {
       awaitingReceipt.delete(awaitingReceipt.keys().next().value!);
     }
+  };
+  const setDelivery = (seq: number, agent: string, state: string) => {
+    rememberDelivery(seq, agent, state);
+    transcript.invalidate();
+    const row = inlineReceiptRows.get(seq);
+    const event = trackedEvents.get(seq);
+    const header = event ? render(event)?.split("\n")[0] : undefined;
+    if (inline && row !== undefined && row >= inlineVisibleFloor && header !== undefined) {
+      // Only repaint rows still on the live terminal screen. Cursor movement
+      // cannot rewrite native scrollback. Saved history reads durable receipts.
+      // Icons are one cell wide, so the header wraps to the same rows as before.
+      const rows = wrapStyledLine(header, Math.max(1, dimensions().columns - 1));
+      output.write("\u001b[?2026h");
+      eraseComposer();
+      const up = inlineOutputRows - row;
+      const down = up - rows.length + 1;
+      // CSI 0 B still moves one row, so never emit a zero-length move.
+      output.write(`\r\u001b[${up}A${rows.map((text) => `\u001b[2K${text}`).join("\r\n")}\r${down > 0 ? `\u001b[${down}B` : ""}`);
+      drawComposer();
+      output.write("\u001b[?2026l");
+    } else redraw();
   };
   const checkReceipts = () => {
     if (awaitingReceipt.size === 0 || Date.now() - lastReceiptCheck < RECEIPT_POLL_MS) return;
@@ -235,29 +383,27 @@ export async function runChatSession(
     const seqs = [...awaitingReceipt.keys()];
     const receipts = [];
     for (let start = 0; start < seqs.length; start += RECEIPT_BATCH) {
-      receipts.push(...runtime.commands.getMessageReceipts({
-        room_id: roomId,
-        event_seqs: seqs.slice(start, start + RECEIPT_BATCH)
-      }));
+      receipts.push(...runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: seqs.slice(start, start + RECEIPT_BATCH) }));
     }
     for (const receipt of receipts) {
       const pending = awaitingReceipt.get(receipt.event_seq);
-      if (!pending) continue;
-      awaitingReceipt.delete(receipt.event_seq);
-      const text = `${sanitizeChatText(nameOf(receipt.agent_id))}: received`;
-      if (pending.notice !== null && transcript.updateNotice(pending.notice, `${pending.text} → received`)) {
-        redraw();
-      } else {
-        print(text);
-      }
+      if (!pending?.delete(receipt.agent_id)) continue;
+      if (pending.size === 0) awaitingReceipt.delete(receipt.event_seq);
+      setDelivery(receipt.event_seq, receipt.agent_id, "delivered");
+      if (!terminal) print(`${sanitizeChatText(nameOf(receipt.agent_id))}: delivered`);
     }
   };
   const reportRoomClosed = () => {
     exitReason = "tt chat: the room has closed.";
-    if (!terminal) print("The room has closed.");
+    if (!fullscreen) print("The room has closed.");
   };
   const restore = () => {
     editor?.close();
+    if (inlineActive) {
+      eraseComposer();
+      output.write("\u001b[?2026l\u001b[?2004l");
+      inlineActive = false;
+    }
     if (!screenActive) return;
     screenActive = false;
     output.write(
@@ -265,7 +411,7 @@ export async function runChatSession(
     );
   };
   const stop = () => {
-    if (closed && !screenActive && !rl) return;
+    if (closed && !screenActive && !inlineActive && !rl) return;
     closed = true;
     if (frameTimer) clearTimeout(frameTimer);
     frameTimer = null;
@@ -274,6 +420,35 @@ export async function runChatSession(
     restore();
   };
   const onResize = () => {
+    // Reflow invalidates physical row anchors; never overwrite a different
+    // message using coordinates recorded at the old width.
+    inlineReceiptRows.clear();
+    inlineOutputRows = 0;
+    inlineVisibleFloor = 0;
+    // Reflow can move rows both before and after the editor cursor. Rebuild
+    // the visible tail from the model instead of guessing a cursor-up distance.
+    // Home + ED0 clears only the active area; ED2 may push it into scrollback
+    // in some terminals, and ED3 would erase history.
+    if (inline) {
+      inlineFrame = null;
+      editor?.resize(dimensions().columns - 1);
+      const draft = editor?.draft ?? { line: "", cursor: 0 };
+      const panel = renderInlinePanel({ room_path: joined.canonical_path, transcript, format: formatContext(),
+        status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date() },
+        draft, hint, completions: editor?.completionVisible ? completionsFor(draft) : [],
+        completion_index: editor?.completionIndex ?? 0, ...dimensions() });
+      const tailHeight = Math.max(0, dimensions().rows - panel.lines.length);
+      const tail = transcript.viewport(tailHeight, Math.max(1, dimensions().columns - 1), formatContext());
+      output.write("\u001b[?2026h\u001b[H\u001b[J");
+      if (tail.length) output.write(tail.join("\r\n") + "\r\n");
+      inlineOutputRows = tail.length;
+      for (const [seq, row] of transcript.receiptRows(tailHeight, Math.max(1, dimensions().columns - 1), formatContext())) {
+        inlineReceiptRows.set(seq, row);
+      }
+      drawComposer();
+      output.write("\u001b[?2026l");
+      return;
+    }
     editor?.resize(dimensions().columns - 1);
     previousFrame = null;
     redraw();
@@ -324,6 +499,47 @@ export async function runChatSession(
 
   const render = (event: RoomEvent) => formatChatEvent(event, formatContext());
 
+  const hydrateReceipts = (events: RoomEvent[]) => {
+    const seqs = events.filter(event => event.event_type === "message_sent" && event.from_agent_id?.startsWith("human:"))
+      .map(event => event.event_seq);
+    for (let start = 0; start < seqs.length; start += RECEIPT_BATCH) {
+      for (const receipt of runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: seqs.slice(start, start + RECEIPT_BATCH) })) {
+        rememberDelivery(receipt.event_seq, receipt.agent_id, "delivered");
+      }
+    }
+    if (seqs.length) transcript.invalidate();
+  };
+
+  const scrollHistory = (amount: number) => {
+    const { columns, rows } = dimensions();
+    const draft = editor?.draft ?? { line: "", cursor: 0 };
+    const height = chatTranscriptHeight({ draft, columns, rows, room_path: joined.canonical_path });
+    if (!height) return;
+    if (transcript.following && transcript.oldestEventSeq !== undefined) {
+      historyCursor = transcript.oldestEventSeq;
+      historyExhausted = false;
+    }
+    if (amount < 0 && !historyExhausted && transcript.needsEarlier(amount, height, columns - 1, formatContext())) {
+      // Skip pages containing only hidden system events, but bound the work
+      // per keystroke. A later upward scroll continues from the saved cursor.
+      for (let page = 0; page < 10 && !historyExhausted; page++) {
+        const earlier = runtime.commands.getRecentRoomEvents({
+          room_id: roomId, limit: 100, before_event_seq: historyCursor,
+          event_types: showTurnEvents ? undefined : CONVERSATION_EVENTS
+        });
+        if (earlier.length === 0) { historyExhausted = true; break; }
+        historyCursor = earlier[0].event_seq;
+        historyExhausted = earlier.length < 100;
+        hydrateReceipts(earlier);
+        const visible = earlier.filter((event) => render(event) !== null);
+        transcript.prependEvents(visible, height, columns - 1, formatContext());
+        if (visible.length) break;
+      }
+    }
+    transcript.scrollBy(amount, height, columns - 1, formatContext());
+    redraw();
+  };
+
   const coloredName = (agentId: string) =>
     formatChatAgent(
       {
@@ -354,8 +570,11 @@ export async function runChatSession(
   };
 
   const send = (to: string[], body: string, interrupt: boolean) => {
-    let targets: (string | null)[] = [null];
-    if (to.length > 0) {
+    // No mention, or @everyone, is one room message that reaches every agent.
+    // Named mentions narrow it: one name is a directed message, several share
+    // a single message listing them. Nothing is ever sent once per agent.
+    let route: { to_agent_id?: string; to_agent_ids?: string[] } = {};
+    if (to.length > 0 && !to.some((selector) => EVERYONE_SELECTORS.includes(selector))) {
       refreshMembers();
       const resolved = resolveChatRecipients(to, members, selfId);
       if ("error" in resolved) {
@@ -373,37 +592,26 @@ export async function runChatSession(
         );
         return;
       }
-      targets = resolved.agent_ids;
+      route = resolved.agent_ids.length === 1
+        ? { to_agent_id: resolved.agent_ids[0] }
+        : { to_agent_ids: resolved.agent_ids };
     }
-    for (const toAgentId of targets) {
-      void runtime.commands.sendMessageAndWake(identity, {
-        room_id: roomId,
-        body,
-        to_agent_id: toAgentId,
-        delivery_hint: interrupt ? "interrupt" : "normal"
-      })
-      .then((result) => {
-        if (closed || !result.delivery_target) return;
-        const state = result.delivery_status === "receiver" ? "listening" :
-          result.delivery_status === "pending" ? "waiting for agent to read" :
-          result.delivery_state === "queued" && result.interrupt_status === "unsupported" ? "queued; immediate interrupt unavailable" :
-          result.delivery_state === "queued" && result.interrupt_status === "injected" ? "urgent prompt injected" :
-          result.delivery_state === "queued" || result.delivery_state === "woken" ? result.delivery_state :
-          result.delivery_state === "ambiguous" ? "wake unconfirmed" :
-          "not listening";
-        const text = `${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`;
-        const notice = print(text);
-        const received = runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: [result.event_seq] });
-        if (received.length > 0) {
-          if (notice !== null) transcript.updateNotice(notice, `${text} → received`);
-          else print(`${sanitizeChatText(nameOf(result.delivery_target))}: received`);
-          redraw();
-        } else {
-          trackReceipt(result.event_seq, { notice, text });
-        }
-      })
-      .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
-    }
+    redraw();
+    void runtime.commands.sendMessageAndWake(identity, {
+      room_id: roomId,
+      body,
+      ...route,
+      delivery_hint: interrupt ? "interrupt" : "normal"
+    }, (delivery, sent) => {
+      if (closed) return;
+      const received = runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: [sent.event_seq] })
+        .some((receipt) => receipt.agent_id === delivery.agent_id);
+      const state = received ? "delivered" : describeChatDelivery(delivery);
+      setDelivery(sent.event_seq, delivery.agent_id, state);
+      if (!terminal) print(`${sanitizeChatText(nameOf(delivery.agent_id))}: ${state}`);
+      if (!received) trackReceipt(sent.event_seq, delivery.agent_id);
+    })
+    .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
   };
 
   const runCommand = (name: string, args = "") => {
@@ -414,9 +622,37 @@ export async function runChatSession(
         stop();
         return;
       case "bottom":
+        if (inline) {
+          print("Use your terminal's scroll-to-bottom shortcut to return to live messages.");
+          return;
+        }
         transcript.scrollToBottom();
         redraw();
         return;
+      case "older": {
+        if (!inline) { scrollHistory(-100); return; }
+        if (historyExhausted) { print("No older saved messages."); return; }
+        const entries: RoomEvent[] = [];
+        for (let page = 0; page < 10 && !historyExhausted; page++) {
+          const earlier = runtime.commands.getRecentRoomEvents({
+            room_id: roomId, limit: 100, before_event_seq: historyCursor,
+            event_types: showTurnEvents ? undefined : CONVERSATION_EVENTS
+          });
+          // The service applies all filters before LIMIT; a short page is EOF.
+          historyExhausted = earlier.length < 100;
+          if (earlier.length) historyCursor = earlier[0].event_seq;
+          entries.push(...earlier.filter(event => render(event) !== null));
+          if (entries.length) break;
+        }
+        if (!entries.length) {
+          print(historyExhausted ? "No older saved messages." : "No visible messages in this page; use /older to continue.");
+          return;
+        }
+        hydrateReceipts(entries);
+        const lines = entries.map(event => render(event)!).join("\n\n");
+        print(`── Earlier saved messages ──\n${lines}\n── End of earlier page · /older for more ──`);
+        return;
+      }
       case "who":
         refreshMembers();
         print(describeRoom());
@@ -448,7 +684,7 @@ export async function runChatSession(
         print(`Stick events ${showTurnEvents ? "shown" : "hidden"}.`);
         return;
       case "help":
-        print(formatChatHelp(dimensions().columns - 1, options.color, args.trim() === "keys"));
+        print(formatChatHelp(dimensions().columns - 1, options.color, args.trim() === "keys", inline));
         return;
       default:
         print(`! Unknown command /${name}. Try /help.`);
@@ -458,7 +694,24 @@ export async function runChatSession(
   // Messages are separated by a blank line; consecutive stick/membership
   // lines stay compact underneath the message they follow.
   let lastPrinted: "message" | "system" | "info" = "info";
-  const printEvent = (event: RoomEvent) => {
+  const printEvent = (event: RoomEvent, historical = false) => {
+    if (!historical && event.event_type === "message_sent" && event.from_agent_id?.startsWith("human:")) {
+      // Named recipients are known from the event itself; a room message's
+      // recipients come from this console's own send result instead.
+      // Every recipient gets a pending icon from the first paint, taken from
+      // the send-time snapshot on the event itself, so later acks only swap it.
+      const payload = event.payload as { recipients?: unknown; sent_to?: unknown } | null;
+      const listed = Array.isArray(payload?.recipients) ? payload.recipients : payload?.sent_to;
+      const recipients = event.to_agent_id ? [event.to_agent_id]
+        : Array.isArray(listed) ? listed.filter((id): id is string => typeof id === "string") : [];
+      if (recipients.length > 0) trackedEvents.set(event.event_seq, event);
+      while (trackedEvents.size > 2_000) trackedEvents.delete(trackedEvents.keys().next().value!);
+      for (const agent of recipients) {
+        const states = deliveryStates.get(event.event_seq);
+        if (!states?.has(agent)) rememberDelivery(event.event_seq, agent, "sent");
+        if (deliveryStates.get(event.event_seq)?.get(agent) !== "delivered") trackReceipt(event.event_seq, agent);
+      }
+    }
     if (render(event) !== null && isChatConversationActivity(event)) {
       if (startsChatConversation(previousConversationEvent, event) &&
           (!historyBefore || Date.parse(event.created_at) > Date.parse(historyBefore))) {
@@ -474,8 +727,8 @@ export async function runChatSession(
     } else if (event.event_type === "join" && event.from_agent_id) {
       departedAgents.delete(event.from_agent_id);
     }
-    if (terminal) {
-      transcript.appendEvent(event);
+    if (terminal) transcript.appendEvent(event);
+    if (fullscreen) {
       if (
         event.event_type === "message_sent" &&
         event.to_agent_id === selfId &&
@@ -491,18 +744,22 @@ export async function runChatSession(
     }
     const section = chatSectionLabel(event, formatContext());
     if (section !== printedSection) {
-      print(`── ${section} ──`);
+      if (inline) writeInline(`── ${section} ──`);
+      else print(`── ${section} ──`);
       printedSection = section;
     }
     const isMessage = event.event_type === "message_sent";
     if (isMessage || lastPrinted === "message") {
-      print("");
+      if (inline) writeInline(""); else print("");
     }
     const forMe =
       isMessage &&
       event.to_agent_id === selfId &&
       event.from_agent_id !== selfId;
-    print(forMe && terminal ? `${line}\u0007` : line);
+    const headerRow = inlineOutputRows;
+    if (inline) writeInline(forMe ? `${line}\u0007` : line);
+    else print(forMe && terminal ? `${line}\u0007` : line);
+    if (inline && deliveryStates.has(event.event_seq)) inlineReceiptRows.set(event.event_seq, headerRow);
     lastPrinted = isMessage ? "message" : "system";
   };
 
@@ -550,7 +807,7 @@ export async function runChatSession(
     output.on("resize", onResize);
   }
   try {
-    if (terminal) {
+    if (fullscreen) {
       screenActive = true;
       output.write(
         "\u001b[?1049h\u001b[?2004h" +
@@ -577,13 +834,7 @@ export async function runChatSession(
           const draft = editor?.draft ?? { line: "", cursor: 0 };
           const height = chatTranscriptHeight({ draft, columns, rows, room_path: joined.canonical_path });
           if (height === 0) return;
-          transcript.scrollBy(
-            amount * (kind === "pages" ? Math.max(1, height - 1) : 1),
-            height,
-            columns - 1,
-            formatContext()
-          );
-          redraw();
+          scrollHistory(amount * (kind === "pages" ? Math.max(1, height - 1) : 1));
         },
         onWheel: (row, direction) => {
           const size = dimensions();
@@ -592,7 +843,7 @@ export async function runChatSession(
           const region = chatWheelRegion(layout, row);
           if (region === "prompt") editor?.scrollPrompt(direction);
           else if (region === "transcript") {
-            transcript.scrollBy(direction * 3, chatTranscriptHeight(layout), size.columns - 1, formatContext());
+            scrollHistory(direction * 3);
           }
           redraw();
         },
@@ -602,6 +853,35 @@ export async function runChatSession(
           return matches[Math.min(index, matches.length - 1)]?.draft ?? null;
         }
       });
+    } else if (inline) {
+      // The terminal keeps its normal screen and owns scrollback, selection,
+      // and the wheel. The same editor as full-screen mode handles bracketed
+      // paste, multiline drafts, and completion; only the drawing differs.
+      inlineActive = true;
+      output.write("\u001b[?2004h");
+      editor = new ChatInputController({
+        input: options.input,
+        columns: dimensions().columns - 1,
+        onChange: drawComposer,
+        onSubmit: (line) => {
+          eraseComposer();
+          submit(line);
+          drawComposer();
+        },
+        onClear: () => {
+          hint = "type /quit to exit";
+        },
+        onQuit: stop,
+        // Scrollback belongs to the terminal in this mode.
+        onBottom: () => {},
+        onScroll: () => {},
+        completionCount: (draft) => completionsFor(draft).length,
+        complete: (draft, index) => {
+          const matches = completionsFor(draft);
+          return matches[Math.min(index, matches.length - 1)]?.draft ?? null;
+        }
+      });
+      drawComposer();
     } else {
       rl = readline.createInterface({ input: options.input, terminal: false });
       rl.on("line", submit);
@@ -620,7 +900,7 @@ export async function runChatSession(
         lastGrant?.to_agent_id === owner ? lastGrant.created_at : null;
     }
     print(`Talking Stick chat · ${sanitizeChatText(joined.canonical_path)}`);
-    if (!terminal) {
+    if (!fullscreen) {
       print(describeRoom());
     }
     print(
@@ -641,6 +921,7 @@ export async function runChatSession(
               (event) => event.event_seq <= head && render(event) !== null
             )
             .slice(-Math.max(0, options.history));
+    historyCursor = historyEvents[0]?.event_seq ?? head + 1;
     // Determine the latest conversation before rendering so its predecessor
     // is dimmed even on the first frame (including non-terminal output).
     const conversationEvents = historyEvents.filter(isChatConversationActivity);
@@ -649,57 +930,79 @@ export async function runChatSession(
         historyBefore = conversationEvents[index].created_at;
       }
     }
+    hydrateReceipts(historyEvents);
     for (const event of historyEvents) {
-      printEvent(event);
+      printEvent(event, true);
     }
 
     redraw();
 
     let cursor = head;
+    let busyAttempts = 0;
     while (!closed) {
-      let result;
       try {
-        result = await runtime.commands.waitForEvents({
-          agent_id: selfId,
-          room_id: roomId,
-          after_event_seq: cursor,
-          target_agent_id: "any",
-          max_wait_ms: options.poll_ms ?? DEFAULT_POLL_MS
-        });
-      } catch (error) {
-        if (error instanceof ProtocolError && error.code === "room_not_found") {
-          reportRoomClosed();
-          break;
+        let result;
+        try {
+          result = await runtime.commands.waitForEvents({
+            agent_id: selfId,
+            room_id: roomId,
+            after_event_seq: cursor,
+            target_agent_id: "any",
+            max_wait_ms: options.poll_ms ?? DEFAULT_POLL_MS
+          });
+        } catch (error) {
+          if (error instanceof ProtocolError && error.code === "room_not_found") {
+            reportRoomClosed();
+            break;
+          }
+          throw error;
         }
-        throw error;
-      }
 
-      const stateChanged = result.events.some((event) =>
-        STATE_CHANGE_EVENTS.has(event.event_type)
-      );
-      const statusStale = Date.now() - lastStatusDraw >= STATUS_REFRESH_MS;
-      if (
-        stateChanged ||
-        statusStale ||
-        Date.now() - lastPresenceRefresh >= PRESENCE_REFRESH_MS
-      ) {
-        refreshMembers();
-      }
-      for (const event of result.events) {
-        if (OWNERSHIP_EVENTS.includes(event.event_type)) {
-          ownerSince = event.created_at;
+        const stateChanged = result.events.some((event) =>
+          STATE_CHANGE_EVENTS.has(event.event_type)
+        );
+        const statusStale = Date.now() - lastStatusDraw >= STATUS_REFRESH_MS;
+        if (
+          stateChanged ||
+          statusStale ||
+          Date.now() - lastPresenceRefresh >= PRESENCE_REFRESH_MS
+        ) {
+          refreshMembers();
         }
-        printEvent(event);
-        if (event.event_type === "close") {
-          reportRoomClosed();
-          closed = true;
+        hydrateReceipts(result.events);
+        for (const event of result.events) {
+          if (OWNERSHIP_EVENTS.includes(event.event_type)) {
+            ownerSince = event.created_at;
+          }
+          printEvent(event);
+          if (event.event_type === "close") {
+            reportRoomClosed();
+            closed = true;
+          }
         }
-      }
-      cursor = result.cursor_event_seq;
-      if (!closed) checkReceipts();
-      if ((stateChanged || statusStale) && !closed) {
-        redraw();
-        lastStatusDraw = Date.now();
+        cursor = result.cursor_event_seq;
+        if (!closed) checkReceipts();
+        if ((stateChanged || statusStale) && !closed) {
+          redraw();
+          lastStatusDraw = Date.now();
+        }
+        if (busyAttempts) {
+          busyAttempts = 0;
+          hint = null;
+          redraw();
+        }
+      } catch (error) {
+        if (!isSqliteBusy(error)) throw error;
+        // Presence and maintenance writes may contend even during a read
+        // cycle. Keep the editor alive and retry from the last rendered event.
+        // Never retry a send here: its commit may already have succeeded.
+        busyAttempts++;
+        hint = "database busy · retrying";
+        if (busyAttempts === 1) {
+          if (terminal) redraw();
+          else print("Database busy; waiting to reconnect.");
+        }
+        if (!closed) await sleep(Math.min(2_000, 100 * 2 ** Math.min(busyAttempts - 1, 5)));
       }
     }
     if (failure) throw failure;
@@ -714,8 +1017,13 @@ export async function runChatSession(
     process.off("exit", restore);
     process.off("uncaughtExceptionMonitor", restore);
     stop();
-    if (terminal && exitReason) output.write(`${exitReason}\n`);
-    await runtime.commands.flushWakes(roomId);
+    if (fullscreen && exitReason) output.write(`${exitReason}\n`);
+    else if (inline && exitReason) output.write(`\r\u001b[2K${exitReason}\n`);
+    try {
+      await runtime.commands.flushWakes(roomId);
+    } catch {
+      // Pending wakes remain durable; cleanup must not replace the real error.
+    }
     try {
       runtime.commands.leaveRoom(identity, { room_id: roomId });
     } catch {

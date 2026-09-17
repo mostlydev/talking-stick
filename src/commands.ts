@@ -30,6 +30,7 @@ import type {
   EventType,
   RoomEvent,
   SendMessageResult,
+  MessageDelivery,
   TakeoverStickInput,
   TakeoverStickResult,
   WaitForEventsInput,
@@ -365,6 +366,12 @@ export class TalkingStickCommands {
     return this.service.getRoomState(input);
   }
 
+  acknowledgeNativeDelivery(identity: DerivedIdentity, token: string) {
+    return this.service.acknowledgeNativeDelivery({ agent_id: identity.agent_id, token,
+      harness_session_id: identity.process_metadata.harness_session_id,
+      host_id: identity.process_metadata.harness_host_id ?? identity.process_metadata.host_id });
+  }
+
   getRoomEvents(input: GetRoomEventsInput): RoomEvent[] {
     return this.service.getRoomEvents(input);
   }
@@ -373,6 +380,7 @@ export class TalkingStickCommands {
     room_id: string;
     limit: number;
     event_types?: EventType[];
+    before_event_seq?: number;
   }): RoomEvent[] {
     return this.service.getRecentRoomEvents(input);
   }
@@ -400,9 +408,13 @@ export class TalkingStickCommands {
     return this.service.flushWakes(roomId);
   }
 
-  sendMessageAndWake(identity: DerivedIdentity, input: SendMessageCommandInput): Promise<SendMessageResult> {
+  sendMessageAndWake(
+    identity: DerivedIdentity,
+    input: SendMessageCommandInput,
+    onDelivery?: (delivery: MessageDelivery, sent: SendMessageResult) => void
+  ): Promise<SendMessageResult> {
     return this.service.sendMessageAndWake({ ...input, agent_id: identity.agent_id,
-      process_metadata: identity.process_metadata });
+      process_metadata: identity.process_metadata }, onDelivery);
   }
 
   sendMessage(

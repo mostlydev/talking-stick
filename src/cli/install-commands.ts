@@ -8,6 +8,10 @@ import {
   planClaudeStopGuardUninstall,
   planGrokSessionHookInstall,
   planGrokSessionHookUninstall,
+  planGrokStopHookInstall,
+  planGrokStopHookUninstall,
+  planGrokInboxHookInstall,
+  planGrokInboxHookUninstall,
   runAction,
   type HarnessId,
   type InstallAction,
@@ -70,7 +74,13 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
       }
       for (const action of [
         ...(harnesses.includes("grok")
-          ? [planGrokSessionHookInstall(installOptions)]
+          ? [
+              planGrokSessionHookInstall(installOptions),
+              planGrokInboxHookInstall(installOptions),
+              ...(installOptions.guard !== false
+                ? [planGrokStopHookInstall(installOptions)]
+                : [])
+            ]
           : []),
         ...(harnesses.includes("claude-code") && installOptions.guard !== false
           ? [planClaudeStopGuardInstall(installOptions)]
@@ -105,7 +115,16 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
     ? [
         ...skillerResults,
         ...(harnesses.includes("grok")
-          ? await runSkillInstallActions([planGrokSessionHookInstall(installOptions)], installOptions)
+          ? await runSkillInstallActions(
+              [
+                planGrokSessionHookInstall(installOptions),
+                planGrokInboxHookInstall(installOptions),
+                ...(installOptions.guard !== false
+                  ? [planGrokStopHookInstall(installOptions)]
+                  : [])
+              ],
+              installOptions
+            )
           : []),
         ...(harnesses.includes("claude-code") && installOptions.guard !== false
           ? await runSkillInstallActions(
@@ -152,6 +171,11 @@ export async function runUninstallCommand(
               planGrokSessionHookUninstall({
                 ...installOptions,
                 skipMissing: false
+              }),
+              planGrokInboxHookUninstall({ ...installOptions, skipMissing: false }),
+              planGrokStopHookUninstall({
+                ...installOptions,
+                skipMissing: false
               })
             ]
           : []),
@@ -189,6 +213,16 @@ export async function runUninstallCommand(
           ? [
               await runAction(
                 planGrokSessionHookUninstall({
+                  ...installOptions,
+                  skipMissing: false
+                }),
+                installOptions
+              ),
+              await runAction(
+                planGrokInboxHookUninstall({ ...installOptions, skipMissing: false }), installOptions
+              ),
+              await runAction(
+                planGrokStopHookUninstall({
                   ...installOptions,
                   skipMissing: false
                 }),
@@ -379,6 +413,11 @@ function planUninstallActions(
           planGrokSessionHookUninstall({
             ...installOptions,
             skipMissing: false
+          }),
+          planGrokInboxHookUninstall({ ...installOptions, skipMissing: false }),
+          planGrokStopHookUninstall({
+            ...installOptions,
+            skipMissing: false
           })
         ]
       : [])
@@ -414,6 +453,11 @@ async function runSkillUninstall(
           planGrokSessionHookUninstall({
             ...installOptions,
             skipMissing: false
+          }),
+          planGrokInboxHookUninstall({ ...installOptions, skipMissing: false }),
+          planGrokStopHookUninstall({
+            ...installOptions,
+            skipMissing: false
           })
         ]
       : [])
@@ -427,7 +471,15 @@ function planInstallActionsForHarness(
 ): InstallAction[] {
   return [
     planSkillInstall(harness, installOptions),
-    ...(harness === "grok" ? [planGrokSessionHookInstall(installOptions)] : []),
+    ...(harness === "grok"
+      ? [
+          planGrokSessionHookInstall(installOptions),
+          planGrokInboxHookInstall(installOptions),
+          ...(installOptions.guard !== false
+            ? [planGrokStopHookInstall(installOptions)]
+            : [])
+        ]
+      : []),
     ...(harness === "claude-code" && installOptions.guard !== false
       ? [planClaudeStopGuardInstall(installOptions)]
       : [])

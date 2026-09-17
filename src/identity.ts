@@ -387,6 +387,16 @@ function detectHarnessSignal(env: NodeJS.ProcessEnv): HarnessSignal | null {
       pidHint: null
     };
   }
+  // GROK_AGENT is the marker; GROK_SESSION_ID alone is not. Grok exports both
+  // into tool children, and a nested harness inherits them, so the session id
+  // only names the session once GROK_AGENT (or ancestry) has established grok.
+  if (env.GROK_AGENT === "1") {
+    return {
+      harness: "grok",
+      sessionId: nonEmpty(env.GROK_SESSION_ID),
+      pidHint: null
+    };
+  }
   const cmuxHarness = resolveCmuxLaunchHarness(env);
   if (cmuxHarness) {
     return {
@@ -424,6 +434,11 @@ function resolveGrokHookSessionId(
     now?: Date;
   }
 ): string | null {
+  // Only reached once grok is the established harness, so the exported session
+  // id is authoritative and beats the recorded hook history.
+  const exported = nonEmpty(env.GROK_SESSION_ID);
+  if (exported) return exported;
+
   const workspaceRoot = resolveGrokWorkspaceRoot(env, options.contextPath);
   const record = findGrokSessionRecord({
     logPath:

@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { guardDisplayName } from "../src/cli/guardian.js";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 
@@ -154,3 +155,10 @@ function fakeHeartbeatInput() {
     expected_turn_id: 1
   };
 }
+
+test("the guardian keeps the harness display name so short mentions still resolve", () => {
+  expect(guardDisplayName("claude:0705e896", "claude")).toBe("claude");
+  expect(guardDisplayName("grok:5bc64c09", "grok")).toBe("grok");
+  expect(guardDisplayName("human:alice", null)).toBe("alice");
+  expect(guardDisplayName("human:alice", "  ")).toBe("alice");
+});
