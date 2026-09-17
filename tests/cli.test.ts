@@ -2149,6 +2149,11 @@ describe("tt notes", () => {
     expect(out).toContain(".grok/skills/talking-stick");
     expect(out).toContain("[grok] write Grok session hook ");
     expect(out).toContain(".grok/hooks/talking-stick-session.json");
+    expect(out).toContain(".grok/hooks/talking-stick-inbox.json");
+    expect(out).toContain(".grok/hooks/talking-stick-stop.json");
+    const noGuard = await captureStdout(["install", "grok", "--no-guard", "--print"]);
+    expect(noGuard).toContain(".grok/hooks/talking-stick-inbox.json");
+    expect(noGuard).not.toContain(".grok/hooks/talking-stick-stop.json");
   });
 
   test("tt install gemini --print is cleanup-only and points to Antigravity", async () => {

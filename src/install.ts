@@ -549,53 +549,52 @@ export function buildGrokStopHookConfig(): string {
   );
 }
 
-export function planGrokStopHookInstall(
-  options: InstallOptions = {}
-): InstallAction {
+export function buildGrokInboxHookConfig(): string {
+  const hook = { type: "command", command: ": talking-stick-grok-inbox-hook; if command -v tt >/dev/null 2>&1; then tt grok-inbox-hook; fi", timeout: 5 };
+  return JSON.stringify({ hooks: Object.fromEntries(["PostToolUse", "PostToolUseFailure", "Stop"]
+    .map(event => [event, [{ hooks: [hook] }]])) }, null, 2) + "\n";
+}
+
+export function resolveGrokInboxHookPath(options: InstallOptions = {}): string {
+  return path.join(path.dirname(resolveGrokStopHookPath(options)), "talking-stick-inbox.json");
+}
+
+export function planGrokStopHookInstall(options: InstallOptions = {}): InstallAction {
+  return planGrokHookFile(options, resolveGrokStopHookPath(options), buildGrokStopHookConfig());
+}
+
+export function planGrokStopHookUninstall(options: InstallOptions = {}): InstallAction {
+  return planGrokHookFile(options, resolveGrokStopHookPath(options), null);
+}
+
+export function planGrokInboxHookInstall(options: InstallOptions = {}): InstallAction {
+  return planGrokHookFile(options, resolveGrokInboxHookPath(options), buildGrokInboxHookConfig());
+}
+
+export function planGrokInboxHookUninstall(options: InstallOptions = {}): InstallAction {
+  return planGrokHookFile(options, resolveGrokInboxHookPath(options), null);
+}
+
+function planGrokHookFile(options: InstallOptions, filePath: string, content: string | null): InstallAction {
   const resolved = resolveOptions(options);
   const grokConfigDir = resolveGrokConfigDirFromResolved(resolved);
-  const filePath = resolveGrokStopHookPath(options);
   if (resolved.skipMissing && !resolved.hooks.pathExists(grokConfigDir)) {
     return skipAction("grok", `grok config directory not found: ${grokConfigDir}`);
   }
-
   return {
-    kind: "file-patch",
-    harness: "grok",
-    filePath,
-    description: `write Grok stop guard ${filePath}`,
-    operation: "install",
+    kind: "file-patch", harness: "grok", filePath,
+    description: `${content === null ? "remove" : "write"} Grok hook ${filePath}`,
+    operation: content === null ? "uninstall" : "install",
     inspect: () => {
       const existing = resolved.hooks.readFile(filePath);
       if (existing === null) return "absent";
-      return existing === buildGrokStopHookConfig() ? "present" : "different";
+      return content === null || existing === content ? "present" : "different";
     },
     apply: () => {
+      if (content === null) { removeGrokSessionHook(filePath, resolved); return; }
       resolved.hooks.ensureDir(path.dirname(filePath));
-      resolved.hooks.writeFile(filePath, buildGrokStopHookConfig());
+      resolved.hooks.writeFile(filePath, content);
     }
-  };
-}
-
-export function planGrokStopHookUninstall(
-  options: InstallOptions = {}
-): InstallAction {
-  const resolved = resolveOptions(options);
-  const grokConfigDir = resolveGrokConfigDirFromResolved(resolved);
-  const filePath = resolveGrokStopHookPath(options);
-  if (resolved.skipMissing && !resolved.hooks.pathExists(grokConfigDir)) {
-    return skipAction("grok", `grok config directory not found: ${grokConfigDir}`);
-  }
-
-  return {
-    kind: "file-patch",
-    harness: "grok",
-    filePath,
-    description: `remove Grok stop guard ${filePath}`,
-    operation: "uninstall",
-    inspect: () =>
-      resolved.hooks.readFile(filePath) === null ? "absent" : "present",
-    apply: () => removeGrokSessionHook(filePath, resolved)
   };
 }
 

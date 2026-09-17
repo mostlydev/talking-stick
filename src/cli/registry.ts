@@ -1,3 +1,4 @@
+import { runGrokInboxHookCommand } from "./grok-inbox-hook.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
 import { runGuardCommand } from "./guardian.js";
@@ -51,6 +52,11 @@ export interface CommandEntry {
 }
 
 export const COMMAND_REGISTRY: CommandEntry[] = [
+  {
+    name: "grok-inbox-hook", needsRuntime: false, startupMaintenance: false, internal: true,
+    usage: "tt grok-inbox-hook", description: "Deliver pending room events inside an active Grok session.",
+    handler: () => runGrokInboxHookCommand()
+  },
   {
     name: "ack", needsRuntime: true, startupMaintenance: false, internal: false,
     usage: "tt ack <delivery-token> [--json]",

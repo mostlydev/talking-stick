@@ -338,6 +338,15 @@ const migrations: Migration[] = [
     id: 18,
     name: "native_batch_retry_age",
     up: `ALTER TABLE member_wake_endpoints ADD COLUMN batch_started_at TEXT;`
+  },
+  {
+    id: 19,
+    name: "hook_delivery_reservations",
+    up: `
+      ALTER TABLE native_delivery_batches ADD COLUMN source TEXT NOT NULL DEFAULT 'native';
+      ALTER TABLE native_delivery_batches ADD COLUMN created_at TEXT;
+      CREATE INDEX hook_delivery_pending ON native_delivery_batches(room_id, agent_id, source, created_at);
+    `
   }
 ];
 

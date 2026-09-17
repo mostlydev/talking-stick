@@ -4,6 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   buildGrokSessionHookConfig,
+  buildGrokInboxHookConfig,
+  planGrokInboxHookInstall,
+  planGrokInboxHookUninstall,
+  resolveGrokInboxHookPath,
   CLAUDE_STOP_GUARD_MARKER,
   mergeClaudeStopGuard,
   planClaudeStopGuardInstall,
@@ -267,4 +271,24 @@ describe("grok stop guard", () => {
 
     expect(fs.readFileSync(foreign, "utf8")).toBe('{"hooks":{"Stop":[]}}\n');
   });
+});
+
+
+test("Grok inbox hooks install idempotently and remove only their own file", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-inbox-"));
+  roots.push(homeDir);
+  const options = { homeDir, env: {} };
+  await runAction(planGrokSessionHookInstall(options), options);
+  await runAction(planGrokStopHookInstall(options), options);
+  const foreign = path.join(homeDir, ".grok/hooks/foreign.json");
+  fs.writeFileSync(foreign, "{}\n");
+  expect((await runAction(planGrokInboxHookInstall(options), options)).status).toBe("added");
+  expect((await runAction(planGrokInboxHookInstall(options), options)).status).toBe("already_present");
+  expect(fs.readFileSync(resolveGrokInboxHookPath(options), "utf8")).toBe(buildGrokInboxHookConfig());
+  expect(Object.keys(JSON.parse(buildGrokInboxHookConfig()).hooks)).toEqual(["PostToolUse", "PostToolUseFailure", "Stop"]);
+  await runAction(planGrokInboxHookUninstall(options), options);
+  expect(fs.existsSync(resolveGrokInboxHookPath(options))).toBe(false);
+  expect(fs.existsSync(resolveGrokSessionHookPath(options))).toBe(true);
+  expect(fs.existsSync(resolveGrokStopHookPath(options))).toBe(true);
+  expect(fs.readFileSync(foreign, "utf8")).toBe("{}\n");
 });

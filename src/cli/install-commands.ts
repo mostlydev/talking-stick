@@ -10,6 +10,8 @@ import {
   planGrokSessionHookUninstall,
   planGrokStopHookInstall,
   planGrokStopHookUninstall,
+  planGrokInboxHookInstall,
+  planGrokInboxHookUninstall,
   runAction,
   type HarnessId,
   type InstallAction,
@@ -74,6 +76,7 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
         ...(harnesses.includes("grok")
           ? [
               planGrokSessionHookInstall(installOptions),
+              planGrokInboxHookInstall(installOptions),
               ...(installOptions.guard !== false
                 ? [planGrokStopHookInstall(installOptions)]
                 : [])
@@ -115,6 +118,7 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
           ? await runSkillInstallActions(
               [
                 planGrokSessionHookInstall(installOptions),
+                planGrokInboxHookInstall(installOptions),
                 ...(installOptions.guard !== false
                   ? [planGrokStopHookInstall(installOptions)]
                   : [])
@@ -168,6 +172,7 @@ export async function runUninstallCommand(
                 ...installOptions,
                 skipMissing: false
               }),
+              planGrokInboxHookUninstall({ ...installOptions, skipMissing: false }),
               planGrokStopHookUninstall({
                 ...installOptions,
                 skipMissing: false
@@ -212,6 +217,9 @@ export async function runUninstallCommand(
                   skipMissing: false
                 }),
                 installOptions
+              ),
+              await runAction(
+                planGrokInboxHookUninstall({ ...installOptions, skipMissing: false }), installOptions
               ),
               await runAction(
                 planGrokStopHookUninstall({
@@ -406,6 +414,7 @@ function planUninstallActions(
             ...installOptions,
             skipMissing: false
           }),
+          planGrokInboxHookUninstall({ ...installOptions, skipMissing: false }),
           planGrokStopHookUninstall({
             ...installOptions,
             skipMissing: false
@@ -445,6 +454,7 @@ async function runSkillUninstall(
             ...installOptions,
             skipMissing: false
           }),
+          planGrokInboxHookUninstall({ ...installOptions, skipMissing: false }),
           planGrokStopHookUninstall({
             ...installOptions,
             skipMissing: false
@@ -464,6 +474,7 @@ function planInstallActionsForHarness(
     ...(harness === "grok"
       ? [
           planGrokSessionHookInstall(installOptions),
+          planGrokInboxHookInstall(installOptions),
           ...(installOptions.guard !== false
             ? [planGrokStopHookInstall(installOptions)]
             : [])

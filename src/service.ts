@@ -1817,6 +1817,10 @@ export class TalkingStickService {
       if (wakeTargetId) {
         if (deliveryHint === "interrupt" && wakeTargetId !== input.agent_id) {
           const target = this.getMember(input.room_id, wakeTargetId)!;
+          // Hook delivery must also see urgent events before an external wake
+          // attempt, including oversized events that cannot form an envelope.
+          this.db.prepare(`INSERT OR IGNORE INTO native_event_receipts (room_id, agent_id, event_seq) VALUES (?, ?, ?)`)
+            .run(input.room_id, wakeTargetId, eventSeq);
           this.db.prepare(`INSERT INTO interrupt_deliveries
             (room_id, agent_id, event_seq, harness_session_id, host_id) VALUES (?, ?, ?, ?, ?)`)
             .run(input.room_id, wakeTargetId, eventSeq,
@@ -2431,6 +2435,76 @@ export class TalkingStickService {
       .run(token, roomId, agentId, member.harness_session_id ?? `member:${agentId}`,
         member.harness_host_id ?? member.host_id ?? this.hostId, JSON.stringify(rows.map(row => row.event_seq)));
     return text;
+  }
+
+  // Hooks run inside an already active harness. This is receipt preparation,
+  // never enrollment, turn acquisition, or evidence of an idle wake transport.
+  prepareGrokHookDelivery(input: { context_path: string; harness_session_id: string; diagnostic?: (text: string) => void }): string | null {
+    const resolved = resolveContextPath(input.context_path);
+    const room = this.findDeepestRoom(ancestorPaths(resolved.canonical_context_path, resolved.workspace_root));
+    if (!room || room.state === "closed") return null;
+    // Most tool calls have no pending room work. Do not acquire a write lock
+    // for those calls; revalidate membership and pending events inside below.
+    const pendingForSession = this.db.prepare(`SELECT 1 FROM room_members m
+      JOIN native_event_receipts n ON n.room_id = m.room_id AND n.agent_id = m.agent_id
+      WHERE m.room_id = ? AND m.harness_session_id = ? AND m.harness_name = 'grok'
+        AND COALESCE(m.harness_host_id, m.host_id) = ? AND n.consumed_at IS NULL LIMIT 1`)
+      .get(room.room_id, input.harness_session_id, this.hostId);
+    if (!pendingForSession) return null;
+    return withImmediateTransaction(this.db, () => {
+      const members = this.db.prepare<[string, string, string], RoomMemberRow>(`SELECT * FROM room_members
+        WHERE room_id = ? AND harness_session_id = ? AND harness_name = 'grok'
+          AND COALESCE(harness_host_id, host_id) = ? LIMIT 2`)
+        .all(room.room_id, input.harness_session_id, this.hostId);
+      if (members.length !== 1) {
+        if (members.length > 1) input.diagnostic?.("Talking Stick: multiple Grok members match this session; hook delivery deferred. Check tt whoami and room membership.");
+        return null;
+      }
+      const member = members[0];
+      // A failed hook write must not strand events forever. Retrying can
+      // create another token for the same IDs; model event-ID dedup and exact
+      // acknowledgements intentionally make either token safe to accept.
+      const retryBefore = new Date(this.now().getTime() - 60_000).toISOString();
+      const outstanding = this.db.prepare(`SELECT 1 FROM native_delivery_batches b
+        WHERE b.room_id = ? AND b.agent_id = ? AND b.harness_session_id = ? AND b.host_id = ?
+          AND b.source = 'grok_hook' AND b.acknowledged_at IS NULL AND b.created_at > ?
+          AND EXISTS (SELECT 1 FROM json_each(b.event_seqs_json) j JOIN native_event_receipts n
+            ON n.room_id = b.room_id AND n.agent_id = b.agent_id AND n.event_seq = j.value
+            WHERE n.consumed_at IS NULL) LIMIT 1`)
+        .get(room.room_id, member.agent_id, input.harness_session_id, this.hostId, retryBefore);
+      if (outstanding) return null;
+      const pending = this.db.prepare<[string, string], RoomEventRow>(`SELECT e.* FROM room_events e
+        JOIN native_event_receipts n ON n.room_id = e.room_id AND n.event_seq = e.event_seq
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL ORDER BY e.event_seq LIMIT 32`)
+        .all(room.room_id, member.agent_id);
+      if (pending.length === 0) return null;
+      const token = randomUUID();
+      const selected: RoomEventRow[] = [];
+      for (const row of pending) {
+        const candidate = formatNativeEventText({ token, room_id: room.room_id, path: room.canonical_path,
+          recipient: member.agent_id, events: [...selected, row].map(event => this.mapEvent(event)) });
+        // Grok clips hook feedback at 10,000 characters. Bound UTF-8 bytes more
+        // conservatively so the complete envelope and acknowledgement survive.
+        if (!candidate || Buffer.byteLength(candidate, "utf8") > 8_000) break;
+        selected.push(row);
+      }
+      const text = selected.length > 0
+        ? this.prepareNativeEnvelope(room.room_id, member.agent_id, selected.map(row => row.event_seq), token)
+        : null;
+      if (!text) {
+        // An oversized event stays unread. Reserve only its pull notification,
+        // so every hook in this turn does not repeat the same fallback prompt.
+        this.db.prepare(`INSERT INTO native_delivery_batches
+          (token, room_id, agent_id, harness_session_id, host_id, event_seqs_json)
+          VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(token, room.room_id, member.agent_id, input.harness_session_id, this.hostId,
+            JSON.stringify([pending[0].event_seq]));
+      }
+      this.db.prepare("UPDATE native_delivery_batches SET source = 'grok_hook', created_at = ? WHERE token = ?")
+        .run(this.now().toISOString(), token);
+      this.touchKnownMember(room.room_id, member.agent_id, this.now().toISOString());
+      return text ?? "[talking-stick] A room event exceeds hook capacity. Run tt wait --json to read it; acquire writer authority only from a valid turn result.";
+    });
   }
 
   acknowledgeNativeDelivery(input: { agent_id: string; token: string; harness_session_id?: string | null; host_id?: string | null }) {
