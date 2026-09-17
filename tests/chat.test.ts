@@ -23,7 +23,7 @@ import {
   resolveChatRecipients,
   sanitizeChatText
 } from "../src/cli/chat-format.js";
-import { chatInlineEnabled, createChatIdentity, runChatSession } from "../src/cli/chat.js";
+import { chatInlineEnabled, chatTerminalCapable, createChatIdentity, runChatSession } from "../src/cli/chat.js";
 import { parseCommand } from "../src/cli/parser.js";
 
 const cleanups: Array<() => void> = [];
@@ -1580,4 +1580,12 @@ test("inline delivery replaces pending status with delivered without adding hist
     await session;
     vt.dispose();
   }
+});
+
+test("a dumb terminal falls back to plain line mode", () => {
+  const tty = { isTTY: true };
+  expect(chatTerminalCapable(tty, tty, { TERM: "xterm-256color" })).toBe(true);
+  expect(chatTerminalCapable(tty, tty, { TERM: "dumb" })).toBe(false);
+  expect(chatTerminalCapable({ isTTY: false }, tty, { TERM: "xterm-256color" })).toBe(false);
+  expect(chatTerminalCapable(tty, {}, {})).toBe(false);
 });

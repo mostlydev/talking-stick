@@ -98,13 +98,25 @@ export function chatInlineEnabled(parsed: ParsedCommand): boolean {
   return !hasOption(parsed, "fullscreen");
 }
 
+// A dumb terminal can neither draw the panel's cursor movement nor edit a
+// draft: Node's readline swaps in its dumb line writer whenever TERM=dumb, even
+// with terminal mode requested, so arrows and Ctrl+A arrive as literal text.
+// Plain line mode is the honest experience there.
+export function chatTerminalCapable(
+  stdin: { isTTY?: boolean },
+  stdout: { isTTY?: boolean },
+  env: NodeJS.ProcessEnv
+): boolean {
+  return Boolean(stdin.isTTY && stdout.isTTY) && env.TERM !== "dumb";
+}
+
 export async function handleChatCommand(
   runtime: Runtime,
   parsed: ParsedCommand
 ): Promise<void> {
   const agentId = getStringOption(parsed, "agent");
   const identity = createChatIdentity(agentId);
-  const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  const terminal = chatTerminalCapable(process.stdin, process.stdout, process.env);
 
   await runChatSession({
     runtime,

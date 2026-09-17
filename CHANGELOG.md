@@ -11,6 +11,7 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+- `tt chat` falls back to plain line mode under `TERM=dumb`. Node's readline disables line editing there even in terminal mode, so arrows and Ctrl+A were submitted as literal text, and a dumb terminal cannot draw the panel's cursor movement.
 - Restore the room bar, live agent status, and visible suggestions in normal-screen chat while preserving native scrollback and selection. Add `/older` for saved history, preserve draft cursors across messages and resize, and restore terminal modes on exit.
 
 - Grok Build gets the stop guard. `tt install grok` writes `~/.grok/hooks/talking-stick-stop.json` beside the existing lifecycle hook, so a Grok session that still holds the turn is reminded to hand off before it stops. The guard reads both Claude's snake_case and Grok's camelCase hook payloads, blocks only an ordinary turn end, and never blocks a session teardown or a subagent stop. `GROK_AGENT=1` now identifies a Grok session and carries `GROK_SESSION_ID` as its session anchor; `GROK_SESSION_ID` alone is still not a marker. Active Grok sessions now receive directed room events through PostToolUse, PostToolUseFailure, and normal Stop hooks, with exact-event acknowledgement, bounded envelopes, and pull recovery. Idle wake still requires cmux; a live `tt wait` also remains supported.
