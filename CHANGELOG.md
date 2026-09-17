@@ -11,33 +11,32 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
-- Deliver normal operator messages to Claude at its next tool boundary without cancelling tools, and keep multi-recipient messages out of unrelated agents' waits.
+This release changes how messages reach agents. An operator's chat now reaches every agent in the room, the message content itself is delivered into the agent's context (no `tt wait` needed), and delivery is shown per recipient in the chat. `/invite` for agents that have not joined, and a guarded herdr wake for idle Grok sessions, are not included.
 
-- An operator's room message now reaches every agent in the room, including agents on standby, as a single event. Chat sends a plain message or `@everyone` once to the room instead of once per agent, and several `@names` share one message that lists them. The message header lists each recipient with a one-character mark: `…` pending, `✓` delivered, `!` failed. Room messages from agents still wake nobody.
-- Native event envelopes are compact attributed text instead of JSON: a one-line header with the room path and ack command, a `#seq sender → you|room` line per event with its content indented beneath, and a closing `[/talking-stick]` line. A two-line chat message now costs about 190 characters instead of about 600.
-- Chat delivery labels say only what is known: `unreachable` needs a definite transport failure; an agent with no wake path yet shows `not acknowledged yet`.
-- `tt chat` falls back to plain line mode under `TERM=dumb`. Node's readline disables line editing there even in terminal mode, so arrows and Ctrl+A were submitted as literal text, and a dumb terminal cannot draw the panel's cursor movement.
-- Restore the room bar, live agent status, and visible suggestions in normal-screen chat while preserving native scrollback and selection. Add `/older` for saved history, preserve draft cursors across messages and resize, and restore terminal modes on exit.
+### Added
 
-- Grok Build gets the stop guard. `tt install grok` writes `~/.grok/hooks/talking-stick-stop.json` beside the existing lifecycle hook, so a Grok session that still holds the turn is reminded to hand off before it stops. The guard reads both Claude's snake_case and Grok's camelCase hook payloads, blocks only an ordinary turn end, and never blocks a session teardown or a subagent stop. `GROK_AGENT=1` now identifies a Grok session and carries `GROK_SESSION_ID` as its session anchor; `GROK_SESSION_ID` alone is still not a marker. Active Grok sessions now receive directed room events through PostToolUse, PostToolUseFailure, and normal Stop hooks, with exact-event acknowledgement, bounded envelopes, and pull recovery. Idle wake still requires cmux; a live `tt wait` also remains supported.
+- **Native event delivery.** Claude Code and Codex wakes carry the room events themselves, so an agent answers without running `tt wait`. `tt ack <token> --json` durably acknowledges exactly those events without fetching them again or claiming the turn. A batch left unacknowledged for five minutes is retried when new directed work arrives; quiet rooms never retry on a timer. Oversized payloads and cmux keep the body-free pull notification.
+- **Operator room messages reach every agent.** A room message from a `human:*` sender goes to every agent that is a member when it is sent, standby included, as one event; later joiners do not inherit it. Room messages from agents still wake nobody, and an agent's room interrupt still reaches only the owner.
+- **Steering for busy agents.** Operator messages reach a busy Claude Code session at its next tool boundary without cancelling the running tool. Agent-to-agent messages keep default delivery. Codex receives messages after its current turn.
+- **Grok Build integration.** `tt install grok` adds a stop guard (`~/.grok/hooks/talking-stick-stop.json`) and active-turn delivery hooks (`~/.grok/hooks/talking-stick-inbox.json`), so a working Grok session receives room events after a tool call or at a normal turn end and acknowledges them like Claude and Codex. `GROK_AGENT=1` now identifies a Grok session and carries `GROK_SESSION_ID` as its session anchor. Idle Grok sessions still need a live `tt wait` or cmux.
+- **Chat scopes.** A plain chat line or `@everyone` is one room message; `@name` narrows it; several `@names` share one message that lists them. Named scopes are honoured: agents not named do not see the message in their own wait.
+- **Delivery marks in chat.** Each message header lists its recipients with a one-character mark: `…` not delivered yet, `✓` delivered, `!` failed. Marks update in place while the message is on screen and are restored from durable receipts in saved history.
+- **Saved history.** Fullscreen scrolling fetches earlier room events; normal-screen chat offers `/older`.
 
 ### Changed
 
-- Native Claude/Codex wakes carry attributed room events directly. `tt ack` durably acknowledges exact events without fetching or claiming ownership; oversized payloads and cmux retain pull notifications.
-
-- Attach delivery receipts to each outgoing transcript message instead of the footer. Update visible receipt rows in place, restore durable receipts in saved history, and remove unused suggestion space from the inline prompt. Resize redraws the visible transcript without clearing native scrollback.
-
-- Place the room path in a compact ruled bar immediately above the prompt, separated from chat. Suggestion space stays above the bar instead of separating the room label from the prompt.
-
-- **Chat renders inline by default.** The console prints into the terminal's normal screen with a room bar, multiline composer, suggestions, and live status, so the terminal or multiplexer keeps scrollback, wheel scrolling, selection, and copy — the same behavior as other CLI agents. `tt chat --fullscreen` keeps the pinned layout with its own scrolling keys and suggestion menus.
+- **Compact envelopes.** Native envelopes are attributed plain text instead of JSON: a short header with the room path and ack command, a `#seq sender → you|room` line per event with its content indented, and a closing boundary. A short chat message costs about 190 characters instead of about 600.
+- **Chat renders inline by default**, in the terminal's normal screen, so the terminal or multiplexer keeps scrollback, wheel scrolling, selection, and copy. `tt chat --fullscreen` keeps the pinned layout.
+- The room path sits in a compact bar directly above the prompt, and the prompt no longer reserves empty suggestion rows.
 
 ### Fixed
 
-- Chat shows “waiting for resume” when a recipient is in manual standby without a usable wake transport, instead of implying the message has been queued into its harness.
-
-- Keep chat open and preserve the draft during transient SQLite contention while polling room state. Probe stale-member liveness outside cleanup write transactions, revalidate concurrent presence changes before deleting, and bound process-inspection time.
-
-- **Older saved chat history.** Fullscreen scrolling fetches earlier room events beyond the startup history window, preserving the visible message and live receive cursor. Normal-screen chat offers `/older` to print earlier pages without replacing native scrollback.
+- A stale wake batch could silently swallow every later message to an agent; new directed work now retries it.
+- Resizing the chat redraws the visible screen instead of guessing the old panel position, so no stale copy of the draft is left behind, and never clears native scrollback.
+- `tt chat` falls back to plain line mode under `TERM=dumb`, where Node's readline cannot edit a draft.
+- The per-turn guardian no longer renames an agent to its full id while it holds the stick, which broke short mentions such as `@claude`.
+- Chat stays open and keeps the draft during transient SQLite contention.
+- Envelope handoffs render plain string artifacts as paths instead of `undefined`, and chat consoles no longer accumulate native receipts they never consume.
 
 ## [0.18.3] — 2026-09-16
 
