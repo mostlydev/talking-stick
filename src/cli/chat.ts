@@ -215,12 +215,17 @@ export async function runChatSession(
     deliveryStates.set(seq, states);
     while (deliveryStates.size > 2_000) deliveryStates.delete(deliveryStates.keys().next().value!);
   };
-  const deliveryText = (seq: number) => {
-    const states = deliveryStates.get(seq);
-    return states?.size
-      ? [...states].map(([agent, state]) => `${sanitizeChatText(nameOf(agent))}: ${state}`).join(" · ")
-      : undefined;
+  // Every icon is one terminal cell, so a delivery update never changes how
+  // many rows a message header occupies: … pending, ✓ delivered, ! failed.
+  const deliveryIcon = (event: RoomEvent, agent: string) => {
+    const state = deliveryStates.get(event.event_seq)?.get(agent);
+    if (!state || !terminal) return undefined;
+    if (state === "delivered") return options.color ? "\u001b[32m✓\u001b[0m" : "✓";
+    if (state === "unreachable") return options.color ? "\u001b[31m!\u001b[0m" : "!";
+    return options.color ? "\u001b[2m…\u001b[0m" : "…";
   };
+  // Events whose header shows delivery icons, kept so a receipt can repaint it.
+  const trackedEvents = new Map<number, RoomEvent>();
   let lastStatusDraw = Date.now();
   const dimensions = () => ({
     columns: Math.max(1, (output as { columns?: number }).columns ?? 80),
@@ -233,10 +238,8 @@ export async function runChatSession(
     show_turn_events: showTurnEvents,
     now: new Date(),
     history_before: historyBefore,
-    delivery_of: (event: RoomEvent) => {
-      const text = terminal ? deliveryText(event.event_seq) : undefined;
-      return text && inline ? truncateStyled(text, Math.max(1, dimensions().columns - 3)) : text;
-    }
+    delivery_icon: deliveryIcon,
+    tracks_delivery: (event: RoomEvent) => terminal && (deliveryStates.get(event.event_seq)?.size ?? 0) > 0
   });
   const completionsFor = (draft: { line: string; cursor: number }) => getChatCompletions(draft,
     members.filter((member) => member.agent_id !== selfId && member.process_liveness !== "gone")
@@ -357,14 +360,19 @@ export async function runChatSession(
     rememberDelivery(seq, agent, state);
     transcript.invalidate();
     const row = inlineReceiptRows.get(seq);
-    if (inline && row !== undefined && row >= inlineVisibleFloor) {
+    const event = trackedEvents.get(seq);
+    const header = event ? render(event)?.split("\n")[0] : undefined;
+    if (inline && row !== undefined && row >= inlineVisibleFloor && header !== undefined) {
       // Only repaint rows still on the live terminal screen. Cursor movement
       // cannot rewrite native scrollback. Saved history reads durable receipts.
+      // Icons are one cell wide, so the header wraps to the same rows as before.
+      const rows = wrapStyledLine(header, Math.max(1, dimensions().columns - 1));
       output.write("\u001b[?2026h");
       eraseComposer();
       const up = inlineOutputRows - row;
-      const label = truncateStyled(`  ${deliveryText(seq)}`, Math.max(1, dimensions().columns - 1));
-      output.write(`\r\u001b[${up}A\u001b[2K${options.color ? "\u001b[2m" : ""}${label}${options.color ? "\u001b[0m" : ""}\r\u001b[${up}B`);
+      const down = up - rows.length + 1;
+      // CSI 0 B still moves one row, so never emit a zero-length move.
+      output.write(`\r\u001b[${up}A${rows.map((text) => `\u001b[2K${text}`).join("\r\n")}\r${down > 0 ? `\u001b[${down}B` : ""}`);
       drawComposer();
       output.write("\u001b[?2026l");
     } else redraw();
@@ -690,14 +698,14 @@ export async function runChatSession(
     if (!historical && event.event_type === "message_sent" && event.from_agent_id?.startsWith("human:")) {
       // Named recipients are known from the event itself; a room message's
       // recipients come from this console's own send result instead.
-      const listed = (event.payload as { recipients?: unknown } | null)?.recipients;
-      // A room message this console sent can print before its send result
-      // returns; reserve its receipt line for the agents it is routed to now.
+      // Every recipient gets a pending icon from the first paint, taken from
+      // the send-time snapshot on the event itself, so later acks only swap it.
+      const payload = event.payload as { recipients?: unknown; sent_to?: unknown } | null;
+      const listed = Array.isArray(payload?.recipients) ? payload.recipients : payload?.sent_to;
       const recipients = event.to_agent_id ? [event.to_agent_id]
-        : Array.isArray(listed) ? listed.filter((id): id is string => typeof id === "string")
-        : event.from_agent_id === selfId
-          ? members.filter((member) => member.agent_id !== selfId && !member.agent_id.startsWith("human:")).map((member) => member.agent_id)
-          : [];
+        : Array.isArray(listed) ? listed.filter((id): id is string => typeof id === "string") : [];
+      if (recipients.length > 0) trackedEvents.set(event.event_seq, event);
+      while (trackedEvents.size > 2_000) trackedEvents.delete(trackedEvents.keys().next().value!);
       for (const agent of recipients) {
         const states = deliveryStates.get(event.event_seq);
         if (!states?.has(agent)) rememberDelivery(event.event_seq, agent, "sent");
@@ -748,9 +756,10 @@ export async function runChatSession(
       isMessage &&
       event.to_agent_id === selfId &&
       event.from_agent_id !== selfId;
+    const headerRow = inlineOutputRows;
     if (inline) writeInline(forMe ? `${line}\u0007` : line);
     else print(forMe && terminal ? `${line}\u0007` : line);
-    if (inline && deliveryStates.has(event.event_seq)) inlineReceiptRows.set(event.event_seq, inlineOutputRows - 1);
+    if (inline && deliveryStates.has(event.event_seq)) inlineReceiptRows.set(event.event_seq, headerRow);
     lastPrinted = isMessage ? "message" : "system";
   };
 

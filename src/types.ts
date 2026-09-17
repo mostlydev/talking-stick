@@ -155,6 +155,8 @@ export interface MessagePayload {
   delivery_hint: DeliveryHint;
   // Present when several named agents share one message instead of to_agent_id.
   recipients?: AgentId[];
+  // Agents an operator's room message was delivered to; display only.
+  sent_to?: AgentId[];
 }
 
 export interface RoomEvent {

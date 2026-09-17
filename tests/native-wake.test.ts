@@ -1248,3 +1248,13 @@ test("scoped room events reach named listeners only while remaining in room hist
   expect(named.events.map(e => e.event_seq)).toEqual([scoped.event_seq, broadcast.event_seq]);
   expect(service.getRoomEvents({ room_id: room, include_all: true }).map(e => e.event_seq)).toContain(scoped.event_seq);
 });
+
+test("plain string artifacts from tt release render as paths, never undefined", () => {
+  const text = formatNativeEventText({ token: "t", room_id: "r", path: "/work", recipient: "claude:aa", events: [
+    { event_seq: 3, event_id: "e3", room_id: "r", turn_id: 1, event_type: "release", from_agent_id: "codex:bb", to_agent_id: null,
+      reason: null, created_at: "", payload: null,
+      handoff: { status: "done", next_action: "review", artifacts: ["src/a.ts", "docs/b.md"] as unknown as never } }
+  ] })!;
+  expect(text).toContain("  artifacts: src/a.ts; docs/b.md");
+  expect(text).not.toContain("undefined");
+});

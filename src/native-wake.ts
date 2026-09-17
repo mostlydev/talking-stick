@@ -106,8 +106,15 @@ export function formatNativeEventText(input: {
     if (typeof payload.body === "string") lines.push(...quote(payload.body));
     if (event.handoff) {
       lines.push(...quote(`status: ${event.handoff.status}`), ...quote(`next: ${event.handoff.next_action}`));
-      const artifacts = (event.handoff.artifacts ?? []).map((artifact) =>
-        `${artifact.path}${artifact.lines?.length ? `:${artifact.lines.join(",")}` : ""}${artifact.note ? ` (${artifact.note})` : ""}`);
+      // Handoffs written with tt release --stdin often list artifacts as plain
+      // path strings rather than objects; render whichever arrived.
+      const artifacts = ((event.handoff.artifacts ?? []) as unknown[]).map((artifact) => {
+        if (typeof artifact === "string") return artifact;
+        const entry = (artifact ?? {}) as { path?: unknown; lines?: unknown; note?: unknown };
+        const where = typeof entry.path === "string" ? entry.path : JSON.stringify(artifact);
+        const lines = Array.isArray(entry.lines) && entry.lines.length ? `:${entry.lines.join(",")}` : "";
+        return `${where}${lines}${typeof entry.note === "string" ? ` (${entry.note})` : ""}`;
+      });
       if (artifacts.length) lines.push(...quote(`artifacts: ${artifacts.join("; ")}`));
       for (const question of event.handoff.open_questions ?? []) lines.push(...quote(`question: ${question}`));
       for (const rule of event.handoff.do_not ?? []) lines.push(...quote(`do not: ${rule}`));

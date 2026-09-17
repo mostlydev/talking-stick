@@ -102,8 +102,9 @@ export function formatChatHelp(width: number, color: boolean, keys = false, inli
     "Paste stays in the draft until sent. Shift+Enter also works in supported terminals.",
     "/help returns to commands."
   ] : [
-    "Type to message the room. Use @agent to address a participant.",
-    "!@agent sends an urgent message; @everyone reaches all agents.",
+    "Type to message every agent in the room. @agent narrows it to that agent.",
+    "!@agent sends an urgent message; !@everyone makes a room message urgent.",
+    "Marks after names in your messages: … not delivered yet, ✓ delivered, ! failed.",
     "Use // to send text beginning with a slash."
   ]) lines.push(...wrapStyledLine(muted(note), usable));
   return lines.join("\n");
@@ -483,8 +484,8 @@ export class ChatTranscript {
         }
         if (isChatConversationActivity(block.event)) previousEvent = block.event;
       }
-      if (block.kind === "event" && context.delivery_of?.(block.event)) {
-        receipts.set(block.event.event_seq, rows.length + lines.length - 1);
+      if (block.kind === "event" && context.tracks_delivery?.(block.event)) {
+        receipts.set(block.event.event_seq, rows.length);
       }
       rows.push(...lines);
       previous = isMessage ? "message" : "other";

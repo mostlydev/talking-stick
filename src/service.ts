@@ -1798,24 +1798,6 @@ export class TalkingStickService {
       const directed = input.to_agent_id ?? (named.length === 1 ? named[0] : null);
       const scoped = !directed && named.length > 1 ? named : null;
 
-      const eventSeq = this.appendEvent({
-        room_id: input.room_id,
-        turn_id: room.turn_id,
-        event_type: "message_sent",
-        from_agent_id: input.agent_id,
-        to_agent_id: directed,
-        handoff: null,
-        reason: null,
-        created_at: timestamp,
-        payload: { body, delivery_hint: deliveryHint, ...(scoped ? { recipients: scoped } : {}) }
-      });
-
-      const row = this.db
-        .prepare<[number], { event_id: string }>(
-          "SELECT event_id FROM room_events WHERE event_seq = ?"
-        )
-        .get(eventSeq);
-
       // An operator's chat is addressed to the room, so a human room message
       // reaches every agent that is a member right now, standby included. An
       // agent's room message still wakes nobody: agents answering each other's
@@ -1833,6 +1815,30 @@ export class TalkingStickService {
             : deliveryHint === "interrupt" && room.owner && room.owner !== input.agent_id
               ? [room.owner]
               : [];
+      const eventSeq = this.appendEvent({
+        room_id: input.room_id,
+        turn_id: room.turn_id,
+        event_type: "message_sent",
+        from_agent_id: input.agent_id,
+        to_agent_id: directed,
+        handoff: null,
+        reason: null,
+        created_at: timestamp,
+        payload: {
+          body, delivery_hint: deliveryHint,
+          ...(scoped ? { recipients: scoped } : {}),
+          // Who a room message went to, for display only. Unlike recipients it
+          // never narrows visibility: everyone in the room can still read it.
+          ...(!directed && !scoped && humanSender && wakeTargets.length > 0 ? { sent_to: wakeTargets } : {})
+        }
+      });
+
+      const row = this.db
+        .prepare<[number], { event_id: string }>(
+          "SELECT event_id FROM room_events WHERE event_seq = ?"
+        )
+        .get(eventSeq);
+
       for (const wakeTargetId of wakeTargets) {
         if (wakeTargetId === input.agent_id) continue;
         this.queueStandbyWake(input.room_id, wakeTargetId);
@@ -2197,7 +2203,9 @@ export class TalkingStickService {
     fromAgentId: AgentId | null,
     eventSeq: number
   ): void {
-    if (agentId === fromAgentId) {
+    // Chat consoles read through their own event stream and never consume
+    // native receipts, so a row for them would only accumulate forever.
+    if (agentId === fromAgentId || agentId.startsWith("human:")) {
       return;
     }
     this.db.prepare(`INSERT OR IGNORE INTO native_event_receipts (room_id, agent_id, event_seq) VALUES (?, ?, ?)` )
