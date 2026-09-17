@@ -1084,8 +1084,7 @@ test("chat remains responsive while a slow recipient wakes and reports each reci
     await until(() => transcript.includes("claude:slow: queued"));
     const noticesBefore = transcript.match(/claude:fast: queued/g)?.length;
     input.write("@claude:fast another message\n");
-    await until(() => transcript.includes("claude:fast: waiting for agent to read"));
-    expect(transcript.match(/claude:fast: queued/g)?.length).toBe(noticesBefore);
+    await until(() => (transcript.match(/claude:fast: queued/g)?.length ?? 0) > (noticesBefore ?? 0));
     expect(deliveries).toBe(2);
   } finally {
     finishSlow({ outcome: "queued" });
@@ -1146,12 +1145,12 @@ describe("message receipts", () => {
     await until(() => transcript.includes("In the room"));
     input.write("@codex please look\n");
     await until(() => /codex: \S/.test(transcript));
-    expect(transcript).not.toContain("codex: received");
+    expect(transcript).not.toContain("codex: delivered");
     await service.waitForTurn({
       agent_id: "codex:aa", room_id: joined.room_id, max_wait_ms: 0, mode: "parked",
       include_events: true, after_event_seq: 0
     });
-    await until(() => transcript.includes("codex: received"));
+    await until(() => transcript.includes("codex: delivered"));
     input.write("/quit\n");
     await session;
   });
@@ -1185,8 +1184,8 @@ test("receipts for later messages still arrive with more than one batch awaiting
     agent_id: "codex:aa", room_id: joined.room_id, max_wait_ms: 0, mode: "parked",
     include_events: true, after_event_seq: last - 1
   });
-  await until(() => transcript.includes("codex: received"), 5_000);
-  expect(transcript.match(/codex: received/g)).toHaveLength(1);
+  await until(() => transcript.includes("codex: delivered"), 5_000);
+  expect(transcript.match(/codex: delivered/g)).toHaveLength(1);
   input.write("/quit\n");
   await session;
 }, 20_000);
@@ -1545,3 +1544,40 @@ test("reopened chat pages back beyond its startup history and 500-event scan", a
     await until(() => captured.includes("fresh-live-message"));
   } finally { input.write("/quit\r"); await session; }
 }, 20_000);
+
+test("inline delivery replaces pending status with delivered without adding history or disturbing the draft", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 24 });
+  const vt = new Terminal({ cols: 100, rows: 24, allowProposedApi: true });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("\u001b[0m", resolve));
+  const text = () => Array.from({ length: vt.buffer.active.length }, (_, i) => vt.buffer.active.getLine(i)?.translateToString(true) ?? "").join("\n");
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: true,
+    color: false, history: 0, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Room ·"));
+    input.write("@codex first message\r");
+    await until(() => bytes.includes("first message") && bytes.includes("codex: not listening"));
+    input.write("unfinished draft");
+    await flush();
+    const history = vt.buffer.active.baseY;
+    await service.waitForTurn({ agent_id: "codex:aa", room_id: joined.room_id, max_wait_ms: 0,
+      mode: "parked", include_events: true, after_event_seq: 0 });
+    await until(() => bytes.includes("codex: delivered"));
+    await flush();
+    expect(text()).toContain("codex: delivered");
+    expect(text()).not.toContain("codex: not listening");
+    expect(text()).not.toContain("received");
+    expect(text()).toContain("> unfinished draft");
+    expect(vt.buffer.active.baseY).toBe(history);
+    expect(vt.buffer.active.type).toBe("normal");
+  } finally {
+    input.write("\u0003\u0004");
+    await session;
+    vt.dispose();
+  }
+});

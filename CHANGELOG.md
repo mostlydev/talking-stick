@@ -15,6 +15,8 @@ changes will be called out under **Breaking changes**.
 
 ### Changed
 
+- Update the latest outgoing message's delivery status in the live chat panel instead of appending queued/received lines to history. Fullscreen notices replace their status, and delivery receipts use `delivered`.
+
 - Place the room path in a compact ruled bar immediately above the prompt, separated from chat. Suggestion space stays above the bar instead of separating the room label from the prompt.
 
 - **Chat renders inline by default.** The console prints into the terminal's normal screen with a room bar, multiline composer, suggestions, and live status, so the terminal or multiplexer keeps scrollback, wheel scrolling, selection, and copy — the same behavior as other CLI agents. `tt chat --fullscreen` keeps the pinned layout with its own scrolling keys and suggestion menus.

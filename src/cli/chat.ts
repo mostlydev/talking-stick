@@ -174,6 +174,9 @@ export async function runChatSession(
   let screenActive = false;
   let failure: unknown;
   let hint: string | null = null;
+  let deliveryGeneration = 0;
+  const deliveryStates = new Map<string, string>();
+  const deliveryHint = () => [...deliveryStates].map(([agent, state]) => `${sanitizeChatText(nameOf(agent))}: ${state}`).join(" · ");
   let lastStatusDraw = Date.now();
   const dimensions = () => ({
     columns: Math.max(1, (output as { columns?: number }).columns ?? 80),
@@ -219,7 +222,7 @@ export async function runChatSession(
     const frame = renderInlinePanel({
       room_path: joined.canonical_path, transcript, format: formatContext(),
       status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date() },
-      draft, hint,
+      draft, hint: hint ?? (deliveryHint() || null),
       completions: editor?.completionVisible ? completionsFor(draft) : [],
       completion_index: editor?.completionIndex ?? 0,
       ...dimensions()
@@ -287,9 +290,9 @@ export async function runChatSession(
   };
   // Directed messages whose recipient hasn't received them yet, keyed by event
   // seq. A receipt means the recipient's own tt wait returned the message.
-  const awaitingReceipt = new Map<number, { notice: number | null; text: string }>();
+  const awaitingReceipt = new Map<number, { notice: number | null; generation: number }>();
   let lastReceiptCheck = 0;
-  const trackReceipt = (eventSeq: number, pending: { notice: number | null; text: string }) => {
+  const trackReceipt = (eventSeq: number, pending: { notice: number | null; generation: number }) => {
     awaitingReceipt.set(eventSeq, pending);
     // Oldest first: a recipient that never reads can't grow this without bound.
     while (awaitingReceipt.size > MAX_AWAITED_RECEIPTS) {
@@ -311,8 +314,11 @@ export async function runChatSession(
       const pending = awaitingReceipt.get(receipt.event_seq);
       if (!pending) continue;
       awaitingReceipt.delete(receipt.event_seq);
-      const text = `${sanitizeChatText(nameOf(receipt.agent_id))}: received`;
-      if (pending.notice !== null && transcript.updateNotice(pending.notice, `${pending.text} → received`)) {
+      const text = `${sanitizeChatText(nameOf(receipt.agent_id))}: delivered`;
+      if (inline) {
+        if (pending.generation === deliveryGeneration) deliveryStates.set(receipt.agent_id, "delivered");
+        redraw();
+      } else if (pending.notice !== null && transcript.updateNotice(pending.notice, text)) {
         redraw();
       } else {
         print(text);
@@ -486,6 +492,9 @@ export async function runChatSession(
       }
       targets = resolved.agent_ids;
     }
+    const generation = ++deliveryGeneration;
+    deliveryStates.clear();
+    redraw();
     for (const toAgentId of targets) {
       void runtime.commands.sendMessageAndWake(identity, {
         room_id: roomId,
@@ -495,22 +504,26 @@ export async function runChatSession(
       })
       .then((result) => {
         if (closed || !result.delivery_target) return;
-        const state = result.delivery_status === "receiver" ? "listening" :
-          result.delivery_status === "pending" ? "waiting for agent to read" :
+        const state = result.delivery_status === "receiver" ? "queued" :
+          result.delivery_status === "pending" ? "queued" :
           result.delivery_state === "queued" && result.interrupt_status === "unsupported" ? "queued; immediate interrupt unavailable" :
           result.delivery_state === "queued" && result.interrupt_status === "injected" ? "urgent prompt injected" :
-          result.delivery_state === "queued" || result.delivery_state === "woken" ? result.delivery_state :
+          result.delivery_state === "queued" || result.delivery_state === "woken" ? "queued" :
           result.delivery_state === "ambiguous" ? "wake unconfirmed" :
           "not listening";
         const text = `${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`;
-        const notice = print(text);
+        const notice = inline ? null : print(text);
+        if (inline && generation === deliveryGeneration) deliveryStates.set(result.delivery_target, state);
         const received = runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: [result.event_seq] });
         if (received.length > 0) {
-          if (notice !== null) transcript.updateNotice(notice, `${text} → received`);
-          else print(`${sanitizeChatText(nameOf(result.delivery_target))}: received`);
+          if (inline) {
+            if (generation === deliveryGeneration) deliveryStates.set(result.delivery_target, "delivered");
+          } else if (notice !== null) transcript.updateNotice(notice, `${sanitizeChatText(nameOf(result.delivery_target))}: delivered`);
+          else print(`${sanitizeChatText(nameOf(result.delivery_target))}: delivered`);
           redraw();
         } else {
-          trackReceipt(result.event_seq, { notice, text });
+          trackReceipt(result.event_seq, { notice, generation });
+          redraw();
         }
       })
       .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
