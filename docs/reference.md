@@ -101,8 +101,9 @@ notes give you a durable channel without interrupting the turn.
 
 ## Out-of-band messaging
 
-The stick guarantees single-writer authority over shared workspace state. It is **not** a chat
-protocol. When two agents need to talk — design questions, "are you about to break X?", live
+The stick establishes single-writer authority over shared workspace state at the protocol level: it
+is an agreement participating agents honor, not a sandbox that prevents writes. It is also **not** a
+chat protocol. When two agents need to talk — design questions, "are you about to break X?", live
 coordination — use messages instead of churning the stick.
 
 ```bash
@@ -160,15 +161,17 @@ tt wait --json
 
 **When to message vs note vs handoff.**
 
-- **Message** — conversational, ephemeral, between live processes. Six round-trips of "what about
-  line 84?" cost about as much as one structured handoff and zero stick churn.
+- **Message** — conversational, addressed to whoever is listening now. Messages are recorded in the
+  room event log, but they are read in passing rather than tracked to resolution, and they cost no
+  stick churn.
 - **Note** (`tt notes add`) — durable, resolvable artifacts. Leave a note when the next holder should
   consider something at handoff, or when the observation should outlive the conversation.
 - **Handoff** (`tt release` / `tt pass`) — transfer of work. Messages do not replace handoffs.
 
-**`to_agent_id` is routing, not ACL.** Any room member can read any message via
-`tt events --target any`. Messages are not private. They also do not grant the stick — a non-holder
-paging the holder gets attention, not write authority.
+**`to_agent_id` is routing, not ACL.** A directed or scoped message is filtered out of other agents'
+default waits, so addressing someone does narrow who is prompted with it. It does not make the
+message private: any room member can read it via `tt events --target any`. Messages also do not grant
+the stick — a non-holder paging the holder gets attention, not write authority.
 
 ## Waking idle agents
 
@@ -198,7 +201,8 @@ OpenCode, and Antigravity wake only through cmux.
   itself; the documented inbox protocol offers no way to suppress that wrapper. The sender returned
   by `tt wait` identifies the actual room author.
 - Normal messages wake an agent once per unread batch. More messages join that batch until the
-  agent's wait has read past them or the agent explicitly enters standby again. A new standby rearms
+  agent's wait has read past them, the agent acknowledges the batch with `tt ack`, or the agent
+  explicitly enters standby again. A new standby rearms
   future wakes without marking messages read; previously submitted wakes are not replayed. Each
   explicit interrupt instead gets its own durable delivery reservation.
 - A room message from an operator (a `human:*` sender) reaches every agent that is a member when it
@@ -246,10 +250,12 @@ identifies an event for deduplication if an urgent prompt races a running receiv
 envelope never substitutes for acquiring a lease and live guardian. Oversized envelopes and cmux use
 the existing body-free pull notification.
 
-Normal operator messages use Claude inbox priority `next`, delivering at the next tool boundary
-without cancelling the current tool. Grok receives them through active-turn hooks. Codex native
-queue delivery waits until the current turn ends. Normal messages still coalesce into an unread
-batch; agent-to-agent messages do not request priority steering.
+Normal messages from an operator (a `human:*` sender) use Claude inbox priority `next`, delivering at
+the next tool boundary without cancelling the current tool. This is operator-only: an ordinary
+agent-to-agent message never requests priority steering, so a peer cannot nudge a working session
+mid-turn without an explicit `--interrupt`. Grok receives messages through active-turn hooks. Codex
+native queue delivery waits until the current turn ends. Normal messages still coalesce into an
+unread batch.
 
 ## Operator chat
 
@@ -287,8 +293,8 @@ not proof the model has acted.
 
 ### Display and navigation
 
-Typing `/`, `@`, or `!@` shows suggestions above the room bar, without moving the prompt or
-conversation. Up/Down choose, Tab or Enter accept, and Enter sends once the word is complete. Escape
+Typing `/`, `@`, or `!@` shows suggestions above the room bar. Up/Down choose, Tab or Enter accept,
+and Enter sends once the word is complete. Escape
 closes the list first and clears the draft on a second press; Ctrl+C clears the draft. Neither quits.
 Alt+Enter (or Shift+Enter where supported) adds a new line. With suggestions closed, Up/Down move
 through multiline drafts or recall single-line prompt history; Ctrl+P/Ctrl+N also recall prompts.
@@ -317,11 +323,9 @@ member changes the recipient, not privacy. Colors require an interactive termina
 when `NO_COLOR` is set to a nonempty value. If an existing console was opened before a local
 rebuild, quit and reopen `tt chat` to load the new display.
 
-Resizing the window reflows the live panel in place. Shrinking both width and height at once (for
-example 80x24 to 20x8) can leave one copy of the old panel in the scrollback above the live one; it
-scrolls away and does not affect the conversation or your draft. Narrowing a terminal can leave
-repeated recent lines at the scrollback boundary, and the redraw replaces any pre-chat shell output
-still in the visible area.
+Resizing the window reflows the live panel in place, rebuilding only the visible tail and keeping
+native scrollback. Narrowing a terminal can leave repeated recent lines at the scrollback boundary,
+and the redraw replaces any pre-chat shell output still in the visible area.
 
 `tt chat --fullscreen` retains the alternate-screen layout, with a header pinned to the top and an
 input/status area pinned below the transcript. In that mode, Page Up/Page Down and Shift+Up/Down
@@ -362,7 +366,8 @@ Instruction delivery is deliberately tiered:
 | Installed skill | When Talking Stick is invoked/loaded | Full ownership, wait, recovery, and handoff mechanics |
 | `tt instructions show` | Once after joining | Concise working agreement plus the detected harness's default role |
 | Compact `tt` result hints | Only at join, authority, wait-exit, and handoff transitions | One short next-step safety reminder |
-| Wake and Claude Stop hooks | Only on the matching lifecycle event | Fixed resume or release/pass warning |
+| Native wakes and delivery hooks | When a message or handoff reaches an idle or working session | The room events themselves, in a bounded envelope, plus the `tt ack` line |
+| Claude and Grok Stop guards | Only when a session tries to stop owning the stick | Fixed release/pass warning |
 | README and design docs | Only when explicitly opened | Human reference and rationale |
 
 Normal `tt join --json` includes compact current-member summaries and omits the large policy block;

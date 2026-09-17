@@ -4,6 +4,8 @@ Run Claude Code, Codex, and Grok on the same repo without them overwriting each 
 holds the stick at a time, handoffs carry structured context so the next agent doesn't re-derive it,
 and `tt chat` gives you one console to talk to all of them.
 
+**[Jump to the quickstart →](#quickstart)**
+
 ![The tt chat console: three agents in one room, delivery marks on each message, and agent status in the footer](docs/images/tt-chat.png)
 
 No daemon, no server. Multi-process-safe via SQLite WAL, liveness-aware, and it works with Claude
@@ -44,16 +46,17 @@ agent, which works against `tt standby`.
 ### 4. Watch and steer from a third pane
 
 ```bash
-tt chat
+cd ~/myrepo && tt chat
 ```
 
-You'll see the agents coordinate in real time, who holds the stick in the footer, and a delivery mark
-next to each agent you message.
+The console joins the room for the directory you run it in, so `cd` to the same repo first. You'll
+see the agents coordinate in real time, who holds the stick in the footer, and a delivery mark next
+to each agent you message.
 
 | You type | What happens |
 |---|---|
 | `ship it when tests pass` | Goes to the whole room |
-| `@codex rebase onto master` | Goes to Codex; `@everyone` addresses every agent |
+| `@codex rebase onto master` | Goes to Codex; `@everyone` addresses every agent that has joined the room |
 | `!@claude stop, wrong file` | Steers Claude mid-task, at its next tool step |
 | `/who`, `/help` | Members and stick holder; all commands |
 
@@ -80,18 +83,20 @@ delivery receipt, not proof the model acted on it.
 
 ## Waking idle agents
 
-A directed message wakes an idle Claude Code or Codex session natively — no keystrokes typed, no
-model polling while idle.
+A directed message, or a room message you send from the console, wakes an idle Claude Code or Codex
+session natively — no keystrokes typed, no model polling while idle.
 
 | Harness | How it wakes |
 |---|---|
-| Claude Code | Its inbox socket. Normal messages arrive at the next tool boundary without cancelling the current tool |
+| Claude Code | Its inbox socket. A message you send as the operator arrives at the next tool boundary without cancelling the current tool |
 | Codex | `codex queue`, delivered after the current turn ends |
 | Grok Build | Active-turn hooks while a session is running; an idle session needs a live `tt wait` or cmux |
 | Antigravity, OpenCode, Gemini | cmux only |
 
-Wakes carry the full message in a compact envelope, so the agent answers from what it received and
-acknowledges with `tt ack <token> --json` instead of fetching again. Details in
+Claude Code and Codex wakes, and Grok's active-turn hooks, carry the message itself in a compact
+envelope, so the agent answers from what it received and acknowledges with `tt ack <token> --json`
+instead of fetching again. cmux and anything too large to fit fall back to a body-free notice that
+tells the agent to pull with `tt wait`. Details in
 [Waking idle agents](docs/reference.md#waking-idle-agents).
 
 ## Command overview
@@ -130,7 +135,9 @@ the new build.
 
 Installing for Claude Code also adds a Stop-guard hook that blocks a session from stopping once while
 it still holds the stick, telling it to hand off first. It is read-only, fails open, and never blocks
-twice in a row. Skip it with `tt install --no-guard`.
+twice in a row. Skip it with `tt install claude-code --no-guard` (`--no-guard` needs an explicit
+harness or `--all`). Grok Build gets the same guard, and keeps its delivery and session hooks either
+way.
 
 ## Customizing what agents are told
 
