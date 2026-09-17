@@ -3,6 +3,30 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+vi.mock("../src/process-utils.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/process-utils.js")>();
+  return {
+    ...actual,
+    createSystemProcessInspector(options?: Parameters<typeof actual.createSystemProcessInspector>[0]) {
+      const inner = actual.createSystemProcessInspector(options);
+      return {
+        inspect(pid: number) {
+          const info = inner.inspect(pid);
+          if (!info?.command) return info;
+          // CLI tests assume a non-harness host. When the suite runs inside
+          // Grok, ancestry would otherwise promote every whoami/text-mode
+          // assertion to grok JSON. Keep pid/startTime for liveness.
+          if (/(?:^|[\\/\s])grok(?:[\s-]|$)/i.test(info.command)) {
+            return { ...info, command: "node" };
+          }
+          return info;
+        }
+      };
+    }
+  };
+});
+
 import { runStartupMaintenance } from "../src/cli/startup-maintenance.js";
 import {
   checkGuardianLiveness,
@@ -35,6 +59,7 @@ const ENV_KEYS = [
   "CODEX_MANAGED_BY_NPM",
   "CODEX_THREAD_ID",
   "GEMINI_CLI",
+  "GROK_AGENT",
   "GROK_HOME",
   "GROK_SESSION_ID",
   "GROK_WORKSPACE_ROOT",
