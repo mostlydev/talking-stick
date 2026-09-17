@@ -11,6 +11,8 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+- Deliver normal operator messages to Claude at its next tool boundary without cancelling tools, and keep multi-recipient messages out of unrelated agents' waits.
+
 - An operator's room message now reaches every agent in the room, including agents on standby, as a single event. Chat sends a plain message or `@everyone` once to the room instead of once per agent, and several `@names` share one message that lists them. The receipt line under the message shows each recipient's state. Room messages from agents still wake nobody.
 - Native event envelopes are compact attributed text instead of JSON: a one-line header with the room path and ack command, a `#seq sender → you|room` line per event with its content indented beneath, and a closing `[/talking-stick]` line. A two-line chat message now costs about 190 characters instead of about 600.
 - Chat delivery labels say only what is known: `unreachable` needs a definite transport failure; an agent with no wake path yet shows `not acknowledged yet`.

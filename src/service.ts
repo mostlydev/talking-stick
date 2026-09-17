@@ -2390,11 +2390,18 @@ export class TalkingStickService {
       const text = formatNativeWakeText({ reason: reason?.wake_reason ?? "room_update",
         sender: reason?.wake_from_agent_id ? this.describeWakeSender(roomId, reason.wake_from_agent_id) : null,
         path: this.requireRoom(roomId).canonical_path });
+      // Operator messages may steer at a safe tool boundary without becoming
+      // urgent events or bypassing the normal unread-batch coalescing.
+      const steer = Boolean(this.db.prepare(`SELECT 1 FROM native_event_receipts n
+        JOIN room_events e ON e.room_id = n.room_id AND e.event_seq = n.event_seq
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL
+          AND e.event_type = 'message_sent' AND e.from_agent_id LIKE 'human:%' LIMIT 1`)
+        .get(roomId, agentId));
       const nativeText = this.prepareNativeEnvelope(roomId, agentId, undefined, batchId);
-      return { endpoints, batchId, text: nativeText ?? text, wakeReason, standbyGeneration: member.standby_generation };
+      return { endpoints, batchId, text: nativeText ?? text, wakeReason, steer, standbyGeneration: member.standby_generation };
     });
     if (!reservation) return;
-    const { endpoints, batchId, text, wakeReason, standbyGeneration } = reservation;
+    const { endpoints, batchId, text, wakeReason, steer, standbyGeneration } = reservation;
     for (const endpoint of endpoints) {
       // Another wait, leave, or session replacement may have invalidated this
       // batch while a previous transport was in flight. Never fall back then.
@@ -2404,7 +2411,7 @@ export class TalkingStickService {
       if (!member || !this.usableNativeWakeEndpoints(roomId, member).some((row) => row.transport === endpoint.transport)) return;
       if (endpoint.transport === "cmux" && wakeReason !== "interrupt" &&
           !(member.wait_intent === "parked" && member.standby_transport === "cmux")) return;
-      const result = await this.deliverWakeEndpoint(endpoint, text);
+      const result = await this.deliverWakeEndpoint(endpoint, text, false, steer);
       const safeError = result.error ?? null;
       const recorded = this.db.prepare(`UPDATE member_wake_endpoints
         SET last_attempt_at = ?, last_status = ?, last_error = ?
@@ -2430,7 +2437,7 @@ export class TalkingStickService {
     ).run(roomId, agentId, standbyGeneration);
   }
 
-  private async deliverWakeEndpoint(endpoint: NativeWakeEndpointRow, text: string, interrupt = false): Promise<NativeWakeResult> {
+  private async deliverWakeEndpoint(endpoint: NativeWakeEndpointRow, text: string, interrupt = false, steer = false): Promise<NativeWakeResult> {
     const { room_id: roomId, agent_id: agentId } = endpoint;
     let result: NativeWakeResult;
     try {
@@ -2444,7 +2451,7 @@ export class TalkingStickService {
           { outcome: delivery?.definite_failure || !delivery ? "failed" : "ambiguous", error: "cmux_wake_failed" };
       } else {
         result = this.nativeWakeTransport ? await this.nativeWakeTransport.deliver({
-          transport: endpoint.transport, address: endpoint.address, secret: endpoint.secret, text, interrupt
+          transport: endpoint.transport, address: endpoint.address, secret: endpoint.secret, text, interrupt, steer: steer && endpoint.transport === "claude_inbox"
         }) : { outcome: "failed", error: "native_wake_unavailable" };
       }
     } catch {
@@ -4542,6 +4549,9 @@ export class TalkingStickService {
       clauses.push(`NOT EXISTS (SELECT 1 FROM native_event_receipts n
         WHERE n.room_id = room_events.room_id AND n.event_seq = room_events.event_seq
           AND n.agent_id = ? AND n.acknowledged_at IS NOT NULL)`);
+      params.push(input.caller_agent_id);
+      clauses.push(`(event_type != 'message_sent' OR json_type(payload_json, '$.recipients') IS NULL
+        OR EXISTS (SELECT 1 FROM json_each(payload_json, '$.recipients') WHERE value = ?))`);
       params.push(input.caller_agent_id);
       clauses.push(
         `(

@@ -25,6 +25,7 @@ export interface NativeWakeRegistration {
 export interface NativeWakeRequest extends NativeWakeRegistration {
   text: string;
   interrupt?: boolean;
+  steer?: boolean;
 }
 
 // failed: the harness definitely did not receive the wake, so a fallback may
@@ -168,7 +169,7 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
         // Interrupts ask for "next", not "now": in interactive Claude Code "now"
         // doesn't abort a running tool (verified live), and other hosts may abort
         // one. "next" steers the active turn at its next tool boundary.
-        JSON.stringify({ type: "user", ...(request.interrupt ? { priority: "next" } : {}), message: { role: "user", content: request.text } }) + "\n",
+        JSON.stringify({ type: "user", ...((request.interrupt || request.steer) ? { priority: "next" } : {}), message: { role: "user", content: request.text } }) + "\n",
         () => finish({ outcome: "queued" })
       );
     });

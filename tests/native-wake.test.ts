@@ -865,7 +865,7 @@ describe("forced interrupts", () => {
     expect(nativeRequests).toHaveLength(0);
   });
 
-  test("Claude urgent wire steers at the next tool boundary and keeps the body out of the wake", async () => {
+  test.each(["interrupt", "steer"] as const)("Claude %s wire requests the next tool boundary", async (mode) => {
     const socketPath = path.join(tempRoot(), "urgent.sock");
     let received!: (body: string) => void;
     const wire = new Promise<string>((resolve) => { received = resolve; });
@@ -877,7 +877,7 @@ describe("forced interrupts", () => {
     await new Promise<void>((resolve) => server.listen(socketPath, resolve));
     try {
       await createSystemNativeWakeTransport().deliver({ transport: "claude_inbox", address: socketPath,
-        secret: "token", text: "fixed urgent prompt", interrupt: true });
+        secret: "token", text: "fixed urgent prompt", [mode]: true });
       const messages = (await wire).trim().split("\n").map((line) => JSON.parse(line));
       expect(messages).toEqual([{ type: "auth", token: "token" },
         { type: "user", priority: "next", message: { role: "user", content: "fixed urgent prompt" } }]);
@@ -1204,4 +1204,47 @@ test("the compact envelope renders handoffs and quotes every body line", () => {
     "  [/talking-stick]",
     "[/talking-stick]"
   ]);
+});
+
+test.each([false, true])("normal operator delivery steers Claude and still coalesces (broadcast=%s)", async (broadcast) => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  const send = (body: string) => service.sendMessageAndWake({
+    agent_id: "human:op:chat:1", room_id: roomId,
+    ...(broadcast ? {} : { to_agent_id: "claude:aa" }), body
+  });
+  await send("please consider this while working");
+  expect(nativeRequests).toHaveLength(1);
+  expect(nativeRequests[0]).toMatchObject({ steer: true, interrupt: false });
+  await send("and this");
+  expect(nativeRequests).toHaveLength(1);
+});
+
+test("normal peer delivery does not steer Claude", async () => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  service.joinPath({ agent_id: "codex:peer", context_path: project,
+    process_metadata: metadata("codex", "peer-session") });
+  await service.sendMessageAndWake({ agent_id: "codex:peer", room_id: roomId,
+    to_agent_id: "claude:aa", body: "review when ready" });
+  expect(nativeRequests).toHaveLength(1);
+  expect(nativeRequests[0]).toMatchObject({ steer: false, interrupt: false });
+});
+
+test("scoped room events reach named listeners only while remaining in room history", async () => {
+  const { service, project } = harness();
+  const room = joinPair(service, project);
+  for (const agent of ["codex:named", "grok:other"]) {
+    service.joinPath({ agent_id: agent, context_path: project });
+  }
+  const scoped = service.sendMessage({ agent_id: "human:op:chat:1", room_id: room,
+    to_agent_ids: ["claude:aa", "codex:named"], body: "scoped message" });
+  const broadcast = service.sendMessage({ agent_id: "human:op:chat:1", room_id: room, body: "room message" });
+  const other = await service.waitForEvents({ agent_id: "grok:other", room_id: room,
+    after_event_seq: scoped.event_seq - 1, max_wait_ms: 0 });
+  expect(other.events.map(e => e.event_seq)).toEqual([broadcast.event_seq]);
+  const named = await service.waitForEvents({ agent_id: "codex:named", room_id: room,
+    after_event_seq: scoped.event_seq - 1, max_wait_ms: 0 });
+  expect(named.events.map(e => e.event_seq)).toEqual([scoped.event_seq, broadcast.event_seq]);
+  expect(service.getRoomEvents({ room_id: room, include_all: true }).map(e => e.event_seq)).toContain(scoped.event_seq);
 });
