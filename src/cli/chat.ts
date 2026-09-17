@@ -11,6 +11,9 @@ import {
   formatChatHelp,
   renderInlinePanel,
   inlineCursorRow,
+  textWidth,
+  truncateStyled,
+  wrapStyledLine,
   chatTranscriptHeight,
   chatWheelRegion,
   CHAT_COMMANDS,
@@ -186,9 +189,15 @@ export async function runChatSession(
   let screenActive = false;
   let failure: unknown;
   let hint: string | null = null;
-  let deliveryGeneration = 0;
-  const deliveryStates = new Map<string, string>();
-  const deliveryHint = () => [...deliveryStates].map(([agent, state]) => `${sanitizeChatText(nameOf(agent))}: ${state}`).join(" · ");
+  const deliveryStates = new Map<number, { agent: string; state: string }>();
+  const rememberDelivery = (seq: number, agent: string, state: string) => {
+    deliveryStates.set(seq, { agent, state });
+    while (deliveryStates.size > 2_000) deliveryStates.delete(deliveryStates.keys().next().value!);
+  };
+  const deliveryText = (seq: number) => {
+    const delivery = deliveryStates.get(seq);
+    return delivery ? `${sanitizeChatText(nameOf(delivery.agent))}: ${delivery.state}` : undefined;
+  };
   let lastStatusDraw = Date.now();
   const dimensions = () => ({
     columns: Math.max(1, (output as { columns?: number }).columns ?? 80),
@@ -200,7 +209,11 @@ export async function runChatSession(
     color: options.color,
     show_turn_events: showTurnEvents,
     now: new Date(),
-    history_before: historyBefore
+    history_before: historyBefore,
+    delivery_of: (event: RoomEvent) => {
+      const text = terminal ? deliveryText(event.event_seq) : undefined;
+      return text && inline ? truncateStyled(text, Math.max(1, dimensions().columns - 3)) : text;
+    }
   });
   const completionsFor = (draft: { line: string; cursor: number }) => getChatCompletions(draft,
     members.filter((member) => member.agent_id !== selfId && member.process_liveness !== "gone")
@@ -217,6 +230,9 @@ export async function runChatSession(
   let inlineFrame: ChatFrame | null = null;
   let inlineFrameColumns = { columns: 80, rows: 24 };
   let inlineActive = false;
+  let inlineOutputRows = 0;
+  let inlineVisibleFloor = 0;
+  const inlineReceiptRows = new Map<number, number>();
   // Erase with the geometry the panel was drawn at: after a resize the current
   // width would compute the wrong row count and strand a stale copy.
   const eraseComposer = () => {
@@ -234,7 +250,7 @@ export async function runChatSession(
     const frame = renderInlinePanel({
       room_path: joined.canonical_path, transcript, format: formatContext(),
       status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date() },
-      draft, hint: hint ?? (deliveryHint() || null),
+      draft, hint,
       completions: editor?.completionVisible ? completionsFor(draft) : [],
       completion_index: editor?.completionIndex ?? 0,
       ...dimensions()
@@ -245,6 +261,8 @@ export async function runChatSession(
     output.write(frame.lines.join("\r\n"));
     inlineFrame = frame;
     inlineFrameColumns = dimensions();
+    inlineVisibleFloor = Math.max(inlineVisibleFloor, inlineOutputRows + frame.lines.length - dimensions().rows);
+    for (const [seq, row] of inlineReceiptRows) if (row < inlineVisibleFloor) inlineReceiptRows.delete(seq);
     const up = frame.lines.length - 1 - frame.cursor.row;
     output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}${frame.cursor.col > 0 ? `\u001b[${frame.cursor.col}C` : ""}\u001b[?2026l`);
   };
@@ -252,7 +270,9 @@ export async function runChatSession(
   // line, then redraw the draft underneath.
   const writeInline = (text: string) => {
     eraseComposer();
-    output.write(`${text.replace(/\r?\n/g, "\r\n")}\r\n`);
+    const lines = text.split(/\r?\n/).flatMap(line => wrapStyledLine(line, Math.max(1, dimensions().columns - 1)));
+    output.write(lines.join("\r\n") + "\r\n");
+    inlineOutputRows += lines.length;
     drawComposer();
   };
   const redraw = () => {
@@ -289,6 +309,7 @@ export async function runChatSession(
   };
   const print = (text: string): number | null => {
     if (inline) {
+      transcript.appendNotice(text);
       writeInline(text);
       return null;
     }
@@ -300,16 +321,30 @@ export async function runChatSession(
     output.write(`${text}\n`);
     return null;
   };
-  // Directed messages whose recipient hasn't received them yet, keyed by event
-  // seq. A receipt means the recipient's own tt wait returned the message.
-  const awaitingReceipt = new Map<number, { notice: number | null; generation: number }>();
+  // Receipts belong to event IDs, never to the latest send or the room footer.
+  const awaitingReceipt = new Map<number, { agent: string }>();
   let lastReceiptCheck = 0;
-  const trackReceipt = (eventSeq: number, pending: { notice: number | null; generation: number }) => {
-    awaitingReceipt.set(eventSeq, pending);
-    // Oldest first: a recipient that never reads can't grow this without bound.
+  const trackReceipt = (eventSeq: number, agent: string) => {
+    awaitingReceipt.set(eventSeq, { agent });
     while (awaitingReceipt.size > MAX_AWAITED_RECEIPTS) {
       awaitingReceipt.delete(awaitingReceipt.keys().next().value!);
     }
+  };
+  const setDelivery = (seq: number, agent: string, state: string) => {
+    rememberDelivery(seq, agent, state);
+    transcript.invalidate();
+    const row = inlineReceiptRows.get(seq);
+    if (inline && row !== undefined && row >= inlineVisibleFloor) {
+      // Only repaint rows still on the live terminal screen. Cursor movement
+      // cannot rewrite native scrollback. Saved history reads durable receipts.
+      output.write("\u001b[?2026h");
+      eraseComposer();
+      const up = inlineOutputRows - row;
+      const label = truncateStyled(`  ${deliveryText(seq)}`, Math.max(1, dimensions().columns - 1));
+      output.write(`\r\u001b[${up}A\u001b[2K${options.color ? "\u001b[2m" : ""}${label}${options.color ? "\u001b[0m" : ""}\r\u001b[${up}B`);
+      drawComposer();
+      output.write("\u001b[?2026l");
+    } else redraw();
   };
   const checkReceipts = () => {
     if (awaitingReceipt.size === 0 || Date.now() - lastReceiptCheck < RECEIPT_POLL_MS) return;
@@ -317,24 +352,12 @@ export async function runChatSession(
     const seqs = [...awaitingReceipt.keys()];
     const receipts = [];
     for (let start = 0; start < seqs.length; start += RECEIPT_BATCH) {
-      receipts.push(...runtime.commands.getMessageReceipts({
-        room_id: roomId,
-        event_seqs: seqs.slice(start, start + RECEIPT_BATCH)
-      }));
+      receipts.push(...runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: seqs.slice(start, start + RECEIPT_BATCH) }));
     }
     for (const receipt of receipts) {
-      const pending = awaitingReceipt.get(receipt.event_seq);
-      if (!pending) continue;
-      awaitingReceipt.delete(receipt.event_seq);
-      const text = `${sanitizeChatText(nameOf(receipt.agent_id))}: delivered`;
-      if (inline) {
-        if (pending.generation === deliveryGeneration) deliveryStates.set(receipt.agent_id, "delivered");
-        redraw();
-      } else if (pending.notice !== null && transcript.updateNotice(pending.notice, text)) {
-        redraw();
-      } else {
-        print(text);
-      }
+      if (!awaitingReceipt.delete(receipt.event_seq)) continue;
+      setDelivery(receipt.event_seq, receipt.agent_id, "delivered");
+      if (!terminal) print(`${sanitizeChatText(nameOf(receipt.agent_id))}: delivered`);
     }
   };
   const reportRoomClosed = () => {
@@ -364,15 +387,34 @@ export async function runChatSession(
     restore();
   };
   const onResize = () => {
-    // The terminal reflows what is already on screen, so the panel may occupy
-    // more rows than either geometry alone predicts. Erase the larger of the
-    // two before redrawing, bounded by the visible screen.
-    if (inline && inlineFrame) {
-      const previous = inlineCursorRow(inlineFrame, inlineFrameColumns.columns);
-      const reflowed = inlineCursorRow(inlineFrame, dimensions().columns);
-      const up = Math.min(dimensions().rows - 1, Math.max(previous, reflowed));
-      output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}\u001b[J`);
+    // Reflow invalidates physical row anchors; never overwrite a different
+    // message using coordinates recorded at the old width.
+    inlineReceiptRows.clear();
+    inlineOutputRows = 0;
+    inlineVisibleFloor = 0;
+    // Reflow can move rows both before and after the editor cursor. Rebuild
+    // the visible tail from the model instead of guessing a cursor-up distance.
+    // Home + ED0 clears only the active area; ED2 may push it into scrollback
+    // in some terminals, and ED3 would erase history.
+    if (inline) {
       inlineFrame = null;
+      editor?.resize(dimensions().columns - 1);
+      const draft = editor?.draft ?? { line: "", cursor: 0 };
+      const panel = renderInlinePanel({ room_path: joined.canonical_path, transcript, format: formatContext(),
+        status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date() },
+        draft, hint, completions: editor?.completionVisible ? completionsFor(draft) : [],
+        completion_index: editor?.completionIndex ?? 0, ...dimensions() });
+      const tailHeight = Math.max(0, dimensions().rows - panel.lines.length);
+      const tail = transcript.viewport(tailHeight, Math.max(1, dimensions().columns - 1), formatContext());
+      output.write("\u001b[?2026h\u001b[H\u001b[J");
+      if (tail.length) output.write(tail.join("\r\n") + "\r\n");
+      inlineOutputRows = tail.length;
+      for (const [seq, row] of transcript.receiptRows(tailHeight, Math.max(1, dimensions().columns - 1), formatContext())) {
+        inlineReceiptRows.set(seq, row);
+      }
+      drawComposer();
+      output.write("\u001b[?2026l");
+      return;
     }
     editor?.resize(dimensions().columns - 1);
     previousFrame = null;
@@ -424,6 +466,17 @@ export async function runChatSession(
 
   const render = (event: RoomEvent) => formatChatEvent(event, formatContext());
 
+  const hydrateReceipts = (events: RoomEvent[]) => {
+    const seqs = events.filter(event => event.event_type === "message_sent" && event.to_agent_id && event.from_agent_id?.startsWith("human:"))
+      .map(event => event.event_seq);
+    for (let start = 0; start < seqs.length; start += RECEIPT_BATCH) {
+      for (const receipt of runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: seqs.slice(start, start + RECEIPT_BATCH) })) {
+        rememberDelivery(receipt.event_seq, receipt.agent_id, "delivered");
+      }
+    }
+    if (seqs.length) transcript.invalidate();
+  };
+
   const scrollHistory = (amount: number) => {
     const { columns, rows } = dimensions();
     const draft = editor?.draft ?? { line: "", cursor: 0 };
@@ -444,6 +497,7 @@ export async function runChatSession(
         if (earlier.length === 0) { historyExhausted = true; break; }
         historyCursor = earlier[0].event_seq;
         historyExhausted = earlier.length < 100;
+        hydrateReceipts(earlier);
         const visible = earlier.filter((event) => render(event) !== null);
         transcript.prependEvents(visible, height, columns - 1, formatContext());
         if (visible.length) break;
@@ -504,8 +558,6 @@ export async function runChatSession(
       }
       targets = resolved.agent_ids;
     }
-    const generation = ++deliveryGeneration;
-    deliveryStates.clear();
     redraw();
     for (const toAgentId of targets) {
       void runtime.commands.sendMessageAndWake(identity, {
@@ -524,20 +576,13 @@ export async function runChatSession(
           result.delivery_state === "queued" || result.delivery_state === "woken" ? "queued" :
           result.delivery_state === "ambiguous" ? "wake unconfirmed" :
           "not listening";
-        const text = `${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`;
-        const notice = inline ? null : print(text);
-        if (inline && generation === deliveryGeneration) deliveryStates.set(result.delivery_target, state);
+        setDelivery(result.event_seq, result.delivery_target, state);
+        if (!terminal) print(`${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`);
         const received = runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: [result.event_seq] });
         if (received.length > 0) {
-          if (inline) {
-            if (generation === deliveryGeneration) deliveryStates.set(result.delivery_target, "delivered");
-          } else if (notice !== null) transcript.updateNotice(notice, `${sanitizeChatText(nameOf(result.delivery_target))}: delivered`);
-          else print(`${sanitizeChatText(nameOf(result.delivery_target))}: delivered`);
-          redraw();
-        } else {
-          trackReceipt(result.event_seq, { notice, generation });
-          redraw();
-        }
+          setDelivery(result.event_seq, result.delivery_target, "delivered");
+          if (!terminal) print(`${sanitizeChatText(nameOf(result.delivery_target))}: delivered`);
+        } else trackReceipt(result.event_seq, result.delivery_target);
       })
       .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
     }
@@ -577,6 +622,7 @@ export async function runChatSession(
           print(historyExhausted ? "No older saved messages." : "No visible messages in this page; use /older to continue.");
           return;
         }
+        hydrateReceipts(entries);
         const lines = entries.map(event => render(event)!).join("\n\n");
         print(`── Earlier saved messages ──\n${lines}\n── End of earlier page · /older for more ──`);
         return;
@@ -622,7 +668,11 @@ export async function runChatSession(
   // Messages are separated by a blank line; consecutive stick/membership
   // lines stay compact underneath the message they follow.
   let lastPrinted: "message" | "system" | "info" = "info";
-  const printEvent = (event: RoomEvent) => {
+  const printEvent = (event: RoomEvent, historical = false) => {
+    if (!historical && event.event_type === "message_sent" && event.to_agent_id && event.from_agent_id?.startsWith("human:")) {
+      if (!deliveryStates.has(event.event_seq)) rememberDelivery(event.event_seq, event.to_agent_id, "sent");
+      if (deliveryStates.get(event.event_seq)?.state !== "delivered") trackReceipt(event.event_seq, event.to_agent_id);
+    }
     if (render(event) !== null && isChatConversationActivity(event)) {
       if (startsChatConversation(previousConversationEvent, event) &&
           (!historyBefore || Date.parse(event.created_at) > Date.parse(historyBefore))) {
@@ -638,8 +688,8 @@ export async function runChatSession(
     } else if (event.event_type === "join" && event.from_agent_id) {
       departedAgents.delete(event.from_agent_id);
     }
+    if (terminal) transcript.appendEvent(event);
     if (fullscreen) {
-      transcript.appendEvent(event);
       if (
         event.event_type === "message_sent" &&
         event.to_agent_id === selfId &&
@@ -655,18 +705,21 @@ export async function runChatSession(
     }
     const section = chatSectionLabel(event, formatContext());
     if (section !== printedSection) {
-      print(`── ${section} ──`);
+      if (inline) writeInline(`── ${section} ──`);
+      else print(`── ${section} ──`);
       printedSection = section;
     }
     const isMessage = event.event_type === "message_sent";
     if (isMessage || lastPrinted === "message") {
-      print("");
+      if (inline) writeInline(""); else print("");
     }
     const forMe =
       isMessage &&
       event.to_agent_id === selfId &&
       event.from_agent_id !== selfId;
-    print(forMe && terminal ? `${line}\u0007` : line);
+    if (inline) writeInline(forMe ? `${line}\u0007` : line);
+    else print(forMe && terminal ? `${line}\u0007` : line);
+    if (inline && deliveryStates.has(event.event_seq)) inlineReceiptRows.set(event.event_seq, inlineOutputRows - 1);
     lastPrinted = isMessage ? "message" : "system";
   };
 
@@ -837,8 +890,9 @@ export async function runChatSession(
         historyBefore = conversationEvents[index].created_at;
       }
     }
+    hydrateReceipts(historyEvents);
     for (const event of historyEvents) {
-      printEvent(event);
+      printEvent(event, true);
     }
 
     redraw();
@@ -875,6 +929,7 @@ export async function runChatSession(
         ) {
           refreshMembers();
         }
+        hydrateReceipts(result.events);
         for (const event of result.events) {
           if (OWNERSHIP_EVENTS.includes(event.event_type)) {
             ownerSince = event.created_at;

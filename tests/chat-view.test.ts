@@ -26,7 +26,7 @@ const context = {
   show_turn_events: false
 };
 
-test("inline panels fit narrow and short terminals and keep menu space stable", () => {
+test("inline panels fit narrow and short terminals without reserving unused menu rows", () => {
   for (const columns of [1, 4, 8, 20, 40, 80]) {
     for (const rows of [2, 4, 5, 6, 7, 12, 24]) {
       const input = { room_path: "/a/long/workspace", transcript: new ChatTranscript(), format: context,
@@ -38,7 +38,8 @@ test("inline panels fit narrow and short terminals and keep menu space stable", 
       expect(frame.cursor.row).toBeLessThan(frame.lines.length);
       expect(frame.cursor.col).toBeLessThan(columns);
       const suggestions = renderInlinePanel({ ...input, completions: getChatCompletions({ line: "/", cursor: 1 }, []) });
-      expect(suggestions.lines.length).toBe(frame.lines.length);
+      expect(suggestions.lines.length).toBeLessThanOrEqual(Math.max(1, rows - 1));
+      expect(suggestions.cursor.row).toBeLessThan(suggestions.lines.length);
     }
   }
   expect(inlineCursorRow({ lines: ["x".repeat(79), "draft"], cursor: { row: 1, col: 3 } }, 40)).toBe(2);
@@ -50,11 +51,10 @@ test("inline room bar sits directly above the prompt with separation from chat",
     status: { members: [], owner: null, owner_since: null, reserved_for: null, now: new Date() },
     draft: { line: "", cursor: 0 }, hint: null, columns: 80, rows: 24
   });
-  expect(frame.lines).toHaveLength(8);
-  expect(frame.lines[0]).toBe("");
-  expect(frame.lines[4]).toContain("─ Room · /workspace ─");
-  expect(frame.lines[5]).toBe("> ");
-  expect(frame.cursor.row).toBe(5);
+  expect(frame.lines).toHaveLength(4);
+  expect(frame.lines[0]).toContain("─ Room · /workspace ─");
+  expect(frame.lines[1]).toBe("> ");
+  expect(frame.cursor.row).toBe(1);
 });
 
 let seq = 0;

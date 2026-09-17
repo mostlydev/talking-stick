@@ -1374,9 +1374,9 @@ test("inline incoming messages erase from the actual draft cursor and restore pa
     out = "";
     service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: "incoming-during-edit" });
     await until(() => out.includes("incoming-during-edit"));
-    // First draft row is below the separator, suggestions, and room bar.
+    // With no suggestions, only the room bar is above the first draft row.
     // Move back only to the panel start, never into the transcript.
-    expect(out.startsWith("\r\u001b[5A\u001b[J")).toBe(true);
+    expect(out.startsWith("\r\u001b[1A\u001b[J")).toBe(true);
     expect(out).toContain("first");
     expect(out).toContain("second");
   } finally {
@@ -1442,17 +1442,20 @@ test("inline terminal retains history, bars and draft across incoming messages a
     input.write("/h");
     await flush();
     expect(text()).toContain("› /help");
-    expect(vt.buffer.active.baseY).toBe(beforeMenu);
+    expect(vt.buffer.active.baseY).toBe(beforeMenu + 1);
     input.write("\u0003" + "Ω".repeat(37));
     await flush();
     for (const cols of [20, 80, 40]) {
-      vt.resize(cols, 24); output.columns = cols; output.emit("resize");
+      vt.resize(cols, 24);
+      output.columns = cols; output.emit("resize");
       await flush();
       expect(text()).toContain("incoming-marker");
       // Reflow must not leave old draft fragments in the conversation.
       expect((text().match(/Ω/g) ?? []).length, JSON.stringify({ cols, screen: text().split("\n").slice(-30) })).toBe(37);
     }
     expect(bytes).not.toContain("\u001b[?1049h");
+    expect(bytes).not.toContain("\u001b[2J");
+    expect(bytes).not.toContain("\u001b[3J");
     expect(bytes).not.toContain("\u001b[?1000h");
   } finally {
     input.write("\u0003/quit\r");
@@ -1590,4 +1593,91 @@ test("a dumb terminal falls back to plain line mode", () => {
   expect(chatTerminalCapable(tty, tty, { TERM: "dumb" })).toBe(false);
   expect(chatTerminalCapable({ isTTY: false }, tty, { TERM: "xterm-256color" })).toBe(false);
   expect(chatTerminalCapable(tty, {}, {})).toBe(false);
+});
+
+test.each([true, false])("receipts update the matching transcript message, never the footer (inline=%s)", async (inline) => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 32 });
+  const vt = new Terminal({ cols: 100, rows: 32, allowProposedApi: true });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("\u001b[0m", resolve));
+  const lines = () => Array.from({ length: vt.buffer.active.length }, (_, i) => vt.buffer.active.getLine(i)?.translateToString(true) ?? "");
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline,
+    color: false, history: 0, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Room ·"));
+    input.write("@codex first distinct message\r");
+    await until(() => bytes.includes("first distinct message"));
+    input.write("@codex second distinct message\r");
+    await until(() => bytes.includes("second distinct message"));
+    const intervening = "intervening " + "界🙂".repeat(60);
+    service.sendMessage({ agent_id: "codex:aa", room_id: joined.room_id, body: intervening });
+    await until(() => bytes.includes("intervening"));
+    input.write("unfinished draft");
+    const events = service.getRoomEvents({ room_id: joined.room_id, include_all: true });
+    const first = events.find(event => event.payload?.body === "@codex first distinct message" || event.payload?.body === "first distinct message")!;
+    const second = events.find(event => event.payload?.body === "@codex second distinct message" || event.payload?.body === "second distinct message")!;
+    // Accept only the second event first: the older receipt must not overwrite it.
+    service.db.prepare("INSERT INTO message_receipts (room_id, agent_id, event_seq, delivered_at) VALUES (?, ?, ?, ?)")
+      .run(joined.room_id, "codex:aa", second.event_seq, new Date().toISOString());
+    await until(() => bytes.includes("codex: delivered"));
+    await flush();
+    let rendered = lines();
+    let firstRow = rendered.findIndex(line => line.includes("first distinct message"));
+    let secondRow = rendered.findIndex(line => line.includes("second distinct message"));
+    expect(rendered[firstRow + 1]).toContain("codex: not listening");
+    expect(rendered[secondRow + 1]).toContain("codex: delivered");
+    const roomBar = rendered.length - 1 - [...rendered].reverse().findIndex(line => line.includes("Room ·"));
+    if (inline) expect(rendered.slice(roomBar).join("\n")).not.toContain("delivered");
+    expect(rendered.join("\n")).toContain("> unfinished draft");
+    if (inline) {
+      vt.resize(60, 32); output.columns = 60; output.emit("resize");
+      await flush();
+    }
+    bytes = "";
+    service.db.prepare("INSERT INTO message_receipts (room_id, agent_id, event_seq, delivered_at) VALUES (?, ?, ?, ?)")
+      .run(joined.room_id, "codex:aa", first.event_seq, new Date().toISOString());
+    await until(() => bytes.includes("codex: delivered"));
+    await flush();
+    rendered = lines();
+    firstRow = rendered.findIndex(line => line.includes("first distinct message"));
+    secondRow = rendered.findIndex(line => line.includes("second distinct message"));
+    expect(rendered[firstRow + 1]).toContain("codex: delivered");
+    expect(rendered[secondRow + 1]).toContain("codex: delivered");
+    expect(rendered.join("").match(/界/g)).toHaveLength(60);
+    expect(rendered.join("").match(/🙂/g)).toHaveLength(60);
+  } finally { input.write("\u0003\u0004"); await session; vt.dispose(); }
+});
+
+test("saved history batches durable receipts and does not invent pending states for old messages", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  service.joinPath({ agent_id: "human:old:chat:session", context_path: root });
+  service.sendMessage({ agent_id: "human:old:chat:session", room_id: joined.room_id, to_agent_id: "codex:aa", body: "old unread" });
+  const delivered = service.sendMessage({ agent_id: "human:old:chat:session", room_id: joined.room_id, to_agent_id: "codex:aa", body: "old delivered" });
+  service.db.prepare("INSERT INTO message_receipts (room_id, agent_id, event_seq, delivered_at) VALUES (?, ?, ?, ?)")
+    .run(joined.room_id, "codex:aa", delivered.event_seq, new Date().toISOString());
+  const commands = new TalkingStickCommands(service);
+  const queries: number[][] = [];
+  const getReceipts = commands.getMessageReceipts.bind(commands);
+  commands.getMessageReceipts = query => { queries.push(query.event_seqs); return getReceipts(query); };
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 24 });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); });
+  const session = runChatSession({ runtime: { commands, close() {} }, identity: observerIdentity(),
+    context_path: root, input, output, terminal: true, inline: true, color: false,
+    history: 10, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("old delivered\r\n  codex: delivered"));
+    expect(bytes).toContain("old unread");
+    expect(bytes).not.toContain("codex: sent");
+    expect(bytes).not.toContain("codex: queued");
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toHaveLength(2);
+  } finally { input.write("\u0004"); await session; }
 });

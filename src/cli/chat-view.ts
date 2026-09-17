@@ -277,6 +277,7 @@ interface Layout {
   rows: string[];
   starts: Map<number, number>;
   order: number[];
+  receipts: Map<number, number>;
 }
 
 export class ChatTranscript {
@@ -442,6 +443,15 @@ export class ChatTranscript {
     };
   }
 
+  // Physical row anchors for message receipts in the same viewport geometry.
+  receiptRows(height: number, width: number, context: ChatFormatContext): Map<number, number> {
+    const layout = this.layout(width, context);
+    const top = this.topRow(layout, Math.max(0, layout.rows.length - height));
+    const padding = Math.max(0, height - Math.min(height, layout.rows.length - top));
+    return new Map([...layout.receipts].filter(([, row]) => row >= top && row < top + height)
+      .map(([seq, row]) => [seq, padding + row - top]));
+  }
+
   private layout(width: number, context: ChatFormatContext): Layout {
     const key = `${width}|${this.epoch}|${context.show_turn_events}|${context.color}|${context.now?.toDateString()}|${context.history_before}`;
     if (this.layoutCache?.key === key) return this.layoutCache.layout;
@@ -449,6 +459,7 @@ export class ChatTranscript {
     const rows: string[] = [];
     const starts = new Map<number, number>();
     const order: number[] = [];
+    const receipts = new Map<number, number>();
     let previous: "message" | "other" | null = null;
     let previousEvent: RoomEvent | undefined;
     let section: string | undefined;
@@ -472,11 +483,14 @@ export class ChatTranscript {
         }
         if (isChatConversationActivity(block.event)) previousEvent = block.event;
       }
+      if (block.kind === "event" && context.delivery_of?.(block.event)) {
+        receipts.set(block.event.event_seq, rows.length + lines.length - 1);
+      }
       rows.push(...lines);
       previous = isMessage ? "message" : "other";
     }
 
-    const layout = { rows, starts, order };
+    const layout = { rows, starts, order, receipts };
     this.layoutCache = { key, layout };
     return layout;
   }
@@ -743,11 +757,11 @@ export function renderInlinePanel(input: ChatScreenInput): ChatFrame {
   if (width < 4 || height < 4) {
     return { lines: [truncateStyled(CHAT_PROMPT + input.draft.line.replace(/\n/g, " "), width)], cursor: { row: 0, col: 0 } };
   }
-  const topRows = Math.min(5, Math.max(1, height - 4));
-  const menuCapacity = Math.max(0, topRows - 2);
+  const matches = input.completions ?? [];
+  const menuCapacity = Math.min(matches.length, 3, Math.max(0, height - 4));
+  const topRows = menuCapacity + 1;
   const composerCapacity = Math.max(1, Math.min(MAX_COMPOSER_ROWS, height - topRows - 2));
   const composer = layoutComposer(input.draft, width, composerCapacity);
-  const matches = input.completions ?? [];
   const selected = Math.max(0, Math.min(input.completion_index ?? 0, matches.length - 1));
   const first = Math.max(0, selected - menuCapacity + 1);
   const menu = Array.from({ length: menuCapacity }, (_, row) => {
@@ -761,7 +775,7 @@ export function renderInlinePanel(input: ChatScreenInput): ChatFrame {
   const roomBar = title
     ? truncateStyled(`${dim(input.format, "─ ")}${title}${dim(input.format, " " + "─".repeat(Math.max(0, width - textWidth(title) - 3)))}`, width)
     : rule;
-  const top = [...(topRows > 1 ? [""] : []), ...menu, roomBar];
+  const top = [...menu, roomBar];
   const lines = [...top, ...composer.rows, rule, renderFooter(input, width)];
   return {
     lines,

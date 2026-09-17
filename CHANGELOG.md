@@ -20,7 +20,7 @@ changes will be called out under **Breaking changes**.
 
 - Native Claude/Codex wakes carry attributed room events directly. `tt ack` durably acknowledges exact events without fetching or claiming ownership; oversized payloads and cmux retain pull notifications.
 
-- Update the latest outgoing message's delivery status in the live chat panel instead of appending queued/received lines to history. Fullscreen notices replace their status, and delivery receipts use `delivered`.
+- Attach delivery receipts to each outgoing transcript message instead of the footer. Update visible receipt rows in place, restore durable receipts in saved history, and remove unused suggestion space from the inline prompt. Resize redraws the visible transcript without clearing native scrollback.
 
 - Place the room path in a compact ruled bar immediately above the prompt, separated from chat. Suggestion space stays above the bar instead of separating the room label from the prompt.
 

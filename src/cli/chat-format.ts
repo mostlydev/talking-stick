@@ -19,6 +19,7 @@ export interface ChatFormatContext {
   show_turn_events: boolean;
   now?: Date;
   history_before?: string;
+  delivery_of?: (event: RoomEvent) => string | undefined;
 }
 
 const ANSI_PATTERN =
@@ -260,7 +261,9 @@ function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): s
         ? ` ${paint(context, "1;31", "‼ interrupt")}`
         : "";
     const header = `${sender}${route}${marker}  ${paint(context, "2", time)}`;
-    return [header, ...body.split("\n").map((line) => `  ${line}`)].join("\n");
+    const delivery = context.delivery_of?.(event);
+    return [header, ...body.split("\n").map((line) => `  ${line}`),
+      ...(delivery ? [paint(context, "2", `  ${delivery}`)] : [])].join("\n");
   }
 
   const system = describeSystemEvent(event, context);
