@@ -39,7 +39,20 @@ probes establish PostToolUse, PostToolUseFailure and normal Stop feedback.
   fallback, malformed input, foreign session/host, ambiguous membership,
   repeated hooks, database failure, urgent delivery, installer idempotence,
   independent uninstall and `--no-guard` delivery retention.
-- Live Grok reload, actual hook feedback and acknowledgement: pending.
-- Independent final candidate review: pending.
+- Live Grok, after the operator reloaded hooks from the Hooks tab: event 18662
+  (marker `GROK-HOOK-PROOF-9c42`) reached the Grok model complete through
+  `global/talking-stick-inbox: post_tool_use[0].hooks[0]`, with no `tt wait` and
+  no lease. `tt ack 2bdebc3c...` acknowledged 18662 only; a following tool call
+  did not replay it. The setup message 18659 was also delivered by hook and
+  acknowledged. The chat console still labelled the first send `unreachable`,
+  because no idle wake endpoint exists; the acknowledgement is the proof of
+  delivery, and nothing here is an idle wake.
+- Independent review (Claude) at 668f750: full suite 622 passed, 1 skipped, in
+  20 seconds; typecheck clean. An earlier run hung for ten minutes while a second
+  suite ran concurrently in the same checkout; rerun alone it passed normally.
+  Findings raised on the first draft were all addressed: quiet tool calls read
+  before taking a write lock and open the database without migrating it, the
+  oversized notice points at plain `tt wait`, ambiguous membership reports a
+  diagnostic, and retry duplication is documented as deliberate.
 
 No merge or publication performed.

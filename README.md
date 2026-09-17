@@ -247,7 +247,7 @@ After a handoff, an agent keeps the wait loop alive while work is pending, runs 
 
 - Claude Code: copied or linked into `~/.claude/skills/talking-stick` because Claude Code does not read `~/.agents/skills`
 - Codex, Antigravity (`agy`), Grok Build, and OpenCode: copied or linked once into the shared `~/.agents/skills/talking-stick`
-- Grok Build: also installs a trusted global session hook at `~/.grok/hooks/talking-stick-session.json` a stop guard at `~/.grok/hooks/talking-stick-stop.json`, and active-turn delivery hooks at `~/.grok/hooks/talking-stick-inbox.json`
+- Grok Build: also installs a trusted global session hook at `~/.grok/hooks/talking-stick-session.json`, a stop guard at `~/.grok/hooks/talking-stick-stop.json`, and active-turn delivery hooks at `~/.grok/hooks/talking-stick-inbox.json`
 - Gemini CLI: deprecated for skill installation; `tt install gemini` prints a deprecation notice and runs cleanup only
 
 By default, `tt install` links the bundled skill so local updates are picked up immediately. Pass `--copy` if you want a standalone snapshot.
