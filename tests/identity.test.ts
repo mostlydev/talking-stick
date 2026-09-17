@@ -364,6 +364,76 @@ describe("deriveHarnessCliIdentity", () => {
     });
   });
 
+  test("GROK_AGENT marks grok and GROK_SESSION_ID names the session", () => {
+    const { workspace, logPath } = makeTempWorkspace();
+    const identity = deriveHarnessCliIdentity({
+      env: { GROK_AGENT: "1", GROK_SESSION_ID: "session-live" },
+      username: "alice",
+      parentPid: 200,
+      hostId: "test-host",
+      inspector: fakeInspector({
+        200: { startTime: "Mon Jun  8 12:01:00 2026", command: "zsh", ppid: 1 }
+      }),
+      contextPath: workspace,
+      grokSessionLogPath: logPath
+    });
+
+    expect(identity).not.toBeNull();
+    expect(identity!.process_metadata).toMatchObject({
+      harness_name: "grok",
+      harness_session_id: "harness:session-live"
+    });
+  });
+
+  test("GROK_AGENT alone still identifies grok without a session id", () => {
+    const { workspace, logPath } = makeTempWorkspace();
+    const identity = deriveHarnessCliIdentity({
+      env: { GROK_AGENT: "1" },
+      username: "alice",
+      parentPid: 200,
+      hostId: "test-host",
+      inspector: fakeInspector({
+        100: {
+          startTime: "Mon Jun  8 12:00:00 2026",
+          command: "/Users/alice/.local/bin/grok",
+          ppid: 1
+        },
+        200: { startTime: "Mon Jun  8 12:01:00 2026", command: "zsh", ppid: 100 }
+      }),
+      contextPath: workspace,
+      grokSessionLogPath: logPath
+    });
+
+    expect(identity).not.toBeNull();
+    expect(identity!.process_metadata).toMatchObject({
+      harness_name: "grok",
+      harness_session_id: "pid:100@Mon Jun  8 12:00:00 2026"
+    });
+  });
+
+  test("an inherited GROK_SESSION_ID never overrides the real harness", () => {
+    const identity = deriveHarnessCliIdentity({
+      env: {
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION_ID: "claude-session",
+        GROK_AGENT: "1",
+        GROK_SESSION_ID: "stale-grok-session"
+      },
+      username: "alice",
+      parentPid: 200,
+      hostId: "test-host",
+      inspector: fakeInspector({
+        200: { startTime: "Mon Jun  8 12:01:00 2026", command: "zsh", ppid: 1 }
+      })
+    });
+
+    expect(identity).not.toBeNull();
+    expect(identity!.process_metadata).toMatchObject({
+      harness_name: "claude",
+      harness_session_id: "harness:claude-session"
+    });
+  });
+
   test("does not treat GROK_SESSION_ID alone as a normal shell marker", () => {
     const identity = deriveHarnessCliIdentity({
       env: { GROK_SESSION_ID: "session-a" },

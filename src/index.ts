@@ -85,6 +85,8 @@ export {
   CLAUDE_STOP_GUARD_MARKER,
   planGrokSessionHookInstall,
   planGrokSessionHookUninstall,
+  planGrokStopHookInstall,
+  planGrokStopHookUninstall,
   resolveGrokSessionHookPath,
   resolveHarnessConfigDir,
   resolveOpencodeConfigDir,

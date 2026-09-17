@@ -153,3 +153,100 @@ describe("claude stop hook command", () => {
     expect(exitCode).toBeNull();
   });
 });
+
+describe("grok stop payloads", () => {
+  test("blocks on a camelCase turn end the same way Claude's snake_case does", async () => {
+    const { service, project } = await setupOwnedRoom();
+    const run = await runHook(
+      service,
+      {
+        hookEventName: "stop",
+        hook_event_name: "Stop",
+        sessionId: SESSION_ID,
+        cwd: project,
+        workspaceRoot: project,
+        stopHookActive: false,
+        reason: "end_turn",
+        promptId: "prompt-1"
+      },
+      project
+    );
+    expect(run.exitCode).toBe(2);
+    expect(run.stderr).toContain("claude:hooked");
+  });
+
+  test("camelCase stopHookActive prevents a block loop", async () => {
+    const { service, project } = await setupOwnedRoom();
+    const run = await runHook(
+      service,
+      {
+        hook_event_name: "Stop",
+        sessionId: SESSION_ID,
+        cwd: project,
+        stopHookActive: true,
+        reason: "end_turn"
+      },
+      project
+    );
+    expect(run.exitCode).toBeNull();
+    expect(run.stderr).toBe("");
+  });
+
+  test("a session ending is observed, never blocked", async () => {
+    const { service, project } = await setupOwnedRoom();
+    for (const reason of ["session_end", "user_exit", "shutdown"]) {
+      const run = await runHook(
+        service,
+        { hook_event_name: "Stop", sessionId: SESSION_ID, cwd: project, reason },
+        project
+      );
+      expect(run.exitCode, `reason ${reason} must not block`).toBeNull();
+      expect(run.stderr).toBe("");
+    }
+  });
+
+  test("a subagent stop never blocks, by event name or subagent type", async () => {
+    const { service, project } = await setupOwnedRoom();
+
+    const byEvent = await runHook(
+      service,
+      {
+        hook_event_name: "SubagentStop",
+        sessionId: SESSION_ID,
+        cwd: project,
+        reason: "end_turn"
+      },
+      project
+    );
+    expect(byEvent.exitCode).toBeNull();
+
+    const byType = await runHook(
+      service,
+      {
+        hook_event_name: "Stop",
+        sessionId: SESSION_ID,
+        cwd: project,
+        reason: "end_turn",
+        subagentType: "explore"
+      },
+      project
+    );
+    expect(byType.exitCode).toBeNull();
+  });
+
+  test("a Grok session that owns nothing is left alone", async () => {
+    const { service, project } = await setupOwnedRoom();
+    const run = await runHook(
+      service,
+      {
+        hook_event_name: "Stop",
+        sessionId: "some-other-grok-session",
+        cwd: project,
+        reason: "end_turn"
+      },
+      project
+    );
+    expect(run.exitCode).toBeNull();
+    expect(run.stderr).toBe("");
+  });
+});

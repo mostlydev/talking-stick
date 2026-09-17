@@ -1,10 +1,18 @@
 import { TalkingStickService } from "../service.js";
 
+// Grok loads ~/.claude/settings.json for Claude compatibility and sends the
+// same events with camelCase keys, so every field is read in both spellings.
 interface ClaudeStopHookInput {
   session_id?: unknown;
+  sessionId?: unknown;
   cwd?: unknown;
   stop_hook_active?: unknown;
+  stopHookActive?: unknown;
   hook_event_name?: unknown;
+  hookEventName?: unknown;
+  reason?: unknown;
+  subagentType?: unknown;
+  subagent_type?: unknown;
 }
 
 export interface RunClaudeStopHookOptions {
@@ -15,10 +23,6 @@ export interface RunClaudeStopHookOptions {
   setExitCode?: (code: number) => void;
 }
 
-// Claude Code Stop-hook entry point. Exit code 2 blocks the stop and surfaces
-// stderr to the model; anything else lets the stop proceed. Every failure path
-// must fail open (exit 0): coordination being unavailable must never trap a
-// session at its prompt.
 export async function runClaudeStopHookCommand(
   options: RunClaudeStopHookOptions = {}
 ): Promise<void> {
@@ -34,10 +38,26 @@ export async function runClaudeStopHookCommand(
   const ownsService = !options.service;
   try {
     const input = parseHookInput(options.stdin ?? (await readStdin()));
-    if (input.stop_hook_active === true) {
+    if (input.stop_hook_active === true || input.stopHookActive === true) {
       return;
     }
-    const sessionId = nonEmptyString(input.session_id);
+    // Grok fires Stop for a session ending too, and separately for a subagent.
+    // Only an ordinary turn end is a moment where handing off makes sense;
+    // blocking the others would trap a teardown or a child that owns nothing.
+    const reason = nonEmptyString(input.reason);
+    if (reason && reason !== "end_turn") {
+      return;
+    }
+    const event = nonEmptyString(input.hook_event_name) ?? nonEmptyString(input.hookEventName);
+    if (
+      (event && /subagent/i.test(event)) ||
+      nonEmptyString(input.subagentType) ||
+      nonEmptyString(input.subagent_type)
+    ) {
+      return;
+    }
+    const sessionId =
+      nonEmptyString(input.session_id) ?? nonEmptyString(input.sessionId);
     if (!sessionId) {
       return;
     }

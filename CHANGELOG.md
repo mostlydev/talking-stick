@@ -13,6 +13,8 @@ changes will be called out under **Breaking changes**.
 
 - Restore the room bar, live agent status, and visible suggestions in normal-screen chat while preserving native scrollback and selection. Add `/older` for saved history, preserve draft cursors across messages and resize, and restore terminal modes on exit.
 
+- Grok Build gets the stop guard. `tt install grok` writes `~/.grok/hooks/talking-stick-stop.json` beside the existing lifecycle hook, so a Grok session that still holds the turn is reminded to hand off before it stops. The guard reads both Claude's snake_case and Grok's camelCase hook payloads, blocks only an ordinary turn end, and never blocks a session teardown or a subagent stop. `GROK_AGENT=1` now identifies a Grok session and carries `GROK_SESSION_ID` as its session anchor; `GROK_SESSION_ID` alone is still not a marker. Grok still has no out-of-process wake, so it is reached only through cmux.
+
 ### Changed
 
 - Native Claude/Codex wakes carry attributed room events directly. `tt ack` durably acknowledges exact events without fetching or claiming ownership; oversized payloads and cmux retain pull notifications.
