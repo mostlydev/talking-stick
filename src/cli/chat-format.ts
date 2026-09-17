@@ -255,7 +255,13 @@ function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): s
       ""
     );
     const sender = from ? formatChatAgent(context, from) : "?";
-    const route = to ? ` → ${formatChatAgent(context, to)}` : "";
+    const listed = (event.payload as { recipients?: unknown } | null)?.recipients;
+    const recipients = Array.isArray(listed) ? listed.filter((id): id is string => typeof id === "string") : [];
+    const route = to
+      ? ` → ${formatChatAgent(context, to)}`
+      : recipients.length > 0
+        ? ` → ${recipients.map((id) => formatChatAgent(context, id)).join(", ")}`
+        : "";
     const marker =
       event.payload?.delivery_hint === "interrupt"
         ? ` ${paint(context, "1;31", "‼ interrupt")}`

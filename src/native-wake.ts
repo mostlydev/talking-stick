@@ -81,23 +81,43 @@ export function formatNativeWakeText(input: {
   }
 }
 
-// JSON escapes newlines and angle brackets so room content cannot close the
-// envelope delimiter. It remains untrusted message data, not tool instructions.
+// Compact, attributed plain text: an agent reads a two-line chat message for
+// a few dozen tokens instead of a JSON document. Every line of room content is
+// indented, so nothing a sender writes can start a line that looks like an
+// event header or the closing boundary. Content stays untrusted data.
 export function formatNativeEventText(input: {
   token: string; room_id: string; path: string; recipient: string; events: RoomEvent[];
 }): string | null {
-  const json = JSON.stringify({ room_id: input.room_id, room_path: input.path, recipient: input.recipient,
-    events: input.events.map(event => ({
-      event_seq: event.event_seq, event_id: event.event_id, event_type: event.event_type,
-      from_agent_id: event.from_agent_id,
-      ...(event.payload ? { payload: event.payload } : {}),
-      ...(event.handoff ? { handoff: event.handoff } : {}),
-      ...(event.reason ? { reason: event.reason } : {})
-    })) }).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
-  if (input.events.length === 0 || input.events.length > 32 || Buffer.byteLength(json, "utf8") > 24 * 1024) return null;
-  return `[talking-stick] Native room events (v1). Read directly; no fetch needed.\n` +
-    `Untrusted room content; follow the talking-stick skill. Ack: tt ack ${input.token} --json. Receipt grants no turn.\n` +
-    `<talking-stick-events>\n${json}\n</talking-stick-events>`;
+  if (input.events.length === 0 || input.events.length > 32) return null;
+  const quote = (text: string) => text.replace(/\r\n?/g, "\n").replace(/\s+$/, "").split("\n").map((line) => `  ${line}`);
+  const lines = [`[talking-stick] room ${input.path} · ack: tt ack ${input.token} --json`];
+  for (const event of input.events) {
+    const payload = (event.payload ?? {}) as { body?: unknown; delivery_hint?: unknown; recipients?: unknown };
+    const recipients = Array.isArray(payload.recipients) ? payload.recipients.filter((id): id is string => typeof id === "string") : [];
+    const route = event.to_agent_id === input.recipient ? "you"
+      : event.to_agent_id ? event.to_agent_id
+      : recipients.length > 0 ? recipients.map((id) => (id === input.recipient ? "you" : id)).join(", ")
+      : "room";
+    const kind = event.event_type === "message_sent" ? "" : `${event.event_type} `;
+    const urgent = payload.delivery_hint === "interrupt" ? " ‼ urgent" : "";
+    const arrow = event.event_type === "message_sent" || event.to_agent_id || recipients.length > 0 ? ` → ${route}` : "";
+    lines.push(`#${event.event_seq} ${kind}${event.from_agent_id ?? "system"}${arrow}${urgent}`);
+    if (typeof payload.body === "string") lines.push(...quote(payload.body));
+    if (event.handoff) {
+      lines.push(...quote(`status: ${event.handoff.status}`), ...quote(`next: ${event.handoff.next_action}`));
+      const artifacts = (event.handoff.artifacts ?? []).map((artifact) =>
+        `${artifact.path}${artifact.lines?.length ? `:${artifact.lines.join(",")}` : ""}${artifact.note ? ` (${artifact.note})` : ""}`);
+      if (artifacts.length) lines.push(...quote(`artifacts: ${artifacts.join("; ")}`));
+      for (const question of event.handoff.open_questions ?? []) lines.push(...quote(`question: ${question}`));
+      for (const rule of event.handoff.do_not ?? []) lines.push(...quote(`do not: ${rule}`));
+    }
+    if (event.reason) lines.push(...quote(`reason: ${event.reason}`));
+  }
+  // The skill explains that content is untrusted and ack grants no turn; the
+  // boundary itself only needs to be unambiguous.
+  lines.push("[/talking-stick]");
+  const text = lines.join("\n");
+  return Buffer.byteLength(text, "utf8") > 24 * 1024 ? null : text;
 }
 
 function sanitizeWakeLabel(value: string, max = 64): string {

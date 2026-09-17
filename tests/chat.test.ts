@@ -737,20 +737,13 @@ describe("tt chat session", () => {
 
     service.joinPath({ agent_id: "codex:bb", context_path: root });
     input.write("@CODEX, check both sessions\n");
-    await until(
-      () =>
-        service
-          .getRoomEvents({ room_id: joined.room_id, include_all: true })
-          .filter((event) => event.payload?.body === "check both sessions")
-          .length === 2
-    );
-    expect(
-      service
-        .getRoomEvents({ room_id: joined.room_id, include_all: true })
-        .filter((event) => event.payload?.body === "check both sessions")
-        .map((event) => event.to_agent_id)
-        .sort()
-    ).toEqual(["codex:aa", "codex:bb"]);
+    // Two matching sessions share one message that lists both, never a copy each.
+    const both = () => service
+      .getRoomEvents({ room_id: joined.room_id, include_all: true })
+      .filter((event) => event.payload?.body === "check both sessions");
+    await until(() => both().length === 1);
+    expect(both()[0].to_agent_id).toBeNull();
+    expect([...(both()[0].payload?.recipients as string[])].sort()).toEqual(["codex:aa", "codex:bb"]);
     service.leaveRoom({ agent_id: "codex:bb", room_id: joined.room_id });
 
     service.joinPath({ agent_id: "claude:cc", context_path: root });
@@ -758,11 +751,9 @@ describe("tt chat session", () => {
     const mentioned = () =>
       service
         .getRoomEvents({ room_id: joined.room_id, include_all: true })
-        .filter((event) => event.payload?.body === "ping @codex:aa and @claude about it")
-        .map((event) => event.to_agent_id)
-        .sort();
-    await until(() => mentioned().length === 2);
-    expect(mentioned()).toEqual(["claude:cc", "codex:aa"]);
+        .filter((event) => event.payload?.body === "ping @codex:aa and @claude about it");
+    await until(() => mentioned().length === 1);
+    expect([...(mentioned()[0].payload?.recipients as string[])].sort()).toEqual(["claude:cc", "codex:aa"]);
     service.leaveRoom({ agent_id: "claude:cc", room_id: joined.room_id });
 
     input.write("/quit\n");
@@ -1552,7 +1543,7 @@ test.each([false, true])("inline delivery replaces pending status with delivered
   const { root, service } = setupService();
   const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
   if (manualStandby) service.registerStandby({ agent_id: "codex:aa", room_id: joined.room_id, transport: "manual" });
-  const initialState = manualStandby ? "waiting for resume" : "not listening";
+  const initialState = manualStandby ? "waiting for resume" : "not acknowledged yet";
   const input = new PassThrough();
   const output = Object.assign(new PassThrough(), { columns: 100, rows: 24 });
   const vt = new Terminal({ cols: 100, rows: 24, allowProposedApi: true });
@@ -1629,7 +1620,7 @@ test.each([true, false])("receipts update the matching transcript message, never
     let rendered = lines();
     let firstRow = rendered.findIndex(line => line.includes("first distinct message"));
     let secondRow = rendered.findIndex(line => line.includes("second distinct message"));
-    expect(rendered[firstRow + 1]).toContain("codex: not listening");
+    expect(rendered[firstRow + 1]).toContain("codex: not acknowledged yet");
     expect(rendered[secondRow + 1]).toContain("codex: delivered");
     const roomBar = rendered.length - 1 - [...rendered].reverse().findIndex(line => line.includes("Room ·"));
     if (inline) expect(rendered.slice(roomBar).join("\n")).not.toContain("delivered");
@@ -1680,4 +1671,37 @@ test("saved history batches durable receipts and does not invent pending states 
     expect(queries).toHaveLength(1);
     expect(queries[0]).toHaveLength(2);
   } finally { input.write("\u0004"); await session; }
+});
+
+test("a plain chat message is one room message that reports every agent", async () => {
+  const { root, service } = setupService({ nativeWakeTransport: { deliver() { return { outcome: "queued" }; } } });
+  const joined = service.joinPath({ agent_id: "claude:aa", context_path: root, process_metadata: { harness_session_id: "aa" } });
+  service.joinPath({ agent_id: "codex:bb", context_path: root, process_metadata: { harness_session_id: "bb" } });
+  service.registerNativeWakeEndpoint({ room_id: joined.room_id, agent_id: "claude:aa", transport: "claude_inbox",
+    address: "aa", secret: "private", harness_session_id: "aa", host_id: os.hostname() });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let transcript = "";
+  output.on("data", (chunk) => { transcript += chunk.toString(); });
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: false, color: false, history: 0,
+    show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => transcript.includes("Talking Stick chat"));
+    input.write("status everyone\n");
+    await until(() => transcript.includes("claude: queued") && transcript.includes("codex: not acknowledged yet"));
+    const copies = service.getRoomEvents({ room_id: joined.room_id, include_all: true })
+      .filter((event) => event.payload?.body === "status everyone");
+    expect(copies).toHaveLength(1);
+    expect(copies[0].to_agent_id).toBeNull();
+
+    input.write("@everyone again\n");
+    await until(() => service.getRoomEvents({ room_id: joined.room_id, include_all: true })
+      .some((event) => event.payload?.body === "again"));
+    expect(service.getRoomEvents({ room_id: joined.room_id, include_all: true })
+      .filter((event) => event.payload?.body === "again").map((event) => event.to_agent_id)).toEqual([null]);
+  } finally {
+    input.write("/quit\n");
+    await session;
+  }
 });

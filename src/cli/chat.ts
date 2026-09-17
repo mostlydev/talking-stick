@@ -26,6 +26,7 @@ import { deriveHumanCliIdentity, type DerivedIdentity } from "../identity.js";
 import {
   HUMAN_CHAT_SESSION_KIND,
   type EventType,
+  type MessageDelivery,
   type RoomEvent,
   type RoomMember
 } from "../types.js";
@@ -39,7 +40,8 @@ import {
   describeMemberState,
   parseChatInput,
   resolveChatRecipients,
-  sanitizeChatText
+  sanitizeChatText,
+  EVERYONE_SELECTORS
 } from "./chat-format.js";
 import {
   getStringOption,
@@ -111,6 +113,21 @@ export function chatTerminalCapable(
   env: NodeJS.ProcessEnv
 ): boolean {
   return Boolean(stdin.isTTY && stdout.isTTY) && env.TERM !== "dumb";
+}
+
+// Labels say what is known, never more. "unreachable" needs a definite
+// transport failure; an agent with nothing to wake it yet, such as a Grok that
+// will pick the message up at its next tool call, is only "not acknowledged yet".
+export function describeChatDelivery(delivery: MessageDelivery): string {
+  if (delivery.state === "failed") return "unreachable";
+  if (delivery.status === "receiver") return "queued";
+  if (delivery.error === "manual_standby") return "waiting for resume";
+  if (delivery.state === "queued" && delivery.interrupt_status === "unsupported") return "queued; immediate interrupt unavailable";
+  if (delivery.state === "queued" && delivery.interrupt_status === "injected") return "urgent prompt injected";
+  if (delivery.state === "ambiguous") return "wake unconfirmed";
+  if (delivery.state === "queued" || delivery.state === "woken") return "queued";
+  if (delivery.status === "pending" || delivery.status === "endpoint") return "queued";
+  return "not acknowledged yet";
 }
 
 export async function handleChatCommand(
@@ -189,14 +206,20 @@ export async function runChatSession(
   let screenActive = false;
   let failure: unknown;
   let hint: string | null = null;
-  const deliveryStates = new Map<number, { agent: string; state: string }>();
+  // One room message can reach several agents, so each event keeps a state per
+  // recipient and renders them on a single line under that message.
+  const deliveryStates = new Map<number, Map<string, string>>();
   const rememberDelivery = (seq: number, agent: string, state: string) => {
-    deliveryStates.set(seq, { agent, state });
+    const states = deliveryStates.get(seq) ?? new Map<string, string>();
+    states.set(agent, state);
+    deliveryStates.set(seq, states);
     while (deliveryStates.size > 2_000) deliveryStates.delete(deliveryStates.keys().next().value!);
   };
   const deliveryText = (seq: number) => {
-    const delivery = deliveryStates.get(seq);
-    return delivery ? `${sanitizeChatText(nameOf(delivery.agent))}: ${delivery.state}` : undefined;
+    const states = deliveryStates.get(seq);
+    return states?.size
+      ? [...states].map(([agent, state]) => `${sanitizeChatText(nameOf(agent))}: ${state}`).join(" · ")
+      : undefined;
   };
   let lastStatusDraw = Date.now();
   const dimensions = () => ({
@@ -322,10 +345,10 @@ export async function runChatSession(
     return null;
   };
   // Receipts belong to event IDs, never to the latest send or the room footer.
-  const awaitingReceipt = new Map<number, { agent: string }>();
+  const awaitingReceipt = new Map<number, Set<string>>();
   let lastReceiptCheck = 0;
   const trackReceipt = (eventSeq: number, agent: string) => {
-    awaitingReceipt.set(eventSeq, { agent });
+    awaitingReceipt.set(eventSeq, (awaitingReceipt.get(eventSeq) ?? new Set<string>()).add(agent));
     while (awaitingReceipt.size > MAX_AWAITED_RECEIPTS) {
       awaitingReceipt.delete(awaitingReceipt.keys().next().value!);
     }
@@ -355,7 +378,9 @@ export async function runChatSession(
       receipts.push(...runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: seqs.slice(start, start + RECEIPT_BATCH) }));
     }
     for (const receipt of receipts) {
-      if (!awaitingReceipt.delete(receipt.event_seq)) continue;
+      const pending = awaitingReceipt.get(receipt.event_seq);
+      if (!pending?.delete(receipt.agent_id)) continue;
+      if (pending.size === 0) awaitingReceipt.delete(receipt.event_seq);
       setDelivery(receipt.event_seq, receipt.agent_id, "delivered");
       if (!terminal) print(`${sanitizeChatText(nameOf(receipt.agent_id))}: delivered`);
     }
@@ -467,7 +492,7 @@ export async function runChatSession(
   const render = (event: RoomEvent) => formatChatEvent(event, formatContext());
 
   const hydrateReceipts = (events: RoomEvent[]) => {
-    const seqs = events.filter(event => event.event_type === "message_sent" && event.to_agent_id && event.from_agent_id?.startsWith("human:"))
+    const seqs = events.filter(event => event.event_type === "message_sent" && event.from_agent_id?.startsWith("human:"))
       .map(event => event.event_seq);
     for (let start = 0; start < seqs.length; start += RECEIPT_BATCH) {
       for (const receipt of runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: seqs.slice(start, start + RECEIPT_BATCH) })) {
@@ -537,8 +562,11 @@ export async function runChatSession(
   };
 
   const send = (to: string[], body: string, interrupt: boolean) => {
-    let targets: (string | null)[] = [null];
-    if (to.length > 0) {
+    // No mention, or @everyone, is one room message that reaches every agent.
+    // Named mentions narrow it: one name is a directed message, several share
+    // a single message listing them. Nothing is ever sent once per agent.
+    let route: { to_agent_id?: string; to_agent_ids?: string[] } = {};
+    if (to.length > 0 && !to.some((selector) => EVERYONE_SELECTORS.includes(selector))) {
       refreshMembers();
       const resolved = resolveChatRecipients(to, members, selfId);
       if ("error" in resolved) {
@@ -556,36 +584,26 @@ export async function runChatSession(
         );
         return;
       }
-      targets = resolved.agent_ids;
+      route = resolved.agent_ids.length === 1
+        ? { to_agent_id: resolved.agent_ids[0] }
+        : { to_agent_ids: resolved.agent_ids };
     }
     redraw();
-    for (const toAgentId of targets) {
-      void runtime.commands.sendMessageAndWake(identity, {
-        room_id: roomId,
-        body,
-        to_agent_id: toAgentId,
-        delivery_hint: interrupt ? "interrupt" : "normal"
-      })
-      .then((result) => {
-        if (closed || !result.delivery_target) return;
-        const state = result.delivery_error === "manual_standby" ? "waiting for resume" :
-          result.delivery_status === "receiver" ? "queued" :
-          result.delivery_status === "pending" ? "queued" :
-          result.delivery_state === "queued" && result.interrupt_status === "unsupported" ? "queued; immediate interrupt unavailable" :
-          result.delivery_state === "queued" && result.interrupt_status === "injected" ? "urgent prompt injected" :
-          result.delivery_state === "queued" || result.delivery_state === "woken" ? "queued" :
-          result.delivery_state === "ambiguous" ? "wake unconfirmed" :
-          "not listening";
-        setDelivery(result.event_seq, result.delivery_target, state);
-        if (!terminal) print(`${sanitizeChatText(nameOf(result.delivery_target))}: ${state}`);
-        const received = runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: [result.event_seq] });
-        if (received.length > 0) {
-          setDelivery(result.event_seq, result.delivery_target, "delivered");
-          if (!terminal) print(`${sanitizeChatText(nameOf(result.delivery_target))}: delivered`);
-        } else trackReceipt(result.event_seq, result.delivery_target);
-      })
-      .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
-    }
+    void runtime.commands.sendMessageAndWake(identity, {
+      room_id: roomId,
+      body,
+      ...route,
+      delivery_hint: interrupt ? "interrupt" : "normal"
+    }, (delivery, sent) => {
+      if (closed) return;
+      const received = runtime.commands.getMessageReceipts({ room_id: roomId, event_seqs: [sent.event_seq] })
+        .some((receipt) => receipt.agent_id === delivery.agent_id);
+      const state = received ? "delivered" : describeChatDelivery(delivery);
+      setDelivery(sent.event_seq, delivery.agent_id, state);
+      if (!terminal) print(`${sanitizeChatText(nameOf(delivery.agent_id))}: ${state}`);
+      if (!received) trackReceipt(sent.event_seq, delivery.agent_id);
+    })
+    .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
   };
 
   const runCommand = (name: string, args = "") => {
@@ -669,9 +687,22 @@ export async function runChatSession(
   // lines stay compact underneath the message they follow.
   let lastPrinted: "message" | "system" | "info" = "info";
   const printEvent = (event: RoomEvent, historical = false) => {
-    if (!historical && event.event_type === "message_sent" && event.to_agent_id && event.from_agent_id?.startsWith("human:")) {
-      if (!deliveryStates.has(event.event_seq)) rememberDelivery(event.event_seq, event.to_agent_id, "sent");
-      if (deliveryStates.get(event.event_seq)?.state !== "delivered") trackReceipt(event.event_seq, event.to_agent_id);
+    if (!historical && event.event_type === "message_sent" && event.from_agent_id?.startsWith("human:")) {
+      // Named recipients are known from the event itself; a room message's
+      // recipients come from this console's own send result instead.
+      const listed = (event.payload as { recipients?: unknown } | null)?.recipients;
+      // A room message this console sent can print before its send result
+      // returns; reserve its receipt line for the agents it is routed to now.
+      const recipients = event.to_agent_id ? [event.to_agent_id]
+        : Array.isArray(listed) ? listed.filter((id): id is string => typeof id === "string")
+        : event.from_agent_id === selfId
+          ? members.filter((member) => member.agent_id !== selfId && !member.agent_id.startsWith("human:")).map((member) => member.agent_id)
+          : [];
+      for (const agent of recipients) {
+        const states = deliveryStates.get(event.event_seq);
+        if (!states?.has(agent)) rememberDelivery(event.event_seq, agent, "sent");
+        if (deliveryStates.get(event.event_seq)?.get(agent) !== "delivered") trackReceipt(event.event_seq, agent);
+      }
     }
     if (render(event) !== null && isChatConversationActivity(event)) {
       if (startsChatConversation(previousConversationEvent, event) &&

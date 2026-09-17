@@ -30,7 +30,7 @@ function setup() {
     return output ? JSON.parse(output).hookSpecificOutput : null;
   };
   const ack = (text: string) => service.acknowledgeNativeDelivery({ agent_id: "grok:test",
-    token: text.match(/Ack: tt ack ([a-f0-9-]+)/)![1], harness_session_id: "harness:grok-session", host_id: "test-host" });
+    token: text.match(/tt ack ([a-f0-9-]+) --json/)![1], harness_session_id: "harness:grok-session", host_id: "test-host" });
   return { root, service, room, send, hook, ack };
 }
 
@@ -40,7 +40,7 @@ test("post-tool delivery includes exact events; ack prevents replay and never gr
   const output = await hook();
   expect(output.hookEventName).toBe("PostToolUse");
   expect(output.additionalContext).toContain("steer the work");
-  expect(output.additionalContext).toContain(sent.event_id);
+  expect(output.additionalContext).toContain(`#${sent.event_seq} human:op → you`);
   expect(service.getMessageReceipts({ room_id: room.room_id, event_seqs: [sent.event_seq] })).toEqual([]);
   expect(await hook()).toBeNull();
   ack(output.additionalContext);
@@ -118,14 +118,16 @@ test("normal wait consumption releases a hook reservation without native ack", a
 
 test("oversized events use a bounded pull notice and remain readable", async () => {
   const { service, room, send, hook } = setup();
-  const body = "<".repeat(4000);
+  // Every body line is indented in the envelope, so a message of many short
+  // lines renders well past the hook ceiling while staying under the 4 KB cap.
+  const body = "a\n".repeat(2000);
   const sent = send(body);
   const output = await hook();
   expect(output.additionalContext).toContain("exceeds hook capacity");
-  expect(output.additionalContext).not.toContain("Ack:");
+  expect(output.additionalContext).not.toContain("tt ack");
   expect(await hook()).toBeNull();
   const read = await service.waitForEvents({ room_id: room.room_id, agent_id: "grok:test", after_event_seq: sent.event_seq - 1, max_wait_ms: 0 });
-  expect(JSON.stringify(read.events)).toContain(body);
+  expect(read.events?.map((event) => event.payload?.body)).toContain(body);
   send("after the large event");
   expect((await hook()).additionalContext).toContain("after the large event");
 });
@@ -153,4 +155,16 @@ test("urgent events are available to hooks before external dispatch", async () =
   const { service, room, hook } = setup();
   service.sendMessage({ room_id: room.room_id, agent_id: "human:op", to_agent_id: "grok:test", body: "urgent steering", delivery_hint: "interrupt" });
   expect((await hook()).additionalContext).toContain("urgent steering");
+});
+
+test("an operator's room message reaches a working Grok through its hook, once", async () => {
+  const { service, room, hook, ack } = setup();
+  const sent = service.sendMessage({ agent_id: "human:op", room_id: room.room_id, body: "everyone: status?" });
+  const output = await hook();
+  expect(output.additionalContext).toContain(`#${sent.event_seq} human:op → room`);
+  expect(output.additionalContext).toContain("  everyone: status?");
+  ack(output.additionalContext);
+  expect(await hook()).toBeNull();
+  expect(service.getMessageReceipts({ room_id: room.room_id, event_seqs: [sent.event_seq] }).map((receipt) => receipt.agent_id))
+    .toEqual(["grok:test"]);
 });

@@ -204,6 +204,7 @@ export {
   createSystemNativeWakeTransport,
   detectNativeWakeEndpoints,
   formatNativeWakeText,
+  formatNativeEventText,
   type NativeWakeOptions,
   type NativeWakeReason,
   type NativeWakeRegistration,

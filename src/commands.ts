@@ -30,6 +30,7 @@ import type {
   EventType,
   RoomEvent,
   SendMessageResult,
+  MessageDelivery,
   TakeoverStickInput,
   TakeoverStickResult,
   WaitForEventsInput,
@@ -407,9 +408,13 @@ export class TalkingStickCommands {
     return this.service.flushWakes(roomId);
   }
 
-  sendMessageAndWake(identity: DerivedIdentity, input: SendMessageCommandInput): Promise<SendMessageResult> {
+  sendMessageAndWake(
+    identity: DerivedIdentity,
+    input: SendMessageCommandInput,
+    onDelivery?: (delivery: MessageDelivery, sent: SendMessageResult) => void
+  ): Promise<SendMessageResult> {
     return this.service.sendMessageAndWake({ ...input, agent_id: identity.agent_id,
-      process_metadata: identity.process_metadata });
+      process_metadata: identity.process_metadata }, onDelivery);
   }
 
   sendMessage(

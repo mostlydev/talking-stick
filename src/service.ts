@@ -90,6 +90,7 @@ import type {
   RoomState,
   SendMessageInput,
   SendMessageResult,
+  MessageDelivery,
   SessionKind,
   StoredRoomState,
   TakeoverStickInput,
@@ -1775,31 +1776,39 @@ export class TalkingStickService {
         input.process_metadata
       );
 
-      if (input.to_agent_id) {
-        const target = this.getMember(input.room_id, input.to_agent_id);
+      if (input.to_agent_id && input.to_agent_ids?.length) {
+        throw new ProtocolError(
+          "invalid_input",
+          "Use either to_agent_id or to_agent_ids, not both."
+        );
+      }
+      const named = [...new Set(input.to_agent_ids ?? [])];
+      for (const recipient of input.to_agent_id ? [input.to_agent_id] : named) {
+        const target = this.getMember(input.room_id, recipient);
         if (!target) {
           throw new ProtocolError(
             "unknown_recipient",
             "to_agent_id is not a member of this room.",
-            { to_agent_id: input.to_agent_id }
+            { to_agent_id: recipient }
           );
         }
       }
+      // One named recipient keeps the directed form every existing reader
+      // understands; several share a single room event listing them.
+      const directed = input.to_agent_id ?? (named.length === 1 ? named[0] : null);
+      const scoped = !directed && named.length > 1 ? named : null;
 
       const eventSeq = this.appendEvent({
         room_id: input.room_id,
         turn_id: room.turn_id,
         event_type: "message_sent",
         from_agent_id: input.agent_id,
-        to_agent_id: input.to_agent_id ?? null,
+        to_agent_id: directed,
         handoff: null,
         reason: null,
         created_at: timestamp,
-        payload: { body, delivery_hint: deliveryHint }
+        payload: { body, delivery_hint: deliveryHint, ...(scoped ? { recipients: scoped } : {}) }
       });
-      if (input.to_agent_id) {
-        this.queueStandbyWake(input.room_id, input.to_agent_id);
-      }
 
       const row = this.db
         .prepare<[number], { event_id: string }>(
@@ -1807,15 +1816,27 @@ export class TalkingStickService {
         )
         .get(eventSeq);
 
-      const wakeTargetId =
-        input.to_agent_id ??
-        (deliveryHint === "interrupt" &&
-        room.owner &&
-        room.owner !== input.agent_id
-          ? room.owner
-          : null);
-      if (wakeTargetId) {
-        if (deliveryHint === "interrupt" && wakeTargetId !== input.agent_id) {
+      // An operator's chat is addressed to the room, so a human room message
+      // reaches every agent that is a member right now, standby included. An
+      // agent's room message still wakes nobody: agents answering each other's
+      // broadcasts would loop. Later joiners never inherit earlier messages.
+      const humanSender = input.agent_id.startsWith("human:");
+      const wakeTargets: AgentId[] = directed
+        ? [directed]
+        : scoped
+          ? scoped
+          : humanSender
+            ? this.getMembers(input.room_id)
+                .filter((member) => member.agent_id !== input.agent_id &&
+                  !isObserverMember(member) && !member.agent_id.startsWith("human:"))
+                .map((member) => member.agent_id)
+            : deliveryHint === "interrupt" && room.owner && room.owner !== input.agent_id
+              ? [room.owner]
+              : [];
+      for (const wakeTargetId of wakeTargets) {
+        if (wakeTargetId === input.agent_id) continue;
+        this.queueStandbyWake(input.room_id, wakeTargetId);
+        if (deliveryHint === "interrupt") {
           const target = this.getMember(input.room_id, wakeTargetId)!;
           // Hook delivery must also see urgent events before an external wake
           // attempt, including oversized events that cannot form an envelope.
@@ -1835,27 +1856,47 @@ export class TalkingStickService {
         event_seq: eventSeq,
         event_id: row?.event_id ?? "",
         created_at: timestamp,
-        wake_target_id: wakeTargetId
+        wake_target_ids: wakeTargets.filter((target) => target !== input.agent_id)
       };
     });
 
-    const { wake_target_id: wakeTargetId, ...sendResult } = result;
-    if (!wakeTargetId) {
+    const { wake_target_ids: wakeTargetIds, ...sendResult } = result;
+    if (wakeTargetIds.length === 0) {
       return sendResult;
     }
-    const delivery = this.resolveMessageDelivery(
-      input.room_id,
-      wakeTargetId,
-      result.event_seq,
-      deliveryHint
-    );
+    const deliveries = wakeTargetIds.map((agentId) =>
+      this.describeDelivery(input.room_id, agentId, result.event_seq, deliveryHint));
     return {
       ...sendResult,
-      delivery_status: delivery.status,
-      delivery_target: wakeTargetId,
-      ...(delivery.error ? { delivery_error: delivery.error } : {}),
-      ...(delivery.transport ? { delivery_transport: delivery.transport } : {}),
-      ...(delivery.state ? { delivery_state: delivery.state } : {})
+      ...this.singleDeliveryFields(deliveries),
+      deliveries
+    };
+  }
+
+  private describeDelivery(roomId: string, agentId: AgentId, eventSeq: number, hint: DeliveryHint | undefined): MessageDelivery {
+    const delivery = this.resolveMessageDelivery(roomId, agentId, eventSeq, hint);
+    return {
+      agent_id: agentId,
+      status: delivery.status,
+      ...(delivery.transport ? { transport: delivery.transport } : {}),
+      ...(delivery.state ? { state: delivery.state } : {}),
+      ...(delivery.error ? { error: delivery.error } : {}),
+      ...(delivery.interrupt_status ? { interrupt_status: delivery.interrupt_status } : {})
+    };
+  }
+
+  // Existing callers read a single delivery_* result; fill it only when there
+  // is exactly one recipient so a room fan-out never looks like a directed send.
+  private singleDeliveryFields(deliveries: MessageDelivery[]): Partial<SendMessageResult> {
+    if (deliveries.length !== 1) return {};
+    const [only] = deliveries;
+    return {
+      delivery_status: only.status,
+      delivery_target: only.agent_id,
+      ...(only.error ? { delivery_error: only.error } : {}),
+      ...(only.transport ? { delivery_transport: only.transport } : {}),
+      ...(only.state ? { delivery_state: only.state } : {}),
+      ...(only.interrupt_status ? { interrupt_status: only.interrupt_status } : {})
     };
   }
 
@@ -2254,16 +2295,20 @@ export class TalkingStickService {
 
   // Not async on purpose: send errors (closed room, unknown recipient) throw
   // synchronously so callers can tell them apart from wake delivery.
-  sendMessageAndWake(input: SendMessageInput): Promise<SendMessageResult> {
+  // onDelivery reports each recipient as soon as its own wake settles, so one
+  // slow harness never holds back the status of the others.
+  sendMessageAndWake(
+    input: SendMessageInput,
+    onDelivery?: (delivery: MessageDelivery, sent: SendMessageResult) => void
+  ): Promise<SendMessageResult> {
     const result = this.sendMessage(input);
-    const target = result.delivery_target;
-    if (!target) return Promise.resolve(result);
-    return this.flushWakes(input.room_id, target).then(() => {
-      const delivery = this.resolveMessageDelivery(input.room_id, target, result.event_seq, input.delivery_hint);
-      return { ...result, delivery_status: delivery.status,
-        delivery_transport: delivery.transport, delivery_state: delivery.state,
-        delivery_error: delivery.error, interrupt_status: delivery.interrupt_status };
-    });
+    const targets = result.deliveries?.map((delivery) => delivery.agent_id) ?? [];
+    if (targets.length === 0) return Promise.resolve(result);
+    return Promise.all(targets.map((target) => this.flushWakes(input.room_id, target).then(() => {
+      const delivery = this.describeDelivery(input.room_id, target, result.event_seq, input.delivery_hint);
+      onDelivery?.(delivery, result);
+      return delivery;
+    }))).then((deliveries) => ({ ...result, ...this.singleDeliveryFields(deliveries), deliveries }));
   }
 
   private async dispatchInterrupt(row: InterruptDeliveryRow): Promise<void> {
@@ -5090,8 +5135,14 @@ export class TalkingStickService {
     for (const event of events) this.db.prepare(`UPDATE native_event_receipts SET consumed_at = ?
       WHERE room_id = ? AND agent_id = ? AND event_seq = ? AND consumed_at IS NULL`)
       .run(acceptedAt, roomId, agentId, event.event_seq);
+    // A room or multi-recipient message counts as delivered only to members it
+    // was routed to at send time, which is exactly who holds a receipt row.
+    const routed = this.db.prepare<[string, string, number], { found: number }>(
+      "SELECT 1 AS found FROM native_event_receipts WHERE room_id = ? AND agent_id = ? AND event_seq = ?"
+    );
     const addressed = events.filter(
-      (event) => event.event_type === "message_sent" && event.to_agent_id === agentId
+      (event) => event.event_type === "message_sent" &&
+        (event.to_agent_id === agentId || routed.get(roomId, agentId, event.event_seq) !== undefined)
     );
     if (addressed.length === 0) return;
     const insert = this.db.prepare(
