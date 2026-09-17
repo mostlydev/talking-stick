@@ -44,8 +44,11 @@ export async function runClaudeStopHookCommand(
     // Grok fires Stop for a session ending too, and separately for a subagent.
     // Only an ordinary turn end is a moment where handing off makes sense;
     // blocking the others would trap a teardown or a child that owns nothing.
+    // Grok always names its reason, so a Grok payload must say end_turn; Claude
+    // sends no reason at all and is recognised by that absence.
     const reason = nonEmptyString(input.reason);
-    if (reason && reason !== "end_turn") {
+    const fromGrok = nonEmptyString(input.hookEventName) !== null;
+    if (fromGrok ? reason !== "end_turn" : reason !== null && reason !== "end_turn") {
       return;
     }
     const event = nonEmptyString(input.hook_event_name) ?? nonEmptyString(input.hookEventName);

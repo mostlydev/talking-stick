@@ -434,6 +434,20 @@ describe("deriveHarnessCliIdentity", () => {
     });
   });
 
+  test("GROK_AGENT set to an agent name is not a harness marker", () => {
+    const identity = deriveHarnessCliIdentity({
+      env: { GROK_AGENT: "reviewer", GROK_SESSION_ID: "session-a" },
+      username: "alice",
+      parentPid: 200,
+      hostId: "test-host",
+      inspector: fakeInspector({
+        200: { startTime: "Mon Jun  8 12:01:00 2026", command: "zsh", ppid: 1 }
+      })
+    });
+
+    expect(identity).toBeNull();
+  });
+
   test("does not treat GROK_SESSION_ID alone as a normal shell marker", () => {
     const identity = deriveHarnessCliIdentity({
       env: { GROK_SESSION_ID: "session-a" },
