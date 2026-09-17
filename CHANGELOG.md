@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.19.0] — 2026-09-17
+
+Full notes: [`docs/releases/0.19.0.md`](docs/releases/0.19.0.md).
+
 This release changes how messages reach agents. An operator's chat now reaches every agent in the room, the message content itself is delivered into the agent's context (no `tt wait` needed), and delivery is shown per recipient in the chat. `/invite` for agents that have not joined, and a guarded herdr wake for idle Grok sessions, are not included.
 
 ### Added
@@ -605,6 +609,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.19.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.19.0
 [0.18.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.3
 [0.18.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.2
 [0.18.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.1
