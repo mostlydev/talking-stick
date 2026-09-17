@@ -25,3 +25,28 @@ This change reuses registered native endpoints. Automatically joining previously
 Claude independently reviewed the design and confirmed exact-event acceptance, idempotence and session binding. Review reduced envelope repetition and exposed a stale outstanding-batch problem; new directed work now rearms an unaccepted batch after five minutes. Interrupt acknowledgements deliberately leave unrelated normal batches intact, covered by a regression test.
 
 Local validation: 596 tests passed, one skipped; typecheck and build passed. Live Claude events 18463 and 18467 arrived as full attributed bodies without a fetch, and durable receipt records confirm both acknowledgements. The Codex idle test was queued from a disposable real `tt chat` PTY in an isolated room (marker `7f21`); recipient acceptance is still pending until this active turn ends. This is not yet release acceptance.
+
+## Verification record (2026-09-17)
+
+Codex, live: an isolated chat event (18466) reached the Codex model as a queued
+native envelope with the complete body, without `tt wait`; `tt ack` returned
+`acknowledged` for that exact event; the sender's chat surface moved
+`queued -> delivered` in place; a zero-duration self read starting before 18466
+returned no events and `replayed: false`.
+
+Claude, live: envelopes for events 18463, 18467, 18475, 18479, 18488 and the
+18489/18491 batch arrived with full bodies and were acknowledged by token; each
+`tt ack` returned `acknowledged` once and never a lease or a body. Compacted
+envelope overhead measured at 576 fixed characters (header plus JSON scaffolding)
+against 1,136 total for a 237-character message before compaction.
+
+Claude, read-only on the live database at commit b986b56: every receipt for an
+active member is consumed, acknowledged receipts are excluded from self waits
+only, and the stale-batch retry heals rows written before the fix. The endpoint
+for `claude:49512d87` has been stuck at `awaiting_wait = 1` since
+2026-09-15T21:50 with no `batch_started_at`; the retry clause falls back to
+`last_attempt_at`, so the next directed message to that member clears the batch
+and redelivers instead of coalescing silently. That was the failure that
+silently swallowed two operator messages on 2026-09-16.
+
+Suite at b986b56: 596 passed, 1 skipped; typecheck and build clean.
