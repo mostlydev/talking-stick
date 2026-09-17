@@ -1706,13 +1706,13 @@ test("a plain chat message is one room message that reports every agent", async 
   }
 });
 
-test("a room message header lists every recipient with its own delivery mark", async () => {
+test.each([100, 18])("a room message header updates delivery marks across wrapped rows (width=%s)", async (columns) => {
   const { root, service } = setupService();
   const joined = service.joinPath({ agent_id: "claude:aa", context_path: root });
   service.joinPath({ agent_id: "codex:bb", context_path: root });
   const input = new PassThrough();
-  const output = Object.assign(new PassThrough(), { columns: 100, rows: 24 });
-  const vt = new Terminal({ cols: 100, rows: 24, allowProposedApi: true });
+  const output = Object.assign(new PassThrough(), { columns, rows: 24 });
+  const vt = new Terminal({ cols: columns, rows: 24, allowProposedApi: true });
   let bytes = "";
   output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
   const flush = () => new Promise<void>(resolve => vt.write("[0m", resolve));
@@ -1721,17 +1721,19 @@ test("a room message header lists every recipient with its own delivery mark", a
     identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: true,
     color: false, history: 0, show_turn_events: false, poll_ms: 5 });
   try {
-    await until(() => bytes.includes("Room ·"));
+    await until(() => bytes.length > 0);
     input.write("status everyone\r");
-    await until(() => bytes.includes("you → claude …, codex …"));
+    await until(() => bytes.replace(/\s/g, "").includes("you→claude…,codex…"));
     const sent = service.getRoomEvents({ room_id: joined.room_id, include_all: true }).find(event => event.payload?.body === "status everyone")!;
+    input.write("draft");
     service.db.prepare("INSERT INTO message_receipts (room_id, agent_id, event_seq, delivered_at) VALUES (?, ?, ?, ?)")
       .run(joined.room_id, "codex:bb", sent.event_seq, new Date().toISOString());
-    await until(() => bytes.includes("claude …, codex ✓"));
+    await until(() => bytes.includes("✓"));
     await flush();
     const screen = text();
-    expect(screen).toContain("you → claude …, codex ✓");
+    expect(screen.replace(/\s/g, "")).toContain("you→claude…,codex✓");
     expect(screen.match(/status everyone/g)).toHaveLength(1);
     expect(screen).not.toMatch(/delivered|queued/);
+    expect(screen).toContain("> draft");
   } finally { input.write(""); await session; vt.dispose(); }
 });
