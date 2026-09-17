@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { Terminal } from "@xterm/headless";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, test } from "vitest";
 import { TalkingStickCommands } from "../src/commands.js";
 import { deriveHumanCliIdentity } from "../src/identity.js";
@@ -1191,6 +1192,33 @@ test("receipts for later messages still arrive with more than one batch awaiting
 }, 20_000);
 
 describe("ended member pruning", () => {
+  test("probes liveness without a writer lock and preserves concurrently refreshed members", () => {
+    let clock = new Date("2026-09-16T10:00:00Z");
+    let onProbe: (() => void) | undefined;
+    const { root, service } = setupService({ now: () => clock,
+      policy: { idleRoomTtlMs: 0 },
+      processLivenessChecker: () => { onProbe?.(); return "gone"; }
+    });
+    const room = service.joinPath({ agent_id: "codex:old", context_path: root,
+      process_metadata: { host_id: "host", pid: 123, process_started_at: "start", session_kind: "harness_cli" } });
+    const concurrent = new Database(service.db.name);
+    concurrent.pragma("busy_timeout = 1");
+    clock = new Date("2026-09-16T12:00:00Z");
+    let probed = false;
+    onProbe = () => {
+      onProbe = undefined;
+      probed = true;
+      expect(service.db.inTransaction).toBe(false);
+      concurrent.prepare("UPDATE room_members SET last_seen_at = ? WHERE room_id = ?")
+        .run(clock.toISOString(), room.room_id);
+    };
+    try {
+      const state = service.getRoomState({ room_id: room.room_id, include_all: true });
+      expect(probed).toBe(true);
+      expect(state.members.map(member => member.agent_id)).toContain("codex:old");
+    } finally { concurrent.close(); }
+  });
+
   test("removes definitely ended agents after the grace period and keeps everyone else", () => {
     let clock = new Date("2026-09-15T10:00:00.000Z");
     const liveness: Record<string, ProcessLiveness> = {
@@ -1431,6 +1459,47 @@ test("inline terminal retains history, bars and draft across incoming messages a
     input.write("\u0003/quit\r");
     await session;
     vt.dispose();
+  }
+});
+
+test("chat survives a real SQLite writer lock and preserves its draft and event cursor", async () => {
+  const { root, service } = setupService();
+  const room = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  const concurrent = new Database(service.db.name);
+  service.db.pragma("busy_timeout = 1");
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 24 });
+  let out = "";
+  output.on("data", chunk => { out += chunk.toString(); });
+  let finished = false;
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: true,
+    color: false, history: 0, show_turn_events: false, poll_ms: 5 }).finally(() => { finished = true; });
+  // Observe rejection immediately even when the test is waiting for UI output.
+  void session.catch(() => {});
+  try {
+    await until(() => out.includes("Room ·"));
+    input.write("unsent-draft");
+    service.joinPath({ agent_id: "claude:joined", context_path: root });
+    concurrent.exec("BEGIN IMMEDIATE");
+    await until(() => out.includes("database busy"));
+    expect(finished).toBe(false);
+    input.write("-preserved");
+    concurrent.exec("COMMIT");
+    out = "";
+    await until(() => out.includes("claude"));
+    input.write("\r");
+    await until(() => service.getRoomEvents({ room_id: room.room_id, include_all: true })
+      .some(event => event.payload?.body === "unsent-draft-preserved"));
+    const sent = service.getRoomEvents({ room_id: room.room_id, include_all: true })
+      .filter(event => event.payload?.body === "unsent-draft-preserved");
+    expect(sent).toHaveLength(1);
+    expect(finished).toBe(false);
+  } finally {
+    if (concurrent.inTransaction) concurrent.exec("ROLLBACK");
+    concurrent.close();
+    input.write("\u0003/quit\r");
+    await session;
   }
 });
 

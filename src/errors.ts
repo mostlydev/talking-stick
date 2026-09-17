@@ -75,3 +75,8 @@ export class ProtocolError extends Error {
 export function isProtocolError(error: unknown): error is ProtocolError {
   return error instanceof ProtocolError;
 }
+
+export function isSqliteBusy(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  return typeof error.code === "string" && /^(SQLITE_BUSY|SQLITE_LOCKED)(_|$)/.test(error.code);
+}

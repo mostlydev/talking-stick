@@ -4472,60 +4472,41 @@ export class TalkingStickService {
     const expireRooms = this.policy.idleRoomTtlMs > 0;
     const cutoffMs = now.getTime() - this.policy.idleRoomTtlMs;
 
-    withImmediateTransaction(this.db, () => {
-      const rooms = this.db
-        .prepare<[], PathRoomRow>("SELECT * FROM path_rooms")
-        .all();
-
-      for (const room of rooms) {
-        // Ended-member cleanup runs even when idle room expiry is disabled.
-        this.pruneEndedMembers(room, now);
-        if (!expireRooms) continue;
-        const members = this.getMembers(room.room_id);
-        if (this.latestRoomActivityMs(room, members) > cutoffMs) {
-          continue;
-        }
-
-        if (members.some((member) => this.shouldRetainIdleRoom(member, now))) {
-          continue;
-        }
-
-        this.deleteRoom(room.room_id);
-      }
-    });
-  }
-
-  // A member whose harness process is definitely gone on this host, and who
-  // hasn't run a tt command for ENDED_MEMBER_GRACE_MS, has ended for good; its
-  // row would otherwise linger as "away" forever. The owner and the reserved
-  // recipient are left to the takeover and reservation rules, and unknown
-  // liveness (another host, no process identity) is never pruned.
-  private pruneEndedMembers(room: PathRoomRow, now: Date): void {
-    const cutoffMs = now.getTime() - ENDED_MEMBER_GRACE_MS;
-    const ended = this.getMembers(room.room_id).filter(
-      (member) =>
-        member.agent_id !== room.owner &&
-        member.agent_id !== room.reserved_for &&
-        parseTimestampMs(member.last_seen_at) < cutoffMs &&
+    // Process inspection can fork ps and stall under system pressure. Do it
+    // without a writer lock, then validate the snapshot before any deletion.
+    const rooms = this.db.prepare<[], PathRoomRow>("SELECT * FROM path_rooms").all();
+    for (const room of rooms) {
+      const members = this.getMembers(room.room_id);
+      const ended = members.filter(member =>
+        member.agent_id !== room.owner && member.agent_id !== room.reserved_for &&
+        parseTimestampMs(member.last_seen_at) < now.getTime() - ENDED_MEMBER_GRACE_MS &&
         this.getMemberProcessLiveness(member) === "gone"
-    );
-    const timestamp = now.toISOString();
-    for (const member of ended) {
-      this.db
-        .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
-        .run(room.room_id, member.agent_id);
-      if (!isObserverMember(member)) {
-        this.appendEvent({
-          room_id: room.room_id,
-          turn_id: room.turn_id,
-          event_type: "leave",
-          from_agent_id: member.agent_id,
-          to_agent_id: null,
-          handoff: null,
-          reason: "process_ended",
-          created_at: timestamp
-        });
-      }
+      );
+      const endedIds = new Set(ended.map(member => member.agent_id));
+      const remaining = members.filter(member => !endedIds.has(member.agent_id));
+      const expire = expireRooms && this.latestRoomActivityMs(room, remaining) <= cutoffMs &&
+        !remaining.some(member => this.shouldRetainIdleRoom(member, now));
+      if (!ended.length && !expire) continue;
+
+      withImmediateTransaction(this.db, () => {
+        const current = this.db.prepare<[string], PathRoomRow>(
+          "SELECT * FROM path_rooms WHERE room_id = ?"
+        ).get(room.room_id);
+        // A concurrent join, heartbeat, handoff or metadata change invalidates
+        // the probe. Leave that room for a later cleanup pass.
+        if (!current || JSON.stringify(current) !== JSON.stringify(room) ||
+            JSON.stringify(this.getMembers(room.room_id)) !== JSON.stringify(members)) return;
+        if (expire) { this.deleteRoom(room.room_id); return; }
+        for (const member of ended) {
+          this.db.prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
+            .run(room.room_id, member.agent_id);
+          if (!isObserverMember(member)) {
+            this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id,
+              event_type: "leave", from_agent_id: member.agent_id, to_agent_id: null,
+              handoff: null, reason: "process_ended", created_at: now.toISOString() });
+          }
+        }
+      });
     }
   }
 

@@ -21,6 +21,8 @@ changes will be called out under **Breaking changes**.
 
 ### Fixed
 
+- Keep chat open and preserve the draft during transient SQLite contention while polling room state. Probe stale-member liveness outside cleanup write transactions, revalidate concurrent presence changes before deleting, and bound process-inspection time.
+
 - **Older saved chat history.** Fullscreen scrolling fetches earlier room events beyond the startup history window, preserving the visible message and live receive cursor. Normal-screen chat offers `/older` to print earlier pages without replacing native scrollback.
 
 ## [0.18.3] — 2026-09-16

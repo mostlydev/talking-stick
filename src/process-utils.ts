@@ -99,7 +99,7 @@ export function createSystemProcessInspector(
 
       const inspection = inspectSystemProcess(pid, options);
       cache.set(pid, {
-        checked_at_ms: nowMs,
+        checked_at_ms: Date.now(),
         inspection
       });
       return inspection;
@@ -189,5 +189,6 @@ function defaultExecFile(
     env?: NodeJS.ProcessEnv;
   }
 ): string {
-  return execFileSync(file, args, options) as string;
+  // A stalled process probe must not hold a caller (possibly a writer) forever.
+  return execFileSync(file, args, { ...options, timeout: 1_000 }) as string;
 }

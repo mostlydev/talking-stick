@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import readline from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
 import { ChatInputController } from "./chat-input.js";
 import { resolveChatKick } from "./chat-kick.js";
 import {
@@ -17,7 +18,7 @@ import {
 } from "./chat-view.js";
 import type { Readable, Writable } from "node:stream";
 
-import { ProtocolError } from "../errors.js";
+import { ProtocolError, isSqliteBusy } from "../errors.js";
 import { deriveHumanCliIdentity, type DerivedIdentity } from "../identity.js";
 import {
   HUMAN_CHAT_SESSION_KIND,
@@ -817,50 +818,70 @@ export async function runChatSession(
     redraw();
 
     let cursor = head;
+    let busyAttempts = 0;
     while (!closed) {
-      let result;
       try {
-        result = await runtime.commands.waitForEvents({
-          agent_id: selfId,
-          room_id: roomId,
-          after_event_seq: cursor,
-          target_agent_id: "any",
-          max_wait_ms: options.poll_ms ?? DEFAULT_POLL_MS
-        });
-      } catch (error) {
-        if (error instanceof ProtocolError && error.code === "room_not_found") {
-          reportRoomClosed();
-          break;
+        let result;
+        try {
+          result = await runtime.commands.waitForEvents({
+            agent_id: selfId,
+            room_id: roomId,
+            after_event_seq: cursor,
+            target_agent_id: "any",
+            max_wait_ms: options.poll_ms ?? DEFAULT_POLL_MS
+          });
+        } catch (error) {
+          if (error instanceof ProtocolError && error.code === "room_not_found") {
+            reportRoomClosed();
+            break;
+          }
+          throw error;
         }
-        throw error;
-      }
 
-      const stateChanged = result.events.some((event) =>
-        STATE_CHANGE_EVENTS.has(event.event_type)
-      );
-      const statusStale = Date.now() - lastStatusDraw >= STATUS_REFRESH_MS;
-      if (
-        stateChanged ||
-        statusStale ||
-        Date.now() - lastPresenceRefresh >= PRESENCE_REFRESH_MS
-      ) {
-        refreshMembers();
-      }
-      for (const event of result.events) {
-        if (OWNERSHIP_EVENTS.includes(event.event_type)) {
-          ownerSince = event.created_at;
+        const stateChanged = result.events.some((event) =>
+          STATE_CHANGE_EVENTS.has(event.event_type)
+        );
+        const statusStale = Date.now() - lastStatusDraw >= STATUS_REFRESH_MS;
+        if (
+          stateChanged ||
+          statusStale ||
+          Date.now() - lastPresenceRefresh >= PRESENCE_REFRESH_MS
+        ) {
+          refreshMembers();
         }
-        printEvent(event);
-        if (event.event_type === "close") {
-          reportRoomClosed();
-          closed = true;
+        for (const event of result.events) {
+          if (OWNERSHIP_EVENTS.includes(event.event_type)) {
+            ownerSince = event.created_at;
+          }
+          printEvent(event);
+          if (event.event_type === "close") {
+            reportRoomClosed();
+            closed = true;
+          }
         }
-      }
-      cursor = result.cursor_event_seq;
-      if (!closed) checkReceipts();
-      if ((stateChanged || statusStale) && !closed) {
-        redraw();
-        lastStatusDraw = Date.now();
+        cursor = result.cursor_event_seq;
+        if (!closed) checkReceipts();
+        if ((stateChanged || statusStale) && !closed) {
+          redraw();
+          lastStatusDraw = Date.now();
+        }
+        if (busyAttempts) {
+          busyAttempts = 0;
+          hint = null;
+          redraw();
+        }
+      } catch (error) {
+        if (!isSqliteBusy(error)) throw error;
+        // Presence and maintenance writes may contend even during a read
+        // cycle. Keep the editor alive and retry from the last rendered event.
+        // Never retry a send here: its commit may already have succeeded.
+        busyAttempts++;
+        hint = "database busy · retrying";
+        if (busyAttempts === 1) {
+          if (terminal) redraw();
+          else print("Database busy; waiting to reconnect.");
+        }
+        if (!closed) await sleep(Math.min(2_000, 100 * 2 ** Math.min(busyAttempts - 1, 5)));
       }
     }
     if (failure) throw failure;
@@ -877,7 +898,11 @@ export async function runChatSession(
     stop();
     if (fullscreen && exitReason) output.write(`${exitReason}\n`);
     else if (inline && exitReason) output.write(`\r\u001b[2K${exitReason}\n`);
-    await runtime.commands.flushWakes(roomId);
+    try {
+      await runtime.commands.flushWakes(roomId);
+    } catch {
+      // Pending wakes remain durable; cleanup must not replace the real error.
+    }
     try {
       runtime.commands.leaveRoom(identity, { room_id: roomId });
     } catch {

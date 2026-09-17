@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   createSystemProcessInspector,
   terminateKnownProcess,
@@ -107,6 +107,25 @@ describe("terminateKnownProcess", () => {
 });
 
 describe("createSystemProcessInspector", () => {
+  test("starts the cache lifetime after a slow probe completes", () => {
+    let clock = 0;
+    let calls = 0;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const inspector = createSystemProcessInspector({ cacheTtlMs: 1_000,
+      processExists: () => true,
+      execFile() {
+        calls++;
+        clock += 1_500;
+        return "  56919 Thu Apr 23 12:00:00 2026 node guardian\n";
+      }
+    });
+    try {
+      inspector.inspect(4242);
+      inspector.inspect(4242);
+      expect(calls).toBe(1);
+    } finally { now.mockRestore(); }
+  });
+
   test("uses one ps call to capture both lstart and command, with cache", () => {
     let calls = 0;
     const inspector = createSystemProcessInspector({
