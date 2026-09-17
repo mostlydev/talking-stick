@@ -1545,9 +1545,11 @@ test("reopened chat pages back beyond its startup history and 500-event scan", a
   } finally { input.write("/quit\r"); await session; }
 }, 20_000);
 
-test("inline delivery replaces pending status with delivered without adding history or disturbing the draft", async () => {
+test.each([false, true])("inline delivery replaces pending status with delivered without disturbing the draft (manual standby=%s)", async (manualStandby) => {
   const { root, service } = setupService();
   const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  if (manualStandby) service.registerStandby({ agent_id: "codex:aa", room_id: joined.room_id, transport: "manual" });
+  const initialState = manualStandby ? "waiting for resume" : "not listening";
   const input = new PassThrough();
   const output = Object.assign(new PassThrough(), { columns: 100, rows: 24 });
   const vt = new Terminal({ cols: 100, rows: 24, allowProposedApi: true });
@@ -1561,7 +1563,7 @@ test("inline delivery replaces pending status with delivered without adding hist
   try {
     await until(() => bytes.includes("Room ·"));
     input.write("@codex first message\r");
-    await until(() => bytes.includes("first message") && bytes.includes("codex: not listening"));
+    await until(() => bytes.includes("first message") && bytes.includes(`codex: ${initialState}`));
     input.write("unfinished draft");
     await flush();
     const history = vt.buffer.active.baseY;
@@ -1570,7 +1572,7 @@ test("inline delivery replaces pending status with delivered without adding hist
     await until(() => bytes.includes("codex: delivered"));
     await flush();
     expect(text()).toContain("codex: delivered");
-    expect(text()).not.toContain("codex: not listening");
+    expect(text()).not.toContain(`codex: ${initialState}`);
     expect(text()).not.toContain("received");
     expect(text()).toContain("> unfinished draft");
     expect(vt.buffer.active.baseY).toBe(history);

@@ -516,7 +516,8 @@ export async function runChatSession(
       })
       .then((result) => {
         if (closed || !result.delivery_target) return;
-        const state = result.delivery_status === "receiver" ? "queued" :
+        const state = result.delivery_error === "manual_standby" ? "waiting for resume" :
+          result.delivery_status === "receiver" ? "queued" :
           result.delivery_status === "pending" ? "queued" :
           result.delivery_state === "queued" && result.interrupt_status === "unsupported" ? "queued; immediate interrupt unavailable" :
           result.delivery_state === "queued" && result.interrupt_status === "injected" ? "urgent prompt injected" :
