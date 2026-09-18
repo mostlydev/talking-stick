@@ -11,6 +11,38 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.20.0] — 2026-09-18
+
+Full notes: [`docs/releases/0.20.0.md`](docs/releases/0.20.0.md).
+
+### Changed
+
+- Being asked to use the Talking Stick skill is no longer treated as a task. An agent invoked with
+  no work joins the room and goes idle in `tt standby`, waiting for the task to arrive in `tt chat`,
+  instead of claiming the stick or asking for direction in a harness prompt the operator is not
+  reading. A session that cannot self-wake keeps exactly one `tt wait --park` so it stays reachable
+  without being granted a turn it has no work for. An explicit task given alongside the skill still
+  runs the normal loop.
+- Agents no longer relay operator messages to each other. An operator's room message already reaches
+  every joined agent, and a directed message was scoped deliberately, so re-broadcasting either
+  duplicated the console or widened a scope the operator chose. Agents still report their own
+  actions, findings, and disagreements.
+- Agents no longer announce their arrival in the room. The join event is already rendered in the
+  operator console, so the extra message was a duplicate line; agents now introduce themselves when
+  the operator asks rather than on launch.
+- Rewrote the README around the quickstart, which now mirrors the operator console layout: agents
+  stacked on the left, `tt chat` on the right, each agent given only the skill, and the task typed
+  once into the console. The full command surface, delivery semantics, identity resolution, and
+  install behavior moved to [`docs/reference.md`](docs/reference.md).
+
+### Fixed
+
+- Corrected README claims that no longer matched the code: next-tool-boundary steering is
+  operator-only, not every wake carries the message body, directed messages are filtered from other
+  agents' default waits but remain readable via audit views, and lease fencing protects Talking
+  Stick's own state rather than arbitrary workspace edits. The native event delivery section had
+  also been sitting below the License heading.
+
 ## [0.19.0] — 2026-09-17
 
 Full notes: [`docs/releases/0.19.0.md`](docs/releases/0.19.0.md).
@@ -609,6 +641,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.20.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.20.0
 [0.19.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.19.0
 [0.18.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.3
 [0.18.2]: https://github.com/mostlydev/talking-stick/releases/tag/v0.18.2
