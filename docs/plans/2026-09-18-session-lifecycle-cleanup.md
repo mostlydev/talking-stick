@@ -50,6 +50,24 @@ hooks, hook merge/uninstall preservation, and conservative tombstone GC.
 
 Final suite: 657 passed, one skipped; typecheck passed. Grok's review caught
 snake-case event values; the handler now normalizes spelling, with a regression
-covering native Grok input and shell-to-Grok ancestry. Independent compiled-hook
-live verification is pending. Draft PR #87 is open; no release or real harness
-configuration change yet.
+covering native Grok input and shell-to-Grok ancestry.
+
+Live verification of the compiled hook at `f8d500e`, with a disposable Claude
+2.1.277 in an isolated data directory and workspace, loading only scratch
+settings (`--setting-sources local`) so no real hook configuration changed. Every
+lifecycle event went through `node dist/cli.js session-hook claude`:
+
+| Step | Result |
+| --- | --- |
+| Session A joins via `tt join` inside the session | A is a member |
+| `/clear` | SessionEnd `clear` for A; A removed with a `leave … session_ended` event; new session B |
+| A's ID rejoins from the same process | Refused with `session_ended`: a lingering old listener cannot resurrect it |
+| B joins | Joined |
+| `/resume A` | SessionEnd `resume` removes B; SessionStart `resume` for the same ID A; A rejoins |
+
+A second, independent run using a join fixture confirmed `/clear` and normal-exit
+retirement. It did not exercise resume: its original session was empty, and an
+empty session cannot be resumed at all, so no tombstone can trap one. Lease
+release was not exercised live and rests on the regression suite.
+
+Draft PR #87 is open; no release or real harness configuration change yet.
