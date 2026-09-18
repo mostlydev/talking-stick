@@ -1,4 +1,5 @@
 import { runGrokInboxHookCommand } from "./grok-inbox-hook.js";
+import { runSessionHookCommand } from "./session-hook.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
 import { runGuardCommand } from "./guardian.js";
@@ -52,6 +53,11 @@ export interface CommandEntry {
 }
 
 export const COMMAND_REGISTRY: CommandEntry[] = [
+  {
+    name: "session-hook", needsRuntime: false, startupMaintenance: false, internal: true,
+    usage: "tt session-hook <claude|codex|grok>", description: "Track exact harness session lifecycle.",
+    handler: ({ parsed }) => runSessionHookCommand(parsed.positionals[0])
+  },
   {
     name: "grok-inbox-hook", needsRuntime: false, startupMaintenance: false, internal: true,
     usage: "tt grok-inbox-hook", description: "Deliver pending room events inside an active Grok session.",
