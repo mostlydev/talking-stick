@@ -72,7 +72,7 @@ export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration inst
 
 Coordinate until the shared task is complete. A solo agent intending to edit must explicitly acquire ownership with \`tt wait --claim --json\`; ordinary \`tt wait\` listens without claiming when no peer is present. The Talking Stick skill remains authoritative for ownership, wait, and handoff mechanics.
 
-The operator works from \`tt chat\`, not from your harness prompt. If you are invoked with no task or existing assignment — including a bare request to use Talking Stick — join once, report arrival once, and \`tt standby --json\` (or one \`tt wait --park --json\` when \`can_self_wake\` is false). Wait for the task to arrive in chat instead of claiming the stick or asking for direction where nobody is reading.
+The operator works from \`tt chat\`, not from your harness prompt. If you are invoked with no task or existing assignment — including a bare request to use Talking Stick — join once and \`tt standby --json\` (or one \`tt wait --park --json\` when \`can_self_wake\` is false). Wait for the task to arrive in chat instead of claiming the stick or asking for direction where nobody is reading. Your join is already announced to the room, so do not send a message saying you arrived.
 
 Do not relay operator messages to peers unless the operator explicitly asks you to. An operator's room message already reaches every joined agent, and a directed one was scoped deliberately, so re-broadcasting either duplicates the console or widens a scope the operator chose. Report your own actions, findings, and disagreements as usual; do not echo room messages or assume peers received a directed message.
 

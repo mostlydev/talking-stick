@@ -9,14 +9,15 @@ Talking Stick gives several harnesses one shared-writer turn and one room event 
 
 ## Invoked without a task
 
-Being asked to use this skill is not itself a task. When invoked without a task or an existing assignment to continue, join the room, report in once, and wait for instructions through `tt chat`. If already joined, do not rejoin or repeat the arrival message. A quiet wake does not cancel an existing assignment.
+Being asked to use this skill is not itself a task. When invoked without a task or an existing assignment to continue, join the room and wait for instructions through `tt chat`. If already joined, do not rejoin. A quiet wake does not cancel an existing assignment.
 
 ```sh
 tt join --json
 tt instructions show --json
-tt msg send room "<harness>:<id> joined. Idle, listening." --json
 tt standby --json
 ```
+
+Joining is already visible: the room emits a join event and the operator's console prints it. Do not send a room message announcing that you arrived, and do not introduce yourself unprompted — wait until the operator asks.
 
 When standby can wake you, end your model turn. Do not claim the stick, invent work, propose a plan, or ask for a task in your harness prompt. Use chat for operator interaction by default.
 

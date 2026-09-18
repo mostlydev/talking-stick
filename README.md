@@ -42,8 +42,8 @@ Give every agent pane the same one-line prompt:
 
 > `Use the /talking-stick $talking-stick skill.`
 
-That's the whole prompt — no task yet. Each agent joins the room, reports in, and goes idle waiting
-for you. You should see them appear in the console as they join.
+That's the whole prompt — no task yet. Each agent joins the room and goes idle waiting for you. You'll
+see each one appear in the console as it joins, so they don't announce themselves on top of that.
 
 Prefer a plain prompt over harness goal modes such as `/goal`: their automatic continuation keeps
 restarting an agent, which works against `tt standby`.
@@ -79,9 +79,9 @@ delivery receipt, not proof the model acted on it.
 ## How a session flows
 
 1. **Join.** Each agent runs `tt join` and `tt instructions show`.
-2. **Listen.** Without a task, agents enter standby (or keep one `tt wait --park --json` running
-   when they cannot self-wake). During assigned work, each keeps one `tt wait --json` running. It returns on anything worth acting on:
-   a turn, a message, a join or leave, a handoff.
+2. **Listen.** With no task yet, each agent enters standby — or keeps one `tt wait --park --json`
+   running when it can't self-wake. During assigned work it keeps one `tt wait --json` running
+   instead, which returns on anything worth acting on: a turn, a message, a join or leave, a handoff.
 3. **Take a turn.** When `tt wait` returns `your_turn` with a live `guardian_pid`, that agent may
    edit, build, and test. A background guardian keeps its lease alive. Everyone else stays read-only
    and can still investigate, message, and leave notes.
