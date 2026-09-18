@@ -15,9 +15,12 @@ export async function runSessionHookCommand(harness: string | undefined, options
     }
     const input = JSON.parse(raw) as Record<string, unknown>;
     if (!input || typeof input !== "object" || Array.isArray(input)) return;
-    const event = input.hook_event_name ?? input.hookEventName;
+    const rawEvent = input.hook_event_name ?? input.hookEventName;
+    const normalizedEvent = typeof rawEvent === "string" ? rawEvent.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+    const event = normalizedEvent === "sessionstart" ? "SessionStart"
+      : normalizedEvent === "sessionend" ? "SessionEnd" : null;
     const sessionId = input.session_id ?? input.sessionId;
-    if ((event !== "SessionEnd" && event !== "SessionStart") ||
+    if (!event ||
         typeof sessionId !== "string" || !sessionId.trim()) return;
     // Some harness hook payloads identify the parent when a child runs a hook.
     if (input.subagent_type || input.subagentType || input.agent_id || input.agentId) return;

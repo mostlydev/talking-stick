@@ -122,3 +122,17 @@ test("installer preserves foreign hooks even in a shared entry and is idempotent
   expect(mergeSessionHooks('{"hooks":[]}', "codex")).toBeNull();
   expect(mergeSessionHooks('{"hooks":{"SessionEnd":1}}', "codex")).toBeNull();
 });
+
+test("Grok snake-case event values bind through a shell to the Grok parent", async () => {
+  const { service, join, metadata } = setup();
+  join("grok:old", { ...metadata, harness_name: "grok" });
+  const inspector = { inspect: (pid: number) => pid === 999
+    ? { pid, ppid: 123, command: "bash", startTime: "shell" }
+    : pid === 123 ? { pid, ppid: 1, command: "grok", startTime: "start" } : null };
+  await runSessionHookCommand("grok", { service, inspector, parentPid: 999,
+    stdin: JSON.stringify({ hookEventName: "session_end", sessionId: "old" }) });
+  expect(service.db.prepare("SELECT agent_id FROM room_members").all()).toEqual([{ agent_id: "claude:old" }]);
+  await runSessionHookCommand("grok", { service, inspector, parentPid: 999,
+    stdin: JSON.stringify({ hookEventName: "session_start", sessionId: "old" }) });
+  expect(() => join("grok:old", { ...metadata, harness_name: "grok" })).not.toThrow();
+});

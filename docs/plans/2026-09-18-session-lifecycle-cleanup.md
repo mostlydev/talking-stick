@@ -48,6 +48,8 @@ lease/reservation revocation, endpoint cascade, duplicate end events,
 metadata-less late receivers, same/new-process resume, malformed/subagent
 hooks, hook merge/uninstall preservation, and conservative tombstone GC.
 
-Full suite before final extra GC/reservation tests: 652 passed, one skipped;
-typecheck and build passed. Independent compiled-hook live verification is
-pending. No release or real harness configuration change yet.
+Final suite: 657 passed, one skipped; typecheck passed. Grok's review caught
+snake-case event values; the handler now normalizes spelling, with a regression
+covering native Grok input and shell-to-Grok ancestry. Independent compiled-hook
+live verification is pending. Draft PR #87 is open; no release or real harness
+configuration change yet.
