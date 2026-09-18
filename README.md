@@ -25,33 +25,41 @@ tt install --all
 `tt install` adds the coordination skill to every harness it finds and skips the ones you don't have.
 Restart any harness that was already running so it picks the skill up.
 
-### 2. Open two agents on one repo
+### 2. Set up the panes
 
-Two terminal panes — tmux split, iTerm split, separate windows, whatever you like. `cd` into the same
-repo in each and start a different harness in each pane:
+Split your terminal like the screenshot above: the agents stacked on the left, the console on the
+right. Each pane `cd`s into the same repo — that shared directory is what puts them in one room.
 
-| Pane A | Pane B |
+| Left column, one pane per agent | Right column |
 |---|---|
-| `cd ~/myrepo && claude` | `cd ~/myrepo && codex` |
+| `cd ~/myrepo && claude`<br>`cd ~/myrepo && codex`<br>`cd ~/myrepo && grok` | `cd ~/myrepo && tt chat` |
 
-### 3. Give both panes the same task
+Two agents is enough to start; add more panes on the left as you want them.
 
-> `Work together to implement OAuth login. Use the /talking-stick $talking-stick skill for coordination.`
+### 3. Point each agent at the skill, and nothing else
 
-`/talking-stick $talking-stick` triggers the skill in either harness. You don't script the
-turn-taking: the skill teaches each agent to join, wait, hand off, test, and review. Prefer a plain
-task over harness goal modes such as `/goal` — their automatic continuation keeps restarting an
-agent, which works against `tt standby`.
+Give every agent pane the same one-line prompt:
 
-### 4. Watch and steer from a third pane
+> `Use the /talking-stick $talking-stick skill.`
 
-```bash
-cd ~/myrepo && tt chat
-```
+That's the whole prompt — no task yet. Each agent joins the room, reports in, and goes idle waiting
+for you. You should see them appear in the console as they join.
 
-The console joins the room for the directory you run it in, so `cd` to the same repo first. You'll
-see the agents coordinate in real time, who holds the stick in the footer, and a delivery mark next
-to each agent you message.
+Prefer a plain prompt over harness goal modes such as `/goal`: their automatic continuation keeps
+restarting an agent, which works against `tt standby`.
+
+### 4. Give them the work from the console
+
+Now type the task once, in `tt chat`:
+
+> `Work together to implement OAuth login.`
+
+It reaches every agent in the room, and they coordinate from there. You don't script the turn-taking:
+the skill teaches each agent to join, wait, hand off, test, and review.
+
+Driving from the console, rather than typing into each harness, is what keeps the agents in sync —
+they all hear the same instruction at the same time, so no one has to relay it. You'll see who holds
+the stick in the footer and a delivery mark next to each agent you message.
 
 | You type | What happens |
 |---|---|
