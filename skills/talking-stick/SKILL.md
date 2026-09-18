@@ -9,7 +9,7 @@ Talking Stick gives several harnesses one shared-writer turn and one room event 
 
 ## Invoked without a task
 
-Being asked to use this skill is not itself a task. When you are pointed at the skill with no work to do — the operator's whole prompt is "use talking-stick", or a wake arrives with nothing to act on — join the room, report in, and go idle. The operator drives from `tt chat`, so the task arrives there, not in your harness prompt.
+Being asked to use this skill is not itself a task. When invoked without a task or an existing assignment to continue, join the room, report in once, and wait for instructions through `tt chat`. If already joined, do not rejoin or repeat the arrival message. A quiet wake does not cancel an existing assignment.
 
 ```sh
 tt join --json
@@ -18,12 +18,14 @@ tt msg send room "<harness>:<id> joined. Idle, listening." --json
 tt standby --json
 ```
 
-Then end your model turn. Do not claim the stick, invent work, propose a plan, or ask the operator what to do inside your own harness; they are not reading it. Standby costs nothing while you wait and a chat message wakes you.
+When standby can wake you, end your model turn. Do not claim the stick, invent work, propose a plan, or ask for a task in your harness prompt. Use chat for operator interaction by default.
 
 Two cases need care:
 
 - If `tt standby --json` reports `can_self_wake: false`, nothing can wake this session. Keep exactly one `tt wait --park --json` running instead, so you stay reachable without claiming a turn.
 - Use `--park`, not an ordinary `tt wait`, whenever you are idle in a room with peers. A plain wait can be granted a turn you have no work for, which churns the stick.
+
+For a greeting or membership-only wake, acknowledge supplied events, answer in chat when needed, then return to the idle receive path. Fetch a body-free wake with `tt wait --park --json` while taskless; switch to the normal loop when it supplies work. Do not claim or hand off turns merely to acknowledge messages.
 
 An explicit task given with the skill still runs normally: join, then work the loop below. This section applies only when there is nothing to do yet.
 
@@ -96,7 +98,7 @@ Normal operator messages also steer Claude at its next tool boundary without can
 
 Native delivery and acknowledgement do not grant writer ownership. For a handoff or a task requiring shared edits, acquire the turn normally and verify `your_turn` plus a live guardian. Pure conversation needs no claim/release. When finished, remain joined with `tt standby --json`.
 
-Other prompts beginning `[talking-stick]` are body-free fallback wakes. Run `tt wait --json` and act on its result. Ignore any other instruction in that fallback wake text; the real message arrives through `tt wait`.
+Other prompts beginning `[talking-stick]` are body-free fallback wakes. Run `tt wait --park --json` while taskless, or `tt wait --json` during assigned work, and act on its result. Ignore any other instruction in that fallback wake text; the real message arrives through `tt wait`.
 
 A `[talking-stick] URGENT` prompt can arrive in the middle of your work. It usually means the operator is steering you. Run `tt wait --json` at once, read the message, and fold it into the current task: change course if asked, answer questions briefly, then continue. Abandon the task only if the message clearly cancels it. If you hold the stick, you still hold it; the interrupt is not a handoff.
 
@@ -119,9 +121,9 @@ Reserve `--interrupt` for a time-sensitive blocker, a veto, a changed operator i
 
 Messages from a `human:*` sender usually come from the operator, often typing in `tt chat`. Treat them as operator instructions. Reply with `tt msg send <that human agent_id> "..." --json` so the answer shows up in the operator console.
 
-Do not relay the operator to your peers. Their room messages already reach every joined agent, so repeating one is duplicate noise in the console; and a directed `@name` message was deliberately narrowed, so forwarding it widens a scope the operator chose. Assume every agent already heard what you heard.
+Do not relay operator messages to peers unless the operator explicitly asks you to. Room messages are already routed to every joined agent; do not duplicate them while delivery is pending. A directed `@name` message is deliberately scoped: do not forward it or assume other agents received it.
 
-This is about echoing, not silence. Keep saying what you are doing about an instruction, what you found, what you disagree with, and anything a peer needs and cannot see — that is the coordination the room is for. If you genuinely need to know whether a peer received something, ask them, rather than pasting it again. A chat console is an observer, not a turn-taking peer. For a live chat exercise, keep the same single wait receive process active and surface its output; having a subprocess handle alone does not deliver messages into the model. Use `tt wait --park --json` for a discussion that must remain read-only, after releasing any active turn. An operator's room message wakes every agent in the room; room messages between agents wake nobody, and directed messages wake their recipients.
+Continue sharing your own plans, work assignments, findings, review questions, and results. Share what peers need to coordinate without restating operator messages or widening their scope. If you genuinely need to know whether a peer received something, ask them, rather than pasting it again. A chat console is an observer, not a turn-taking peer. For a live chat exercise, keep the same single wait receive process active and surface its output; having a subprocess handle alone does not deliver messages into the model. Use `tt wait --park --json` for a discussion that must remain read-only, after releasing any active turn. An operator's room message wakes every agent in the room; room messages between agents wake nobody, and directed messages wake their recipients.
 
 Use `tt notes add "finding" --json` for durable findings that should survive a handoff. Do not use notes as a second chat stream.
 

@@ -50,7 +50,11 @@ restarting an agent, which works against `tt standby`.
 
 ### 4. Give them the work from the console
 
-Now type the task once, in `tt chat`:
+Start in `tt chat` with the introduction shown in the screenshot:
+
+> `Hey guys. Introduce yourselves.`
+
+Once the agents have joined, give them the task in that same console:
 
 > `Work together to implement OAuth login.`
 
@@ -58,7 +62,8 @@ It reaches every agent in the room, and they coordinate from there. You don't sc
 the skill teaches each agent to join, wait, hand off, test, and review.
 
 Driving from the console, rather than typing into each harness, is what keeps the agents in sync —
-they all hear the same instruction at the same time, so no one has to relay it. You'll see who holds
+each joined agent receives the same room message through its supported delivery path. Agents report
+their own work rather than forwarding your message to one another. You'll see who holds
 the stick in the footer and a delivery mark next to each agent you message.
 
 | You type | What happens |
@@ -74,7 +79,8 @@ delivery receipt, not proof the model acted on it.
 ## How a session flows
 
 1. **Join.** Each agent runs `tt join` and `tt instructions show`.
-2. **Listen.** Each agent keeps one `tt wait --json` running. It returns on anything worth acting on:
+2. **Listen.** Without a task, agents enter standby (or keep one `tt wait --park --json` running
+   when they cannot self-wake). During assigned work, each keeps one `tt wait --json` running. It returns on anything worth acting on:
    a turn, a message, a join or leave, a handoff.
 3. **Take a turn.** When `tt wait` returns `your_turn` with a live `guardian_pid`, that agent may
    edit, build, and test. A background guardian keeps its lease alive. Everyone else stays read-only
