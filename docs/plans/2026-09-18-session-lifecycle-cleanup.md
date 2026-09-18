@@ -70,4 +70,20 @@ retirement. It did not exercise resume: its original session was empty, and an
 empty session cannot be resumed at all, so no tombstone can trap one. Lease
 release was not exercised live and rests on the regression suite.
 
-Draft PR #87 is open; no release or real harness configuration change yet.
+Draft PR #87 is open; nothing has been merged or released. After live verification,
+Codex enabled the lifecycle hooks in the operator's real Claude, Codex, and Grok
+configuration for local validation. These are global harness settings, so they
+apply across projects, not only to this repository. Existing foreign settings
+and hooks were structurally checked against private backups and preserved.
+Codex's hooks still require its `/hooks` trust review.
+
+The installed commands resolve `tt` from PATH. On this machine `tt` is npm-linked
+to this checkout's `dist/cli.js`, so behavior follows the last build of this
+checkout, including this unmerged branch. Building an older branch without
+`session-hook` makes these fail-open commands no-op. Local installation is not
+evidence of a published release. The historical dicom-capacitor ghost entries
+remain unchanged.
+
+Private pre-install backups were retained locally. For rollback, remove only
+the managed lifecycle hooks from the current settings, preserving any later
+foreign changes; do not blindly replace current settings with the snapshots.
