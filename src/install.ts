@@ -58,6 +58,7 @@ export interface ExecAction {
 
 export interface FilePatchAction {
   kind: "file-patch";
+  dedupeKey?: string;
   harness: HarnessId;
   filePath: string;
   description: string;
@@ -310,6 +311,62 @@ export function buildClaudeStopGuardHook(): Record<string, unknown> {
     command: CLAUDE_STOP_GUARD_COMMAND,
     timeout: 5
   };
+}
+
+export function mergeSessionHooks(existing: string | null, harness: string, remove = false): string | null {
+  try {
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      value !== null && typeof value === "object" && !Array.isArray(value);
+    const settings: unknown = existing?.trim() ? JSON.parse(existing) : {};
+    if (!isRecord(settings)) return null;
+    if (settings.hooks !== undefined && !isRecord(settings.hooks)) return null;
+    const hooks: Record<string, unknown> = { ...(settings.hooks as Record<string, unknown> | undefined) };
+    const marker = `talking-stick-lifecycle-${harness}`;
+    for (const event of ["SessionStart", "SessionEnd"]) {
+      if (hooks[event] !== undefined && !Array.isArray(hooks[event])) return null;
+      const entries: unknown[] = ((hooks[event] ?? []) as unknown[]).flatMap((entry: unknown) => {
+        if (!isRecord(entry) || !Array.isArray(entry.hooks)) return [entry];
+        const remaining = entry.hooks.filter((hook: unknown) => !isRecord(hook) || typeof hook.command !== "string" || !hook.command.includes(marker));
+        return remaining.length ? [{ ...entry, hooks: remaining }] : [];
+      });
+      if (!remove) entries.push({ hooks: [{ type: "command", timeout: 5,
+        command: `: ${marker}; if command -v tt >/dev/null 2>&1; then tt session-hook ${harness} >/dev/null 2>/dev/null || true; fi` }] });
+      if (entries.length) hooks[event] = entries;
+      else delete hooks[event];
+    }
+    if (Object.keys(hooks).length) settings.hooks = hooks;
+    else delete settings.hooks;
+    const result = JSON.stringify(settings, null, 2) + "\n";
+    return existing && JSON.stringify(JSON.parse(existing)) === JSON.stringify(settings) ? existing : result;
+  } catch { return null; }
+}
+
+export function planSessionHooks(harness: HarnessId, operation: "install" | "uninstall", options: InstallOptions = {}): InstallAction[] {
+  if (harness !== "claude-code" && harness !== "codex" && harness !== "grok") return [];
+  const resolved = resolveOptions(options);
+  const configDir = harness === "codex" && resolved.env.CODEX_HOME?.trim()
+    ? resolved.env.CODEX_HOME.trim() : resolveHarnessConfigDirFromResolved(harness, resolved);
+  if (resolved.skipMissing && !resolved.hooks.pathExists(configDir)) return [skipAction(harness, `config directory not found: ${configDir}`)];
+  const filePath = harness === "claude-code" ? resolveClaudeSettingsPath(resolved)
+    : path.join(configDir, ...(harness === "grok" ? ["hooks", "talking-stick-lifecycle.json"] : ["hooks.json"]));
+  const name = harness === "claude-code" ? "claude" : harness;
+  return [{ kind: "file-patch", harness, filePath, operation, dedupeKey: `${filePath}:lifecycle`,
+    description: `${operation} session lifecycle hooks in ${filePath}${harness === "codex" && operation === "install" ? " (review and trust in /hooks)" : ""}`,
+    inspect: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      const next = mergeSessionHooks(existing, name, operation === "uninstall");
+      if (next === null) return "different";
+      if (operation === "uninstall") return existing === null || next === existing ? "absent" : "present";
+      return next === existing ? "present" : "absent";
+    },
+    apply: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      if (existing === null && operation === "uninstall") return;
+      const next = mergeSessionHooks(existing, name, operation === "uninstall");
+      if (next === null) throw new Error(`Refusing to modify unparseable hook settings: ${filePath}`);
+      if (next !== existing) { resolved.hooks.ensureDir(path.dirname(filePath)); resolved.hooks.writeFile(filePath, next); }
+    }
+  }];
 }
 
 function isStopGuardEntry(entry: unknown): boolean {

@@ -521,6 +521,33 @@ hook deliveries may retry after one minute at the next hook. Hooks never auto-jo
 
 ## Storage
 
+### Session lifecycle
+
+`tt install claude codex grok` installs merge-only `SessionStart`/`SessionEnd`
+hooks for those harnesses. Review and trust Codex's new hooks in `/hooks`;
+reload hooks or restart other harnesses if their settings are cached.
+Existing hooks and settings are preserved.
+
+An end event removes only the matching session on the same host and exact
+harness process instance, releasing its turn and wake registrations. A saved
+retirement marker prevents an old background listener from rejoining; a later
+session-start event permits an explicit resume. Concurrent sessions remain
+separate even when they share a process. Crashes without hooks still use process
+liveness cleanup.
+
+Claude reports the old session ending during `/clear` and `/resume`. Codex
+does **not** report an immediate end on `/clear`; cleanup waits for its actual
+end hook (normal shutdown, archive/delete, or the documented unopened-idle
+timeout). A still-open standby session does not meet that timeout condition.
+See [Codex's lifecycle contract](https://learn.chatgpt.com/docs/hooks#sessionend).
+Installing hooks cannot reconstruct end events that occurred before installation.
+
+Process retirement markers older than 30 days are reclaimed only when the
+exact process is confirmed gone. Room-member markers remain until resume or
+room deletion, protecting against metadata-less stale listeners.
+
+### Database location
+
 The coordination database lives at:
 
 - Linux/macOS: `~/.local/share/talking-stick/rooms.sqlite` (or

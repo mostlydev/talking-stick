@@ -455,6 +455,54 @@ export class TalkingStickService {
     });
   }
 
+  /** A hook's exact session identity is evidence that PID liveness cannot give. */
+  recordSessionLifecycle(input: {
+    harness: string; sessionId: string; pid: number; processStartedAt: string;
+    event: "SessionStart" | "SessionEnd";
+  }): number {
+    if (!input.sessionId.trim() || !input.processStartedAt.trim() ||
+        !Number.isSafeInteger(input.pid) || input.pid <= 1) return 0;
+    const key = [input.harness, `harness:${input.sessionId}`, this.hostId,
+      input.pid, input.processStartedAt.trim()] as const;
+    return withImmediateTransaction(this.db, () => {
+      if (input.event === "SessionStart") {
+        this.db.prepare(`DELETE FROM ended_harness_sessions WHERE harness_name = ?
+          AND session_id = ? AND host_id = ? AND pid = ? AND process_started_at = ?`).run(...key);
+        this.db.prepare(`DELETE FROM ended_room_members WHERE harness_name = ?
+          AND session_id = ? AND host_id = ?`).run(input.harness, `harness:${input.sessionId}`, this.hostId);
+        return 0;
+      }
+      const timestamp = this.now().toISOString();
+      this.db.prepare("INSERT OR REPLACE INTO ended_harness_sessions VALUES (?, ?, ?, ?, ?, ?)")
+        .run(...key, timestamp);
+      const members = this.db.prepare<[string, string, string, number, string], RoomMemberRow>(
+        `SELECT * FROM room_members WHERE harness_name = ? AND harness_session_id = ?
+         AND harness_host_id = ? AND harness_pid = ? AND trim(harness_process_started_at) = ?`
+      ).all(...key);
+      for (const member of members) {
+        const room = this.requireRoom(member.room_id);
+        this.db.prepare("INSERT OR REPLACE INTO ended_room_members VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(member.room_id, member.agent_id, ...key);
+        const owner = room.owner === member.agent_id ? null : room.owner;
+        const reserved = room.reserved_for === member.agent_id ? null : room.reserved_for;
+        this.db.prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
+          .run(member.room_id, member.agent_id);
+        this.db.prepare(`UPDATE path_rooms SET owner = ?, reserved_for = ?,
+          lease_id = ?, lease_expires_at = ?, claim_expires_at = ?, pending_handoff_event_seq = ?,
+          state = ?, updated_at = ? WHERE room_id = ?`).run(owner, reserved,
+            owner ? room.lease_id : null, owner ? room.lease_expires_at : null,
+            reserved ? room.claim_expires_at : null,
+            owner ? room.pending_handoff_event_seq : null,
+            room.state === "closed" ? "closed" : owner ? "owned" : reserved ? "reserved" : "idle",
+            timestamp, room.room_id);
+        this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "leave",
+          from_agent_id: member.agent_id, to_agent_id: null, handoff: null,
+          reason: "session_ended", created_at: timestamp });
+      }
+      return members.length;
+    });
+  }
+
   leaveRoom(input: LeaveRoomInput): LeaveRoomResult {
     assertNonEmpty(input.agent_id, "agent_id");
     assertNonEmpty(input.room_id, "room_id");
@@ -3593,6 +3641,14 @@ export class TalkingStickService {
   ): void {
     const existing = this.getMember(roomId, agentId);
     const normalized = normalizeProcessMetadata(options.processMetadata);
+    if (this.db.prepare("SELECT 1 FROM ended_room_members WHERE room_id = ? AND agent_id = ?").get(roomId, agentId) ||
+        (normalized.harness_session_id && normalized.harness_pid &&
+        this.db.prepare(`SELECT 1 FROM ended_harness_sessions WHERE harness_name = ?
+          AND session_id = ? AND host_id = ? AND pid = ? AND process_started_at = ?`)
+          .get(normalized.harness_name, normalized.harness_session_id, normalized.harness_host_id,
+            normalized.harness_pid, normalized.harness_process_started_at?.trim() ?? null))) {
+      throw new ProtocolError("session_ended", "This harness session ended; it cannot rejoin until resumed.");
+    }
     const hasIdentity =
       hasExactProcessIdentity(normalized) ||
       hasHarnessProcessIdentity(normalized);
@@ -4683,6 +4739,22 @@ export class TalkingStickService {
   }
 
   private purgeExpiredIdleRooms(now: Date): void {
+    // A timestamp alone is not evidence that a still-running old listener is
+    // harmless. Reclaim process tombstones only after exact process death;
+    // room/agent tombstones continue to block metadata-less old receivers.
+    const agedSessions = this.db.prepare(`SELECT * FROM ended_harness_sessions WHERE ended_at < ?`)
+      .all(new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()) as Array<{
+        harness_name: string; session_id: string; host_id: string; pid: number;
+        process_started_at: string; ended_at: string;
+      }>;
+    for (const ended of agedSessions) {
+      if (this.processLivenessChecker({ host_id: ended.host_id, pid: ended.pid,
+        process_started_at: ended.process_started_at, harness_host_id: ended.host_id,
+        harness_pid: ended.pid, harness_process_started_at: ended.process_started_at }) !== "gone") continue;
+      this.db.prepare(`DELETE FROM ended_harness_sessions WHERE harness_name = ? AND session_id = ?
+        AND host_id = ? AND pid = ? AND process_started_at = ? AND ended_at = ?`).run(
+          ended.harness_name, ended.session_id, ended.host_id, ended.pid, ended.process_started_at, ended.ended_at);
+    }
     const expireRooms = this.policy.idleRoomTtlMs > 0;
     const cutoffMs = now.getTime() - this.policy.idleRoomTtlMs;
 

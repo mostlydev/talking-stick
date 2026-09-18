@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- Installed lifecycle hooks retire an ended Claude, Codex, or Grok session by exact session and process identity, including its lease and wake endpoints. Old listeners cannot rejoin an ended session; a later resume permits it again. Claude `/clear` reports the old session immediately. Codex currently delays its end hook until thread teardown, so immediate Codex `/clear` cleanup remains unsupported.
+
 ## [0.20.0] — 2026-09-18
 
 Full notes: [`docs/releases/0.20.0.md`](docs/releases/0.20.0.md).
