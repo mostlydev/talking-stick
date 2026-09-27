@@ -2230,11 +2230,13 @@ describe("tt notes", () => {
       expect(fs.readFileSync(settingsPath, "utf8")).toContain(
         "talking-stick-claude-stop-hook"
       );
+      expect(fs.readFileSync(settingsPath, "utf8")).toContain("talking-stick-lifecycle-claude");
 
       await captureStdout(["uninstall", "claude"]);
       expect(fs.readFileSync(settingsPath, "utf8")).not.toContain(
         "talking-stick-claude-stop-hook"
       );
+      expect(fs.readFileSync(settingsPath, "utf8")).not.toContain("talking-stick-lifecycle-claude");
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME;

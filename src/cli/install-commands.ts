@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import {
   SUPPORTED_HARNESSES,
+  planSessionHooks,
   detectHarness,
   isDeprecatedHarness,
   parseHarnessList,
@@ -73,6 +74,7 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
         process.stdout.write(`${line}\n`);
       }
       for (const action of [
+        ...harnesses.flatMap(h => planSessionHooks(h, "install", installOptions)),
         ...(harnesses.includes("grok")
           ? [
               planGrokSessionHookInstall(installOptions),
@@ -114,6 +116,7 @@ export async function runInstallCommand(parsed: ParsedCommand): Promise<void> {
   const results = skillerResults
     ? [
         ...skillerResults,
+        ...await runSkillInstallActions(harnesses.flatMap(h => planSessionHooks(h, "install", installOptions)), installOptions),
         ...(harnesses.includes("grok")
           ? await runSkillInstallActions(
               [
@@ -166,6 +169,7 @@ export async function runUninstallCommand(
         process.stdout.write(`${line}\n`);
       }
       for (const action of [
+        ...harnesses.flatMap(h => planSessionHooks(h, "uninstall", installOptions)),
         ...(harnesses.includes("grok")
           ? [
               planGrokSessionHookUninstall({
@@ -209,6 +213,7 @@ export async function runUninstallCommand(
   const results = skillerResults
     ? [
         ...skillerResults,
+        ...await Promise.all(harnesses.flatMap(h => planSessionHooks(h, "uninstall", installOptions)).map(a => runAction(a, installOptions))),
         ...(harnesses.includes("grok")
           ? [
               await runAction(
@@ -383,7 +388,7 @@ function dedupeInstallActions(actions: InstallAction[]): InstallAction[] {
 
 function installActionDedupeKey(action: InstallAction): string {
   if (action.kind === "file-patch") {
-    return `${action.kind}:${action.operation ?? "op"}:${action.filePath}`;
+    return `${action.kind}:${action.operation ?? "op"}:${action.dedupeKey ?? action.filePath}`;
   }
   if (action.kind === "exec") {
     return `${action.kind}:${action.operation ?? "op"}:${action.command}:${action.args.join("\0")}`;
@@ -396,6 +401,7 @@ function planUninstallActions(
   installOptions: { skipMissing: boolean }
 ): InstallAction[] {
   return harnesses.flatMap((harness) => [
+    ...planSessionHooks(harness, "uninstall", installOptions),
     planSkillUninstall(harness, {
       ...installOptions,
       skipMissing: false
@@ -436,6 +442,7 @@ async function runSkillUninstall(
   installOptions: { skipMissing: boolean }
 ): Promise<InstallResult[]> {
   const actions = [
+    ...planSessionHooks(harness, "uninstall", { ...installOptions, skipMissing: false }),
     planSkillUninstall(harness, {
       ...installOptions,
       skipMissing: false
@@ -471,6 +478,7 @@ function planInstallActionsForHarness(
 ): InstallAction[] {
   return [
     planSkillInstall(harness, installOptions),
+    ...planSessionHooks(harness, "install", installOptions),
     ...(harness === "grok"
       ? [
           planGrokSessionHookInstall(installOptions),
@@ -630,6 +638,10 @@ function reportInstallResults(
 }
 
 export function printInstructionHint(results: InstallResult[]): void {
+  if (results.some(result => result.ok && result.harness === "codex" &&
+      result.action.kind === "file-patch" && result.action.dedupeKey?.endsWith(":lifecycle"))) {
+    process.stdout.write("Codex: review and trust the new lifecycle hooks with /hooks.\n");
+  }
   const changed = new Set<InstallStatus>(["added", "updated", "ok"]);
   if (!results.some((result) => result.ok && changed.has(result.status))) {
     return;

@@ -347,6 +347,27 @@ const migrations: Migration[] = [
       ALTER TABLE native_delivery_batches ADD COLUMN created_at TEXT;
       CREATE INDEX hook_delivery_pending ON native_delivery_batches(room_id, agent_id, source, created_at);
     `
+  },
+  {
+    id: 20,
+    name: "ended_harness_sessions",
+    up: `CREATE TABLE ended_harness_sessions (
+      harness_name TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      host_id TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      process_started_at TEXT NOT NULL,
+      ended_at TEXT NOT NULL,
+      PRIMARY KEY (harness_name, session_id, host_id, pid, process_started_at)
+    );
+    CREATE INDEX ended_harness_sessions_age ON ended_harness_sessions(ended_at);
+    CREATE TABLE ended_room_members (
+      room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      harness_name TEXT NOT NULL, session_id TEXT NOT NULL, host_id TEXT NOT NULL,
+      pid INTEGER NOT NULL, process_started_at TEXT NOT NULL,
+      PRIMARY KEY (room_id, agent_id)
+    );`
   }
 ];
 
