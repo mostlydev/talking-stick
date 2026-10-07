@@ -20,6 +20,61 @@ afterEach(() => {
 });
 
 describe("prepare-release script", () => {
+  test("rebases local links and images while preserving changelog targets and code", () => {
+    const tempRoot = createTempRoot();
+    fs.mkdirSync(path.join(tempRoot, "docs"));
+    fs.writeFileSync(path.join(tempRoot, "docs", "reference.md"), "# Reference\n");
+    fs.writeFileSync(path.join(tempRoot, "README.md"), "# Readme\n");
+    fs.writeFileSync(path.join(tempRoot, "docs", "file (one).md"), "# File\n");
+    const siblingPath = path.join(path.dirname(tempRoot), `${path.basename(tempRoot)}-sibling.md`);
+    tempRoots.push(siblingPath);
+    fs.writeFileSync(siblingPath, "# Sibling\n");
+    const body = [
+      "### Fixed",
+      '- See [reference](docs/reference.md#commands "Reference") and [readme](./README.md).',
+      "- ![image](<docs/reference.md>) and [reference][doc].",
+      "  - Nested [deep](docs/reference.md) and [folder](docs/).",
+      "    - Deeper [readme](README.md).",
+      "[doc]: docs/reference.md 'Reference'",
+      `- [parent](../${path.basename(tempRoot)}-sibling.md) and [encoded](docs/file%20(one).md?raw=1#part).`,
+      "- Keep [web](https://example.com), [mail](mailto:a@example.com), [anchor](#fixed), and [absolute](/docs/reference.md).",
+      "- Code: `[example](missing.md)`.",
+      "```md",
+      "[example](also-missing.md)",
+      "```"
+    ].join("\n");
+    fs.writeFileSync(path.join(tempRoot, "CHANGELOG.md"), `# Changelog\n\n## Unreleased\n\n${body}\n`);
+    execFileSync(process.execPath, [scriptPath, "--version", "0.4.4"], { cwd: tempRoot });
+    const notes = fs.readFileSync(path.join(tempRoot, "docs/releases/0.4.4.md"), "utf8");
+    expect(notes).toContain('[reference](../reference.md#commands "Reference")');
+    expect(notes).toContain("[readme](../../README.md)");
+    expect(notes).toContain("![image](<../reference.md>)");
+    expect(notes).toContain("[deep](../reference.md) and [folder](../)");
+    expect(notes).toContain("    - Deeper [readme](../../README.md)");
+    expect(notes).toContain("[doc]: ../reference.md 'Reference'");
+    expect(notes).toContain(`[parent](../../../${path.basename(tempRoot)}-sibling.md)`);
+    expect(notes).toContain("[encoded](../file%20(one).md?raw=1#part)");
+    expect(notes).toContain("[web](https://example.com)");
+    expect(notes).toContain("[mail](mailto:a@example.com)");
+    expect(notes).toContain("[anchor](#fixed)");
+    expect(notes).toContain("[absolute](/docs/reference.md)");
+    expect(notes).toContain("`[example](missing.md)`");
+    expect(notes).toContain("[example](also-missing.md)");
+    const changelog = fs.readFileSync(path.join(tempRoot, "CHANGELOG.md"), "utf8");
+    for (const line of body.split("\n")) expect(changelog).toContain(line);
+  });
+
+  test("rejects a missing local link before modifying either output", () => {
+    const tempRoot = createTempRoot();
+    const changelog = "# Changelog\n\n## Unreleased\n\n- Parent\n    - See [missing](docs/missing.md).\n";
+    fs.writeFileSync(path.join(tempRoot, "CHANGELOG.md"), changelog);
+    expect(() => execFileSync(process.execPath, [scriptPath, "--version", "0.4.4"], {
+      cwd: tempRoot, stdio: "pipe"
+    })).toThrow(/docs\/missing.md/);
+    expect(fs.readFileSync(path.join(tempRoot, "CHANGELOG.md"), "utf8")).toBe(changelog);
+    expect(fs.existsSync(path.join(tempRoot, "docs/releases/0.4.4.md"))).toBe(false);
+  });
+
   test("moves Unreleased entries into a versioned changelog section and release note", () => {
     const tempRoot = createTempRoot();
     fs.writeFileSync(

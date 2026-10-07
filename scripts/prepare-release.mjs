@@ -34,9 +34,10 @@ function main() {
     throw new Error(`${releasePath} already exists.`);
   }
 
+  const releaseNotes = renderReleaseNotes(version, date, rebaseReleaseLinks(releaseBody));
   fs.mkdirSync(RELEASES_DIR, { recursive: true });
   writeText(CHANGELOG_PATH, nextChangelog);
-  writeText(releasePath, renderReleaseNotes(version, date, releaseBody));
+  writeText(releasePath, releaseNotes);
   stageGeneratedFiles([CHANGELOG_PATH, releasePath]);
 
   console.log(`Prepared release notes for ${version}.`);
@@ -215,6 +216,53 @@ function renderReleaseBody(changelogBody) {
       return `${heading[1].slice(1)} ${heading[2]}`;
     })
     .join("\n");
+}
+
+// Destinations in CHANGELOG.md are relative to the repository root. Preserve
+// their targets when copying prose two directories down into docs/releases.
+// Only fenced blocks count as code: CHANGELOG entries are nested lists, where
+// four-space indentation continues an item rather than starting code.
+// Inline code spans in changelog prose must stay on one line.
+function rebaseReleaseLinks(body) {
+  let fence = null;
+  return body.split("\n").map((line) => {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length &&
+          line.slice(marker[0].length).trim() === "") fence = null;
+      return line;
+    }
+    if (marker) {
+      fence = marker[1];
+      return line;
+    }
+    // Process reference definitions before protecting backtick spans: an angle
+    // destination may itself legitimately contain backticks.
+    const definition = /^( {0,3}\[[^\]]+\]:\s*)(<[^>]*>|\S+)(.*)$/.exec(line);
+    if (definition) {
+      return definition[1] + rebaseDestination(definition[2]) + definition[3];
+    }
+    return line.replace(/(`+)[\s\S]*?\1(?!`)|\]\(\s*(<[^>]*>|(?:\\.|[^\s()\\]|\((?:\\.|[^()\\])*\))+)/g,
+      (match, code, destination) => code ? match : match.slice(0, match.length - destination.length) + rebaseDestination(destination));
+  }).join("\n");
+}
+
+function rebaseDestination(destination) {
+  const angle = destination.startsWith("<");
+  const target = angle ? destination.slice(1, -1) : destination;
+  if (!target || /^(?:[a-z][a-z\d+.-]*:|\/|#|\?)/i.test(target)) return destination;
+  const suffixIndex = target.search(/[?#]/);
+  const pathname = suffixIndex === -1 ? target : target.slice(0, suffixIndex);
+  const suffix = suffixIndex === -1 ? "" : target.slice(suffixIndex);
+  const decoded = decodeURIComponent(pathname.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/g, "$1"));
+  if (!fs.existsSync(path.resolve(decoded))) {
+    throw new Error(`Broken local release link in CHANGELOG.md: ${target}`);
+  }
+  // Keep URL encoding/Markdown escapes intact; POSIX paths are used in links
+  // regardless of the host that prepares the release.
+  const relative = path.posix.relative("docs/releases", pathname);
+  const rebased = (pathname.endsWith("/") ? `${relative}/` : relative) + suffix;
+  return angle ? `<${rebased}>` : rebased;
 }
 
 function readText(filePath) {
