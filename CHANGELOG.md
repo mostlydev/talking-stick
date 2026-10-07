@@ -13,6 +13,7 @@ changes will be called out under **Breaking changes**.
 
 ### Fixed
 
+- Read commands recover from cached IDs for deleted rooms, and session writes replace older entries for the same agent and path without carrying leases or cursors into the new room.
 - Installed lifecycle hooks retire an ended Claude, Codex, or Grok session by exact session and process identity, including its lease and wake endpoints. Old listeners cannot rejoin an ended session; a later resume permits it again. Claude `/clear` reports the old session immediately. Codex currently delays its end hook until thread teardown, so immediate Codex `/clear` cleanup remains unsupported.
 
 ## [0.20.0] — 2026-09-18

@@ -159,6 +159,25 @@ describe("CLI session store", () => {
     ]);
   });
 
+  test("replacing a room deduplicates the agent path without inheriting its lease or cursor", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-cli-"));
+    tempRoots.push(tempRoot);
+    const sessionPath = path.join(tempRoot, "cli-sessions.json");
+    const base = { agent_id: "human:alice", canonical_path: "/repo", workspace_root: "/repo", updated_at: "2026-10-07T12:00:00Z" };
+    writeCliSessions(sessionPath, [
+      { ...base, room_id: "deleted-1", lease_id: "old", event_cursor_seq: 99 },
+      { ...base, room_id: "deleted-2" },
+      { ...base, agent_id: "human:bob", room_id: "other-agent" },
+      { ...base, canonical_path: "/repo/child", room_id: "child" }
+    ]);
+    upsertCliSession(sessionPath, { ...base, room_id: "live", event_cursor_seq: 1 });
+    const sessions = readCliSessions(sessionPath);
+    expect(sessions).toHaveLength(3);
+    expect(sessions.find((session) => session.room_id === "live")).toEqual({ ...base, room_id: "live", event_cursor_seq: 1 });
+    expect(sessions.map((session) => session.room_id)).toContain("child");
+    expect(sessions.map((session) => session.room_id)).toContain("other-agent");
+  });
+
   test("writes session files with an atomic rename", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-cli-"));
     tempRoots.push(tempRoot);

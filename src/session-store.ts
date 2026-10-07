@@ -86,7 +86,33 @@ export function upsertCliSession(
       sessions[index] = merged;
     }
 
+    // A replacement room owns a fresh lease and event stream. Preserve fields
+    // only from the same room, then discard older rooms for this agent/path.
+    const keepIndex = index === -1 ? sessions.length - 1 : index;
+    writeCliSessionsUnlocked(sessionPath, sessions.filter((candidate, candidateIndex) =>
+      candidateIndex === keepIndex ||
+      candidate.agent_id !== session.agent_id ||
+      candidate.canonical_path !== session.canonical_path
+    ));
+  });
+}
+
+// Read-path discovery must not overwrite a join that won the race with its
+// room snapshot. The joined session may already contain a lease and cursor.
+export function insertCliSessionIfAbsent(
+  sessionPath: string,
+  session: CliSession
+): CliSession {
+  return withSessionLock(sessionPath, () => {
+    const sessions = readCliSessions(sessionPath);
+    const existing = sessions
+      .filter((candidate) => candidate.agent_id === session.agent_id &&
+        candidate.canonical_path === session.canonical_path)
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0];
+    if (existing) return existing;
+    sessions.push(session);
     writeCliSessionsUnlocked(sessionPath, sessions);
+    return session;
   });
 }
 
