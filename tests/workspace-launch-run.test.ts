@@ -55,7 +55,7 @@ function setup() {
       env: { PATH: bin },
       homeDir: home
     });
-  const run = (agents: LaunchAgent[], topology: LaunchTopology = "here") =>
+  const run = (agents: LaunchAgent[], topology: LaunchTopology = "here", onProgress?: (message: string) => void) =>
     executeWorkspaceLaunch(plan(agents, topology), {
       runner: herdr.runner,
       readStartTime,
@@ -64,7 +64,8 @@ function setup() {
       record: readLaunchRecord(dataDir, repo),
       joinTimeoutMs: 10_000,
       sleep: async (ms) => { clock += ms; },
-      now: () => clock
+      now: () => clock,
+      onProgress
     });
   const mutations = () => herdr.calls.filter((call) =>
     ["split", "create", "run", "start", "prompt"].includes(call[1])
@@ -76,6 +77,47 @@ function setup() {
 }
 
 describe("tt up execution", () => {
+  test("reports progress before submission and only changes while waiting", async () => {
+    const { run, herdr, setMembers } = setup();
+    let polls = 0;
+    setMembers(() => (++polls < 3 ? [] : herdr.members()));
+    const messages: string[] = [];
+    const result = await run(["claude"], "here", (message) => {
+      if (messages.length === 0) expect(herdr.calls.some((call) => call[1] === "split")).toBe(false);
+      messages.push(message);
+    });
+    expect(result.status).toBe("launched");
+    expect(messages.some((message) => message.includes("Chat: submitted"))).toBe(true);
+    expect(messages.filter((message) => message.startsWith("Waiting for joins"))).toEqual([
+      "Waiting for joins (up to 10s): chat submitted, claude started.",
+      "Waiting for joins (up to 10s): chat opened, claude confirmed."
+    ]);
+  });
+
+  test("CLI writes launch progress to stderr and keeps JSON stdout parseable", async () => {
+    const { herdr, repo, home, bin, dataDir } = setup();
+    const runtime = { commands: {
+      listRooms: () => ({ rooms: [{ canonical_path: repo, room_id: "room-1" }] }),
+      getRoomState: () => ({ members: herdr.members() })
+    } } as unknown as Runtime;
+    const output: string[] = [];
+    const progress: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => { output.push(String(chunk)); return true; });
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => { progress.push(String(chunk)); return true; });
+    try {
+      await handleUpCommand(runtime, parseCommand(["up", "--agents", "claude", "--path", repo, "--json"]), {
+        env: { PATH: bin, TALKING_STICK_DATA_DIR: dataDir, HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" },
+        homeDir: home, runner: herdr.runner, readStartTime: (pid) => herdr.startTimes.get(pid) ?? null
+      });
+      expect(JSON.parse(output.join(""))).toMatchObject({ status: "launched" });
+      expect(progress.join("")).toContain("[tt up] Waiting for joins");
+      expect(progress.join("")).toContain("claude: confirmed");
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
   test("rejects an ancestor-room mismatch before launching into the wrong room", async () => {
     const { herdr, repo, dataDir, home, bin } = setup();
     const nested = path.join(repo, "child");
@@ -205,6 +247,43 @@ describe("tt up execution", () => {
     const record = readLaunchRecord(dataDir, repo)!;
     expect(record.chat_pane_id).toBe("w1:p2");
     expect(record.agents.claude).toMatchObject({ pane_id: "w1:p3", state: "confirmed" });
+    expect(herdr.calls.some((call) => call[1] === "focus")).toBe(false);
+  });
+
+  test.each(["new-tab", "new-workspace"] as const)("shows %s after startup and before join observation", async (topology) => {
+    const { run, herdr, setMembers } = setup();
+    setMembers(() => {
+      expect(herdr.calls.at(-1)?.slice(0, 2)).not.toEqual(["agent", "start"]);
+      expect(herdr.calls.some((call) => call[1] === "focus")).toBe(true);
+      return herdr.members();
+    });
+    const result = await run(["claude", "codex"], topology);
+    expect(result.status).toBe("launched");
+    expect(result.destination).toMatchObject({ tab_id: "w1:t2", workspace_id: "w1", tab_number: 2, label: "talking-stick", focused: true });
+    const focus = herdr.calls.findIndex((call) => call[1] === "focus");
+    const starts = herdr.calls.map((call, index) => call[1] === "start" ? index : -1);
+    expect(focus).toBeGreaterThan(Math.max(...starts));
+    expect(herdr.calls[focus]).toEqual(topology === "new-tab" ? ["tab", "focus", "w1:t2"] : ["workspace", "focus", "w1"]);
+  });
+
+  test("focus refusal leaves joined peers usable and reports manual navigation", async () => {
+    const { run, herdr } = setup();
+    herdr.failFocus = true;
+    const result = await run(["claude"], "new-tab");
+    expect(result.status).toBe("partial");
+    expect(result.agents[0].state).toBe("confirmed");
+    expect(result.destination).toMatchObject({ focused: false, focus_error: expect.stringContaining("focus refused") });
+    expect(result.next_steps.join("\n")).toContain("Select the created w1:t2 manually");
+  });
+
+  test("missing destination IDs never send unresolved placeholders to Herdr", async () => {
+    const { run, herdr } = setup();
+    herdr.omitDestinationIds = true;
+    const result = await run(["claude"], "new-tab");
+    expect(result.status).toBe("partial");
+    expect(result.agents[0].state).toBe("confirmed");
+    expect(herdr.calls.some((call) => call[1] === "focus")).toBe(false);
+    expect(result.destination?.focus_error).toContain("did not return the destination ID");
   });
 
   test("a repeat launch after success creates nothing", async () => {
@@ -321,6 +400,7 @@ describe("tt up execution", () => {
     expect(result.status).toBe("partial");
     expect(result.agents[0].state).toBe("started");
     expect(result.agents[0].detail).toMatch(/no verified join within 10s/);
+    expect(result.next_steps.join("\n")).toContain("startup dialog");
   });
 
   test("an agent without a Herdr session stays unconfirmed even after joining", async () => {

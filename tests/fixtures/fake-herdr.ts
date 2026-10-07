@@ -28,6 +28,8 @@ export class FakeHerdr {
   failSplit = false;
   ambiguousSplitAt: number | null = null;
   ambiguousChat = false;
+  failFocus = false;
+  omitDestinationIds = false;
   private splits = 0;
   private nextPane = 2;
   private nextPid = 5000;
@@ -112,7 +114,14 @@ export class FakeHerdr {
       return ok({ pane: { pane_id: pane } });
     }
     if ((group === "tab" || group === "workspace") && command === "create") {
-      return ok({ root_pane: { pane_id: this.createPane() } });
+      return ok({ root_pane: { pane_id: this.createPane() },
+        ...(!this.omitDestinationIds ? {
+        tab: { tab_id: "w1:t2", workspace_id: "w1", number: 2, label: "talking-stick" },
+        ...(group === "workspace" ? { workspace: { workspace_id: "w1" } } : {}) } : {}) });
+    }
+    if ((group === "tab" || group === "workspace") && command === "focus") {
+      if (this.failFocus) throw herdrFailure("tab_not_found", "focus refused");
+      return ok({ focused: true });
     }
     if (group === "pane" && command === "run") {
       this.panes.get(args[2])!.chat = true;

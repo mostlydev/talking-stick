@@ -68,7 +68,7 @@ export interface LaunchAgentPlan {
   prompt: string;
 }
 
-export type LaunchStepKind = "anchor" | "chat" | "split" | "start" | "prompt";
+export type LaunchStepKind = "anchor" | "chat" | "split" | "start" | "prompt" | "focus";
 
 // Steps are the single description of a launch: --print renders them and the
 // executor runs them, substituting <placeholders> with pane IDs Herdr returns.
@@ -358,6 +358,11 @@ function planSteps(
     }
     previous = pane;
     first = false;
+  }
+  if (topology !== "here") {
+    const group = topology === "new-tab" ? "tab" : "workspace";
+    steps.push({ kind: "focus", description: `Show the new ${group} after startup calls.`,
+      argv: ["herdr", group, "focus", `<launch-${group}>`] });
   }
   return steps;
 }

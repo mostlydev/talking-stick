@@ -89,7 +89,8 @@ export async function handleUpCommand(
       record,
       joinTimeoutMs,
       sleep: options.sleep,
-      now: options.now
+      now: options.now,
+      onProgress: (message) => { process.stderr.write(`[tt up] ${message}\n`); }
     });
     printResult(parsed, result, () => renderResult(plan, result));
     if (result.status !== "launched" && result.status !== "nothing_to_do") process.exitCode = 1;
@@ -149,6 +150,10 @@ export function renderPlan(plan: WorkspaceLaunchPlan): string {
 
 export function renderResult(plan: WorkspaceLaunchPlan, result: WorkspaceLaunchResult): string {
   const lines = [`Launch for ${result.canonical_path} (${plan.topology}) — ${result.status}`, ""];
+  if (result.destination) {
+    const destination = result.destination;
+    lines.push(`Destination: ${destination.workspace_id ?? "workspace"}, ${destination.tab_id ?? "tab"}${destination.tab_number !== null ? ` (tab ${destination.tab_number})` : ""}, label ${destination.label}${destination.focused ? " — shown" : " — select manually"}`, "");
+  }
   if (result.status === "blocked") {
     for (const check of plan.checks.filter((candidate) => candidate.status === "failed")) {
       lines.push(`  failed    ${check.name}: ${check.detail}${check.remedy ? ` (fix: ${check.remedy})` : ""}`);

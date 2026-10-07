@@ -134,6 +134,9 @@ Inside Herdr, experimental `tt up --agents claude,codex --new-tab` opens a chat
 console and fresh agent panes, loads the installed skill with an initial prompt,
 and verifies exact-room joins. Preview with `--print` first. Omit `--new-tab` to
 split the caller's tab, or use `--new-workspace` for a separate workspace.
+Launch progress goes to stderr, including the created tab/workspace destination
+and the bounded join wait; JSON results stay on stdout. An explicitly requested
+new tab/workspace is shown after startup calls; current-tab splits keep focus.
 Verified members are reused; uncertain launches require inspection and are never
 blindly retried. After checking old panes and confirming exited agents, `--forget`
 discards this command's launch record without closing panes. `--print --forget`

@@ -41,6 +41,7 @@ export interface ExecuteLaunchDeps {
   joinTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  onProgress?: (message: string) => void;
 }
 
 export type LaunchOutcomeState = LaunchAgentState | "skipped" | "inspect" | "not_started";
@@ -59,6 +60,7 @@ export interface WorkspaceLaunchResult {
   chat: { state: "opened" | "submitted" | "skipped" | "inspect" | "failed" | "ambiguous" | "not_started"; pane_id: string | null; detail: string };
   agents: LaunchAgentOutcome[];
   next_steps: string[];
+  destination: { workspace_id: string | null; tab_id: string | null; tab_number: number | null; label: string; focused: boolean; focus_error?: string } | null;
 }
 
 // Runs the plan's steps in order. Each external side effect is recorded before
@@ -69,6 +71,7 @@ export async function executeWorkspaceLaunch(
 ): Promise<WorkspaceLaunchResult> {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const progress = deps.onProgress ?? (() => {});
   const outcomes = new Map<LaunchAgent, LaunchAgentOutcome>(plan.agents.map((agent) => [agent.agent, {
     agent: agent.agent,
     state: agent.action === "launch" ? "not_started" : agent.action === "skip" ? "skipped" : "inspect",
@@ -80,12 +83,15 @@ export async function executeWorkspaceLaunch(
     pane_id: null,
     detail: plan.chat.reason ?? ""
   };
+  let destination: WorkspaceLaunchResult["destination"] = null;
   const finish = (status: WorkspaceLaunchResult["status"]): WorkspaceLaunchResult => ({
     status,
     canonical_path: plan.canonical_path,
     chat,
     agents: [...outcomes.values()],
-    next_steps: nextSteps(plan, chat, [...outcomes.values()])
+    next_steps: [...nextSteps(plan, chat, [...outcomes.values()]),
+      ...(destination?.focus_error ? [`Select the created ${destination.tab_id ?? destination.workspace_id ?? "tab/workspace"} manually: ${destination.focus_error}`] : [])],
+    destination
   });
 
   if (plan.status === "blocked") return finish("blocked");
@@ -117,6 +123,7 @@ export async function executeWorkspaceLaunch(
       updated_at: new Date(now()).toISOString()
     };
     save();
+    progress(`${agent}: ${state}${outcome.pane_id ? ` (${outcome.pane_id})` : ""} — ${detail}`);
   };
 
   const panes = new Map<string, string>();
@@ -148,6 +155,12 @@ export async function executeWorkspaceLaunch(
       track(step.agent, "starting", "Starting the agent.", paneId);
     }
 
+    progress(step.description);
+    if (step.kind === "focus" && argv.some((arg) => /^<.+>$/.test(arg))) {
+      if (destination) destination.focus_error = "Herdr did not return the destination ID; no focus command was sent.";
+      progress("Destination ID missing; select the new tab/workspace manually.");
+      continue;
+    }
     const outcome = runStep(deps.runner, step, argv);
     if (outcome.kind === "ok") {
       if (step.produces) {
@@ -160,6 +173,18 @@ export async function executeWorkspaceLaunch(
         if (step.kind === "anchor") {
           record.anchor = { state: "created", pane_id: paneId };
           save();
+          progress(`Layout anchor created (${paneId}).`);
+          if (plan.topology !== "here") {
+            const tab = recordObject(outcome.result.tab);
+            const workspace = recordObject(outcome.result.workspace);
+            const textId = (value: unknown) => typeof value === "string" ? value : null;
+            destination = { tab_id: textId(tab.tab_id), workspace_id: textId(workspace.workspace_id) ?? textId(tab.workspace_id),
+              tab_number: typeof tab.number === "number" ? tab.number : null,
+              label: typeof tab.label === "string" ? tab.label : "talking-stick", focused: false };
+            if (destination.tab_id) panes.set("<launch-tab>", destination.tab_id);
+            if (destination.workspace_id) panes.set("<launch-workspace>", destination.workspace_id);
+            progress(`Destination: ${destination.workspace_id ?? "workspace"}, ${destination.tab_id ?? "tab"}${destination.tab_number !== null ? ` (tab ${destination.tab_number})` : ""}, label ${destination.label}; anchor ${paneId}.`);
+          }
         }
         if (step.kind === "split" && step.agent) track(step.agent, "pane_created", "Fresh shell pane created.", paneId);
       }
@@ -170,9 +195,14 @@ export async function executeWorkspaceLaunch(
         record.chat_pane_id = chat.pane_id;
         record.chat_state = "starting";
         save();
+        progress(`Chat: submitted (${chat.pane_id}); waiting for live console proof.`);
       }
       if ((step.kind === "start" || step.kind === "prompt") && step.agent) {
         track(step.agent, "started", "Agent is running; waiting for it to join the room.");
+      }
+      if (step.kind === "focus" && destination) {
+        destination.focused = true;
+        progress(`Showing ${argv[2]}.`);
       }
       continue;
     }
@@ -180,6 +210,11 @@ export async function executeWorkspaceLaunch(
     const state: LaunchAgentState = outcome.code === "agent_not_ready" ? "blocked"
       : outcome.code && ["pane_not_found", "agent_not_found", "agent_name_in_use", "agent_blocked", "invalid_params", "method_not_found"].includes(outcome.code)
         ? "failed" : "ambiguous";
+    progress(`${step.agent ?? step.kind}: ${state} — ${outcome.message}`);
+    if (step.kind === "focus") {
+      if (destination) destination.focus_error = outcome.message;
+      continue;
+    }
     if (step.kind === "anchor") {
       record.anchor = { state: state === "ambiguous" ? "ambiguous" : "failed", pane_id: null };
       save();
@@ -210,7 +245,7 @@ export async function executeWorkspaceLaunch(
   );
   const complete = launched.every((outcome) => outcome.state === "confirmed") &&
     (chat.state === "opened" || chat.state === "skipped") &&
-    plan.status === "ready";
+    plan.status === "ready" && !destination?.focus_error;
   return finish(complete ? "launched" : "partial");
 
   function failAnchorOrAgent(step: LaunchStep, message: string, state: LaunchAgentState): WorkspaceLaunchResult {
@@ -225,6 +260,10 @@ export async function executeWorkspaceLaunch(
     }
     return finish("partial");
   }
+}
+
+function recordObject(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 type StepOutcome =
@@ -259,7 +298,20 @@ async function observeJoins(
   const deadline = now() + (deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS);
   const proofDeps = { runner: deps.runner, readStartTime: deps.readStartTime };
   const lastReason = new Map<LaunchAgent, string>();
+  const seconds = Math.round((deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS) / 1000);
+  let lastProgress = "";
+  const report = () => {
+    const summary = [
+      `chat ${chat.state}`,
+      ...[...outcomes.values()].map((outcome) => `${outcome.agent} ${outcome.state}`)
+    ].join(", ");
+    if (summary !== lastProgress) {
+      deps.onProgress?.(`Waiting for joins (up to ${seconds}s): ${summary}.`);
+      lastProgress = summary;
+    }
+  };
 
+  if (pending().length > 0 || chat.state === "submitted") report();
   while (pending().length > 0 || chat.state === "submitted") {
     let herdrAgents: ReturnType<typeof listHerdrAgents> = [];
     try {
@@ -280,6 +332,7 @@ async function observeJoins(
           chat.state = "opened";
           chat.detail = `${consoleMember.agent_id} is confirmed running in pane ${chat.pane_id}.`;
           confirmChat();
+          deps.onProgress?.(`Chat: confirmed (${chat.pane_id}).`);
         }
       } catch { /* No positive console proof yet; retain submitted state. */ }
     }
@@ -300,11 +353,11 @@ async function observeJoins(
         lastReason.set(outcome.agent, proof.reason);
       }
     }
+    report();
     if ((pending().length === 0 && chat.state !== "submitted") || now() >= deadline) break;
     await sleep(Math.min(JOIN_POLL_MS, Math.max(0, deadline - now())));
   }
 
-  const seconds = Math.round((deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS) / 1000);
   if (chat.state === "submitted") chat.detail = `Chat command submitted in pane ${chat.pane_id}, but no verified live console within ${seconds}s.`;
   for (const outcome of pending()) {
     const why = lastReason.get(outcome.agent) ?? "no matching member joined";
@@ -337,7 +390,7 @@ function nextSteps(
         steps.push(`${outcome.agent}${where} may have started; inspect it before rerunning (tt up will not resend).`);
         break;
       case "started":
-        steps.push(`${outcome.agent}${where} is running but has not proven its join; check the pane.`);
+        steps.push(`${outcome.agent}${where} is running but has not proven its join; check the pane for a startup dialog and answer it yourself. Do not resend the bootstrap prompt.`);
         break;
       case "failed":
         steps.push(`${outcome.agent} failed: ${outcome.detail}`);

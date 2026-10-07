@@ -16,7 +16,10 @@ tt up --agents claude,codex --path . --new-workspace
 Require an explicit agent list. Default path is the caller's working directory.
 Default topology is sibling panes in the caller's current Herdr tab, keeping its
 focus. `--new-tab` creates a clean tab in the current workspace; `--new-workspace`
-creates a workspace. These flags are mutually exclusive. Current-tab splitting
+creates a workspace. These flags are mutually exclusive. Explicit new topology
+is shown after startup calls, before the join wait; current-tab splitting keeps
+the caller's focus. Progress reports the returned destination IDs on stderr.
+Current-tab splitting
 follows the existing Herdr skill convention and makes the default topology
 predictable. A clean tab is recommended for larger groups to avoid squeezing the
 caller's pane, but remains an explicit choice. `--print` performs read-only
@@ -62,6 +65,10 @@ harnesses are subsequent adapters, not implicit support.
    Call `herdr agent start` with a unique name and the returned pane ID. Prefer
    the harness's initial-prompt positional argument after Herdr's `--`; both
    installed Claude and Codex CLIs advertise interactive positional prompts.
+   After all startup calls, focus an explicitly created tab/workspace using its
+   returned ID. Failed focus leaves panes usable and reports manual navigation.
+   Emit step outcomes and changed join status on stderr so a bounded wait is
+   visible and JSON stdout remains one final result.
 6. The single bootstrap prompt explicitly names
    the talking-stick skill, give the resolved SKILL.md and canonical room path,
    and instruct the agent to join, load instructions, and use its taskless
@@ -139,7 +146,8 @@ Run the full suite, typecheck, and build. Independently review the final behavio
 in the room, then ask the operator to exercise a dedicated test workspace:
 
 1. Preview the launch; confirm selected agents, repo path, and pane layout.
-2. Launch Claude and Codex; verify readable panes, preserved focus, skill loaded,
+2. Launch Claude and Codex; verify readable panes, focus preserved for current-tab
+   splits or the explicit new tab/workspace shown, skill loaded,
    both members visible in chat, and idle room without stick churn.
    Confirm the chat member's PID is the foreground `tt chat`/Node process Herdr
    reports in its pane, rather than a shell wrapper; chat stays submitted until
