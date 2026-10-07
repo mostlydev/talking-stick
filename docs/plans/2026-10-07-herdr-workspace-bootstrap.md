@@ -78,6 +78,12 @@ harnesses are subsequent adapters, not implicit support.
    Prompt submission and a settled Herdr state alone are not
    proof the skill loaded or the agent joined. Use bounded join observation through
    the service event stream; do not add another ordinary agent `tt wait` listener.
+   Do not require Herdr `idle`: a taskless parked long-poll can appear `working`.
+   Obtain harness argv and PID from `pane process-info`, excluding shell/helper
+   processes; inspect that local PID's start time and compare its normalized value
+   with `harness_process_started_at`. Herdr process-info alone has no start time.
+   Provisional `pid:`, `term:`, and `userhost:` member identities cannot satisfy
+   proof; bounded observation waits for a verified `harness:` identity upgrade.
 8. Return each created/skipped pane and agent, membership evidence, blocked/failed
    stages, and what the operator must do next. A partial or unconfirmed launch
    exits nonzero while retaining successful agents and the chat console.
@@ -143,6 +149,23 @@ in the room, then ask the operator to exercise a dedicated test workspace:
 
 No release until the operator accepts this behavior. Do not replace or restart
 the live Herdr server as part of testing.
+
+Grok's independent live review (room event #66) confirmed Claude/Codex session
+and process matches. Its own pane omitted Herdr `agent_session`, so Grok cannot
+pass session confirmation yet. Grok accepts an interactive positional `[PROMPT]`;
+`-p`/`--single` exits and must not be used. The shared `.agents` skill is the
+source; proprietary `.grok/skills` remains only a duplicate cleanup target. A
+taskless Grok with `can_self_wake: false` keeps exactly one `tt wait --park`.
+
+## Preview implementation status
+
+The first slice adds `tt up --print` and an injected read-only Herdr planner.
+Existing agent members are inspection candidates until session/process proof is
+implemented; their presence does not produce a false successful repeat result.
+Chat reuse requires a human-chat session with verified process liveness. Names
+include a canonical-path hash, with live name collision checks still required
+in execution. Actual launch, record/lock, bounded member observation, per-agent
+native arguments, and live operator acceptance remain unimplemented.
 
 ## Development machine preparation (completed)
 

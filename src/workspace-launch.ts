@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import type { HarnessId } from "./harness-model.js";
 import {
   preferredSplitDirection,
@@ -28,7 +29,7 @@ interface LaunchAdapter {
 const LAUNCH_ADAPTERS: Record<LaunchAgent, LaunchAdapter> = {
   claude: { herdr_kind: "claude", harness: "claude-code", executable: "claude", initial_prompt: true, experimental: false },
   codex: { herdr_kind: "codex", harness: "codex", executable: "codex", initial_prompt: true, experimental: false },
-  grok: { herdr_kind: "grok", harness: "grok", executable: "grok", initial_prompt: false, experimental: true }
+  grok: { herdr_kind: "grok", harness: "grok", executable: "grok", initial_prompt: true, experimental: true }
 };
 
 export const LAUNCH_AGENTS = Object.keys(LAUNCH_ADAPTERS) as LaunchAgent[];
@@ -44,7 +45,7 @@ export interface LaunchCheck {
 
 export interface LaunchAgentPlan {
   agent: LaunchAgent;
-  action: "launch" | "skip";
+  action: "launch" | "inspect";
   reason?: string;
   experimental: boolean;
   herdr_name: string;
@@ -59,13 +60,13 @@ export interface LaunchStep {
 }
 
 export interface WorkspaceLaunchPlan {
-  status: "ready" | "blocked";
+  status: "ready" | "needs_confirmation" | "blocked";
   canonical_path: string;
   room_id: string | null;
   topology: LaunchTopology;
   herdr: HerdrContext | null;
   checks: LaunchCheck[];
-  chat: { action: "launch" | "skip"; reason?: string };
+  chat: { action: "launch" | "skip" | "inspect"; reason?: string };
   agents: LaunchAgentPlan[];
   steps: LaunchStep[];
 }
@@ -147,7 +148,13 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
     checks.push({ name: "path", status: "ok", detail: canonicalPath });
   }
 
-  checks.push(executableCheck("tt", env));
+  const ttCheck = executableCheck("tt", env);
+  if (ttCheck.status === "uncertain") {
+    ttCheck.status = "failed";
+    ttCheck.detail = "tt is missing from the launcher's PATH; bootstrap commands cannot rely on it.";
+    ttCheck.remedy = "Install or link Talking Stick and run this command from a shell where tt is on PATH.";
+  }
+  checks.push(ttCheck);
 
   const agents = input.agents.map((agent): LaunchAgentPlan => {
     const adapter = LAUNCH_ADAPTERS[agent];
@@ -167,8 +174,8 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
     );
     return {
       agent,
-      action: joined ? "skip" : "launch",
-      ...(joined ? { reason: `${joined.agent_id} is already an active member of this room.` } : {}),
+      action: joined ? "inspect" : "launch",
+      ...(joined ? { reason: `${joined.agent_id} is an unverified membership candidate; Herdr session and process correlation is required.` } : {}),
       experimental: adapter.experimental,
       herdr_name: herdrAgentName(agent, canonicalPath),
       skill_path: skillPath,
@@ -178,17 +185,20 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
   });
 
   const chatMember = input.room?.members.find((member) =>
-    member.status === "active" && CHAT_MEMBER_PATTERN.test(member.agent_id)
+    member.status === "active" && member.session_kind === "human_chat" && CHAT_MEMBER_PATTERN.test(member.agent_id)
   );
   const chat: WorkspaceLaunchPlan["chat"] = chatMember
-    ? { action: "skip", reason: `${chatMember.agent_id} is already open in this room.` }
+    ? chatMember.process_liveness === "alive"
+      ? { action: "skip", reason: `${chatMember.agent_id} is a live chat console in this room.` }
+      : { action: "inspect", reason: `${chatMember.agent_id} has unconfirmed console liveness.` }
     : { action: "launch" };
   const steps = input.herdr
     ? planSteps(input.topology, input.herdr, canonicalPath, callerDirection, chat.action === "launch", agents)
     : [];
 
   return {
-    status: checks.some((check) => check.status === "failed") ? "blocked" : "ready",
+    status: checks.some((check) => check.status === "failed") ? "blocked"
+      : chat.action === "inspect" || agents.some((agent) => agent.action === "inspect") ? "needs_confirmation" : "ready",
     canonical_path: canonicalPath,
     room_id: input.room?.room_id ?? null,
     topology: input.topology,
@@ -268,7 +278,8 @@ function planSteps(
 
 function herdrAgentName(agent: LaunchAgent, canonicalPath: string): string {
   const base = path.basename(canonicalPath).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^[^a-z]+/, "");
-  return `${agent}-${base || "room"}`.slice(0, 32).replace(/-+$/, "");
+  const hash = createHash("sha256").update(canonicalPath).digest("hex").slice(0, 8);
+  return `${agent}-${base || "room"}`.slice(0, 23).replace(/-+$/, "") + `-${hash}`;
 }
 
 function executableCheck(name: string, env: NodeJS.ProcessEnv): LaunchCheck {

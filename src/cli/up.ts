@@ -47,7 +47,7 @@ export function handleUpCommand(
   });
 
   printResult(parsed, plan, () => renderPlan(plan));
-  if (plan.status === "blocked") process.exitCode = 1;
+  if (plan.status !== "ready") process.exitCode = 1;
 }
 
 function parseTopology(parsed: ParsedCommand): LaunchTopology {
@@ -82,8 +82,8 @@ function renderPlan(plan: WorkspaceLaunchPlan): string {
   lines.push("", `Chat console: ${plan.chat.action}${plan.chat.reason ? ` — ${plan.chat.reason}` : ""}`, "", "Agents:");
   for (const agent of plan.agents) {
     const experimental = agent.experimental ? " [experimental]" : "";
-    const outcome = agent.action === "skip"
-      ? `skip — ${agent.reason}`
+    const outcome = agent.action === "inspect"
+      ? `inspect — ${agent.reason}`
       : `launch as ${agent.herdr_name} (prompt via ${agent.prompt_delivery.replace("_", " ")})`;
     lines.push(`  ${agent.agent}${experimental}: ${outcome}`);
   }

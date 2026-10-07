@@ -57,7 +57,8 @@ function fixture(options: { executables?: string[]; skills?: Array<"claude" | "s
 }
 
 function member(agentId: string, harness: string | null, status = "active"): RoomMember {
-  return { agent_id: agentId, harness_name: harness, status } as RoomMember;
+  return { agent_id: agentId, harness_name: harness, status,
+    session_kind: harness ? "harness_cli" : "human_chat", process_liveness: "alive" } as RoomMember;
 }
 
 describe("tt up planning", () => {
@@ -93,9 +94,9 @@ describe("tt up planning", () => {
       ["herdr", "pane", "split", "--pane", "w1:p1", "--direction", "right", "--cwd", repo, "--no-focus"],
       ["herdr", "pane", "run", "<chat-pane>", "tt chat"],
       ["herdr", "pane", "split", "--pane", "<chat-pane>", "--direction", "down", "--cwd", repo, "--no-focus"],
-      ["herdr", "agent", "start", "claude-repo", "--kind", "claude", "--pane", "<claude-pane>", "--", plan.agents[0].prompt],
+      ["herdr", "agent", "start", plan.agents[0].herdr_name, "--kind", "claude", "--pane", "<claude-pane>", "--", plan.agents[0].prompt],
       ["herdr", "pane", "split", "--pane", "<claude-pane>", "--direction", "down", "--cwd", repo, "--no-focus"],
-      ["herdr", "agent", "start", "codex-repo", "--kind", "codex", "--pane", "<codex-pane>", "--", plan.agents[1].prompt]
+      ["herdr", "agent", "start", plan.agents[1].herdr_name, "--kind", "codex", "--pane", "<codex-pane>", "--", plan.agents[1].prompt]
     ]);
   });
 
@@ -109,18 +110,19 @@ describe("tt up planning", () => {
     expect(splits).toEqual(["right", "down"]);
   });
 
-  test("grok is experimental and receives its prompt after start", () => {
+  test("grok is experimental and uses an interactive positional prompt", () => {
     const { base } = fixture({ executables: ["tt", "claude", "codex"] });
     const plan = planWorkspaceLaunch({ ...base, agents: ["grok"] });
-    expect(plan.agents[0]).toMatchObject({ agent: "grok", experimental: true, prompt_delivery: "agent_prompt" });
+    expect(plan.agents[0]).toMatchObject({ agent: "grok", experimental: true, prompt_delivery: "initial_argument" });
     expect(plan.checks.find((check) => check.name === "grok executable")?.status).toBe("uncertain");
     expect(plan.status).toBe("ready");
     const argv = plan.steps.map((step) => step.argv.slice(0, 3).join(" "));
-    expect(argv.slice(-2)).toEqual(["herdr agent start", "herdr agent prompt"]);
-    expect(plan.steps.at(-2)?.argv).not.toContain("--");
+    expect(argv.at(-1)).toEqual("herdr agent start");
+    expect(plan.steps.at(-1)?.argv.slice(-2)).toEqual(["--", plan.agents[0].prompt]);
+    expect(plan.steps.at(-1)?.argv).not.toContain("--single");
   });
 
-  test("skips active members of the requested harness and an open chat console", () => {
+  test("requires identity confirmation for active agent candidates and skips a live chat console", () => {
     const { base, repo } = fixture();
     const plan = planWorkspaceLaunch({
       ...base,
@@ -134,7 +136,9 @@ describe("tt up planning", () => {
       }
     });
     expect(plan.chat).toMatchObject({ action: "skip" });
-    expect(plan.agents.map((agent) => agent.action)).toEqual(["skip", "launch"]);
+    expect(plan.agents.map((agent) => agent.action)).toEqual(["inspect", "launch"]);
+    expect(plan.status).toBe("needs_confirmation");
+    expect(plan.agents[0].reason).toContain("unverified");
     // Codex takes the fresh split directly; no chat command is run.
     expect(plan.steps.map((step) => step.argv.slice(0, 3).join(" "))).toEqual([
       "herdr pane split", "herdr agent start"
@@ -143,14 +147,35 @@ describe("tt up planning", () => {
     expect(plan.steps[0].argv).toContain(repo);
   });
 
-  test("an already-complete room needs no steps", () => {
+  test("room membership alone cannot prove launch completion", () => {
     const { base } = fixture();
     const plan = planWorkspaceLaunch({
       ...base,
       room: { room_id: "room-1", members: [member("claude:a", "claude"), member("codex:b", "codex"), member("human:op:chat:1", null)] }
     });
-    expect(plan.status).toBe("ready");
+    expect(plan.status).toBe("needs_confirmation");
     expect(plan.steps).toEqual([]);
+  });
+
+  test("unconfirmed chat liveness cannot be presented as a reusable console", () => {
+    const { base } = fixture();
+    const plan = planWorkspaceLaunch({ ...base, room: { room_id: "room-1", members: [
+      { ...member("human:op:chat:1", null), process_liveness: "unknown" }
+    ] } });
+    expect(plan.chat.action).toBe("inspect");
+    expect(plan.status).toBe("needs_confirmation");
+    expect(plan.steps.some((step) => step.argv[2] === "run")).toBe(false);
+  });
+
+  test("different canonical repos with the same basename get different valid names", () => {
+    const { base, repo } = fixture();
+    const other = path.join(path.dirname(repo), "other", "repo");
+    fs.mkdirSync(other, { recursive: true });
+    const first = planWorkspaceLaunch(base).agents[0].herdr_name;
+    const second = planWorkspaceLaunch({ ...base, context_path: other }).agents[0].herdr_name;
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
+    expect(second).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
   });
 
   test("blocks before any step outside Herdr or without an installed skill", () => {
@@ -167,6 +192,13 @@ describe("tt up planning", () => {
       status: "failed",
       remedy: "tt install claude-code"
     });
+  });
+
+  test("requires tt on PATH even when a harness executable may resolve in an interactive shell", () => {
+    const { base } = fixture({ executables: ["claude", "codex"] });
+    const plan = planWorkspaceLaunch(base);
+    expect(plan.status).toBe("blocked");
+    expect(plan.checks.find((check) => check.name === "tt executable")?.status).toBe("failed");
   });
 
   test("a failed layout read blocks the plan", () => {

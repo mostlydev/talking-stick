@@ -13,7 +13,7 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
-- `tt up --agents claude,codex[,grok] --print` previews launching agents and a chat console in Herdr panes: it runs read-only preflight checks, skips agents and a chat console already in the exact room, and lists the Herdr commands a launch would run. Launching itself is not implemented yet ([#91](https://github.com/mostlydev/talking-stick/issues/91)).
+- `tt up --agents claude,codex[,grok] --print` previews launching agents and a chat console in Herdr panes: it runs read-only preflight checks, marks existing exact-room agent members for identity confirmation, and lists the Herdr commands a launch would run. Launching itself is not implemented yet ([#91](https://github.com/mostlydev/talking-stick/issues/91)).
 
 ### Fixed
 
