@@ -20,6 +20,8 @@ const BOOLEAN_FLAGS = new Set([
   "no-guard",
   "no-mouse",
   "mouse",
+  "new-tab",
+  "new-workspace",
   "inline",
   "fullscreen",
   "operator-requested",

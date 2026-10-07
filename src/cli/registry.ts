@@ -26,6 +26,7 @@ import {
   handleWhoAmICommand
 } from "./room-commands.js";
 import type { Runtime } from "./runtime.js";
+import { handleUpCommand, UP_USAGE } from "./up.js";
 import {
   handleAssignCommand,
   handlePassCommand,
@@ -100,6 +101,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt grok-session-hook",
     description: "Record Grok hook session context for identity resolution.",
     handler: () => runGrokSessionHookCommand()
+  },
+  {
+    name: "up",
+    needsRuntime: true,
+    startupMaintenance: false,
+    internal: false,
+    usage: UP_USAGE,
+    description: "Preview launching agents and a chat console in Herdr panes.",
+    handler: ({ parsed, runtime }) => handleUpCommand(runtime!, parsed)
   },
   {
     name: "install",
