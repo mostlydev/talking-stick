@@ -157,15 +157,32 @@ pass session confirmation yet. Grok accepts an interactive positional `[PROMPT]`
 source; proprietary `.grok/skills` remains only a duplicate cleanup target. A
 taskless Grok with `can_self_wake: false` keeps exactly one `tt wait --park`.
 
-## Preview implementation status
+## Implementation status
 
-The first slice adds `tt up --print` and an injected read-only Herdr planner.
-Existing agent members are inspection candidates until session/process proof is
-implemented; their presence does not produce a false successful repeat result.
-Chat reuse requires a human-chat session with verified process liveness. Names
-include a canonical-path hash, with live name collision checks still required
-in execution. Actual launch, record/lock, bounded member observation, per-agent
-native arguments, and live operator acceptance remain unimplemented.
+`tt up --print` previews and `tt up` launches. Both share one planner, so the
+preview lists the exact Herdr argv a launch runs, with `<placeholders>` for pane
+IDs Herdr returns.
+
+- Planning reads Herdr layout, `agent list`, and `pane process-info`. An existing
+  member is skipped only when its `harness:` session equals Herdr's
+  `agent_session.value`, the pane's foreground process has its `harness_pid` and
+  executable, and that PID's local start time equals `harness_process_started_at`.
+  Anything less (provisional identity, no Herdr session, restarted process) is
+  `inspect`, never relaunched over.
+- Launch takes a per-path lock in the data dir and keeps a launch record of each
+  agent's pane and state (`pane_created`, `starting`, `started`, `confirmed`,
+  `blocked`, `ambiguous`, `failed`), written around every side effect. A rerun
+  inspects a recorded pane that still hosts an agent, and a clashing Herdr name.
+- `agent_not_ready` is reported as `blocked`; a Herdr error code is `failed`; a
+  timeout or crash is `ambiguous` and is never retried. Other agents continue.
+- Join observation polls room membership (read-only, no extra `tt wait`) and the
+  same identity proof until `--timeout` (default 120s). Herdr idle is not required.
+- Exit status is zero only for a full confirmed launch or nothing to do.
+
+Verified live (read-only): in this repo's room, the preview proves the running
+Claude and Codex in their panes and reports Grok as `inspect` because Herdr
+gives no Grok session. Per-agent native arguments (`--agent-arg`) and live
+operator acceptance remain open.
 
 ## Development machine preparation (completed)
 

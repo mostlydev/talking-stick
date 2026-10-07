@@ -3,13 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { parseCommand } from "../src/cli/parser.js";
-import { preferredSplitDirection, type HerdrRunner } from "../src/herdr.js";
+import { preferredSplitDirection } from "../src/herdr.js";
 import type { RoomMember } from "../src/types.js";
 import {
   parseLaunchAgents,
   planWorkspaceLaunch,
   type PlanWorkspaceLaunchInput
 } from "../src/workspace-launch.js";
+import { FakeHerdr } from "./fixtures/fake-herdr.js";
 
 const tempRoots: string[] = [];
 afterEach(() => {
@@ -33,27 +34,20 @@ function fixture(options: { executables?: string[]; skills?: Array<"claude" | "s
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "SKILL.md"), "# skill\n");
   }
-  const calls: string[][] = [];
-  const runner: HerdrRunner = (args) => {
-    calls.push([...args]);
-    if (args[0] === "pane" && args[1] === "layout") {
-      return JSON.stringify({
-        result: { layout: { panes: [{ pane_id: "w1:p1", rect: { width: 200, height: 50 } }] } }
-      });
-    }
-    throw new Error(`unexpected herdr call: ${args.join(" ")}`);
-  };
+  const herdr = new FakeHerdr();
+  const calls = herdr.calls;
   const base: PlanWorkspaceLaunchInput = {
     agents: ["claude", "codex"],
     context_path: repo,
     topology: "here",
     herdr: { pane_id: "w1:p1", tab_id: "w1:t1", workspace_id: "w1" },
-    runner,
+    runner: herdr.runner,
     room: null,
+    readStartTime: (pid) => herdr.startTimes.get(pid) ?? null,
     env: { PATH: bin },
     homeDir: home
   };
-  return { repo, home, calls, base };
+  return { repo, home, calls, base, herdr };
 }
 
 function member(agentId: string, harness: string | null, status = "active"): RoomMember {
@@ -80,7 +74,7 @@ describe("tt up planning", () => {
     const { base, calls, repo, home } = fixture();
     const plan = planWorkspaceLaunch(base);
 
-    expect(calls).toEqual([["pane", "layout", "--pane", "w1:p1"]]);
+    expect(calls).toEqual([["pane", "layout", "--pane", "w1:p1"], ["agent", "list"]]);
     expect(plan.status).toBe("ready");
     expect(plan.chat).toEqual({ action: "launch" });
     expect(plan.agents.map((agent) => [agent.agent, agent.action, agent.prompt_delivery])).toEqual([
@@ -94,9 +88,9 @@ describe("tt up planning", () => {
       ["herdr", "pane", "split", "--pane", "w1:p1", "--direction", "right", "--cwd", repo, "--no-focus"],
       ["herdr", "pane", "run", "<chat-pane>", "tt chat"],
       ["herdr", "pane", "split", "--pane", "<chat-pane>", "--direction", "down", "--cwd", repo, "--no-focus"],
-      ["herdr", "agent", "start", plan.agents[0].herdr_name, "--kind", "claude", "--pane", "<claude-pane>", "--", plan.agents[0].prompt],
+      ["herdr", "agent", "start", plan.agents[0].herdr_name, "--kind", "claude", "--pane", "<claude-pane>", "--timeout", "60000", "--", plan.agents[0].prompt],
       ["herdr", "pane", "split", "--pane", "<claude-pane>", "--direction", "down", "--cwd", repo, "--no-focus"],
-      ["herdr", "agent", "start", plan.agents[1].herdr_name, "--kind", "codex", "--pane", "<codex-pane>", "--", plan.agents[1].prompt]
+      ["herdr", "agent", "start", plan.agents[1].herdr_name, "--kind", "codex", "--pane", "<codex-pane>", "--timeout", "60000", "--", plan.agents[1].prompt]
     ]);
   });
 
@@ -138,7 +132,7 @@ describe("tt up planning", () => {
     expect(plan.chat).toMatchObject({ action: "skip" });
     expect(plan.agents.map((agent) => agent.action)).toEqual(["inspect", "launch"]);
     expect(plan.status).toBe("needs_confirmation");
-    expect(plan.agents[0].reason).toContain("unverified");
+    expect(plan.agents[0].reason).toContain("no Herdr pane reports its session");
     // Codex takes the fresh split directly; no chat command is run.
     expect(plan.steps.map((step) => step.argv.slice(0, 3).join(" "))).toEqual([
       "herdr pane split", "herdr agent start"
@@ -176,6 +170,50 @@ describe("tt up planning", () => {
     expect(first).not.toBe(second);
     expect(first).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
     expect(second).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
+  });
+
+  test("a member proven by Herdr session, process, and start time is skipped", () => {
+    const { base, herdr } = fixture();
+    herdr.addAgent("w1:p9", "claude");
+    const members = herdr.members();
+    const plan = planWorkspaceLaunch({ ...base, room: { room_id: "room-1", members } });
+    expect(plan.agents[0]).toMatchObject({ agent: "claude", action: "skip" });
+    expect(plan.agents[0].reason).toContain("confirmed in pane w1:p9");
+    expect(plan.agents[1].action).toBe("launch");
+    expect(plan.status).toBe("ready");
+  });
+
+  test("a different process incarnation, provisional identity, or missing Herdr session is not proof", () => {
+    const restarted = fixture();
+    const agent = restarted.herdr.addAgent("w1:p9", "claude");
+    const members = restarted.herdr.members();
+    restarted.herdr.startTimes.set(agent.pid, "Thu Oct  8 09:00:00 2026");
+    const plan = planWorkspaceLaunch({ ...restarted.base, room: { room_id: "r", members } });
+    expect(plan.agents[0]).toMatchObject({ action: "inspect" });
+    expect(plan.agents[0].reason).toContain("different process incarnation");
+
+    const noSession = fixture();
+    noSession.herdr.addAgent("w1:p9", "codex", { session: null });
+    const provisional = noSession.herdr.members();
+    const noSessionPlan = planWorkspaceLaunch({ ...noSession.base, room: { room_id: "r", members: provisional } });
+    expect(noSessionPlan.agents[1]).toMatchObject({ action: "inspect" });
+  });
+
+  test("an unconfirmed earlier launch or a clashing Herdr name is surfaced, not relaunched", () => {
+    const earlier = fixture();
+    earlier.herdr.addAgent("w1:p4", "codex", { session: null });
+    const plan = planWorkspaceLaunch({ ...earlier.base, record: {
+      canonical_path: earlier.repo, chat_pane_id: null, updated_at: "",
+      agents: { codex: { herdr_name: "x", pane_id: "w1:p4", state: "ambiguous", updated_at: "" } }
+    } });
+    expect(plan.agents[1]).toMatchObject({ action: "inspect" });
+    expect(plan.agents[1].reason).toContain("pane w1:p4 (ambiguous)");
+
+    const clash = fixture();
+    const name = planWorkspaceLaunch(clash.base).agents[0].herdr_name;
+    clash.herdr.addAgent("w1:p7", "claude", { name, session: null });
+    const clashPlan = planWorkspaceLaunch(clash.base);
+    expect(clashPlan.agents[0].reason).toContain(`${name} is already used by pane w1:p7`);
   });
 
   test("blocks before any step outside Herdr or without an installed skill", () => {

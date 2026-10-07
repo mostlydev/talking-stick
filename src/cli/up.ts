@@ -1,5 +1,13 @@
+import { resolveDataDir } from "../config.js";
 import { createSystemHerdrRunner, readHerdrContext, type HerdrRunner } from "../herdr.js";
+import { createSystemStartTimeReader, type StartTimeReader } from "../launch-identity.js";
+import { acquireLaunchLock, readLaunchRecord } from "../launch-record.js";
 import { resolveContextPath } from "../path-resolution.js";
+import {
+  DEFAULT_JOIN_TIMEOUT_MS,
+  executeWorkspaceLaunch,
+  type WorkspaceLaunchResult
+} from "../workspace-launch-run.js";
 import {
   parseLaunchAgents,
   planWorkspaceLaunch,
@@ -8,46 +16,73 @@ import {
 } from "../workspace-launch.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
-import { getStringOption, hasOption, type ParsedCommand } from "./parser.js";
+import { getStringOption, hasOption, parseWaitTimeout, type ParsedCommand } from "./parser.js";
 import type { Runtime } from "./runtime.js";
 import { pickDeepestRoom } from "./session.js";
 
 export const UP_USAGE =
-  "tt up --agents claude,codex[,grok] [--path DIR] [--new-tab | --new-workspace] --print [--json]";
+  "tt up --agents claude,codex[,grok] [--path DIR] [--new-tab | --new-workspace] [--print] [--timeout 120s] [--json]";
 
 export interface UpCommandOptions {
   env?: NodeJS.ProcessEnv;
   runner?: HerdrRunner;
+  readStartTime?: StartTimeReader;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 }
 
-export function handleUpCommand(
+export async function handleUpCommand(
   runtime: Runtime,
   parsed: ParsedCommand,
   options: UpCommandOptions = {}
-): void {
+): Promise<void> {
   const env = options.env ?? process.env;
   const agents = parseLaunchAgents(getStringOption(parsed, "agents"));
   const topology = parseTopology(parsed);
-  if (!hasOption(parsed, "print")) {
-    // Launching lands in a later slice; previewing must never create panes.
-    throw new Error("tt up currently supports only --print (a read-only launch preview).");
-  }
-
+  const joinTimeoutMs = parseWaitTimeout(parsed) ?? DEFAULT_JOIN_TIMEOUT_MS;
   const contextPath = getStringOption(parsed, "path") ?? process.cwd();
   const canonicalPath = resolveContextPath(contextPath).canonical_context_path;
-  const room = findExactRoom(runtime, parsed, canonicalPath);
-  const plan = planWorkspaceLaunch({
-    agents,
-    context_path: contextPath,
-    topology,
-    herdr: readHerdrContext(env),
-    runner: options.runner ?? createSystemHerdrRunner(env),
-    room,
-    env
-  });
+  const runner = options.runner ?? createSystemHerdrRunner(env);
+  const readStartTime = options.readStartTime ?? createSystemStartTimeReader();
+  const dataDir = resolveDataDir({ env });
+  const preview = hasOption(parsed, "print");
 
-  printResult(parsed, plan, () => renderPlan(plan));
-  if (plan.status !== "ready") process.exitCode = 1;
+  // A preview takes no lock; a launch plans under the lock so a concurrent
+  // launcher cannot act on the same stale view of the room and record.
+  const release = preview ? () => {} : acquireLaunchLock(dataDir, canonicalPath);
+  try {
+    const record = readLaunchRecord(dataDir, canonicalPath);
+    const plan = planWorkspaceLaunch({
+      agents,
+      context_path: contextPath,
+      topology,
+      herdr: readHerdrContext(env),
+      runner,
+      room: findExactRoom(runtime, parsed, canonicalPath),
+      readStartTime,
+      record,
+      env
+    });
+    if (preview) {
+      printResult(parsed, plan, () => renderPlan(plan));
+      if (plan.status !== "ready") process.exitCode = 1;
+      return;
+    }
+    const result = await executeWorkspaceLaunch(plan, {
+      runner,
+      readStartTime,
+      readMembers: () => findExactRoom(runtime, parsed, canonicalPath)?.members ?? null,
+      dataDir,
+      record,
+      joinTimeoutMs,
+      sleep: options.sleep,
+      now: options.now
+    });
+    printResult(parsed, result, () => renderResult(plan, result));
+    if (result.status !== "launched" && result.status !== "nothing_to_do") process.exitCode = 1;
+  } finally {
+    release();
+  }
 }
 
 function parseTopology(parsed: ParsedCommand): LaunchTopology {
@@ -69,7 +104,7 @@ function findExactRoom(runtime: Runtime, parsed: ParsedCommand, canonicalPath: s
   return { room_id: room.room_id, members: state.members };
 }
 
-function renderPlan(plan: WorkspaceLaunchPlan): string {
+export function renderPlan(plan: WorkspaceLaunchPlan): string {
   const lines = [
     `Launch preview for ${plan.canonical_path} (${plan.topology}) — ${plan.status}`,
     "",
@@ -82,9 +117,9 @@ function renderPlan(plan: WorkspaceLaunchPlan): string {
   lines.push("", `Chat console: ${plan.chat.action}${plan.chat.reason ? ` — ${plan.chat.reason}` : ""}`, "", "Agents:");
   for (const agent of plan.agents) {
     const experimental = agent.experimental ? " [experimental]" : "";
-    const outcome = agent.action === "inspect"
-      ? `inspect — ${agent.reason}`
-      : `launch as ${agent.herdr_name} (prompt via ${agent.prompt_delivery.replace("_", " ")})`;
+    const outcome = agent.action === "launch"
+      ? `launch as ${agent.herdr_name} (prompt via ${agent.prompt_delivery.replace("_", " ")})`
+      : `${agent.action} — ${agent.reason}`;
     lines.push(`  ${agent.agent}${experimental}: ${outcome}`);
   }
   if (plan.status === "ready" && plan.steps.length === 0) {
@@ -95,6 +130,26 @@ function renderPlan(plan: WorkspaceLaunchPlan): string {
     plan.steps.forEach((step, index) => {
       lines.push(`  ${index + 1}. ${step.description}`, `     ${step.argv.map(shellQuote).join(" ")}`);
     });
+  }
+  return lines.join("\n");
+}
+
+export function renderResult(plan: WorkspaceLaunchPlan, result: WorkspaceLaunchResult): string {
+  const lines = [`Launch for ${result.canonical_path} (${plan.topology}) — ${result.status}`, ""];
+  if (result.status === "blocked") {
+    for (const check of plan.checks.filter((candidate) => candidate.status === "failed")) {
+      lines.push(`  failed    ${check.name}: ${check.detail}${check.remedy ? ` (fix: ${check.remedy})` : ""}`);
+    }
+  }
+  const chatPane = result.chat.pane_id ? ` (${result.chat.pane_id})` : "";
+  lines.push(`Chat console: ${result.chat.state}${chatPane}${result.chat.detail ? ` — ${result.chat.detail}` : ""}`);
+  for (const agent of result.agents) {
+    const pane = agent.pane_id ? ` (${agent.pane_id})` : "";
+    const member = agent.member_id ? ` as ${agent.member_id}` : "";
+    lines.push(`  ${agent.agent}: ${agent.state}${pane}${member}${agent.detail ? ` — ${agent.detail}` : ""}`);
+  }
+  if (result.next_steps.length > 0) {
+    lines.push("", "Next:", ...result.next_steps.map((step) => `  - ${step}`));
   }
   return lines.join("\n");
 }

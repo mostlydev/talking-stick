@@ -108,7 +108,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: UP_USAGE,
-    description: "Preview launching agents and a chat console in Herdr panes.",
+    description: "Launch agents and a chat console in Herdr panes (--print previews).",
     handler: ({ parsed, runtime }) => handleUpCommand(runtime!, parsed)
   },
   {

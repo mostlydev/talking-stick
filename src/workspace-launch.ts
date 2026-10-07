@@ -3,11 +3,20 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import type { HarnessId } from "./harness-model.js";
 import {
+  listHerdrAgents,
   preferredSplitDirection,
   readPaneLayout,
+  type HerdrAgent,
   type HerdrContext,
   type HerdrRunner
 } from "./herdr.js";
+import {
+  findHerdrAgentForMember,
+  isLiveMember,
+  proveMemberInPane,
+  type StartTimeReader
+} from "./launch-identity.js";
+import type { LaunchRecord } from "./launch-record.js";
 import { resolveContextPath } from "./path-resolution.js";
 import { resolvePrimarySkillTargetPath } from "./skill-install.js";
 import type { RoomMember } from "./types.js";
@@ -16,7 +25,7 @@ export type LaunchTopology = "here" | "new-tab" | "new-workspace";
 export type LaunchAgent = "claude" | "codex" | "grok";
 export type CheckStatus = "ok" | "uncertain" | "failed";
 
-interface LaunchAdapter {
+export interface LaunchAdapter {
   herdr_kind: string;
   harness: HarnessId;
   executable: string;
@@ -34,6 +43,10 @@ const LAUNCH_ADAPTERS: Record<LaunchAgent, LaunchAdapter> = {
 
 export const LAUNCH_AGENTS = Object.keys(LAUNCH_ADAPTERS) as LaunchAgent[];
 
+export function launchAdapter(agent: LaunchAgent): LaunchAdapter {
+  return LAUNCH_ADAPTERS[agent];
+}
+
 const CHAT_MEMBER_PATTERN = /^human:[^:]+:chat:/;
 
 export interface LaunchCheck {
@@ -45,7 +58,7 @@ export interface LaunchCheck {
 
 export interface LaunchAgentPlan {
   agent: LaunchAgent;
-  action: "launch" | "inspect";
+  action: "launch" | "skip" | "inspect";
   reason?: string;
   experimental: boolean;
   herdr_name: string;
@@ -54,10 +67,20 @@ export interface LaunchAgentPlan {
   prompt: string;
 }
 
+export type LaunchStepKind = "anchor" | "chat" | "split" | "start" | "prompt";
+
+// Steps are the single description of a launch: --print renders them and the
+// executor runs them, substituting <placeholders> with pane IDs Herdr returns.
 export interface LaunchStep {
+  kind: LaunchStepKind;
+  agent?: LaunchAgent;
+  produces?: string;
   description: string;
   argv: string[];
 }
+
+export const AGENT_START_TIMEOUT_MS = 60_000;
+export const AGENT_PROMPT_TIMEOUT_MS = 120_000;
 
 export interface WorkspaceLaunchPlan {
   status: "ready" | "needs_confirmation" | "blocked";
@@ -78,6 +101,8 @@ export interface PlanWorkspaceLaunchInput {
   herdr: HerdrContext | null;
   runner: HerdrRunner;
   room: { room_id: string; members: RoomMember[] } | null;
+  readStartTime: StartTimeReader;
+  record?: LaunchRecord | null;
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
 }
@@ -132,11 +157,13 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
   }
 
   let callerDirection: "right" | "down" = "right";
+  let herdrAgents: HerdrAgent[] = [];
   if (input.herdr) {
     try {
       const layout = readPaneLayout(input.runner, input.herdr.pane_id);
       callerDirection = preferredSplitDirection(layout.rect);
       checks.push({ name: "herdr", status: "ok", detail: `Caller pane ${layout.pane_id} is ${layout.rect.width}x${layout.rect.height}.` });
+      herdrAgents = listHerdrAgents(input.runner);
     } catch (error) {
       checks.push({ name: "herdr", status: "failed", detail: error instanceof Error ? error.message : String(error) });
     }
@@ -169,15 +196,13 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
     // from ours, so local absence is uncertainty and agent start decides.
     checks.push(executableCheck(adapter.executable, env));
 
-    const joined = input.room?.members.find((member) =>
-      member.status === "active" && member.harness_name === agent
-    );
+    const herdrName = herdrAgentName(agent, canonicalPath);
+    const decision = decideAgent(agent, adapter, herdrName, input, herdrAgents);
     return {
       agent,
-      action: joined ? "inspect" : "launch",
-      ...(joined ? { reason: `${joined.agent_id} is an unverified membership candidate; Herdr session and process correlation is required.` } : {}),
+      ...decision,
       experimental: adapter.experimental,
-      herdr_name: herdrAgentName(agent, canonicalPath),
+      herdr_name: herdrName,
       skill_path: skillPath,
       prompt_delivery: adapter.initial_prompt ? "initial_argument" : "agent_prompt",
       prompt: buildBootstrapPrompt(skillPath, canonicalPath)
@@ -210,6 +235,42 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
   };
 }
 
+// Launch only when nothing live could already be this agent. Anything that
+// might be ours but cannot be proven is surfaced, never relaunched over.
+function decideAgent(
+  agent: LaunchAgent,
+  adapter: LaunchAdapter,
+  herdrName: string,
+  input: PlanWorkspaceLaunchInput,
+  herdrAgents: HerdrAgent[]
+): { action: LaunchAgentPlan["action"]; reason?: string } {
+  const deps = { runner: input.runner, readStartTime: input.readStartTime };
+  const candidates = (input.room?.members ?? []).filter((member) => isLiveMember(member, agent));
+  let unproven: string | null = null;
+  for (const member of candidates) {
+    const herdrAgent = findHerdrAgentForMember(member, herdrAgents);
+    if (!herdrAgent) {
+      unproven ??= `${member.agent_id} is active in this room but no Herdr pane reports its session.`;
+      continue;
+    }
+    const proof = proveMemberInPane(member, herdrAgent, adapter.executable, deps);
+    if (proof.confirmed) return { action: "skip", reason: proof.reason };
+    unproven ??= proof.reason;
+  }
+  if (unproven) return { action: "inspect", reason: unproven };
+
+  const previous = input.record?.agents[agent];
+  if (previous?.pane_id && previous.state !== "failed" &&
+      herdrAgents.some((candidate) => candidate.pane_id === previous.pane_id)) {
+    return { action: "inspect", reason: `An earlier launch left ${agent} in pane ${previous.pane_id} (${previous.state}) without a confirmed join.` };
+  }
+  const clash = herdrAgents.find((candidate) => candidate.name === herdrName);
+  if (clash) {
+    return { action: "inspect", reason: `Herdr name ${herdrName} is already used by pane ${clash.pane_id}.` };
+  }
+  return { action: "launch" };
+}
+
 function planSteps(
   topology: LaunchTopology,
   herdr: HerdrContext,
@@ -227,23 +288,29 @@ function planSteps(
   let agentDirection: "right" | "down" = "right";
   if (topology === "new-workspace") {
     steps.push({
+      kind: "anchor",
+      produces: anchorPane,
       description: `Create a workspace; its root pane (${anchorPane}) anchors the layout.`,
       argv: ["herdr", "workspace", "create", "--cwd", canonicalPath, "--label", path.basename(canonicalPath), "--no-focus"]
     });
   } else if (topology === "new-tab") {
     steps.push({
+      kind: "anchor",
+      produces: anchorPane,
       description: `Create a tab in the caller's workspace; its root pane (${anchorPane}) anchors the layout.`,
       argv: ["herdr", "tab", "create", "--workspace", herdr.workspace_id ?? "<workspace>", "--cwd", canonicalPath, "--label", "talking-stick", "--no-focus"]
     });
   } else {
     steps.push({
+      kind: "anchor",
+      produces: anchorPane,
       description: `Split the caller pane for ${anchorPane}, keeping focus.`,
       argv: ["herdr", "pane", "split", "--pane", herdr.pane_id, "--direction", callerDirection, "--cwd", canonicalPath, "--no-focus"]
     });
     agentDirection = callerDirection === "right" ? "down" : "right";
   }
   if (openChat) {
-    steps.push({ description: "Open the operator chat console.", argv: ["herdr", "pane", "run", anchorPane, "tt chat"] });
+    steps.push({ kind: "chat", description: "Open the operator chat console.", argv: ["herdr", "pane", "run", anchorPane, "tt chat"] });
   }
 
   let previous = anchorPane;
@@ -256,18 +323,26 @@ function planSteps(
     const direction = topology === "here" ? agentDirection : first ? "right" : "down";
     if (!reuseAnchor) {
       steps.push({
+        kind: "split",
+        agent: agent.agent,
+        produces: pane,
         description: `Create a fresh shell pane for ${agent.agent}.`,
         argv: ["herdr", "pane", "split", "--pane", previous, "--direction", direction, "--cwd", canonicalPath, "--no-focus"]
       });
     }
-    const start = ["herdr", "agent", "start", agent.herdr_name, "--kind", LAUNCH_ADAPTERS[agent.agent].herdr_kind, "--pane", pane];
+    const start = [
+      "herdr", "agent", "start", agent.herdr_name, "--kind", LAUNCH_ADAPTERS[agent.agent].herdr_kind,
+      "--pane", pane, "--timeout", String(AGENT_START_TIMEOUT_MS)
+    ];
     if (agent.prompt_delivery === "initial_argument") {
-      steps.push({ description: `Start ${agent.agent} with the bootstrap prompt.`, argv: [...start, "--", agent.prompt] });
+      steps.push({ kind: "start", agent: agent.agent, description: `Start ${agent.agent} with the bootstrap prompt.`, argv: [...start, "--", agent.prompt] });
     } else {
-      steps.push({ description: `Start ${agent.agent}.`, argv: start });
+      steps.push({ kind: "start", agent: agent.agent, description: `Start ${agent.agent}.`, argv: start });
       steps.push({
+        kind: "prompt",
+        agent: agent.agent,
         description: `Submit the bootstrap prompt to ${agent.agent} once ready.`,
-        argv: ["herdr", "agent", "prompt", agent.herdr_name, agent.prompt, "--wait", "--timeout", "120000"]
+        argv: ["herdr", "agent", "prompt", agent.herdr_name, agent.prompt, "--wait", "--timeout", String(AGENT_PROMPT_TIMEOUT_MS)]
       });
     }
     previous = pane;
