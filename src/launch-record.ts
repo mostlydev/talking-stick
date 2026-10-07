@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
+import { createSystemProcessInspector, getCurrentProcessStartedAt, type ProcessInspector } from "./process-utils.js";
+import { randomUUID } from "node:crypto";
 
 // One record per canonical path remembers which panes a launch created and how
 // far each agent got, so a rerun can tell "ours, still starting" from "free".
@@ -26,13 +28,13 @@ export interface LaunchRecordAgent {
 export interface LaunchRecord {
   canonical_path: string;
   chat_pane_id: string | null;
+  anchor?: { state: "creating" | "created" | "ambiguous" | "failed"; pane_id: string | null };
+  chat_state?: "starting" | "opened" | "ambiguous" | "failed";
   agents: Record<string, LaunchRecordAgent>;
   updated_at: string;
 }
 
 export const LAUNCH_LOCK_TIMEOUT_MS = 5_000;
-// A launch runs agent starts and a bounded join wait; anything older is stale.
-export const LAUNCH_LOCK_STALE_MS = 10 * 60_000;
 
 export function launchKey(canonicalPath: string): string {
   return createHash("sha256").update(canonicalPath).digest("hex").slice(0, 16);
@@ -63,30 +65,50 @@ export function writeLaunchRecord(dataDir: string, record: LaunchRecord): void {
 export function acquireLaunchLock(
   dataDir: string,
   canonicalPath: string,
-  options: { timeoutMs?: number; staleMs?: number; now?: () => number } = {}
+  options: { timeoutMs?: number; now?: () => number; inspector?: ProcessInspector } = {}
 ): () => void {
   const lockPath = `${launchRecordPath(dataDir, canonicalPath)}.lock`;
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const now = options.now ?? Date.now;
   const deadline = now() + (options.timeoutMs ?? LAUNCH_LOCK_TIMEOUT_MS);
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  const inspector = options.inspector ?? createSystemProcessInspector();
+  const owner = { pid: process.pid, started_at: getCurrentProcessStartedAt(), token: randomUUID() };
+  const ownerPath = path.join(lockPath, "owner.json");
   while (true) {
     try {
       fs.mkdirSync(lockPath);
-      return () => fs.rmSync(lockPath, { recursive: true, force: true });
+      try { writeFileAtomic(ownerPath, JSON.stringify(owner)); }
+      catch (error) { fs.rmSync(lockPath, { recursive: true, force: true }); throw error; }
+      return () => {
+        try {
+          if (JSON.parse(fs.readFileSync(ownerPath, "utf8")).token === owner.token) {
+            fs.rmSync(lockPath, { recursive: true, force: true });
+          }
+        } catch { /* An absent/replaced lock is not ours to remove. */ }
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
+    // Age cannot prove a writer is dead: the operator may choose a long join
+    // timeout. Serialize reapers too, then inspect the exact process owner.
+    const reaper = `${lockPath}.reap`;
+    let reaping = false;
     try {
-      if (now() - fs.statSync(lockPath).mtimeMs > (options.staleMs ?? LAUNCH_LOCK_STALE_MS)) {
-        fs.rmSync(lockPath, { recursive: true, force: true });
-        continue;
+      fs.mkdirSync(reaper);
+      reaping = true;
+      const previous = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+      if (Number.isInteger(previous.pid) && typeof previous.started_at === "string") {
+        const live = inspector.inspect(previous.pid);
+        if (live === null || (live?.startTime && live.startTime.trim() !== previous.started_at.trim())) {
+          fs.rmSync(lockPath, { recursive: true, force: true });
+        }
       }
-    } catch {
-      continue;
-    }
+    } catch { /* Missing owner evidence is uncertain; never break the lock. */ }
+    finally { if (reaping) fs.rmSync(reaper, { recursive: true, force: true }); }
+    if (!fs.existsSync(lockPath)) continue;
     if (now() >= deadline) {
-      throw new Error(`Another tt up is already launching ${canonicalPath}; wait for it to finish.`);
+      throw new Error(`Another tt up may be launching ${canonicalPath}. Lock: ${lockPath}; recovery guard: ${reaper}. Inspect the owner before removing either path.`);
     }
     Atomics.wait(sleeper, 0, 0, 50);
   }

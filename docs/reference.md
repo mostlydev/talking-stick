@@ -31,6 +31,7 @@ tt health [path] [--verbose|--all]                        # concise safety/actio
 tt status [path] [--verbose|--all]                        # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
 tt chat [path] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse]   # operator console
+tt up --agents claude,codex[,grok] [--path DIR] [--new-tab|--new-workspace] [--print] [--forget] [--timeout 120s] # experimental Herdr launcher
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--path DIR]
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
 tt ack <delivery-token> [--json]                          # acknowledge a native delivery envelope

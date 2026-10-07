@@ -14,6 +14,7 @@ interface FakeAgent {
 interface FakePane {
   id: string;
   chat: boolean;
+  chatPid?: number;
   agent: FakeAgent | null;
 }
 
@@ -25,6 +26,9 @@ export class FakeHerdr {
   readonly startTimes = new Map<number, string>();
   readonly startBehavior: Record<string, FakeStartBehavior> = {};
   failSplit = false;
+  ambiguousSplitAt: number | null = null;
+  ambiguousChat = false;
+  private splits = 0;
   private nextPane = 2;
   private nextPid = 5000;
 
@@ -53,7 +57,8 @@ export class FakeHerdr {
     for (const pane of this.panes.values()) {
       if (pane.chat) {
         members.push({ agent_id: `human:op:chat:${pane.id}`, harness_name: null, status: "active",
-          session_kind: "human_chat", process_liveness: "alive" } as RoomMember);
+          session_kind: "human_chat", process_liveness: "alive", pid: pane.chatPid,
+          process_started_at: this.startTimes.get(pane.chatPid!) } as RoomMember);
       }
       const agent = pane.agent;
       if (!agent || !agent.joins) continue;
@@ -89,20 +94,32 @@ export class FakeHerdr {
         agent_status: "idle"
       })) });
     }
+    if (group === "pane" && command === "get") {
+      const pane = this.panes.get(args[2]);
+      if (!pane) throw herdrFailure("pane_not_found", "pane is closed");
+      return ok({ pane: { pane_id: pane.id } });
+    }
     if (group === "pane" && command === "process-info") {
       const pane = this.panes.get(option("--pane"));
-      const processes = pane?.agent ? [{ pid: pane.agent.pid, argv0: pane.agent.kind }] : [];
+      const processes = pane?.agent ? [{ pid: pane.agent.pid, argv0: pane.agent.kind }]
+        : pane?.chat && pane.chatPid ? [{ pid: pane.chatPid, argv0: "node" }] : [];
       return ok({ process_info: { foreground_processes: processes } });
     }
     if (group === "pane" && command === "split") {
       if (this.failSplit) throw herdrFailure("pane_not_found", "split failed");
-      return ok({ pane: { pane_id: this.createPane() } });
+      const pane = this.createPane();
+      if (++this.splits === this.ambiguousSplitAt) throw new Error("spawnSync herdr ETIMEDOUT");
+      return ok({ pane: { pane_id: pane } });
     }
     if ((group === "tab" || group === "workspace") && command === "create") {
       return ok({ root_pane: { pane_id: this.createPane() } });
     }
     if (group === "pane" && command === "run") {
       this.panes.get(args[2])!.chat = true;
+      const pid = this.nextPid++;
+      this.panes.get(args[2])!.chatPid = pid;
+      this.startTimes.set(pid, `Wed Oct  7 10:00:${String(pid % 60).padStart(2, "0")} 2026`);
+      if (this.ambiguousChat) throw new Error("spawnSync herdr ETIMEDOUT");
       return ok({ ran: true });
     }
     if (group === "agent" && command === "start") {
@@ -129,6 +146,7 @@ export class FakeHerdr {
 
 function herdrFailure(code: string, message: string): Error {
   return Object.assign(new Error("exit 1"), {
-    stdout: JSON.stringify({ error: { code, message } })
+    stdout: "",
+    stderr: JSON.stringify({ error: { code, message } })
   });
 }

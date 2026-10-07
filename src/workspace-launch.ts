@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { HarnessId } from "./harness-model.js";
 import {
   listHerdrAgents,
+  paneExists,
   preferredSplitDirection,
   readPaneLayout,
   type HerdrAgent,
@@ -212,11 +213,19 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
   const chatMember = input.room?.members.find((member) =>
     member.status === "active" && member.session_kind === "human_chat" && CHAT_MEMBER_PATTERN.test(member.agent_id)
   );
-  const chat: WorkspaceLaunchPlan["chat"] = chatMember
+  let chat: WorkspaceLaunchPlan["chat"] = chatMember
     ? chatMember.process_liveness === "alive"
       ? { action: "skip", reason: `${chatMember.agent_id} is a live chat console in this room.` }
       : { action: "inspect", reason: `${chatMember.agent_id} has unconfirmed console liveness.` }
     : { action: "launch" };
+  if (!chatMember && input.record?.anchor && input.record.anchor.state !== "failed" &&
+      (!input.record.anchor.pane_id || paneExists(input.runner, input.record.anchor.pane_id) !== false)) {
+    chat = { action: "inspect", reason: `An earlier launch created or may have created an anchor${input.record.anchor.pane_id ? ` in pane ${input.record.anchor.pane_id}` : ""}; inspect it before opening another console. Use --forget only after checking the old panes.` };
+  }
+  if (!chatMember && input.record?.chat_state && input.record.chat_state !== "failed" &&
+      (!input.record.chat_pane_id || paneExists(input.runner, input.record.chat_pane_id) !== false)) {
+    chat = { action: "inspect", reason: `An earlier chat submission (${input.record.chat_state}) is still unconfirmed${input.record.chat_pane_id ? ` in pane ${input.record.chat_pane_id}` : ""}. Inspect it; use --forget only after checking the old panes.` };
+  }
   const steps = input.herdr
     ? planSteps(input.topology, input.herdr, canonicalPath, callerDirection, chat.action === "launch", agents)
     : [];
@@ -260,9 +269,11 @@ function decideAgent(
   if (unproven) return { action: "inspect", reason: unproven };
 
   const previous = input.record?.agents[agent];
-  if (previous?.pane_id && previous.state !== "failed" &&
-      herdrAgents.some((candidate) => candidate.pane_id === previous.pane_id)) {
-    return { action: "inspect", reason: `An earlier launch left ${agent} in pane ${previous.pane_id} (${previous.state}) without a confirmed join.` };
+  if (previous && previous.state !== "failed" && !previous.pane_id) {
+    return { action: "inspect", reason: `An earlier ${agent} launch (${previous.state}) may have created a pane whose ID was not recorded; inspect it before relaunching. Use --forget only after checking the old panes.` };
+  }
+  if (previous?.pane_id && previous.state !== "failed" && paneExists(input.runner, previous.pane_id) !== false) {
+    return { action: "inspect", reason: `An earlier launch left ${agent} in pane ${previous.pane_id} (${previous.state}) without a confirmed join. Inspect it; use --forget after confirming the old agent has exited.` };
   }
   const clash = herdrAgents.find((candidate) => candidate.name === herdrName);
   if (clash) {

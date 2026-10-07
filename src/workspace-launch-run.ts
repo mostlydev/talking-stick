@@ -2,6 +2,7 @@ import {
   createdPaneId,
   HerdrError,
   listHerdrAgents,
+  readPaneProcesses,
   runHerdrJson,
   type HerdrRunner
 } from "./herdr.js";
@@ -55,7 +56,7 @@ export interface LaunchAgentOutcome {
 export interface WorkspaceLaunchResult {
   status: "launched" | "partial" | "nothing_to_do" | "blocked";
   canonical_path: string;
-  chat: { state: "opened" | "skipped" | "inspect" | "failed" | "ambiguous" | "not_started"; pane_id: string | null; detail: string };
+  chat: { state: "opened" | "submitted" | "skipped" | "inspect" | "failed" | "ambiguous" | "not_started"; pane_id: string | null; detail: string };
   agents: LaunchAgentOutcome[];
   next_steps: string[];
 }
@@ -126,6 +127,15 @@ export async function executeWorkspaceLaunch(
   for (const step of plan.steps) {
     if (step.agent && stopped.has(step.agent)) continue;
     let argv = resolve(step.argv).slice(1);
+    if (step.kind === "anchor") {
+      record.anchor = { state: "creating", pane_id: null };
+      save();
+    }
+    if (step.kind === "chat") {
+      record.chat_pane_id = argv[2];
+      record.chat_state = "starting";
+      save();
+    }
     // A failed neighbour leaves its placeholder unresolved; split from the
     // last pane that does exist instead of guessing an ID.
     if (step.kind === "split" && argv.some((arg) => /^<.+>$/.test(arg)) && lastPane) {
@@ -147,13 +157,18 @@ export async function executeWorkspaceLaunch(
         }
         panes.set(step.produces, paneId);
         lastPane = paneId;
+        if (step.kind === "anchor") {
+          record.anchor = { state: "created", pane_id: paneId };
+          save();
+        }
         if (step.kind === "split" && step.agent) track(step.agent, "pane_created", "Fresh shell pane created.", paneId);
       }
       if (step.kind === "chat") {
-        chat.state = "opened";
+        chat.state = "submitted";
         chat.pane_id = argv[2];
-        chat.detail = "tt chat is running.";
+        chat.detail = "tt chat command submitted; waiting for its live room membership.";
         record.chat_pane_id = chat.pane_id;
+        record.chat_state = "starting";
         save();
       }
       if ((step.kind === "start" || step.kind === "prompt") && step.agent) {
@@ -163,8 +178,11 @@ export async function executeWorkspaceLaunch(
     }
 
     const state: LaunchAgentState = outcome.code === "agent_not_ready" ? "blocked"
-      : outcome.code ? "failed" : "ambiguous";
+      : outcome.code && ["pane_not_found", "agent_not_found", "agent_name_in_use", "agent_blocked", "invalid_params", "method_not_found"].includes(outcome.code)
+        ? "failed" : "ambiguous";
     if (step.kind === "anchor") {
+      record.anchor = { state: state === "ambiguous" ? "ambiguous" : "failed", pane_id: null };
+      save();
       chat.state = chat.state === "not_started" ? (state === "ambiguous" ? "ambiguous" : "failed") : chat.state;
       chat.detail = outcome.message;
       for (const agent of plan.agents) {
@@ -173,6 +191,8 @@ export async function executeWorkspaceLaunch(
       return finish("partial");
     }
     if (step.kind === "chat") {
+      record.chat_state = state === "ambiguous" ? "ambiguous" : "failed";
+      save();
       chat.state = state === "ambiguous" ? "ambiguous" : "failed";
       chat.detail = outcome.message;
       chat.pane_id = argv[2];
@@ -184,7 +204,7 @@ export async function executeWorkspaceLaunch(
     }
   }
 
-  await observeJoins(plan, deps, outcomes, track, sleep, now);
+  await observeJoins(plan, deps, outcomes, track, chat, () => { record.chat_state = "opened"; save(); }, sleep, now);
   const launched = [...outcomes.values()].filter((outcome) =>
     plan.agents.find((agent) => agent.agent === outcome.agent)?.action === "launch"
   );
@@ -198,6 +218,8 @@ export async function executeWorkspaceLaunch(
       track(step.agent, state, message);
       stopped.add(step.agent);
     } else {
+      record.anchor = { state: "ambiguous", pane_id: null };
+      save();
       chat.state = "ambiguous";
       chat.detail = message;
     }
@@ -228,6 +250,8 @@ async function observeJoins(
   deps: ExecuteLaunchDeps,
   outcomes: Map<LaunchAgent, LaunchAgentOutcome>,
   track: (agent: LaunchAgent, state: LaunchAgentState, detail: string) => void,
+  chat: WorkspaceLaunchResult["chat"],
+  confirmChat: () => void,
   sleep: (ms: number) => Promise<void>,
   now: () => number
 ): Promise<void> {
@@ -236,7 +260,7 @@ async function observeJoins(
   const proofDeps = { runner: deps.runner, readStartTime: deps.readStartTime };
   const lastReason = new Map<LaunchAgent, string>();
 
-  while (pending().length > 0) {
+  while (pending().length > 0 || chat.state === "submitted") {
     let herdrAgents: ReturnType<typeof listHerdrAgents> = [];
     try {
       herdrAgents = listHerdrAgents(deps.runner);
@@ -244,6 +268,21 @@ async function observeJoins(
       // A transient listing failure only delays proof until the next poll.
     }
     const members = deps.readMembers() ?? [];
+    if (chat.state === "submitted" && chat.pane_id) {
+      try {
+        const processes = readPaneProcesses(deps.runner, chat.pane_id);
+        const consoleMember = members.find((member) => member.status === "active" &&
+          member.session_kind === "human_chat" && member.process_liveness === "alive" &&
+          member.pid && member.process_started_at?.trim() &&
+          processes.some((candidate) => candidate.pid === member.pid) &&
+          deps.readStartTime(member.pid)?.trim() === member.process_started_at.trim());
+        if (consoleMember) {
+          chat.state = "opened";
+          chat.detail = `${consoleMember.agent_id} is confirmed running in pane ${chat.pane_id}.`;
+          confirmChat();
+        }
+      } catch { /* No positive console proof yet; retain submitted state. */ }
+    }
     for (const outcome of pending()) {
       const herdrAgent = herdrAgents.find((candidate) => candidate.pane_id === outcome.pane_id);
       if (!herdrAgent) {
@@ -261,11 +300,12 @@ async function observeJoins(
         lastReason.set(outcome.agent, proof.reason);
       }
     }
-    if (pending().length === 0 || now() >= deadline) break;
+    if ((pending().length === 0 && chat.state !== "submitted") || now() >= deadline) break;
     await sleep(Math.min(JOIN_POLL_MS, Math.max(0, deadline - now())));
   }
 
   const seconds = Math.round((deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS) / 1000);
+  if (chat.state === "submitted") chat.detail = `Chat command submitted in pane ${chat.pane_id}, but no verified live console within ${seconds}s.`;
   for (const outcome of pending()) {
     const why = lastReason.get(outcome.agent) ?? "no matching member joined";
     outcome.detail = `Started in pane ${outcome.pane_id} but no verified join within ${seconds}s: ${why}`;
@@ -285,6 +325,8 @@ function nextSteps(
   if (chat.state === "failed" || chat.state === "ambiguous") {
     steps.push(`Check the chat pane${chat.pane_id ? ` ${chat.pane_id}` : ""}; run tt chat there if it is not open.`);
   }
+  if (chat.state === "inspect") steps.push(`Chat/layout needs inspection: ${chat.detail}`);
+  if (chat.state === "submitted") steps.push(`Chat command has not proven it is running in pane ${chat.pane_id}; inspect that pane before submitting it again.`);
   for (const outcome of outcomes) {
     const where = outcome.pane_id ? ` in pane ${outcome.pane_id}` : "";
     switch (outcome.state) {
@@ -302,6 +344,9 @@ function nextSteps(
         break;
       case "inspect":
         steps.push(`${outcome.agent}: ${outcome.detail}`);
+        break;
+      case "not_started":
+        steps.push(`${outcome.agent} was not started; resolve the earlier launch uncertainty first.`);
         break;
       default:
         break;

@@ -141,6 +141,9 @@ in the room, then ask the operator to exercise a dedicated test workspace:
 1. Preview the launch; confirm selected agents, repo path, and pane layout.
 2. Launch Claude and Codex; verify readable panes, preserved focus, skill loaded,
    both members visible in chat, and idle room without stick churn.
+   Confirm the chat member's PID is the foreground `tt chat`/Node process Herdr
+   reports in its pane, rather than a shell wrapper; chat stays submitted until
+   that PID and its process start time match.
 3. Give a small chat task; verify both agents receive it and handoff works.
 4. Run the same command again; verify no duplicate panes, members, or prompts.
 5. Test a blocked agent and a failed launch; resolve the dialog personally and
@@ -172,17 +175,30 @@ IDs Herdr returns.
 - Launch takes a per-path lock in the data dir and keeps a launch record of each
   agent's pane and state (`pane_created`, `starting`, `started`, `confirmed`,
   `blocked`, `ambiguous`, `failed`), written around every side effect. A rerun
-  inspects a recorded pane that still hosts an agent, and a clashing Herdr name.
-- `agent_not_ready` is reported as `blocked`; a Herdr error code is `failed`; a
-  timeout or crash is `ambiguous` and is never retried. Other agents continue.
+  inspects any recorded pane not proven closed, and a clashing Herdr name.
+- `agent_not_ready` is reported as `blocked`; known no-side-effect refusals are
+  `failed`; a timeout, crash, or uncertain error is `ambiguous` and is never
+  retried. Other agents continue.
 - Join observation polls room membership (read-only, no extra `tt wait`) and the
   same identity proof until `--timeout` (default 120s). Herdr idle is not required.
 - Exit status is zero only for a full confirmed launch or nothing to do.
+- Chat submission is confirmed separately: a live human-chat member's PID must
+  be in the created pane with its matching local process start time. Submission
+  alone stays unconfirmed and cannot produce a successful full setup result.
 
 Verified live (read-only): in this repo's room, the preview proves the running
 Claude and Codex in their panes and reports Grok as `inspect` because Herdr
 gives no Grok session. Per-agent native arguments (`--agent-arg`) and live
 operator acceptance remain open.
+
+Recovery refinements save anchor/chat/agent intent before side effects. Known
+closed panes are reconciled through read-only `pane get`; an existing shell or
+unknown pane ID remains for inspection. `--forget` clears only launch bookkeeping
+under the lock after the operator checks the old panes; it never closes them.
+`--print --forget` preserves the record. Process incarnation and a unique owner
+token govern lock recovery/release; age alone cannot evict a live launcher. Herdr
+refusal JSON is parsed from stderr, with stdout compatibility for older versions.
+Per-agent native arguments are deferred for v1. Live operator acceptance is pending.
 
 ## Development machine preparation (completed)
 

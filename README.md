@@ -123,11 +123,26 @@ tt release / tt pass     hand off with structured status and next action
 tt assign <agent>        hand off to someone specific
 tt take                  claim when the holder is gone or stuck
 tt chat                  operator console
+tt up --agents claude,codex --print   preview a Herdr room setup
 tt msg send / tt notes   message live processes, or leave durable notes
 tt state / tt health     room state and a concise safety check
 ```
 
 Full flags and semantics: [`docs/reference.md`](docs/reference.md#command-reference).
+
+Inside Herdr, experimental `tt up --agents claude,codex --new-tab` opens a chat
+console and fresh agent panes, loads the installed skill with an initial prompt,
+and verifies exact-room joins. Preview with `--print` first. Omit `--new-tab` to
+split the caller's tab, or use `--new-workspace` for a separate workspace.
+Verified members are reused; uncertain launches require inspection and are never
+blindly retried. After checking old panes and confirming exited agents, `--forget`
+discards this command's launch record without closing panes. `--print --forget`
+previews that fresh plan without changing the record. `--timeout 120s` bounds join
+observation in addition to each startup timeout. Skills must be installed first;
+native per-agent argument forwarding is deferred. Grok remains unconfirmed when
+Herdr omits its session identity. Operator live acceptance is still pending.
+Pass the exact room/workspace root to `--path`; a subdirectory that would join an
+ancestor room is rejected with the root path to use.
 
 ## Installing and updating
 

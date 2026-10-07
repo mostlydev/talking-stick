@@ -1,7 +1,8 @@
 import { resolveDataDir } from "../config.js";
 import { createSystemHerdrRunner, readHerdrContext, type HerdrRunner } from "../herdr.js";
 import { createSystemStartTimeReader, type StartTimeReader } from "../launch-identity.js";
-import { acquireLaunchLock, readLaunchRecord } from "../launch-record.js";
+import { acquireLaunchLock, readLaunchRecord, launchRecordPath } from "../launch-record.js";
+import fs from "node:fs";
 import { resolveContextPath } from "../path-resolution.js";
 import {
   DEFAULT_JOIN_TIMEOUT_MS,
@@ -21,7 +22,7 @@ import type { Runtime } from "./runtime.js";
 import { pickDeepestRoom } from "./session.js";
 
 export const UP_USAGE =
-  "tt up --agents claude,codex[,grok] [--path DIR] [--new-tab | --new-workspace] [--print] [--timeout 120s] [--json]";
+  "tt up --agents claude,codex[,grok] [--path DIR] [--new-tab | --new-workspace] [--print] [--forget] [--timeout 120s] [--json]";
 
 export interface UpCommandOptions {
   env?: NodeJS.ProcessEnv;
@@ -29,6 +30,7 @@ export interface UpCommandOptions {
   readStartTime?: StartTimeReader;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  homeDir?: string;
 }
 
 export async function handleUpCommand(
@@ -41,7 +43,13 @@ export async function handleUpCommand(
   const topology = parseTopology(parsed);
   const joinTimeoutMs = parseWaitTimeout(parsed) ?? DEFAULT_JOIN_TIMEOUT_MS;
   const contextPath = getStringOption(parsed, "path") ?? process.cwd();
-  const canonicalPath = resolveContextPath(contextPath).canonical_context_path;
+  const resolved = resolveContextPath(contextPath);
+  const canonicalPath = resolved.canonical_context_path;
+  const selectedRoom = pickDeepestRoom(runtime.commands.listRooms({ context_path: canonicalPath }).rooms);
+  const joinPath = selectedRoom?.canonical_path ?? resolved.workspace_root;
+  if (joinPath !== canonicalPath) {
+    throw new Error(`Ordinary tt join/chat would select room ${joinPath}, not ${canonicalPath}. Use --path ${joinPath} for this launcher, or explicitly create a nested room first.`);
+  }
   const runner = options.runner ?? createSystemHerdrRunner(env);
   const readStartTime = options.readStartTime ?? createSystemStartTimeReader();
   const dataDir = resolveDataDir({ env });
@@ -51,7 +59,8 @@ export async function handleUpCommand(
   // launcher cannot act on the same stale view of the room and record.
   const release = preview ? () => {} : acquireLaunchLock(dataDir, canonicalPath);
   try {
-    const record = readLaunchRecord(dataDir, canonicalPath);
+    const forget = hasOption(parsed, "forget");
+    const record = forget ? null : readLaunchRecord(dataDir, canonicalPath);
     const plan = planWorkspaceLaunch({
       agents,
       context_path: contextPath,
@@ -61,12 +70,16 @@ export async function handleUpCommand(
       room: findExactRoom(runtime, parsed, canonicalPath),
       readStartTime,
       record,
-      env
+      env,
+      homeDir: options.homeDir
     });
     if (preview) {
       printResult(parsed, plan, () => renderPlan(plan));
       if (plan.status !== "ready") process.exitCode = 1;
       return;
+    }
+    if (forget && plan.status !== "blocked") {
+      fs.rmSync(launchRecordPath(dataDir, canonicalPath), { force: true });
     }
     const result = await executeWorkspaceLaunch(plan, {
       runner,

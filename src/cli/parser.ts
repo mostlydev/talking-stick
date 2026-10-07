@@ -11,6 +11,7 @@ const BOOLEAN_FLAGS = new Set([
   "events",
   "explain",
   "follow",
+  "forget",
   "force",
   "force-new",
   "help",

@@ -147,6 +147,15 @@ export function readPaneProcesses(runner: HerdrRunner, paneId: string): HerdrPro
   );
 }
 
+export function paneExists(runner: HerdrRunner, paneId: string): boolean | null {
+  try {
+    const result = runHerdrJson(runner, ["pane", "get", paneId]);
+    return isRecord(result.pane) && result.pane.pane_id === paneId ? true : null;
+  } catch (error) {
+    return error instanceof HerdrError && error.code === "pane_not_found" ? false : null;
+  }
+}
+
 // Creation responses carry the new pane under different keys per command.
 export function createdPaneId(result: Record<string, unknown>): string | null {
   for (const key of ["pane", "root_pane"]) {
@@ -162,31 +171,31 @@ export function preferredSplitDirection(rect: HerdrRect): "right" | "down" {
 }
 
 function herdrErrorCode(error: unknown): string | null {
-  const stdout = isRecord(error) && typeof error.stdout === "string" ? error.stdout : "";
-  try {
-    const parsed: unknown = JSON.parse(stdout);
-    const failure = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : null;
-    return failure && typeof failure.code === "string" ? failure.code : null;
-  } catch {
-    return null;
-  }
+  const failure = herdrFailure(error);
+  return failure && typeof failure.code === "string" ? failure.code : null;
 }
 
 function describeError(error: unknown): string {
-  if (isRecord(error) && typeof error.stdout === "string") {
-    try {
-      const parsed: unknown = JSON.parse(error.stdout);
-      if (isRecord(parsed) && isRecord(parsed.error) && typeof parsed.error.message === "string") {
-        return parsed.error.message;
-      }
-    } catch {
-      // Fall through to stderr or the process error.
-    }
-  }
+  const failure = herdrFailure(error);
+  if (failure && typeof failure.message === "string") return failure.message;
   if (isRecord(error) && typeof error.stderr === "string" && error.stderr.trim()) {
     return error.stderr.trim();
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+function herdrFailure(error: unknown): Record<string, unknown> | null {
+  if (!isRecord(error)) return null;
+  for (const channel of [error.stderr, error.stdout]) {
+    if (typeof channel !== "string") continue;
+    try {
+      const parsed: unknown = JSON.parse(channel);
+      if (isRecord(parsed) && isRecord(parsed.error)) return parsed.error;
+    } catch {
+      // Try the other stream for older Herdr versions.
+    }
+  }
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
