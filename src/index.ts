@@ -176,6 +176,7 @@ export {
   removeCliSessionsForRoom,
   resolveCliSessionPath,
   upsertCliSession,
+  insertCliSessionIfAbsent,
   upsertJoinedCliSession,
   writeCliSessions,
   type CliSession

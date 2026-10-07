@@ -45,7 +45,8 @@ import {
   readCliSessions,
   resolveCliSessionPath,
   TalkingStickService,
-  upsertCliSession
+  upsertCliSession,
+  writeCliSessions
 } from "../src/index.js";
 
 const ENV_KEYS = [
@@ -1631,6 +1632,106 @@ describe("tt room commands", () => {
     expect(nested.hint).toContain("expected peers are listed in members");
     expect(fs.existsSync(path.join(dataDir, "cli-sessions.json"))).toBe(true);
   });
+});
+
+describe("stale room sessions", () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test.each(["state", "notes"])("%s recovers from a deleted cached room", async (command) => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const old = JSON.parse(await captureStdout(["join", project, "--agent", "human:old", "--json"]));
+    const stale = readCliSessions(resolveCliSessionPath()).find((session) => session.agent_id === "human:old")!;
+    await captureStdout(["leave", project, "--agent", "human:old", "--json"]);
+    const live = JSON.parse(await captureStdout(["join", project, "--agent", "human:live", "--json"]));
+    expect(live.room_id).not.toBe(old.room_id);
+    upsertCliSession(resolveCliSessionPath(), { ...stale, lease_id: "stale-lease", event_cursor_seq: 999 });
+
+    const args = command === "notes"
+      ? ["notes", "list", "--path", project]
+      : [command, project];
+    const result = JSON.parse(await captureStdout([...args, "--agent", "human:old", "--json"]));
+    if (command === "notes") expect(result.notes).toEqual([]);
+    else expect(result.room.room_id).toBe(live.room_id);
+    const healed = readCliSessions(resolveCliSessionPath()).filter((session) => session.agent_id === "human:old");
+    expect(healed).toHaveLength(1);
+    expect(healed[0].room_id).toBe(live.room_id);
+    expect(healed[0].lease_id).toBeUndefined();
+    expect(healed[0].event_cursor_seq).toBeUndefined();
+  });
+
+  test("a deleted nested cache falls back to a live ancestor without losing its lease", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const nested = path.join(project, "child");
+    fs.mkdirSync(nested);
+    const joined = JSON.parse(await captureStdout(["join", project, "--agent", "human:worker", "--json"]));
+    const sessionPath = resolveCliSessionPath();
+    const parent = { ...readCliSessions(sessionPath)[0], lease_id: "live-lease", event_cursor_seq: 42 };
+    writeCliSessions(sessionPath, [parent, {
+      ...parent, canonical_path: nested, room_id: "deleted-child", lease_id: "stale-lease"
+    }]);
+    const result = JSON.parse(await captureStdout(["state", nested, "--agent", "human:worker", "--json"]));
+    expect(result.room.room_id).toBe(joined.room_id);
+    expect(readCliSessions(sessionPath)).toEqual([parent]);
+  });
+
+
+  test("a concurrent join after the room snapshot preserves its replacement session", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const live = JSON.parse(await captureStdout(["join", project, "--agent", "human:live", "--json"]));
+    const sessionPath = resolveCliSessionPath();
+    const base = { agent_id: "human:reader", canonical_path: project, workspace_root: project, updated_at: new Date().toISOString() };
+    upsertCliSession(sessionPath, { ...base, room_id: "deleted" });
+    const replacement = { ...base, room_id: live.room_id, lease_id: "fresh-lease", event_cursor_seq: 42 };
+    const original = TalkingStickService.prototype.listRooms;
+    let firstSnapshot = true;
+    const spy = vi.spyOn(TalkingStickService.prototype, "listRooms").mockImplementation(function (this: TalkingStickService, input) {
+      if (firstSnapshot) {
+        firstSnapshot = false;
+        // The new room/session arrived after the service took this snapshot.
+        upsertCliSession(sessionPath, replacement);
+        return { rooms: [] };
+      }
+      return original.call(this, input);
+    });
+    try {
+      const result = JSON.parse(await captureStdout(["state", project, "--agent", "human:reader", "--json"]));
+      expect(result.room.room_id).toBe(live.room_id);
+      expect(readCliSessions(sessionPath).find((session) => session.agent_id === "human:reader")).toEqual(replacement);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+
+  test("room discovery does not overwrite a concurrent join with an older snapshot", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const live = JSON.parse(await captureStdout(["join", project, "--agent", "human:live", "--json"]));
+    const sessionPath = resolveCliSessionPath();
+    const replacement = { agent_id: "human:reader", canonical_path: project, workspace_root: project,
+      updated_at: new Date().toISOString(), room_id: live.room_id, lease_id: "fresh-lease", event_cursor_seq: 42 };
+    const original = TalkingStickService.prototype.listRooms;
+    let firstSnapshot = true;
+    const spy = vi.spyOn(TalkingStickService.prototype, "listRooms").mockImplementation(function (this: TalkingStickService, input) {
+      const result = original.call(this, input);
+      if (firstSnapshot) {
+        firstSnapshot = false;
+        upsertCliSession(sessionPath, replacement);
+        return { rooms: result.rooms.map((room) => ({ ...room, room_id: "deleted-snapshot" })) };
+      }
+      return result;
+    });
+    try {
+      const result = JSON.parse(await captureStdout(["state", project, "--agent", "human:reader", "--json"]));
+      expect(result.room.room_id).toBe(live.room_id);
+      expect(readCliSessions(sessionPath).find((session) => session.agent_id === "human:reader")).toEqual(replacement);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
 });
 
 describe("tt notes", () => {

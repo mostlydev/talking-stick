@@ -2,7 +2,8 @@ import {
   findCliSessionByRoom,
   findCliSessionForContextPath,
   resolveCliSessionPath,
-  upsertCliSession,
+  removeCliSession,
+  insertCliSessionIfAbsent,
   upsertJoinedCliSession,
   type CliSession,
   type DerivedIdentity,
@@ -20,15 +21,10 @@ export function resolveSessionForReads(
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const resolvedPath = resolveContextPath(contextPath);
   const sessionPath = resolveCliSessionPath();
-  const existing = findCliSessionForContextPath(
-    sessionPath,
-    identity.agent_id,
-    contextPath
-  );
+  const existing = findLiveSession(runtime, sessionPath, identity.agent_id, contextPath);
   if (existing) {
     return existing;
   }
-
   const rooms = runtime.commands.listRooms({ context_path: contextPath }).rooms;
   const room = pickDeepestRoom(rooms);
   if (!room) {
@@ -42,8 +38,10 @@ export function resolveSessionForReads(
     workspace_root: resolvedPath.workspace_root,
     updated_at: new Date().toISOString()
   };
-  upsertCliSession(sessionPath, session);
-  return session;
+  const cached = insertCliSessionIfAbsent(sessionPath, session);
+  return cached.room_id === session.room_id
+    ? cached
+    : resolveSessionForReads(runtime, parsed, identity);
 }
 
 export function resolveSessionForNotes(
@@ -54,15 +52,13 @@ export function resolveSessionForNotes(
   const contextPath = getStringOption(parsed, "path") ?? process.cwd();
   const resolvedPath = resolveContextPath(contextPath);
   const sessionPath = resolveCliSessionPath();
-  const existing = findCliSessionForContextPath(
-    sessionPath,
-    identity.agent_id,
-    contextPath
-  );
+  const hadCachedSession = findCliSessionForContextPath(
+    sessionPath, identity.agent_id, contextPath
+  ) !== null;
+  const existing = findLiveSession(runtime, sessionPath, identity.agent_id, contextPath);
   if (existing) {
     return existing;
   }
-
   const rooms = runtime.commands.listRooms({ context_path: contextPath }).rooms;
   const room = pickDeepestRoom(rooms);
   if (!room) {
@@ -78,6 +74,34 @@ export function resolveSessionForNotes(
     workspace_root: resolvedPath.workspace_root,
     updated_at: new Date().toISOString()
   };
+  if (hadCachedSession) {
+    const cached = insertCliSessionIfAbsent(sessionPath, session);
+    return cached.room_id === session.room_id
+      ? cached
+      : resolveSessionForNotes(runtime, parsed, identity);
+  }
+  return session;
+}
+
+function findLiveSession(
+  runtime: Runtime,
+  sessionPath: string,
+  agentId: string,
+  contextPath: string
+): CliSession | null {
+  let session = findCliSessionForContextPath(sessionPath, agentId, contextPath);
+  while (session) {
+    // Snapshot rooms after reading this candidate so a concurrent join cannot
+    // make a new cached room look deleted against an older room snapshot.
+    const rooms = runtime.commands.listRooms({ context_path: contextPath }).rooms;
+    const roomId = session.room_id;
+    if (rooms.some((room) => room.room_id === roomId)) {
+      return session;
+    }
+    // Remove only this deleted room; a live ancestor may still carry a lease.
+    removeCliSession(sessionPath, agentId, session.room_id);
+    session = findCliSessionForContextPath(sessionPath, agentId, contextPath);
+  }
   return session;
 }
 
