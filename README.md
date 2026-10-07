@@ -188,6 +188,10 @@ harness that cached the old build.
 When cutting a release, add entries under `CHANGELOG.md`'s `Unreleased` section, then run
 `npm version <new-version>`. The lifecycle script moves those entries into the new version section,
 writes `docs/releases/<version>.md`, and adds the GitHub release link before npm commits and tags.
+Write local links relative to the repository root; the script rebases them for the release notes and
+aborts before writing anything if a local target is missing. Put code examples in fenced blocks, since
+indented lines are treated as list continuations and their links are rewritten too. Keep inline code
+spans on one line.
 
 ## Read next
 
