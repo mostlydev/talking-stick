@@ -56,6 +56,10 @@ harnesses are subsequent adapters, not implicit support.
    agents still starting are reported for inspection, not silently relaunched.
    Sharing a directory does not authorize messaging unrelated existing panes.
 4. Create a dedicated chat pane first and run `tt chat` from the canonical path.
+   Explicit new topology does not reuse a console elsewhere in the room. Reruns
+   reuse only the recorded console with pane PID/start-time proof. If no agent
+   needs launching and no local console is proven, report inspection with manual
+   chat guidance rather than creating a separate console-only tab.
    For an explicit new workspace, obtain its root pane from the create response.
    For `--new-tab`, obtain its root pane from `herdr tab create` in the caller's
    workspace. Do not create a second chat for a verified reusable launch record.

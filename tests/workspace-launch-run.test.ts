@@ -300,6 +300,61 @@ describe("tt up execution", () => {
     expect(mutations().length).toBe(before);
   });
 
+  test.each(["new-tab", "new-workspace"] as const)("%s creates its own console despite another room console, then reuses it", async (topology) => {
+    const { run, herdr, mutations, repo, dataDir } = setup();
+    herdr.runner(["pane", "run", "w1:p1", "tt chat"]);
+    const result = await run(["claude"], topology);
+    expect(result.status).toBe("launched");
+    expect(result.chat).toMatchObject({ state: "opened", pane_id: "w1:p2" });
+    expect(readLaunchRecord(dataDir, repo)?.chat_pane_id).toBe("w1:p2");
+    const before = mutations().length;
+    const repeated = await run(["claude"], topology);
+    expect(repeated.chat.state).toBe("skipped");
+    expect(repeated.status).toBe("nothing_to_do");
+    expect(mutations().length).toBe(before);
+  });
+
+  test("another room console cannot hide an ambiguous recorded console in new topology", async () => {
+    const { run, herdr, mutations, setMembers } = setup();
+    herdr.runner(["pane", "run", "w1:p1", "tt chat"]);
+    herdr.ambiguousChat = true;
+    setMembers(() => herdr.members().filter((member) => member.agent_id !== "human:op:chat:w1:p2"));
+    await run(["claude"], "new-tab");
+    // The submitted command has not registered a member.
+    herdr.panes.get("w1:p2")!.chat = false;
+    const before = mutations().length;
+    const result = await run(["claude"], "new-tab");
+    expect(result.chat.state).toBe("inspect");
+    expect(mutations().length).toBe(before);
+  });
+
+  test("a chat proof read failure retains inspection and never creates another console", async () => {
+    const { run, herdr, mutations } = setup();
+    await run(["claude"], "new-tab");
+    herdr.failProcessInfo = true;
+    const before = mutations().length;
+    const result = await run(["claude"], "new-tab");
+    expect(result.chat.state).toBe("inspect");
+    expect(mutations().length).toBe(before);
+  });
+
+  test("an old agent-only layout does not spawn a stray console-only tab", async () => {
+    const { run, herdr, repo, dataDir } = setup();
+    herdr.runner(["pane", "run", "w1:p1", "tt chat"]);
+    herdr.addAgent("w1:p9", "claude");
+    writeLaunchRecord(dataDir, { canonical_path: repo, chat_pane_id: null,
+      anchor: { state: "created", pane_id: "w1:p9" },
+      agents: { claude: { herdr_name: "old", pane_id: "w1:p9", state: "confirmed", updated_at: new Date().toISOString() } },
+      updated_at: new Date().toISOString() });
+    const result = await run(["claude"], "new-tab");
+    expect(result.chat.state).toBe("inspect");
+    expect(result.status).toBe("partial");
+    expect(result.next_steps.join("\n")).toContain("Run tt chat in the existing agents' tab");
+    expect(result.agents[0].state).toBe("skipped");
+    expect(herdr.calls.some((call) => call[1] === "start")).toBe(false);
+    expect(herdr.calls.some((call) => call[1] === "create")).toBe(false);
+  });
+
   test("closed recorded panes allow a later fresh launch", async () => {
     const { run, herdr } = setup();
     const first = await run(["claude"]);

@@ -70,6 +70,18 @@ export function isLiveMember(member: RoomMember, harness: string): boolean {
   return member.status === "active" && member.harness_name === harness;
 }
 
+// False means unproven, including read failure; it never proves the pane gone.
+export function proveChatMemberInPane(member: RoomMember, paneId: string, deps: IdentityDeps): boolean {
+  if (member.status !== "active" || member.session_kind !== "human_chat" ||
+      member.process_liveness !== "alive" || !member.pid || !member.process_started_at?.trim()) return false;
+  try {
+    return readPaneProcesses(deps.runner, paneId).some((candidate) => candidate.pid === member.pid) &&
+      deps.readStartTime(member.pid)?.trim() === member.process_started_at.trim();
+  } catch {
+    return false;
+  }
+}
+
 // Correlate by session id first; kind or cwd alone cannot tell two agents apart.
 export function findHerdrAgentForMember(
   member: RoomMember,

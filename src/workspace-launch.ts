@@ -15,6 +15,7 @@ import {
   findHerdrAgentForMember,
   isLiveMember,
   proveMemberInPane,
+  proveChatMemberInPane,
   type StartTimeReader
 } from "./launch-identity.js";
 import type { LaunchRecord } from "./launch-record.js";
@@ -210,21 +211,31 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
     };
   });
 
-  const chatMember = input.room?.members.find((member) =>
+  const chatMembers = input.room?.members.filter((member) =>
     member.status === "active" && member.session_kind === "human_chat" && CHAT_MEMBER_PATTERN.test(member.agent_id)
-  );
+  ) ?? [];
+  // A console elsewhere in the room does not supply the requested new layout.
+  // On rerun, reuse only the console our record can prove in its own pane.
+  const chatMember = input.topology === "here" ? chatMembers[0]
+    : input.record?.chat_pane_id ? chatMembers.find((member) => proveChatMemberInPane(member, input.record!.chat_pane_id!, input)) : undefined;
   let chat: WorkspaceLaunchPlan["chat"] = chatMember
     ? chatMember.process_liveness === "alive"
       ? { action: "skip", reason: `${chatMember.agent_id} is a live chat console in this room.` }
       : { action: "inspect", reason: `${chatMember.agent_id} has unconfirmed console liveness.` }
     : { action: "launch" };
-  if (!chatMember && input.record?.anchor && input.record.anchor.state !== "failed" &&
+  const oldAgentOnlyAnchor = input.topology !== "here" && input.record?.anchor?.state === "created" &&
+    !input.record.chat_state && !input.record.chat_pane_id &&
+    Object.values(input.record.agents).some((agent) => agent.pane_id === input.record!.anchor!.pane_id);
+  if (!chatMember && !oldAgentOnlyAnchor && input.record?.anchor && input.record.anchor.state !== "failed" &&
       (!input.record.anchor.pane_id || paneExists(input.runner, input.record.anchor.pane_id) !== false)) {
     chat = { action: "inspect", reason: `An earlier launch created or may have created an anchor${input.record.anchor.pane_id ? ` in pane ${input.record.anchor.pane_id}` : ""}; inspect it before opening another console. Use --forget only after checking the old panes.` };
   }
   if (!chatMember && input.record?.chat_state && input.record.chat_state !== "failed" &&
       (!input.record.chat_pane_id || paneExists(input.runner, input.record.chat_pane_id) !== false)) {
     chat = { action: "inspect", reason: `An earlier chat submission (${input.record.chat_state}) is still unconfirmed${input.record.chat_pane_id ? ` in pane ${input.record.chat_pane_id}` : ""}. Inspect it; use --forget only after checking the old panes.` };
+  }
+  if (input.topology !== "here" && chat.action === "launch" && !agents.some((agent) => agent.action === "launch")) {
+    chat = { action: "inspect", reason: "No agents need launching, so a new layout would contain only a console. Run tt chat in the existing agents' tab, or close the old agents and use --forget for a fresh layout." };
   }
   const steps = input.herdr
     ? planSteps(input.topology, input.herdr, canonicalPath, callerDirection, chat.action === "launch", agents)

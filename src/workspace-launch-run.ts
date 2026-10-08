@@ -2,13 +2,13 @@ import {
   createdPaneId,
   HerdrError,
   listHerdrAgents,
-  readPaneProcesses,
   runHerdrJson,
   type HerdrRunner
 } from "./herdr.js";
 import {
   isLiveMember,
   proveMemberInPane,
+  proveChatMemberInPane,
   type StartTimeReader
 } from "./launch-identity.js";
 import {
@@ -322,12 +322,7 @@ async function observeJoins(
     const members = deps.readMembers() ?? [];
     if (chat.state === "submitted" && chat.pane_id) {
       try {
-        const processes = readPaneProcesses(deps.runner, chat.pane_id);
-        const consoleMember = members.find((member) => member.status === "active" &&
-          member.session_kind === "human_chat" && member.process_liveness === "alive" &&
-          member.pid && member.process_started_at?.trim() &&
-          processes.some((candidate) => candidate.pid === member.pid) &&
-          deps.readStartTime(member.pid)?.trim() === member.process_started_at.trim());
+        const consoleMember = members.find((member) => proveChatMemberInPane(member, chat.pane_id!, proofDeps));
         if (consoleMember) {
           chat.state = "opened";
           chat.detail = `${consoleMember.agent_id} is confirmed running in pane ${chat.pane_id}.`;

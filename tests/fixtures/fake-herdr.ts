@@ -30,6 +30,7 @@ export class FakeHerdr {
   ambiguousChat = false;
   failFocus = false;
   omitDestinationIds = false;
+  failProcessInfo = false;
   private splits = 0;
   private nextPane = 2;
   private nextPid = 5000;
@@ -102,6 +103,7 @@ export class FakeHerdr {
       return ok({ pane: { pane_id: pane.id } });
     }
     if (group === "pane" && command === "process-info") {
+      if (this.failProcessInfo) throw new Error("process-info unavailable");
       const pane = this.panes.get(option("--pane"));
       const processes = pane?.agent ? [{ pid: pane.agent.pid, argv0: pane.agent.kind }]
         : pane?.chat && pane.chatPid ? [{ pid: pane.chatPid, argv0: "node" }] : [];
