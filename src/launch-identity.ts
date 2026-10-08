@@ -66,8 +66,11 @@ export function proveMemberInPane(
   return { confirmed: true, reason: `${member.agent_id} is confirmed in pane ${herdrAgent.pane_id}.` };
 }
 
+// A parked agent can go quiet long enough to read "inactive" while its
+// process is still running, so a verified-alive process counts too.
 export function isLiveMember(member: RoomMember, harness: string): boolean {
-  return member.status === "active" && member.harness_name === harness;
+  return member.harness_name === harness &&
+    (member.status === "active" || member.process_liveness === "alive");
 }
 
 // False means unproven, including read failure; it never proves the pane gone.

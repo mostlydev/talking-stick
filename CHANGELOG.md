@@ -13,7 +13,7 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
-- `tt up --agents claude,codex[,grok]` launches agents and a chat console in Herdr panes, and `--print` previews the exact Herdr commands first. An existing agent is skipped only when its Herdr session, pane process, and process start time match its room membership; anything unproven is reported for inspection rather than relaunched. Launches are serialized per path, recorded around every side effect, never retry an uncertain start, and wait a bounded time for each agent to join ([#91](https://github.com/mostlydev/talking-stick/issues/91)).
+- `tt up --agents claude,codex[,grok]` launches agents and a chat console in Herdr panes, and `--print` previews the exact Herdr commands first. An existing agent is skipped only when its Herdr session, pane process, and process start time match its room membership, including a parked agent whose room presence has lapsed while its process still runs; anything unproven is reported for inspection rather than relaunched. Launches are serialized per path, recorded around every side effect, never retry an uncertain start, and wait a bounded time for each agent to join ([#91](https://github.com/mostlydev/talking-stick/issues/91)).
 
 ### Fixed
 

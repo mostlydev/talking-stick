@@ -124,7 +124,7 @@ describe("tt up planning", () => {
         room_id: "room-1",
         members: [
           member("claude:aaaa", "claude"),
-          member("codex:old", "codex", "inactive"),
+          { ...member("codex:old", "codex", "inactive"), process_liveness: "gone" },
           member("human:op:chat:1234", null)
         ]
       }
@@ -181,6 +181,18 @@ describe("tt up planning", () => {
     expect(plan.agents[0].reason).toContain("confirmed in pane w1:p9");
     expect(plan.agents[1].action).toBe("launch");
     expect(plan.status).toBe("ready");
+  });
+
+  test("a parked agent whose presence lapsed is still proven and never duplicated", () => {
+    const { base, herdr } = fixture();
+    herdr.addAgent("w1:p9", "claude");
+    herdr.addAgent("w1:p8", "codex", { session: null });
+    // Overnight standby: presence TTL expired, but both processes still run.
+    const members = herdr.members().map((candidate) => ({ ...candidate, status: "inactive" as const }));
+    const plan = planWorkspaceLaunch({ ...base, room: { room_id: "room-1", members } });
+    expect(plan.agents[0]).toMatchObject({ agent: "claude", action: "skip" });
+    expect(plan.agents[1]).toMatchObject({ agent: "codex", action: "inspect" });
+    expect(plan.steps.some((step) => step.kind === "start")).toBe(false);
   });
 
   test("a different process incarnation, provisional identity, or missing Herdr session is not proof", () => {
