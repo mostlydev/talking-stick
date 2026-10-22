@@ -189,7 +189,13 @@ duplicate agents that are already running. Details:
 |---|---|
 | Standalone binary (recommended) | `curl -fsSL https://raw.githubusercontent.com/mostlydev/talking-stick/master/scripts/install.sh \| sh` |
 | A specific version | `… \| sh -s -- --version 0.30.0` |
+| Windows (x64) | Download `talking-stick_<version>_windows_x64.tar.gz` from [Releases](https://github.com/mostlydev/talking-stick/releases) (see below) |
 | From source | `git clone … && npm install && npm link` (needs Node ≥ 22) |
+
+**Windows.** The installer script does not run on Windows yet, so install the archive by hand: check
+it against `checksums.txt`, extract it with the built-in `tar -xzf`, put the folder on your `PATH`,
+then run `tt install --all`. `tt.exe` finds its skill files beside it, so keep the folder intact. A
+hand-extracted release does not update itself; download the next one to upgrade.
 
 The installer accepts `--bin-dir DIR` (default `~/.local/bin`) and `--install-dir DIR` (default
 `~/.local/share/talking-stick`). Each release lives in its own directory under `releases/`, with

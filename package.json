@@ -19,9 +19,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "node scripts/clean-dist.cjs && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "build": "node scripts/clean-dist.cjs && tsc -p tsconfig.build.json && node scripts/mark-executable.cjs",
     "postinstall": "node scripts/postinstall.cjs",
-    "prepare": "node scripts/clean-dist.cjs && tsc -p tsconfig.build.json && chmod +x dist/cli.js",
+    "prepare": "node scripts/clean-dist.cjs && tsc -p tsconfig.build.json && node scripts/mark-executable.cjs",
     "test": "vitest run",
     "test:bun": "bun test tests/bun",
     "version": "node scripts/prepare-release.mjs --from-package",

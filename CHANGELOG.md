@@ -11,6 +11,11 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- Releases include a Windows x64 standalone archive (`tt.exe`). `npm run build` and
+  `scripts/build-standalone.mjs` now run on Windows, which has no `chmod`.
+
 ### Changed
 
 - Replace pinned message bodies with a one-row unread bar at the top: the count, the

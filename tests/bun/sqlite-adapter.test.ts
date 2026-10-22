@@ -13,7 +13,12 @@ const tempFile = (name: string) => {
   roots.push(root);
   return path.join(root, name);
 };
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+// close() defers until unfinalized statements are collected, and Windows
+// cannot remove a database file that is still open.
+afterEach(() => {
+  Bun.gc(true);
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
 
 test("missing rows are undefined, runs report changes, pragma returns rows", () => {
   const db = openSqlite(tempFile("a.sqlite"));
