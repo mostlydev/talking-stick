@@ -11,12 +11,17 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.30.0] — 2026-10-22
+
+Full notes: [`docs/releases/0.30.0.md`](docs/releases/0.30.0.md).
+
 ### Added
 
-- Host-wide `/rooms` navigator: searchable rooms, activity/name/path/member sorting,
-  Active / All open views, and Tab for a lazy folder tree. Backspace raises the folder
-  root beyond the current repository. Explicit opening reanchors the local strip;
-  browsing does not join rooms or refresh presence (#168).
+- Host-wide `/rooms` navigator opens Folders first; Backspace raises its root beyond
+  the current repository. Tab shows an Active room-only tree, with shared paths compressed
+  and collapsed unread/member rollups. Search and name/path/activity/member sorting preserve
+  the hierarchy; All open includes empty rooms. Explicit opening reanchors the local strip;
+  browsing does not join rooms or refresh presence (#168, #171).
 - `/clear` clears the chat pane and saves a per-human, per-room resume marker. Reopening
   starts after it; `/older` still retrieves the archive. Earlier pins are hidden without
   acknowledging them or changing agents' receive cursors (#166).
@@ -30,17 +35,19 @@ changes will be called out under **Breaking changes**.
   mouse capture off. Fullscreen manual traversal suppresses re-pinning without acknowledging,
   and inline chat in Herdr does the same when native scrollback is scrolled past a message (#162).
 
+### Changed
+
+- Pending operator messages no longer enable terminal-wide mouse capture automatically.
+  Native scrolling and text selection work by default. Plain click acknowledgement now needs
+  explicit `tt chat --mouse`; Herdr Ctrl-click (after `tt install herdr`) and `/ack` do not
+  capture the mouse. `--no-mouse` is still supported.
+
 ### Fixed
 
-- `/rooms` opens Folders first. Rooms also uses a folder hierarchy across the host,
-  starting in Active, with compressed shared paths and collapsed unread/member rollups (#171).
 - Earlier pinned messages share a continuous drawer background, including spacing, with one
   subtle “Earlier” label. Authored messages keep their normal formatting.
 - Inline chat in Herdr buffers incoming output while browsing native scrollback, preserving
   the visible text and scroll position, then appending the complete buffered history on return.
-- Pending operator messages no longer enable terminal-wide mouse capture automatically, which
-  blocked native scrollback and text selection. Native Herdr Ctrl-click and `/ack` preserve
-  default mouse behavior; plain click acknowledgement requires explicit `tt chat --mouse`.
 
 ## [0.29.0] — 2026-10-21
 
@@ -877,6 +884,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.30.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.30.0
 [0.29.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.29.0
 [0.28.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.28.1
 [0.28.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.28.0
