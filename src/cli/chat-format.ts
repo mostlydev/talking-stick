@@ -30,6 +30,8 @@ export interface ChatFormatContext {
   delivery_icon?: (event: RoomEvent, agentId: AgentId) => string | undefined;
   pin_link?: (eventSeq: number) => string;
   excluded_events?: ReadonlySet<number>;
+  /** The message an unread review landed on; it takes the selected-row background. */
+  focused_event?: number;
   human_acknowledged?: (event: RoomEvent) => boolean;
   tracks_delivery?: (event: RoomEvent) => boolean;
 }
@@ -282,8 +284,9 @@ function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): s
       paint(context, themeStyle("path", context.color_mode), describeAttachment(attachment, index)));
     const lines = body.length > 0 ? styled.split("\n") : [];
     const rendered = [header, ...[...lines, ...images].map((line) => `  ${line}`)];
-    if (context.color && isHumanDirected(event) && !context.human_acknowledged?.(event)) {
-      const background = `\u001b[${themeStyle("attention", context.color_mode, true)}m`;
+    const focused = context.focused_event === event.event_seq;
+    if (context.color && (focused || isHumanDirected(event) && !context.human_acknowledged?.(event))) {
+      const background = `\u001b[${themeStyle(focused ? "selection" : "attention", context.color_mode, true)}m`;
       return rendered.map(line => background + line.replace(/\u001b\[0m/g, `\u001b[0m${background}`) + "\u001b[0m").join("\n");
     }
     return rendered.join("\n");

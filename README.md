@@ -27,7 +27,7 @@ The installer downloads the release for your platform, verifies its SHA-256 chec
 finds and skips the ones you don't have. In Codex, open `/hooks` once and trust the new Talking
 Stick entries. Restart any harness that was already running.
 
-In Herdr, run `tt install herdr` once to enable Ctrl-click acknowledgement of pinned messages.
+In Herdr, run `tt install herdr` once to enable Ctrl-click navigation to unread messages.
 Restart `tt chat` after linking the plugin; `/ack` also works without it.
 
 ### 2. Set up the panes
@@ -75,7 +75,7 @@ into each harness keeps them in sync. The footer shows who holds the stick.
 | `/roles` | Assign roles, edit their definitions, and set harness defaults |
 | `/clear` | Clear your room view; reopening resumes here. Saved messages remain available with `/older` |
 | Cmd+V / Ctrl+V, a dragged-in image, or `/attach <file>` | Attach an image; agents get its path and read it |
-| Ctrl-click a pin in Herdr, or `/ack` | Dismiss messages pinned at the top; normal scrolling and selection keep working |
+| Ctrl-click the ▲ unread bar in Herdr, or `/unread` | Visit missed messages oldest-first; each visited message is marked read. Esc returns live |
 | `/theme tide` | Save the palette: Lantern (warm default), Tide (teal), or Dusk (lavender) |
 | Shift+Enter or Alt+Enter | Insert a newline; the draft wraps as you type |
 | `/who`, `/help` | Members and stick holder; all commands |
