@@ -317,7 +317,9 @@ describe("tt up planning", () => {
 
   test("resolves Windows executables through PATHEXT and a Path-spelled variable", () => {
     const { base, home } = fixture({ executables: ["tt.exe", "claude.exe", "codex.cmd"] });
-    const env = { Path: base.env!.PATH, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+    // Windows matches PATHEXT case-insensitively; lowercase keeps this
+    // fixture meaningful on case-sensitive Linux filesystems too.
+    const env = { Path: base.env!.PATH, PATHEXT: ".com;.exe;.bat;.cmd" };
     const plan = planWorkspaceLaunch({ ...base, env, platform: "win32" });
     expect(plan.status).not.toBe("blocked");
     for (const name of ["tt", "claude", "codex"]) {
