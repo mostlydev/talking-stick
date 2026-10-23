@@ -616,7 +616,7 @@ export interface MessageDelivery {
   agent_id: AgentId;
   status: MessageDeliveryStatus;
   transport?: NativeWakeTransportName;
-  state?: "woken" | "queued" | "ambiguous" | "failed";
+  state?: "woken" | "queued" | "steered" | "ambiguous" | "failed";
   error?: string;
   /** Where delivery failed and why, e.g. "connect:EPERM" or "exit:1 rpc:-32603". */
   error_detail?: string;
@@ -644,7 +644,7 @@ export interface SendMessageResult {
   delivery_error?: string;
   delivery_error_detail?: string;
   delivery_transport?: NativeWakeTransportName;
-  delivery_state?: "woken" | "queued" | "ambiguous" | "failed";
+  delivery_state?: "woken" | "queued" | "steered" | "ambiguous" | "failed";
   interrupt_status?: "injected" | "unsupported";
   // Every agent this message was routed to, in send order. A single directed
   // message also fills the delivery_* fields above for existing callers.

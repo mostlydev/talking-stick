@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import net from "node:net";
 import { attachmentInstruction, payloadAttachments } from "./attachments.js";
-import { startQueuedCodexThread } from "./codex-queue-start.js";
+import { codexControlSocket, startQueuedCodexThread } from "./codex-queue-start.js";
+import { inspectCodexTurn, steerCodexThread, type CodexTurnStatus } from "./codex-steer.js";
 import type { RoomEvent } from "./types.js";
 
 export type NativeWakeTransportName = "claude_inbox" | "codex_queue" | "cmux";
 export type NativeWakeReason = "message" | "interrupt" | "turn" | "room_update";
-export type NativeWakeState = "woken" | "queued" | "ambiguous";
+export type NativeWakeState = "woken" | "queued" | "steered" | "ambiguous";
 
 export const CLAUDE_INBOX_TIMEOUT_MS = 2_000;
 export const CODEX_QUEUE_TIMEOUT_MS = 10_000;
@@ -30,6 +31,9 @@ export interface NativeWakeRequest extends NativeWakeRegistration {
   interrupt?: boolean;
   steer?: boolean;
   start_queued?: boolean;
+  /** Persist and revalidate the exact target before any steering input is sent. */
+  on_steer_target?(turnId: string): boolean;
+  can_queue?(): boolean;
 }
 
 // failed: the harness definitely did not receive the wake, so a fallback may
@@ -48,6 +52,7 @@ export interface NativeWakeResult {
 
 export interface NativeWakeTransport {
   deliver(request: NativeWakeRequest): NativeWakeResult | Promise<NativeWakeResult>;
+  inspectCodexTurn?(threadId: string, turnId: string): Promise<CodexTurnStatus>;
 }
 
 export function detectNativeWakeEndpoints(
@@ -166,10 +171,13 @@ function sanitizeWakeLabel(value: string, max = 64): string {
 export interface NativeWakeOptions {
   timeout_ms?: number;
   env?: NodeJS.ProcessEnv;
+  codex_socket?: string;
 }
 
 export function createSystemNativeWakeTransport(options: NativeWakeOptions = {}): NativeWakeTransport {
   return {
+    inspectCodexTurn: (threadId, turnId) => inspectCodexTurn(threadId, turnId,
+      options.codex_socket ?? codexControlSocket(options.env), options.timeout_ms ?? 1_000),
     deliver(request) {
       if (request.transport === "claude_inbox") return deliverClaudeInbox(request, options);
       if (request.transport === "codex_queue") return deliverCodexQueue(request, options);
@@ -219,10 +227,22 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
   });
 }
 
-export function deliverCodexQueue(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
+export async function deliverCodexQueue(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.address)) {
     return Promise.resolve({ outcome: "failed", error: "invalid_codex_thread" });
   }
+  if (request.steer || request.interrupt) {
+    const result = await steerCodexThread({ threadId: request.address, text: request.text,
+      clientMessageId: `tt-${createHash("sha256").update(request.text).digest("hex")}`,
+      socketPath: options.codex_socket ?? codexControlSocket(options.env), timeoutMs: options.timeout_ms,
+      onTarget: request.on_steer_target });
+    if (result === "steered") return { outcome: "steered" };
+    if (result === "ambiguous") return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+    if (result === "cancelled") return { outcome: "failed", error: "native_wake_unavailable", local: true };
+    // The thread is idle, the method unsupported, or no steer bytes were sent.
+    // Queuing is safe only in these definitely-unsent cases.
+  }
+  if (request.can_queue && !request.can_queue()) return { outcome: "failed", error: "native_wake_unavailable", local: true };
   return new Promise((resolve) => {
     const child = execFile("codex", ["queue", "--thread", request.address, "--message", request.text], {
       encoding: "utf8", timeout: options.timeout_ms ?? CODEX_QUEUE_TIMEOUT_MS,

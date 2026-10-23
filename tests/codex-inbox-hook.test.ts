@@ -5,6 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { TalkingStickService } from "../src/service.js";
 import { runCodexInboxHookCommand } from "../src/cli/codex-inbox-hook.js";
 import { mergeSessionHooks } from "../src/install.js";
+import type { NativeWakeRequest, NativeWakeResult, NativeWakeTransport } from "../src/native-wake.js";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); vi.unstubAllEnvs(); });
@@ -13,11 +14,13 @@ function setup(beforeJoin = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-codex-inbox-"));
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
   let now = Date.now();
-  const deliver = vi.fn(async () => ({ outcome: "queued" as const }));
+  const deliver = vi.fn(async (_request: NativeWakeRequest): Promise<NativeWakeResult> => ({ outcome: "queued" }));
+  const native = { deliver, inspectCodexTurn: undefined as NativeWakeTransport["inspectCodexTurn"] };
   const service = new TalkingStickService({ dataDir: path.join(root, "data"), hostId: "local",
-    now: () => new Date(now), processLivenessChecker: () => "alive", nativeWakeTransport: { deliver } });
+    now: () => new Date(now), processLivenessChecker: () => "alive", receiverLivenessChecker: () => "alive", nativeWakeTransport: native });
   cleanup.push(() => service.close());
   const room = service.joinPath({ agent_id: "human:operator", context_path: root });
+  service.joinPath({ agent_id: "claude:peer", context_path: root });
   const metadata = { harness_name: "codex", harness_session_id: `harness:${SESSION}`,
     harness_host_id: "local", harness_pid: 123, harness_process_started_at: "start", host_id: "local" };
   const join = () => {
@@ -29,11 +32,272 @@ function setup(beforeJoin = false) {
   const hook = (event: "UserPromptSubmit" | "Stop" | "Interrupt", overrides = {}) => service.handleCodexTurnHook({
     sessionId: SESSION, pid: 123, processStartedAt: "start", turnId: "turn-1", event, ...overrides });
   const send = (body: string, urgent = false) => service.sendMessageAndWake({ room_id: room.room_id,
-    agent_id: "human:operator", to_agent_id: "codex:test", body, ...(urgent ? { delivery_hint: "interrupt" as const } : {}) });
+    agent_id: "claude:peer", to_agent_id: "codex:test", body, ...(urgent ? { delivery_hint: "interrupt" as const } : {}) });
   const ack = (text: string) => service.acknowledgeNativeDelivery({ agent_id: "codex:test",
     harness_session_id: `harness:${SESSION}`, host_id: "local", token: text.match(/tt ack (\S+)/)![1] });
-  return { root, service, room, metadata, deliver, join, hook, send, ack, advance: (ms: number) => { now += ms; } };
+  const operator = (body: string) => service.sendMessageAndWake({ room_id: room.room_id,
+    agent_id: "human:operator", to_agent_id: "codex:test", body });
+  return { root, service, room, metadata, deliver, native, join, hook, send, operator, ack, advance: (ms: number) => { now += ms; } };
 }
+
+test("operator messages steer a busy exact session and are excluded from Stop feedback", async () => {
+  const { hook, operator, deliver, service, room, ack, advance } = setup();
+  deliver.mockImplementation(async request => { request.on_steer_target?.("turn-1"); return { outcome: "steered" }; });
+  hook("UserPromptSubmit");
+  // Even a long turn with an expired activity TTL must query the native turn.
+  advance(6 * 60_000);
+  const sent = await operator("change direction now");
+  expect(sent.delivery_state).toBe("steered");
+  expect(deliver.mock.calls[0]).toEqual([expect.objectContaining({ steer: true, text: expect.stringContaining("change direction now") })]);
+  expect(service.db.prepare("SELECT source, delivery_mode FROM native_delivery_batches").get()).toMatchObject({ source: "native", delivery_mode: "steered" });
+  expect(service.db.prepare("SELECT last_status FROM member_wake_endpoints WHERE room_id = ?").get(room.room_id)).toMatchObject({ last_status: "woken" });
+  expect(hook("Stop")).toBeNull();
+  ack(deliver.mock.calls[0][0].text);
+});
+
+test("a possibly accepted steer stays held beyond both legacy retry paths", async () => {
+  const { hook, operator, deliver, service, room, advance, ack } = setup();
+  deliver.mockImplementation(async request => { request.on_steer_target?.("turn-1"); return { outcome: "ambiguous", error: "codex_steer_unconfirmed" }; });
+  hook("UserPromptSubmit");
+  const sent = await operator("do not duplicate this correction");
+  expect(sent.delivery_state).toBe("ambiguous");
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(1);
+  const oldBatch = (service.db.prepare("SELECT batch_id FROM member_wake_endpoints").get() as { batch_id: string }).batch_id;
+  legacyExpiry(service, room.room_id);
+  expect(service.db.prepare("SELECT batch_id FROM member_wake_endpoints").get()).toMatchObject({ batch_id: oldBatch });
+  await operator("later work must not resend the first correction");
+  expect(deliver).toHaveBeenCalledTimes(1);
+  // An older chat ignores delivery_mode but still protects queued/woken rows.
+  expect(service.db.prepare("SELECT last_status, awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ last_status: "queued", awaiting_wait: 1 });
+  const continuation = hook("Stop")!;
+  expect(continuation).toContain("later work must not resend");
+  expect(continuation).toContain("do not duplicate this correction");
+  expect(continuation.match(/tt ack (\S+)/)?.[1]).toBe(deliver.mock.calls[0][0].text.match(/tt ack (\S+)/)?.[1]);
+  expect(hook("Stop")).toBeNull();
+  ack(deliver.mock.calls[0][0].text);
+  expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 0 });
+});
+
+test("an unexpected transport throw keeps uncertainty protected and session replacement remains possible", async () => {
+  const { operator, deliver, service, room } = setup();
+  deliver.mockRejectedValue(new Error("connection vanished after send"));
+  expect((await operator("uncertain correction")).delivery_state).toBe("ambiguous");
+  expect(service.db.prepare("SELECT delivery_mode FROM native_delivery_batches").get()).toMatchObject({ delivery_mode: "uncertain" });
+  service.registerNativeWakeEndpoint({ room_id: room.room_id, agent_id: "codex:test", transport: "codex_queue",
+    address: "22222222-2222-3333-4444-555555555555", secret: null, harness_session_id: `harness:${SESSION}`, host_id: "local" });
+  expect(service.db.prepare("SELECT awaiting_wait, batch_id, generation FROM member_wake_endpoints").get())
+    .toMatchObject({ awaiting_wait: 0, batch_id: null, generation: 2 });
+});
+
+test("standby preserves an unread steering hold, and a real read permits rearming", async () => {
+  const { operator, deliver, service, room } = setup();
+  deliver.mockImplementation(async request => { request.on_steer_target?.("turn-1"); return { outcome: "steered" }; });
+  await operator("held while parked");
+  service.registerStandby({ room_id: room.room_id, agent_id: "codex:test", transport: "manual" });
+  expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 1 });
+  await operator("new work while parked");
+  expect(deliver).toHaveBeenCalledTimes(1);
+  await service.waitForEvents({ room_id: room.room_id, agent_id: "codex:test", after_event_seq: 0, max_wait_ms: 0 });
+  service.registerStandby({ room_id: room.room_id, agent_id: "codex:test", transport: "manual" });
+  expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 0 });
+  await operator("fresh correction");
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(deliver.mock.calls[1][0].text).not.toContain("held while parked");
+});
+
+test("without hooks an uncertain steer reuses its original token only after the exact turn ends", async () => {
+  const { operator, deliver, native, service, room, advance, ack } = setup();
+  let status: "active" | "ended" | "unknown" = "active";
+  native.inspectCodexTurn = vi.fn(async () => status);
+  deliver.mockImplementationOnce(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  await operator("recover this once the turn ends");
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(1);
+  expect(native.inspectCodexTurn).toHaveBeenCalledWith(SESSION, "actual-turn");
+  status = "unknown"; advance(30_001);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(1);
+  status = "ended";
+  await service.flushWakes(room.room_id); // inspection is rate-bounded locally too
+  expect(deliver).toHaveBeenCalledTimes(1);
+  advance(30_001);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(deliver.mock.calls[1][0].steer).toBe(false);
+  expect(deliver.mock.calls[1][0].text).toBe(deliver.mock.calls[0][0].text);
+  expect(ack(deliver.mock.calls[1][0].text).status).toBe("acknowledged");
+  expect(ack(deliver.mock.calls[0][0].text).status).toBe("already_acknowledged");
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+});
+
+function legacyExpiry(service: TalkingStickService, roomId: string) {
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  // The unmodified 0.30.0 new-event expiry statement, not the new guarded code.
+  service.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
+    WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1 AND (
+      SELECT MAX(COALESCE(batch_started_at, last_attempt_at, recorded_at)) FROM member_wake_endpoints
+      WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1) <= ?`)
+    .run(roomId, "codex:test", roomId, "codex:test", future);
+  // The unmodified 0.30.0 silence retry, which also reopens wake_pending.
+  service.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL, wake_pending = 1
+    WHERE awaiting_wait = 1 AND COALESCE(batch_started_at, last_attempt_at, recorded_at) <= ?
+      AND NOT EXISTS (SELECT 1 FROM member_wake_endpoints o WHERE o.room_id = member_wake_endpoints.room_id
+        AND o.agent_id = member_wake_endpoints.agent_id AND o.awaiting_wait = 1
+        AND (o.last_status IN ('queued', 'woken') OR COALESCE(o.batch_started_at, o.last_attempt_at, o.recorded_at) > ?))
+      AND EXISTS (SELECT 1 FROM native_event_receipts n WHERE n.room_id = member_wake_endpoints.room_id
+        AND n.agent_id = member_wake_endpoints.agent_id AND n.consumed_at IS NULL)`).run(future, future);
+}
+
+test("an ambiguous recovery send stays held across every expiry path and is never replayed", async () => {
+  const { operator, deliver, native, service, room, advance, ack } = setup();
+  native.inspectCodexTurn = vi.fn(async () => "ended" as const);
+  deliver.mockImplementationOnce(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  deliver.mockImplementationOnce(async () => ({ outcome: "ambiguous", error: "codex_queue_unconfirmed" }));
+  await operator("recover at most once");
+  advance(30_001);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(service.db.prepare("SELECT delivery_mode FROM native_delivery_batches").get()).toMatchObject({ delivery_mode: "recovery_uncertain" });
+  expect(service.db.prepare("SELECT last_status FROM member_wake_endpoints").get()).toMatchObject({ last_status: "queued" });
+  const held = (service.db.prepare("SELECT batch_id FROM member_wake_endpoints").get() as { batch_id: string }).batch_id;
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  legacyExpiry(service, room.room_id);
+  const later = await operator("a later message must not unlock a second replay");
+  expect(later.delivery_state).not.toBe("steered");
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(native.inspectCodexTurn).toHaveBeenCalledTimes(1);
+  expect(service.db.prepare("SELECT batch_id, awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ batch_id: held, awaiting_wait: 1 });
+  ack(deliver.mock.calls[0][0].text);
+  expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 0 });
+});
+
+test("a process that dies mid-recovery leaves the batch held, not open to a blind retry", async () => {
+  const { operator, deliver, service, room, advance } = setup();
+  deliver.mockImplementationOnce(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  await operator("crashed while recovering");
+  service.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'recovering'").run();
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  legacyExpiry(service, room.room_id);
+  await operator("still no blind replay");
+  expect(deliver).toHaveBeenCalledTimes(1);
+  expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 1 });
+});
+
+test("a sender that dies mid-steer is recovered only after the RPC deadline and the exact turn ends", async () => {
+  const { operator, deliver, native, service, room, advance } = setup();
+  native.inspectCodexTurn = vi.fn(async () => "ended" as const);
+  deliver.mockImplementationOnce(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  await operator("sender died before recording its result");
+  // Reproduce the dead sender: still 'steering', captured at setup time.
+  service.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'steering', recovery_checked_at = ?")
+    .run(new Date(Date.now() - 1_000).toISOString());
+  await service.flushWakes(room.room_id);
+  expect(native.inspectCodexTurn).not.toHaveBeenCalled();
+  advance(30_001);
+  await service.flushWakes(room.room_id);
+  expect(native.inspectCodexTurn).toHaveBeenCalledWith(SESSION, "actual-turn");
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(deliver.mock.calls[1][0].text).toBe(deliver.mock.calls[0][0].text);
+});
+
+test("a stale steering reservation without a captured target is released as unsent", async () => {
+  const { operator, deliver, native, service, room, advance } = setup();
+  native.inspectCodexTurn = vi.fn(async () => "ended" as const);
+  deliver.mockImplementationOnce(async () => ({ outcome: "ambiguous", error: "codex_steer_unconfirmed" }));
+  await operator("no target was ever recorded");
+  service.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'steering'").run();
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(1);
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  expect(native.inspectCodexTurn).not.toHaveBeenCalled();
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(deliver.mock.calls[1][0].text).toContain("no target was ever recorded");
+});
+
+test("a concurrent acknowledgement prevents recovery after turn inspection", async () => {
+  const { operator, deliver, native, service, room, ack } = setup();
+  deliver.mockImplementation(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  await operator("ack while inspecting");
+  let finish!: (value: "ended") => void;
+  native.inspectCodexTurn = () => new Promise(resolve => { finish = resolve; });
+  const flushing = service.flushWakes(room.room_id);
+  ack(deliver.mock.calls[0][0].text);
+  finish("ended"); await flushing;
+  expect(deliver).toHaveBeenCalledTimes(1);
+});
+
+test("a busy model is steered even when its background wait process receives the event first", async () => {
+  const { operator, deliver, service, room } = setup();
+  service.registerReceiver({ room_id: room.room_id, agent_id: "codex:test", receiver_id: "background",
+    host_id: "local", pid: 999, process_started_at: "receiver-start", cursor_event_seq: 0 });
+  let proceed!: () => void;
+  const barrier = new Promise<void>(resolve => { proceed = resolve; });
+  let targetAllowed = false;
+  deliver.mockImplementation(async request => {
+    await barrier;
+    targetAllowed = request.on_steer_target?.("turn-1") ?? false;
+    expect(request.can_queue?.()).toBe(false);
+    return { outcome: "steered" };
+  });
+  const sending = operator("stop coding and read the operator now");
+  expect(deliver).toHaveBeenCalledTimes(1);
+  await service.waitForEvents({ room_id: room.room_id, agent_id: "codex:test", after_event_seq: 0, max_wait_ms: 0 });
+  proceed(); await sending;
+  expect(targetAllowed).toBe(true);
+  expect(deliver.mock.calls[0][0]).toMatchObject({ steer: true, text: expect.stringContaining("stop coding and read the operator now") });
+});
+
+test("later operator corrections flush after the first exact receipt is acknowledged", async () => {
+  const { operator, deliver, ack, service, room } = setup();
+  deliver.mockImplementation(async request => { request.on_steer_target?.("turn-1"); return { outcome: "steered" }; });
+  await operator("first correction");
+  await operator("second correction");
+  expect(deliver).toHaveBeenCalledTimes(1);
+  ack(deliver.mock.calls[0][0].text);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+  const next = deliver.mock.calls[1][0].text;
+  expect(next).toContain("second correction");
+  expect(next).not.toContain("first correction");
+});
+
+test("Stop cannot reserve the in-flight steer, and a concurrent wait remains authoritative", async () => {
+  const { hook, operator, deliver, service, room } = setup();
+  let finish!: (value: { outcome: "steered" }) => void;
+  deliver.mockImplementation(() => new Promise<NativeWakeResult>(resolve => { finish = resolve; }));
+  hook("UserPromptSubmit");
+  const sending = operator("in flight");
+  expect(deliver).toHaveBeenCalledTimes(1);
+  expect(hook("Stop")).toBeNull();
+  const events = await service.waitForEvents({ room_id: room.room_id, agent_id: "codex:test", after_event_seq: 0, max_wait_ms: 0 });
+  expect(events.events.some(event => event.payload?.body === "in flight")).toBe(true);
+  finish({ outcome: "steered" }); await sending;
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(1);
+});
 
 test("an active turn reads through wait and never gets a stale Stop envelope", async () => {
   const { service, room, hook, send, deliver } = setup();
@@ -194,13 +458,13 @@ test("one Stop can deliver multiple repository rooms without skipping their even
   const { service, metadata, hook, send, deliver } = setup();
   const second = fs.mkdtempSync(path.join(os.tmpdir(), "tt-codex-second-"));
   cleanup.unshift(() => fs.rmSync(second, { recursive: true, force: true }));
-  const other = service.joinPath({ context_path: second, agent_id: "human:other" });
+  const other = service.joinPath({ context_path: second, agent_id: "claude:other" });
   service.joinPath({ context_path: second, agent_id: "codex:test", process_metadata: metadata });
   service.registerNativeWakeEndpoint({ room_id: other.room_id, agent_id: "codex:test", transport: "codex_queue",
     address: SESSION, secret: null, harness_session_id: `harness:${SESSION}`, host_id: "local" });
   hook("UserPromptSubmit");
   await send("repo one");
-  await service.sendMessageAndWake({ room_id: other.room_id, agent_id: "human:other", to_agent_id: "codex:test", body: "repo two" });
+  await service.sendMessageAndWake({ room_id: other.room_id, agent_id: "claude:other", to_agent_id: "codex:test", body: "repo two" });
   await send("repo one again");
   const text = hook("Stop")!;
   expect(text).toContain("  repo one");

@@ -253,8 +253,9 @@ tt wait --json
 - `--interrupt` forces one native submission per message, even with a live listener or an earlier
   unread wake. Claude Code receives the urgent prompt in its active turn at the next tool boundary,
   so a working session is steered without stopping; a single long-running tool call finishes first.
-  Codex queues the prompt for after its current turn; its queue CLI can't steer an active turn.
-  Results report `interrupt_status: injected` for Claude or `unsupported` for transports that can't
+  Codex uses native `turn/steer` for the exact active daemon-backed turn, with queue fallback
+  only when no steer was accepted.
+  Results report `interrupt_status: injected` for Claude or accepted Codex steering, and `unsupported` for transports that can't
   reach an active turn. Pending urgent deliveries expire after 60 seconds rather than interrupting
   unrelated later work; the room message remains readable. These statuses describe the request, not
   proof that the harness acted on it.
@@ -328,7 +329,7 @@ keystrokes are typed and no model polls while idle.
 | Harness | Transport | Registered from |
 | --- | --- | --- |
 | Claude Code (v2.1.224+, macOS/Linux) | The session's inbox socket | `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN` |
-| Codex (tested with 0.157.1) | `codex queue --thread <id>`; start the stored submission through the local app server when the thread has no active turn. With trusted turn hooks, messages that arrive mid-turn wait for the turn's end instead | `CODEX_THREAD_ID` |
+| Codex (CLI 0.163.0, daemon 0.164.0 live-tested) | `turn/steer` for operator and urgent input to the exact active turn; `codex queue --thread <id>` when idle or steering is definitely unavailable. Other peer events use trusted Stop hooks | `CODEX_THREAD_ID` |
 | Any harness in cmux | `cmux send` plus Enter, only for parked standby or an explicit interrupt | `cmux identify` |
 
 Grok Build receives events through active-turn hooks while its session is running, which is not an
@@ -361,7 +362,7 @@ OpenCode, and Antigravity wake only through cmux.
 - `tt msg send` reports `delivery_status` plus `delivery_transport` and `delivery_state`.
   `delivery_state` is `queued` when the transport submitted the prompt (the socket write flushed, or
   `codex queue` exited 0; Claude may still hold or refuse it per its inbound settings), `woken`
-  when Codex accepted a queued submission as a new turn, `ambiguous`
+  when Codex accepted a queued submission as a new turn, `steered` when its active turn accepted input, `ambiguous`
   when a timeout or cut-off write left it unknown, and `failed` when every eligible transport
   definitely failed. A definite failure releases the batch so a later sender can retry. When a
   failure is this sender's own (a socket connect it was denied, or a `codex` it could not launch),
@@ -392,12 +393,44 @@ OpenCode, and Antigravity wake only through cmux.
 - API users: service writes queue wakes, and `TalkingStickCommands.flushWakes()` or
   `sendMessageAndWake()` delivers them asynchronously.
 
+An accepted steer is not a hard stop and is not proof that the agent acted. Explicit message-free
+cancellation uses `turn/interrupt`; the daemon helper reports success only after the exact turn's
+read-only turn listing (or a matching completion notification) says `interrupted`. An idle native
+result never falls through to pane Escape; a pane-key fallback only confirms key delivery.
+Native steering never resumes an unloaded thread or changes its model/settings. A disconnect or
+unknown error after sending is `ambiguous`: the same batch stays held, including across old
+chat processes' retry paths. While that exact target turn is active or unknown, it is not
+blindly queued again after five minutes. Once its matching Stop hook runs, or read-only daemon
+inspection proves that target ended, unread input can be recovered with the original token and
+event numbers. This is at-least-once delivery: deduplicate work by room and event number, and
+acknowledging either copy consumes both. Inspection is bounded and locally limited to once per
+30 seconds per batch. There is no background watchdog: without Codex hooks, inspection runs
+only when a later room write or flush happens. Recovery replays at most once. If the recovery
+send is itself ambiguous, or the process dies while recovering, the batch stays held until the
+agent reads or acknowledges it, or its session is replaced. A sender that dies mid-steer leaves
+the batch reserved. If it had captured a target turn, recovery treats it as uncertain 30
+seconds later. If it had not, no input was sent, and normal delivery retries after five minutes.
+A cancellation readback that does not list the target keeps polling until the helper's
+timeout; a missing row is not evidence that the turn stopped. Standby alone does not release
+the hold or replay its input. An explicit urgent message
+remains an independent route while a hold is outstanding. Later ordinary input coalesces until receipt; a new explicit urgent
+message has an independent delivery reservation. `--no-daemon`, remote and desktop sessions
+require a reachable matching control endpoint; queue fallback remains available when nothing
+was sent. Steering latency during arbitrary long-running tools has not been established by
+the same-turn marker probe.
+
 ## Native event delivery
 
 `tt install codex` also installs turn hooks; review and trust the new entries in Codex `/hooks`.
-Once a session's `UserPromptSubmit` hook has run, ordinary room events stay in the unread store
-while Codex is active. At `Stop`, the hook continues the turn with only events still unread and
-unreserved; events already read by `tt wait` do not produce stale queued prompts. A high-water
+Once a session's `UserPromptSubmit` hook has run, ordinary peer events stay in the unread store
+while Codex is active. Operator messages and urgent prompts instead attempt native steering
+against the daemon's live turn ID, independent of the activity-hook TTL. Their receipt batch is
+reserved before sending, so Stop cannot race the initial attempt. An uncertain attempt may
+be recovered at the matching target's Stop boundary with that original token. At `Stop`, the hook continues the turn with only events still unread and
+unreserved; events already returned by `tt wait` do not produce stale queued prompts. A live
+background wait is not model-awareness evidence: operator input still attempts same-turn
+steering while that receiver is present. Queue fallback is suppressed when a live receiver or
+trusted active Stop hook already owns delivery. A high-water
 mark prevents repeated continuations for an unacknowledged envelope. `Interrupt` clears active
 state. Hooks never join rooms, claim the stick, create a database, or migrate it.
 
@@ -451,7 +484,7 @@ it. Scrolling, selection, and copying stay with the terminal.
 | --- | --- |
 | Plain text or `/all <message>` | Broadcast to the room |
 | `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case. Mention several agents anywhere in the text: `@claude @codex, review this`. `@everyone` (or `@all`) addresses every agent in the room. Leading mentions are stripped from the message; an unknown `@name` blocks the whole send; email addresses and `` `code` `` spans are not mentions |
-| `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Steer an agent now. A busy Claude Code session gets the prompt at its next tool step and changes course without stopping; Codex gets it after its current turn. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
+| `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Steer an agent now. A busy Claude Code session gets the prompt at its next tool step and changes course without stopping; Codex steers its active daemon-backed turn, or queues when steering is definitely unavailable. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
 | `/who` | Show members and the current stick holder |
 | `/members` | Choose an exact member with ↑↓ and Enter, then message or remove it. Removal requires confirmation and does not stop the harness |
 | `/kick [--force] <agent> [reason]` | Remove one exact ID or unique prefix from the room. Live or unconfirmed processes require `--force`; consoles cannot be kicked. Kicking only removes room membership: the harness keeps running, and its next `tt wait` can rejoin it |

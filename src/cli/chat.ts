@@ -197,6 +197,7 @@ export function describeChatDelivery(delivery: MessageDelivery): string {
   if (delivery.state === "queued" && delivery.interrupt_status === "unsupported") return "queued; immediate interrupt unavailable";
   if (delivery.state === "queued" && delivery.interrupt_status === "injected") return "urgent prompt injected";
   if (delivery.state === "ambiguous") return "wake unconfirmed";
+  if (delivery.state === "steered") return "steering accepted";
   if (delivery.state === "woken") return "turn started";
   if (delivery.state === "queued") return "queued";
   if (delivery.status === "pending" || delivery.status === "endpoint") return "queued";
@@ -1789,11 +1790,14 @@ export async function runChatSession(
           if (step.kind === "unsupported") return;
           if (step.kind === "codex") {
             const member = members.find((candidate) => candidate.agent_id === step.agent_id);
-            const paneResult = member ? interruptCodexHerdr(member) : "unavailable";
-            const result = paneResult === "unavailable"
-              ? await interruptCodexThread(step.thread_id) : paneResult;
+            let result = await interruptCodexThread(step.thread_id);
+            let keySent = false;
+            if (["unavailable", "failed"].includes(result) && member) {
+              const paneResult = interruptCodexHerdr(member);
+              if (paneResult !== "unavailable") { result = paneResult; keySent = paneResult === "sent"; }
+            }
             if (result !== "idle") interruptIndicators.set(step.agent_id, {
-              kind: "timed", label: result === "sent" ? "interrupted" : `interrupt ${result}`,
+              kind: "timed", label: keySent ? "cancel requested" : result === "sent" ? "interrupted" : `interrupt ${result}`,
               until: Date.now() + 3_000
             });
             return;
