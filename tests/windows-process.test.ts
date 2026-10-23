@@ -51,6 +51,26 @@ describe("Windows process identity", () => {
     } finally { clock.mockRestore(); }
   });
 
+  test("a writer reads the cached snapshot and never probes inside its transaction", () => {
+    let now = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const execFile = vi.fn(() => JSON.stringify([row]));
+    let inTransaction = true;
+    try {
+      const inspector = createSystemProcessInspector({ platform: "win32", processExists: () => true, execFile,
+        canRefresh: () => !inTransaction });
+      expect(inspector.inspect(42)).toBeUndefined();
+      expect(execFile).not.toHaveBeenCalled();
+      inTransaction = false;
+      expect(inspector.inspect(42)).toEqual(row);
+      now = 5_001;
+      inTransaction = true;
+      // Stale but present: reuse it under the lock rather than spawn PowerShell.
+      expect(inspector.inspect(42)).toEqual(row);
+      expect(execFile).toHaveBeenCalledTimes(1);
+    } finally { clock.mockRestore(); }
+  });
+
   test("quoted paths and Windows extensions normalize without weakening POSIX names", () => {
     expect(executableName(commandExecutable(row.command), "win32")).toBe("codex");
     expect(executableName("C:\\apps\\CLAUDE.EXE", "win32")).toBe("claude");
