@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { openSqlite } from "../../src/sqlite.js";
 import { openDatabase, withImmediateTransaction } from "../../src/db.js";
+import { TalkingStickService } from "../../src/service.js";
 
 const roots: string[] = [];
 const tempFile = (name: string) => {
@@ -62,7 +63,9 @@ test("close finalizes retained statements and releases the file at once", () => 
   const db = openDatabase({ dbPath: file });
   const retained = db.prepare("SELECT count(*) AS n FROM path_rooms");
   expect(retained.get()).toEqual({ n: 0 });
+  expect(db.open).toBe(true);
   db.close();
+  expect(db.open).toBe(false);
   expect(() => retained.get()).toThrow();
   // Windows refuses to remove a file that is still open.
   fs.rmSync(path.dirname(file), { recursive: true, force: true });
@@ -78,4 +81,13 @@ test("the real schema migrates and immediate transactions roll back on error", (
   // A failed transaction leaves the connection usable.
   expect(withImmediateTransaction(db, () => 7)).toBe(7);
   db.close();
+});
+
+test("closing a service releases its standalone database file", () => {
+  const dataDir = path.dirname(tempFile("unused"));
+  const service = new TalkingStickService({ dataDir, hostId: "local" });
+  service.joinPath({ agent_id: "claude:bun", context_path: dataDir });
+  service.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  expect(fs.existsSync(dataDir)).toBe(false);
 });

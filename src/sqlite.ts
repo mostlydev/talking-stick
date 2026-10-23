@@ -61,6 +61,7 @@ type BunDatabaseConstructor = new (file: string, options?: { strict?: boolean; r
 // better-sqlite3 does.
 export function wrapBunDatabase(db: BunDatabase): SqliteDatabase {
   const live = new Set<WeakRef<BunStatement>>();
+  let open = true;
   const collected = new FinalizationRegistry<WeakRef<BunStatement>>((ref) => live.delete(ref));
   const prepare = (sql: string) => {
     const statement = db.prepare(sql);
@@ -81,6 +82,10 @@ export function wrapBunDatabase(db: BunDatabase): SqliteDatabase {
     get inTransaction() {
       return db.inTransaction;
     },
+    // TalkingStickService.close() closes only an open database.
+    get open() {
+      return open;
+    },
     exec(sql: string) {
       db.exec(sql);
       return wrapper;
@@ -97,6 +102,7 @@ export function wrapBunDatabase(db: BunDatabase): SqliteDatabase {
       for (const ref of live) ref.deref()?.finalize();
       live.clear();
       db.close();
+      open = false;
       return wrapper;
     }
   };
