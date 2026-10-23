@@ -1868,7 +1868,6 @@ export async function runChatSession(
     }
     const herdrSocket = options.herdr?.socket_path;
     if (inline && terminal && options.herdr && herdrSocket) {
-      options.input.on("data", resumeNativeScrollOnInput);
       // Without the stream, pending messages simply pin when pushed off screen.
       nativeScroll = subscribePaneScroll({ socketPath: herdrSocket, paneId: options.herdr.pane_id, onScroll: scroll => {
         if (closed) return;
@@ -1986,6 +1985,11 @@ export async function runChatSession(
           return matches[Math.min(index, matches.length - 1)]?.draft ?? null;
         }
       });
+      // A data listener starts input flowing. On Windows, a cooked read can
+      // discard the pending resize from `tt up` before raw mode is enabled.
+      // Attach only after the editor owns raw mode, preserving its restoration
+      // on exit. Still resume the viewport before the editor handles each key.
+      if (nativeScroll) options.input.prependListener("data", resumeNativeScrollOnInput);
       drawComposer();
     } else {
       rl = readline.createInterface({ input: options.input, terminal: false });

@@ -13,6 +13,9 @@ changes will be called out under **Breaking changes**.
 
 ### Fixed
 
+- Windows chat uses the resized pane width immediately after `tt up`, by enabling
+  raw input before attaching the native-scroll input listener.
+
 - Windows `tt up` can inspect process creation times and ancestry, recognize quoted
   executable paths and `.exe` names, and confirm live agents and chat consoles (#175).
   Herdr launch preflight now reports missing session integrations with install commands.
