@@ -176,6 +176,17 @@ room per repository at a time. See [Rooms and paths](docs/reference.md#rooms-and
 
 ### Herdr and tmux
 
+Before launching with Herdr, install its session integrations for each requested agent,
+for example `herdr integration install claude` and `herdr integration install codex`.
+These are separate from `tt install`: Herdr needs them to report the pane's session ID.
+`tt up --print` checks `herdr integration status` and reports missing or unverified
+integrations before opening panes. This requirement does not apply to tmux.
+
+On Windows, join confirmation also requires permission to inspect local processes
+through PowerShell/CIM. A restricted account that cannot inspect the harness process
+remains unconfirmed; `tt up` never substitutes a matching executable name for proof
+of the session, PID, and process creation time.
+
 Inside Herdr, or a tmux pane, `tt up` turns the current pane into the console and opens a column of agents beside
 it: Claude, Codex, and Antigravity by default, when installed. `--agents claude,codex` picks agents,
 `--print` previews, and `--new-tab` or `--new-workspace` opens a separate tab or workspace. Each

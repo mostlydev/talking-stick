@@ -59,6 +59,23 @@ function member(agentId: string, harness: string | null, status = "active"): Roo
 }
 
 describe("tt up planning", () => {
+  test("preflights Herdr integrations and leaves tmux independent", () => {
+    const { base, herdr } = fixture();
+    herdr.integrationStatus = "claude: current (v11) (hook)\ncodex: not installed (hook)";
+    const missing = planWorkspaceLaunch({ ...base, platform: "win32" });
+    expect(missing.status).toBe("blocked");
+    expect(missing.checks.find((check) => check.name === "codex herdr integration"))
+      .toMatchObject({ status: "failed", remedy: "herdr integration install codex" });
+    expect(planWorkspaceLaunch({ ...base, platform: "linux" }).checks
+      .find((check) => check.name === "codex herdr integration")?.status).toBe("uncertain");
+    herdr.integrationStatus = "claude: outdated (v1) (hook)\ncodex: current (v10) (hook)";
+    expect(planWorkspaceLaunch(base).checks.find((check) => check.name === "claude herdr integration")?.status).toBe("uncertain");
+    herdr.integrationStatus = "unrecognized output";
+    expect(planWorkspaceLaunch(base).checks.find((check) => check.name === "codex herdr integration")?.status).toBe("uncertain");
+    herdr.calls.length = 0;
+    expect(planWorkspaceLaunch({ ...base, backend: "tmux" }).checks.some((check) => check.name.includes("integration"))).toBe(false);
+    expect(herdr.calls.some((args) => args[0] === "integration")).toBe(false);
+  });
   test("defaults to launchers with both a binary and an installed skill", () => {
     const { base, home } = fixture({ executables: ["tt", "claude", "codex", "grok", "opencode", "agy"] });
     expect(installedLaunchAgents(base.env, home)).toEqual(["claude", "codex", "antigravity"]);
@@ -86,7 +103,7 @@ describe("tt up planning", () => {
     const { base, calls, repo, home } = fixture();
     const plan = planWorkspaceLaunch(base);
 
-    expect(calls).toEqual([["pane", "layout", "--pane", "w1:p1"], ["agent", "list"]]);
+    expect(calls).toEqual([["pane", "layout", "--pane", "w1:p1"], ["agent", "list"], ["integration", "status"]]);
     expect(plan.status).toBe("ready");
     expect(plan.chat).toEqual({ action: "launch" });
     expect(plan.agents.map((agent) => [agent.agent, agent.action, agent.prompt_delivery])).toEqual([

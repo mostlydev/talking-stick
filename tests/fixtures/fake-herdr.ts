@@ -35,6 +35,8 @@ export class FakeHerdr {
   failProcessInfo = false;
   failSendKeys = false;
   agentStatus: string | null = "idle";
+  integrationStatus = ["claude", "codex", "grok", "opencode", "antigravity-cli"]
+    .map((kind) => `${kind}: current (v1) (test-hook)`).join("\n");
   private splits = 0;
   private nextPane = 2;
   private nextPid = 5000;
@@ -89,6 +91,8 @@ export class FakeHerdr {
     const [group, command] = args;
     const option = (name: string) => args[args.indexOf(name) + 1];
     const ok = (result: unknown) => JSON.stringify({ result });
+
+    if (group === "integration" && command === "status") return this.integrationStatus;
 
     if (group === "pane" && command === "layout") {
       return ok({ layout: { panes: [{ pane_id: option("--pane"), rect: this.callerRect }] } });

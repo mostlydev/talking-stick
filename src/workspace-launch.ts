@@ -243,6 +243,28 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
     };
   });
 
+  if (backend === "herdr") {
+    let integrationStatus = "";
+    try {
+      integrationStatus = input.runner(["integration", "status"]);
+    } catch {
+      // Older Herdr builds may not support this diagnostic.
+    }
+    for (const agent of input.agents) {
+      const kind = agent === "antigravity" ? "antigravity-cli" : agent;
+      const line = integrationStatus.split(/\r?\n/).find((value) => value.startsWith(`${kind}: `));
+      const state = line?.slice(kind.length + 2) ?? "";
+      const current = /^current\b/.test(state);
+      const missing = /^not installed\b/.test(state);
+      checks.push({ name: `${agent} herdr integration`,
+        status: current ? "ok" : missing && platform === "win32" ? "failed" : "uncertain",
+        detail: current ? line! : missing
+          ? `Herdr's ${kind} integration is not installed; pane session identity cannot be confirmed.`
+          : `Could not verify a current Herdr ${kind} integration${line ? `: ${state}` : "."}`,
+        ...(!current ? { remedy: `herdr integration install ${kind}` } : {}) });
+    }
+  }
+
   const chatMembers = input.room?.members.filter((member) =>
     member.status === "active" && member.session_kind === "human_chat" && CHAT_MEMBER_PATTERN.test(member.agent_id)
   ) ?? [];

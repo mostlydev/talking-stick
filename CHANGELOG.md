@@ -11,6 +11,12 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- Windows `tt up` can inspect process creation times and ancestry, recognize quoted
+  executable paths and `.exe` names, and confirm live agents and chat consoles (#175).
+  Herdr launch preflight now reports missing session integrations with install commands.
+
 ### Added
 
 - Releases include a Windows x64 standalone archive (`tt.exe`). `npm run build` and

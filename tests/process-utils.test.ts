@@ -112,6 +112,7 @@ describe("createSystemProcessInspector", () => {
     let calls = 0;
     const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
     const inspector = createSystemProcessInspector({ cacheTtlMs: 1_000,
+      platform: "linux",
       processExists: () => true,
       execFile() {
         calls++;
@@ -130,6 +131,7 @@ describe("createSystemProcessInspector", () => {
     let calls = 0;
     const inspector = createSystemProcessInspector({
       cacheTtlMs: 1_000,
+      platform: "linux",
       processExists: () => true,
       execFile(_file, args, options) {
         calls += 1;
