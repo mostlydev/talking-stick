@@ -395,12 +395,16 @@ OpenCode, and Antigravity wake only through cmux.
 
 An accepted steer is not a hard stop and is not proof that the agent acted. Explicit message-free
 cancellation uses `turn/interrupt`; the daemon helper reports success only after the exact turn's
-`turn/completed` notification says `interrupted`. A pane-key fallback only confirms key delivery.
+read-only turn listing (or a matching completion notification) says `interrupted`. An idle native
+result never falls through to pane Escape; a pane-key fallback only confirms key delivery.
 Native steering never resumes an unloaded thread or changes its model/settings. A disconnect or
 unknown error after sending is `ambiguous`: the same batch stays held, including across old
-chat processes' retry paths. Use an explicit wait/ack to consume it; it is not blindly queued
-again after five minutes. Standby alone does not release a held steering batch or replay its
-input; consume the receipts first to rearm ordinary delivery. An explicit urgent message
+chat processes' retry paths. While that exact target turn is active or unknown, it is not
+blindly queued again after five minutes. Once its matching Stop hook runs, or read-only daemon
+inspection proves that target ended, unread input can be recovered with the original token and
+event numbers. This is at-least-once delivery: deduplicate work by room and event number, and
+acknowledging either copy consumes both. Inspection is bounded and locally limited to once per
+30 seconds per batch. Standby alone does not release the hold or replay its input. An explicit urgent message
 remains an independent route while a hold is outstanding. Later ordinary input coalesces until receipt; a new explicit urgent
 message has an independent delivery reservation. `--no-daemon`, remote and desktop sessions
 require a reachable matching control endpoint; queue fallback remains available when nothing
@@ -413,8 +417,12 @@ the same-turn marker probe.
 Once a session's `UserPromptSubmit` hook has run, ordinary peer events stay in the unread store
 while Codex is active. Operator messages and urgent prompts instead attempt native steering
 against the daemon's live turn ID, independent of the activity-hook TTL. Their receipt batch is
-reserved before sending, so Stop cannot deliver it again. At `Stop`, the hook continues the turn with only events still unread and
-unreserved; events already read by `tt wait` do not produce stale queued prompts. A high-water
+reserved before sending, so Stop cannot race the initial attempt. An uncertain attempt may
+be recovered at the matching target's Stop boundary with that original token. At `Stop`, the hook continues the turn with only events still unread and
+unreserved; events already returned by `tt wait` do not produce stale queued prompts. A live
+background wait is not model-awareness evidence: operator input still attempts same-turn
+steering while that receiver is present. Queue fallback is suppressed when a live receiver or
+trusted active Stop hook already owns delivery. A high-water
 mark prevents repeated continuations for an unacknowledged envelope. `Interrupt` clears active
 state. Hooks never join rooms, claim the stick, create a database, or migrate it.
 

@@ -1681,7 +1681,7 @@ export async function runChatSession(
             const member = members.find((candidate) => candidate.agent_id === step.agent_id);
             let result = await interruptCodexThread(step.thread_id);
             let keySent = false;
-            if (["idle", "unavailable", "failed"].includes(result) && member) {
+            if (["unavailable", "failed"].includes(result) && member) {
               const paneResult = interruptCodexHerdr(member);
               if (paneResult !== "unavailable") { result = paneResult; keySent = paneResult === "sent"; }
             }

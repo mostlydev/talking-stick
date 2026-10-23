@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { WebSocketServer } from "ws";
-import { steerCodexThread } from "../src/codex-steer.js";
+import { inspectCodexTurn, steerCodexThread } from "../src/codex-steer.js";
 import { deliverCodexQueue } from "../src/native-wake.js";
 
 const threadId = "01a0e1e6-eaba-7db2-aafc-832187d822a0";
@@ -12,7 +12,7 @@ const turnId = "turn-one";
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-async function fixture(mode: "accept" | "idle" | "wrong-thread" | "changed-turn" | "disconnect" | "unknown-error") {
+async function fixture(mode: "accept" | "idle" | "wrong-thread" | "changed-turn" | "disconnect" | "unknown-error" | "ended") {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-steer-"));
   const socketPath = path.join(dir, "s.sock");
   const server = http.createServer();
@@ -24,7 +24,7 @@ async function fixture(mode: "accept" | "idle" | "wrong-thread" | "changed-turn"
     if (!request.id) return;
     let result = {};
     if (request.method === "thread/read") result = { thread: { id: mode === "wrong-thread" ? "other" : threadId, status: { type: mode === "idle" ? "idle" : "active" } } };
-    if (request.method === "thread/turns/list") result = { data: [{ id: turnId, status: "inProgress" }] };
+    if (request.method === "thread/turns/list") result = { data: [{ id: turnId, status: mode === "ended" ? "completed" : "inProgress" }] };
     if (request.method === "turn/steer") {
       if (mode === "disconnect") { client.close(); return; }
       if (mode === "changed-turn" || mode === "unknown-error") {
@@ -74,4 +74,23 @@ test.each(["disconnect", "unknown-error"] as const)("post-send uncertainty never
 
 test("an unavailable control socket proves no steer was sent", async () => {
   expect(await steerCodexThread({ threadId, text: "test", clientMessageId: "id", socketPath: "/tmp/no-tt-steer.sock", timeoutMs: 100 })).toBe("unsent");
+});
+
+test("a receiver-owned fallback is never queued and an obsolete target sends no input", async () => {
+  const idle = await fixture("idle");
+  expect((await deliverCodexQueue({ ...idle.request, can_queue: () => false }, idle.options)).outcome).toBe("failed");
+  expect(fs.existsSync(idle.queueMarker)).toBe(false);
+  const active = await fixture("accept");
+  expect((await deliverCodexQueue({ ...active.request, on_steer_target: () => false }, active.options)).outcome).toBe("failed");
+  expect(active.requests.some(request => request.method === "turn/steer")).toBe(false);
+  expect(fs.existsSync(active.queueMarker)).toBe(false);
+});
+
+test("turn inspection is read-only and only answers for an exact stored target", async () => {
+  const f = await fixture("accept");
+  expect(await inspectCodexTurn(threadId, turnId, f.socketPath)).toBe("active");
+  expect(await inspectCodexTurn(threadId, "a different turn", f.socketPath)).toBe("unknown");
+  expect(f.requests.some(request => request.method === "turn/steer" || request.method === "thread/resume")).toBe(false);
+  const ended = await fixture("ended");
+  expect(await inspectCodexTurn(threadId, turnId, ended.socketPath)).toBe("ended");
 });

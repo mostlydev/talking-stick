@@ -330,6 +330,12 @@ interface InterruptDeliveryRow {
   status: "pending" | "dispatching" | NativeWakeState | "failed";
   transport: NativeWakeTransportName | null;
   error: string | null;
+  delivery_token: string | null;
+}
+
+interface SteeringBatch {
+  token: string; room_id: string; agent_id: string; harness_session_id: string;
+  host_id: string; event_seqs_json: string; target_turn_id: string;
 }
 
 interface NativeWakeEndpointRow {
@@ -2524,6 +2530,8 @@ export class TalkingStickService {
   // Writes only queue work. Call flushWakes after committing, before closing
   // the sending process. Separate recipients dispatch concurrently.
   async flushWakes(roomId?: string, agentId?: string): Promise<void> {
+    const recovery = this.recoverUncertainSteering(roomId, agentId);
+    if (recovery) await recovery;
     this.releaseStaleUnconfirmedWakes();
     // An unscoped flush also sweeps pending rows another process queued but
     // never delivered (killed after commit, or a long wait that queued them).
@@ -2762,7 +2770,7 @@ export class TalkingStickService {
     const finish = (result: NativeWakeResult, transport?: NativeWakeTransportName) => {
       this.db.prepare(`UPDATE interrupt_deliveries SET status = ?, transport = ?, error = ?, attempted_at = ?
         WHERE room_id = ? AND agent_id = ? AND event_seq = ? AND status = 'dispatching'`)
-        .run(result.outcome, transport ?? null, result.error ?? null, this.now().toISOString(), ...key);
+        .run(result.outcome === "steered" ? "woken" : result.outcome, transport ?? null, result.error ?? null, this.now().toISOString(), ...key);
     };
     const reservation = withImmediateTransaction(this.db, () => {
       const changed = this.db.prepare(`UPDATE interrupt_deliveries SET status = 'dispatching'
@@ -2785,8 +2793,11 @@ export class TalkingStickService {
       const text = formatNativeWakeText({ reason: "interrupt",
         sender: event?.from_agent_id ? this.describeWakeSender(row.room_id, event.from_agent_id) : null,
         path: this.requireRoom(row.room_id).canonical_path });
-      const nativeText = this.prepareNativeEnvelope(row.room_id, row.agent_id, [row.event_seq]);
-      return { endpoints, text: nativeText ?? text };
+      const token = this.newDeliveryToken();
+      const nativeText = this.prepareNativeEnvelope(row.room_id, row.agent_id, [row.event_seq], token);
+      this.db.prepare("UPDATE interrupt_deliveries SET delivery_token = ? WHERE room_id = ? AND agent_id = ? AND event_seq = ?")
+        .run(token, ...key);
+      return { endpoints, text: nativeText ?? text, token };
     });
     if (!reservation) return;
     let last: NativeWakeResult = { outcome: "failed", error: "interrupt_endpoint_unavailable" };
@@ -2801,7 +2812,10 @@ export class TalkingStickService {
       }
       // The per-event reservation survives wait/standby and suppresses only
       // repeat dispatches of this exact interrupt, never a later urgent event.
-      last = await this.deliverWakeEndpoint(endpoint, reservation.text, true);
+      if (endpoint.transport === "codex_queue") this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'steering' WHERE token = ?").run(reservation.token);
+      last = await this.deliverWakeEndpoint(endpoint, reservation.text, true, false, reservation.token);
+      if (endpoint.transport === "codex_queue") this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ? WHERE token = ?")
+        .run(last.outcome === "steered" ? "steered" : last.outcome === "ambiguous" ? "uncertain" : null, reservation.token);
       transport = endpoint.transport;
       if (last.outcome !== "failed") break;
       if (this.getNativeWakeEndpoint(row.room_id, row.agent_id, endpoint.transport)?.generation !== endpoint.generation) {
@@ -2839,7 +2853,7 @@ export class TalkingStickService {
       const wakeReason = usable.find((row) => row.wake_pending && !row.awaiting_wait)?.wake_reason;
       const endpoints = usable.filter((row) => row.transport !== "cmux" || wakeReason === "interrupt" ||
         (member.wait_intent === "parked" && member.standby_transport === "cmux"));
-      if (receiver && this.receiverLiveness(receiver) === "alive") {
+      if (receiver && this.receiverLiveness(receiver) === "alive" && !(steer && member.harness_name === "codex")) {
         this.db.prepare(`UPDATE member_wake_endpoints SET wake_pending = 0 WHERE room_id = ? AND agent_id = ?`).run(roomId, agentId);
         return null;
       }
@@ -2889,7 +2903,7 @@ export class TalkingStickService {
         this.db.prepare("UPDATE member_wake_endpoints SET last_status = 'queued' WHERE room_id = ? AND agent_id = ? AND batch_id = ?")
           .run(roomId, agentId, batchId);
       }
-      const result = await this.deliverWakeEndpoint(endpoint, text, false, steer);
+      const result = await this.deliverWakeEndpoint(endpoint, text, false, steer, batchId);
       if (steer && endpoint.transport === "codex_queue") {
         const mode = result.outcome === "steered" ? "steered"
           : result.outcome === "ambiguous" ? "uncertain" : null;
@@ -2946,6 +2960,84 @@ export class TalkingStickService {
           AND n.agent_id = member_wake_endpoints.agent_id AND n.consumed_at IS NULL)`).run(before, before);
   }
 
+  private steeringText(batch: SteeringBatch): { text: string; seqs: number[] } | undefined {
+    const events = this.db.prepare(`SELECT e.* FROM native_event_receipts n JOIN room_events e
+      ON e.room_id = n.room_id AND e.event_seq = n.event_seq
+      WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL
+        AND n.event_seq IN (SELECT value FROM json_each(?)) ORDER BY n.event_seq`)
+      .all(batch.room_id, batch.agent_id, batch.event_seqs_json) as RoomEventRow[];
+    if (!events.length) return;
+    const text = formatNativeEventText({ token: batch.token, room_id: batch.room_id,
+      path: this.requireRoom(batch.room_id).canonical_path, recipient: batch.agent_id,
+      events: events.map(event => this.mapEvent(event)) });
+    return { text: text ?? formatNativeWakeText({ reason: "room_update", sender: null, path: this.requireRoom(batch.room_id).canonical_path }),
+      seqs: events.map(event => event.event_seq) };
+  }
+
+  /** At-least-once recovery only after the exact target turn is known ended.
+   * Keep the original token: late and recovered copies share acknowledgement.
+   */
+  private recoverUncertainSteering(roomId?: string, agentId?: string): Promise<void> | undefined {
+    if (!this.nativeWakeTransport?.inspectCodexTurn) return;
+    const before = new Date(this.now().getTime() - 30_000).toISOString();
+    const batches = this.db.prepare(`SELECT b.* FROM native_delivery_batches b
+      WHERE b.source = 'native' AND b.delivery_mode = 'uncertain' AND b.target_turn_id IS NOT NULL
+        AND b.acknowledged_at IS NULL AND (? IS NULL OR b.room_id = ?) AND (? IS NULL OR b.agent_id = ?)
+        AND (b.recovery_checked_at IS NULL OR b.recovery_checked_at <= ?)
+        AND EXISTS (SELECT 1 FROM native_event_receipts n, json_each(b.event_seqs_json) j
+          WHERE n.room_id = b.room_id AND n.agent_id = b.agent_id AND n.event_seq = j.value AND n.consumed_at IS NULL)
+      LIMIT 8`).all(roomId ?? null, roomId ?? null, agentId ?? null, agentId ?? null, before) as SteeringBatch[];
+    if (!batches.length) return;
+    return Promise.all(batches.map(async batch => {
+      const member = this.getMember(batch.room_id, batch.agent_id);
+      if (!member || member.harness_session_id !== batch.harness_session_id || batch.host_id !== this.hostId) return;
+      const endpoint = this.usableNativeWakeEndpoints(batch.room_id, member).find(row => row.transport === "codex_queue");
+      if (!endpoint || !batch.harness_session_id.startsWith("harness:") ||
+          endpoint.address !== batch.harness_session_id.slice("harness:".length)) return;
+      const receiver = this.db.prepare("SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?")
+        .get(batch.room_id, batch.agent_id) as RoomReceiverRow | undefined;
+      if (receiver && this.receiverLiveness(receiver) === "alive") return;
+      const claimed = this.db.prepare(`UPDATE native_delivery_batches SET recovery_checked_at = ?
+        WHERE token = ? AND delivery_mode = 'uncertain'
+          AND (recovery_checked_at IS NULL OR recovery_checked_at <= ?)`)
+        .run(this.now().toISOString(), batch.token, before);
+      if (!claimed.changes) return;
+      let status: "active" | "ended" | "unknown" = "unknown";
+      try { status = await this.nativeWakeTransport!.inspectCodexTurn!(endpoint.address, batch.target_turn_id); }
+      catch { /* No evidence of completion, no replay. */ }
+      if (status !== "ended") return;
+      const recovery = withImmediateTransaction(this.db, () => {
+        const current = this.getNativeWakeEndpoint(batch.room_id, batch.agent_id, "codex_queue");
+        const currentMember = this.getMember(batch.room_id, batch.agent_id);
+        if (current?.generation !== endpoint.generation || currentMember?.harness_session_id !== batch.harness_session_id) return;
+        const text = this.steeringText(batch);
+        if (!text) return;
+        const result = this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'recovering' WHERE token = ? AND delivery_mode = 'uncertain' AND acknowledged_at IS NULL")
+          .run(batch.token);
+        if (!result.changes) return;
+        this.db.prepare("UPDATE member_wake_endpoints SET batch_started_at = ? WHERE batch_id = ?")
+          .run(this.now().toISOString(), batch.token);
+        return text;
+      });
+      if (!recovery) return;
+      const result = await this.deliverWakeEndpoint(endpoint, recovery.text);
+      const stored = result.outcome === "steered" ? "woken" : result.outcome;
+      this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = NULL WHERE token = ? AND delivery_mode = 'recovering'").run(batch.token);
+      this.db.prepare(`UPDATE member_wake_endpoints SET last_status = ?, last_error = ?, last_error_detail = ?, last_attempt_at = ?
+        WHERE room_id = ? AND agent_id = ? AND generation = ? AND batch_id = ?`)
+        .run(stored, result.error ?? null, safeWakeDetail(result.detail) ?? null, this.now().toISOString(),
+          batch.room_id, batch.agent_id, endpoint.generation, batch.token);
+      this.db.prepare("UPDATE interrupt_deliveries SET status = ?, error = ?, attempted_at = ? WHERE delivery_token = ?")
+        .run(stored, result.error ?? null, this.now().toISOString(), batch.token);
+      if (result.outcome === "failed") {
+        if (result.local) this.localWakeFailures.add(this.localWakeFailureKey(batch.room_id, batch.agent_id,
+          this.usableNativeWakeEndpoints(batch.room_id, member)));
+        this.db.prepare("UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL, wake_pending = ? WHERE batch_id = ?")
+          .run(result.local ? 1 : 0, batch.token);
+      }
+    })).then(() => undefined);
+  }
+
   // The same unread work on the same endpoints: newer events or a re-registered
   // session make a fresh key, so a local failure never blocks later work.
   private localWakeFailureKey(roomId: string, agentId: AgentId, endpoints: NativeWakeEndpointRow[]): string {
@@ -2953,7 +3045,7 @@ export class TalkingStickService {
     return [roomId, agentId, newest, ...endpoints.map((row) => `${row.transport}:${row.generation}`).sort()].join("|");
   }
 
-  private async deliverWakeEndpoint(endpoint: NativeWakeEndpointRow, text: string, interrupt = false, steer = false): Promise<NativeWakeResult> {
+  private async deliverWakeEndpoint(endpoint: NativeWakeEndpointRow, text: string, interrupt = false, steer = false, deliveryToken?: string): Promise<NativeWakeResult> {
     const { room_id: roomId, agent_id: agentId } = endpoint;
     let result: NativeWakeResult;
     try {
@@ -2970,6 +3062,33 @@ export class TalkingStickService {
         result = this.nativeWakeTransport ? await this.nativeWakeTransport.deliver({
           transport: endpoint.transport, address: endpoint.address, secret: endpoint.secret, text, interrupt,
           steer,
+          ...(deliveryToken && endpoint.transport === "codex_queue" && (steer || interrupt) ? {
+            can_queue: () => {
+              const currentMember = this.getMember(roomId, agentId);
+              const receiver = this.db.prepare("SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?")
+                .get(roomId, agentId) as RoomReceiverRow | undefined;
+              if ((receiver && this.receiverLiveness(receiver) === "alive") || (currentMember && this.codexTurnActive(currentMember))) return false;
+              return Boolean(this.db.prepare(`SELECT 1 FROM native_delivery_batches b, json_each(b.event_seqs_json) j
+                JOIN native_event_receipts n ON n.room_id = b.room_id AND n.agent_id = b.agent_id AND n.event_seq = j.value
+                WHERE b.token = ? AND b.acknowledged_at IS NULL AND n.consumed_at IS NULL LIMIT 1`).get(deliveryToken));
+            },
+            on_steer_target: (turnId: string) => {
+              const current = this.getNativeWakeEndpoint(roomId, agentId, endpoint.transport);
+              if (current?.generation !== endpoint.generation) return false;
+              const batch = this.db.prepare("SELECT acknowledged_at FROM native_delivery_batches WHERE token = ?")
+                .get(deliveryToken) as { acknowledged_at: string | null } | undefined;
+              if (!batch || batch.acknowledged_at) return false;
+              if (interrupt) {
+                const held = this.db.prepare("SELECT 1 FROM interrupt_deliveries WHERE room_id = ? AND agent_id = ? AND delivery_token = ? AND status = 'dispatching'")
+                  .get(roomId, agentId, deliveryToken);
+                if (!held) return false;
+              }
+              // A wait subprocess may have received the data while its model
+              // is busy. Still steer this active turn; never queue it later.
+              this.db.prepare("UPDATE native_delivery_batches SET target_turn_id = ? WHERE token = ?").run(turnId, deliveryToken);
+              return true;
+            }
+          } : {}),
           start_queued: endpoint.transport === "codex_queue" &&
             !!member && this.getMemberProcessLiveness(member) === "alive"
         }) : { outcome: "failed", error: "native_wake_unavailable" };
@@ -3048,9 +3167,25 @@ export class TalkingStickService {
           AND m.harness_pid = ? AND trim(m.harness_process_started_at) = ? AND r.state != 'closed'`)
         .all(...key) as RoomMemberRow[];
       const pending: Array<{ member: RoomMemberRow; event: RoomEventRow }> = [];
+      const recovered: string[] = [];
       for (const member of members) {
         // Ambiguous local identities never receive one another's hook feedback.
         if (members.filter(candidate => candidate.room_id === member.room_id).length !== 1) continue;
+        if (!recovered.length) {
+          const batch = this.db.prepare(`SELECT * FROM native_delivery_batches WHERE room_id = ? AND agent_id = ?
+            AND harness_session_id = ? AND host_id = ? AND source = 'native' AND delivery_mode = 'uncertain'
+            AND target_turn_id = ? AND acknowledged_at IS NULL ORDER BY rowid LIMIT 1`)
+            .get(member.room_id, member.agent_id, member.harness_session_id, this.hostId, input.turnId) as SteeringBatch | undefined;
+          const replay = batch && this.steeringText(batch);
+          if (batch && replay) {
+            // Stop is a safe boundary for this exact target turn. Reuse the
+            // original token; an acknowledged late copy becomes a no-op.
+            this.db.prepare("UPDATE native_delivery_batches SET source = 'codex_hook', delivery_mode = NULL, created_at = ? WHERE token = ?")
+              .run(timestamp, batch.token);
+            this.db.prepare("UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL WHERE batch_id = ?").run(batch.token);
+            recovered.push(replay.text);
+          }
+        }
         const events = this.db.prepare(`SELECT e.* FROM room_events e JOIN native_event_receipts n
           ON n.room_id = e.room_id AND n.event_seq = e.event_seq
           WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL AND e.event_seq > ?
@@ -3070,7 +3205,7 @@ export class TalkingStickService {
         pending.push(...events.map(event => ({ member, event })));
       }
       const selected = pending.sort((a, b) => a.event.event_seq - b.event.event_seq).slice(0, 32);
-      if (!selected.length) {
+      if (!selected.length && !recovered.length) {
         for (const member of members) this.clearReadWake(member.room_id, member.agent_id);
         idle();
         return null;
@@ -3081,13 +3216,13 @@ export class TalkingStickService {
         group.seqs.push(event.event_seq);
         grouped.set(member.room_id, group);
       }
-      const texts: string[] = [];
+      const texts: string[] = [...recovered];
       for (const [roomId, { member, seqs }] of grouped) {
         const token = this.newDeliveryToken();
         const text = this.prepareNativeEnvelope(roomId, member.agent_id, seqs, token);
+        this.db.prepare("UPDATE native_delivery_batches SET source = 'codex_hook', created_at = ? WHERE token = ?")
+          .run(timestamp, token);
         if (text) {
-          this.db.prepare("UPDATE native_delivery_batches SET source = 'codex_hook', created_at = ? WHERE token = ?")
-            .run(timestamp, token);
           texts.push(text);
         } else {
           texts.push(`[talking-stick] A room event exceeds hook capacity. Run tt wait --in ${roomId} --json to read it.`);
@@ -3097,7 +3232,7 @@ export class TalkingStickService {
       // continuation prompts, so an unacknowledged envelope never loops.
       this.db.prepare(`UPDATE codex_turn_activity SET active = 1, updated_at = ?, last_hook_event_seq = ?
         WHERE session_id = ? AND host_id = ? AND pid = ? AND process_started_at = ?`)
-        .run(timestamp, selected.at(-1)!.event.event_seq, ...key);
+        .run(timestamp, Math.max(activity.last_hook_event_seq, selected.at(-1)?.event.event_seq ?? 0), ...key);
       return texts.join("\n\n");
     });
   }
@@ -3125,7 +3260,6 @@ export class TalkingStickService {
           ORDER BY e.event_seq LIMIT 33`).all(roomId, agentId, new Date(this.now().getTime() - 5 * 60_000).toISOString());
     const text = formatNativeEventText({ token, room_id: roomId, path: this.requireRoom(roomId).canonical_path,
       recipient: agentId, events: rows.map(row => this.mapEvent(row)) });
-    if (!text) return null;
     for (const row of rows) this.db.prepare(`INSERT OR IGNORE INTO native_event_receipts
       (room_id, agent_id, event_seq) VALUES (?, ?, ?)`).run(roomId, agentId, row.event_seq);
     this.db.prepare(`INSERT INTO native_delivery_batches
@@ -3192,7 +3326,7 @@ export class TalkingStickService {
       if (!text) {
         // An oversized event stays unread. Reserve only its pull notification,
         // so every hook in this turn does not repeat the same fallback prompt.
-        this.db.prepare(`INSERT INTO native_delivery_batches
+        this.db.prepare(`INSERT OR IGNORE INTO native_delivery_batches
           (token, room_id, agent_id, harness_session_id, host_id, event_seqs_json)
           VALUES (?, ?, ?, ?, ?, ?)`)
           .run(token, room.room_id, member.agent_id, input.harness_session_id, this.hostId,
@@ -3264,13 +3398,16 @@ export class TalkingStickService {
       const attempt = this.db.prepare<[string, string, number], InterruptDeliveryRow>(
         "SELECT * FROM interrupt_deliveries WHERE room_id = ? AND agent_id = ? AND event_seq = ?"
       ).get(roomId, targetId, eventSeq);
+      const mode = attempt?.delivery_token ? (this.db.prepare("SELECT delivery_mode FROM native_delivery_batches WHERE token = ?")
+        .get(attempt.delivery_token) as { delivery_mode: string | null } | undefined)?.delivery_mode : null;
+      const state = mode === "steered" ? "steered" : mode === "steering" || mode === "uncertain" ? "ambiguous" : attempt?.status;
       if (attempt) return {
         status: attempt.status === "failed" ? "unreachable" :
           attempt.status === "pending" || attempt.status === "dispatching" ? "pending" : "endpoint",
         transport: attempt.transport ?? undefined,
-        state: attempt.status === "pending" || attempt.status === "dispatching" ? undefined : attempt.status,
+        state: state === "pending" || state === "dispatching" ? undefined : state,
         error: attempt.error ?? undefined,
-        interrupt_status: attempt.transport ? (attempt.transport === "claude_inbox" || attempt.status === "steered") ? "injected" : "unsupported" : undefined
+        interrupt_status: attempt.transport ? (attempt.transport === "claude_inbox" || mode === "steered") ? "injected" : "unsupported" : undefined
       };
     }
     const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
@@ -6054,6 +6191,21 @@ export class TalkingStickService {
     for (const event of events) this.db.prepare(`UPDATE native_event_receipts SET consumed_at = ?
       WHERE room_id = ? AND agent_id = ? AND event_seq = ? AND consumed_at IS NULL`)
       .run(acceptedAt, roomId, agentId, event.event_seq);
+    // A real stream read closes a held steer as surely as its envelope ack.
+    // Preserve later unread arrivals instead of letting a completed hold
+    // suppress the next operator correction.
+    this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL,
+      wake_pending = CASE WHEN EXISTS (SELECT 1 FROM native_event_receipts n
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL) THEN 1 ELSE 0 END,
+      wake_event_seq = (SELECT MAX(event_seq) FROM native_event_receipts n WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL),
+      wake_reason = 'room_update', wake_from_agent_id = NULL
+      WHERE room_id = ? AND agent_id = ? AND batch_id IN (
+        SELECT b.token FROM native_delivery_batches b WHERE b.room_id = ? AND b.agent_id = ?
+          AND b.delivery_mode IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM json_each(b.event_seqs_json) j JOIN native_event_receipts n
+              ON n.room_id = b.room_id AND n.agent_id = b.agent_id AND n.event_seq = j.value
+            WHERE n.consumed_at IS NULL))`)
+      .run(roomId, agentId, roomId, agentId, roomId, agentId, roomId, agentId);
     // A room or multi-recipient message counts as delivered only to members it
     // was routed to at send time, which is exactly who holds a receipt row.
     const routed = this.db.prepare<[string, string, number], { found: number }>(

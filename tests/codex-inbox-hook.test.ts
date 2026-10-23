@@ -5,7 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { TalkingStickService } from "../src/service.js";
 import { runCodexInboxHookCommand } from "../src/cli/codex-inbox-hook.js";
 import { mergeSessionHooks } from "../src/install.js";
-import type { NativeWakeRequest, NativeWakeResult } from "../src/native-wake.js";
+import type { NativeWakeRequest, NativeWakeResult, NativeWakeTransport } from "../src/native-wake.js";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); vi.unstubAllEnvs(); });
@@ -15,8 +15,9 @@ function setup(beforeJoin = false) {
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
   let now = Date.now();
   const deliver = vi.fn(async (_request: NativeWakeRequest): Promise<NativeWakeResult> => ({ outcome: "queued" }));
+  const native = { deliver, inspectCodexTurn: undefined as NativeWakeTransport["inspectCodexTurn"] };
   const service = new TalkingStickService({ dataDir: path.join(root, "data"), hostId: "local",
-    now: () => new Date(now), processLivenessChecker: () => "alive", nativeWakeTransport: { deliver } });
+    now: () => new Date(now), processLivenessChecker: () => "alive", receiverLivenessChecker: () => "alive", nativeWakeTransport: native });
   cleanup.push(() => service.close());
   const room = service.joinPath({ agent_id: "human:operator", context_path: root });
   service.joinPath({ agent_id: "claude:peer", context_path: root });
@@ -36,12 +37,12 @@ function setup(beforeJoin = false) {
     harness_session_id: `harness:${SESSION}`, host_id: "local", token: text.match(/tt ack (\S+)/)![1] });
   const operator = (body: string) => service.sendMessageAndWake({ room_id: room.room_id,
     agent_id: "human:operator", to_agent_id: "codex:test", body });
-  return { root, service, room, metadata, deliver, join, hook, send, operator, ack, advance: (ms: number) => { now += ms; } };
+  return { root, service, room, metadata, deliver, native, join, hook, send, operator, ack, advance: (ms: number) => { now += ms; } };
 }
 
 test("operator messages steer a busy exact session and are excluded from Stop feedback", async () => {
   const { hook, operator, deliver, service, room, ack, advance } = setup();
-  deliver.mockResolvedValue({ outcome: "steered" });
+  deliver.mockImplementation(async request => { request.on_steer_target?.("turn-1"); return { outcome: "steered" }; });
   hook("UserPromptSubmit");
   // Even a long turn with an expired activity TTL must query the native turn.
   advance(6 * 60_000);
@@ -56,7 +57,7 @@ test("operator messages steer a busy exact session and are excluded from Stop fe
 
 test("a possibly accepted steer stays held beyond both legacy retry paths", async () => {
   const { hook, operator, deliver, service, room, advance, ack } = setup();
-  deliver.mockResolvedValue({ outcome: "ambiguous", error: "codex_steer_unconfirmed" });
+  deliver.mockImplementation(async request => { request.on_steer_target?.("turn-1"); return { outcome: "ambiguous", error: "codex_steer_unconfirmed" }; });
   hook("UserPromptSubmit");
   const sent = await operator("do not duplicate this correction");
   expect(sent.delivery_state).toBe("ambiguous");
@@ -77,7 +78,9 @@ test("a possibly accepted steer stays held beyond both legacy retry paths", asyn
   expect(service.db.prepare("SELECT last_status, awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ last_status: "queued", awaiting_wait: 1 });
   const continuation = hook("Stop")!;
   expect(continuation).toContain("later work must not resend");
-  expect(continuation).not.toContain("do not duplicate this correction");
+  expect(continuation).toContain("do not duplicate this correction");
+  expect(continuation.match(/tt ack (\S+)/)?.[1]).toBe(deliver.mock.calls[0][0].text.match(/tt ack (\S+)/)?.[1]);
+  expect(hook("Stop")).toBeNull();
   ack(deliver.mock.calls[0][0].text);
   expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 0 });
 });
@@ -95,7 +98,7 @@ test("an unexpected transport throw keeps uncertainty protected and session repl
 
 test("standby preserves an unread steering hold, and a real read permits rearming", async () => {
   const { operator, deliver, service, room } = setup();
-  deliver.mockResolvedValue({ outcome: "steered" });
+  deliver.mockImplementation(async request => { request.on_steer_target?.("turn-1"); return { outcome: "steered" }; });
   await operator("held while parked");
   service.registerStandby({ room_id: room.room_id, agent_id: "codex:test", transport: "manual" });
   expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 1 });
@@ -109,9 +112,74 @@ test("standby preserves an unread steering hold, and a real read permits rearmin
   expect(deliver.mock.calls[1][0].text).not.toContain("held while parked");
 });
 
+test("without hooks an uncertain steer reuses its original token only after the exact turn ends", async () => {
+  const { operator, deliver, native, service, room, advance, ack } = setup();
+  let status: "active" | "ended" | "unknown" = "active";
+  native.inspectCodexTurn = vi.fn(async () => status);
+  deliver.mockImplementationOnce(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  await operator("recover this once the turn ends");
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(1);
+  expect(native.inspectCodexTurn).toHaveBeenCalledWith(SESSION, "actual-turn");
+  status = "unknown"; advance(30_001);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(1);
+  status = "ended";
+  await service.flushWakes(room.room_id); // inspection is rate-bounded locally too
+  expect(deliver).toHaveBeenCalledTimes(1);
+  advance(30_001);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(deliver.mock.calls[1][0].steer).toBe(false);
+  expect(deliver.mock.calls[1][0].text).toBe(deliver.mock.calls[0][0].text);
+  expect(ack(deliver.mock.calls[1][0].text).status).toBe("acknowledged");
+  expect(ack(deliver.mock.calls[0][0].text).status).toBe("already_acknowledged");
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+});
+
+test("a concurrent acknowledgement prevents recovery after turn inspection", async () => {
+  const { operator, deliver, native, service, room, ack } = setup();
+  deliver.mockImplementation(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  await operator("ack while inspecting");
+  let finish!: (value: "ended") => void;
+  native.inspectCodexTurn = () => new Promise(resolve => { finish = resolve; });
+  const flushing = service.flushWakes(room.room_id);
+  ack(deliver.mock.calls[0][0].text);
+  finish("ended"); await flushing;
+  expect(deliver).toHaveBeenCalledTimes(1);
+});
+
+test("a busy model is steered even when its background wait process receives the event first", async () => {
+  const { operator, deliver, service, room } = setup();
+  service.registerReceiver({ room_id: room.room_id, agent_id: "codex:test", receiver_id: "background",
+    host_id: "local", pid: 999, process_started_at: "receiver-start", cursor_event_seq: 0 });
+  let proceed!: () => void;
+  const barrier = new Promise<void>(resolve => { proceed = resolve; });
+  let targetAllowed = false;
+  deliver.mockImplementation(async request => {
+    await barrier;
+    targetAllowed = request.on_steer_target?.("turn-1") ?? false;
+    expect(request.can_queue?.()).toBe(false);
+    return { outcome: "steered" };
+  });
+  const sending = operator("stop coding and read the operator now");
+  expect(deliver).toHaveBeenCalledTimes(1);
+  await service.waitForEvents({ room_id: room.room_id, agent_id: "codex:test", after_event_seq: 0, max_wait_ms: 0 });
+  proceed(); await sending;
+  expect(targetAllowed).toBe(true);
+  expect(deliver.mock.calls[0][0]).toMatchObject({ steer: true, text: expect.stringContaining("stop coding and read the operator now") });
+});
+
 test("later operator corrections flush after the first exact receipt is acknowledged", async () => {
   const { operator, deliver, ack, service, room } = setup();
-  deliver.mockResolvedValue({ outcome: "steered" });
+  deliver.mockImplementation(async request => { request.on_steer_target?.("turn-1"); return { outcome: "steered" }; });
   await operator("first correction");
   await operator("second correction");
   expect(deliver).toHaveBeenCalledTimes(1);

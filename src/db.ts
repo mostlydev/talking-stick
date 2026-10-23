@@ -456,6 +456,9 @@ const migrations: Migration[] = [
     id: 28,
     name: "native_steering_result",
     up: `ALTER TABLE native_delivery_batches ADD COLUMN delivery_mode TEXT;
+    ALTER TABLE native_delivery_batches ADD COLUMN target_turn_id TEXT;
+    ALTER TABLE native_delivery_batches ADD COLUMN recovery_checked_at TEXT;
+    ALTER TABLE interrupt_deliveries ADD COLUMN delivery_token TEXT;
     -- Older chats expire any unacknowledged batch when new work arrives,
     -- even a possibly accepted steer. Preserve that exact held reservation.
     -- Cursor resets clear wake metadata; acknowledgements consume receipts;
