@@ -2842,10 +2842,16 @@ test.each(["live", "away", "away-acked", "away-input", "away-disconnect", "away-
     await new Promise(resolve => setTimeout(resolve, 30));
     vt.scrollToBottom();
     await scroll(0);
-    await until(() => !pinned());
-    expect(pending()).toBe(1);
-    input.write("\u0015/ack all\r");
+    if (mode === "live") {
+      // Written on the append path before the bar existed, the original went
+      // to native scrollback unledgered; doubt keeps the bar, never hides it.
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(pending()).toBe(1);
+      input.write("\u0015/ack all\r");
+    }
+    // Scrolling across a ledgered original reads it durably, not only for this session.
     await until(() => pending() === 0);
+    await until(() => !pinned());
   } finally {
     input.end(); await session; vt.dispose();
     scrollSpy.mockRestore();

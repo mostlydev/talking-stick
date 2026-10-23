@@ -18,6 +18,8 @@ changes will be called out under **Breaking changes**.
   human-directed messages oldest-first in the original timeline,
   acknowledging only each visited target after it is drawn. Escape returns live with the
   draft preserved; native scrolling and selection remain uncaptured by default (#177).
+  Inline output stays on the normal scrollback path until an unread message actually scrolls
+  off, and scrolling across an unread message now acknowledges it durably.
 
 ## [0.30.0] — 2026-10-22
 

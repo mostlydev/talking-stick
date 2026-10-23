@@ -606,9 +606,14 @@ scroll observations. Explicit `--mouse` enables plain clicking, and captures whe
 input too; inline selection then uses Shift-drag (Option-drag in iTerm2). `--no-mouse` wins
 and does not disable Herdr Ctrl-click.
 
-Manually traversing a pending message suppresses its unread indicator for this session in
-fullscreen mode and in inline Herdr chat where scroll position is known. This does not
-record a durable acknowledgement. While native Herdr scrollback is away from the tail,
+While every unread message is still on screen, inline output keeps flowing into native
+scrollback as usual. The bar takes over the top of the pane only once an unread message has
+scrolled off, and stays until nothing is unread.
+
+Scrolling across an unread message reads it, durably, in fullscreen mode and in inline Herdr
+chat where scroll position is known. Browsing during an unread review never does. In inline
+Herdr chat, only rows written while the bar was showing can be placed in native scrollback;
+a message that scrolled off before the bar appeared stays unread until you visit it. While native Herdr scrollback is away from the tail,
 updates buffer without repainting what you are reading; returning flushes the full history.
 Outside Herdr, native scroll position is unknown, so use the control, `/unread`, or `/ack`.
 Typing alone never acknowledges a message.

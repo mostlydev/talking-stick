@@ -865,10 +865,23 @@ export async function runChatSession(
     else onResize();
     transcript.setOutputBuffered(false);
   };
+  // The top viewport repaints from home, so the transcript stops flowing into
+  // native scrollback. Enter it only once an unread message has left the
+  // screen (the bar has something to point at) or a review is open, and stay
+  // until nothing is unread so the view does not flap at the edge.
+  let inlineTopActive = false;
+  const inlineTopMode = () => {
+    if (unreadReview !== null) return true;
+    if (!attention.total) return inlineTopActive = false;
+    if (inlineTopActive) return true;
+    const floor = Math.max(inlineVisibleFloor, inlineOutputRows + inlinePanelRows - dimensions().rows);
+    const visible = new Set([...inlineHumanRows].filter(([row]) => row >= floor && row < inlineOutputRows).map(([, seq]) => seq));
+    return inlineTopActive = attention.messages.some(event => !visible.has(event.event_seq));
+  };
   const drawComposer = () => {
     if (!inline || closed || externalEditorActive) return;
     if (nativeAway) { inlineNeedsRebuild = true; return; }
-    if (attention.total > 0 || unreadReview !== null) { drawTopViewport(); return; }
+    if (inlineTopMode()) { drawTopViewport(); return; }
     inlineHistoryInitialized = false;
     nativeScrollLedger.reset();
     const draft = editor?.draft ?? { line: "", cursor: 0 };
@@ -915,7 +928,7 @@ export async function runChatSession(
   const writeInline = (text: string) => {
     if (externalEditorActive) { deferredInline.push(text); return; }
     if (nativeAway) { inlineNeedsRebuild = true; return; }
-    if (attention.total > 0 || unreadReview !== null) { drawTopViewport(); return; }
+    if (inlineTopMode()) { drawTopViewport(); return; }
     eraseComposer();
     const lines = text.split(/\r?\n/).flatMap(line => wrapStyledLine(line, Math.max(1, dimensions().columns - 1)));
     output.write(lines.join("\r\n") + "\r\n");
@@ -989,7 +1002,7 @@ export async function runChatSession(
     rememberDelivery(seq, agent, state);
     transcript.invalidate();
     if (inline && nativeAway) { inlineNeedsRebuild = true; return; }
-    if (inline && (attention.total > 0 || unreadReview !== null)) { redraw(); return; }
+    if (inline && inlineTopMode()) { redraw(); return; }
     const row = inlineReceiptRows.get(seq);
     const event = trackedEvents.get(seq);
     const header = event ? render(event)?.split("\n")[0] : undefined;
@@ -1060,7 +1073,7 @@ export async function runChatSession(
     // Herdr may rewrap scrollback; committed rows no longer map one to one.
     nativeScrollLedger.reset();
     if (inline && nativeAway) { inlineNeedsRebuild = true; return; }
-    if (inline && (attention.total > 0 || unreadReview !== null)) {
+    if (inline && inlineTopMode()) {
       editor?.resize(dimensions().columns - 1);
       drawTopViewport();
       return;
@@ -1195,6 +1208,7 @@ export async function runChatSession(
       }
     }
     transcript.scrollBy(amount, height, columns - 1, formatContext());
+    acknowledgeTraversed();
     redraw();
   };
 
@@ -1305,6 +1319,14 @@ export async function runChatSession(
       refreshAttention();
       if (parsed === "all" && attention.messages.length) acknowledge("all");
     } catch (error) { print(`! ${sanitizeChatText(error instanceof Error ? error.message : String(error))}`); }
+  };
+  // Scrolling the live transcript across a message reads it, durably. A review
+  // is excluded: its jumps and browsing leave context rows unread.
+  const acknowledgeTraversed = () => {
+    if (unreadReview !== null) return;
+    for (const event of attention.messages.filter(candidate => transcript.wasManuallyTraversed(candidate.event_seq))) {
+      acknowledge(String(event.event_seq));
+    }
   };
   const completeUnreadVisit = (frame: ChatFrame) => {
     const seq = pendingVisit;
@@ -1661,7 +1683,7 @@ export async function runChatSession(
       redraw();
       return;
     }
-    if (inline && (attention.total > 0 || unreadReview !== null)) {
+    if (inline && inlineTopMode()) {
       drawTopViewport();
       lastPrinted = event.event_type === "message_sent" ? "message" : "system";
       return;
@@ -1852,6 +1874,7 @@ export async function runChatSession(
         nativeAway = away;
         const seqs = unreadReview === null ? nativeScrollLedger.observe(scroll) : [];
         transcript.markHumanMessagesTraversed(seqs);
+        acknowledgeTraversed();
         if (!away && awayChanged && inlineNeedsRebuild) {
           resumeInlineTail();
         } else if (attention.total > 0 && (awayChanged || attention.messages.some(event => seqs.includes(event.event_seq)))) drawComposer();
