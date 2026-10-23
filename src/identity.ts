@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { commandExecutable, executableName } from "./executable-name.js";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -270,12 +271,19 @@ export function findHarnessRootInAncestry(
   let result: { pid: number; startTime: string } | null = null;
   let currentPid: number | null | undefined = startPid;
   let currentInspection = startInspection;
+  let childStartedAt: string | null = null;
   for (let i = 0; i < maxDepth; i++) {
     if (currentPid == null || currentPid <= 1) break;
     if (currentInspection === undefined) {
       currentInspection = inspector.inspect(currentPid);
     }
     if (!currentInspection) break;
+    // Windows retains the original parent PID after its process exits. Do not
+    // follow that PID into a newer, unrelated process after it has been reused.
+    const startedAt = currentInspection.startTime;
+    if (process.platform === "win32" && childStartedAt && startedAt &&
+        /^\d{4}-\d\d-\d\dT/.test(childStartedAt) && /^\d{4}-\d\d-\d\dT/.test(startedAt) &&
+        startedAt > childStartedAt) break;
     const label = deriveCommandLabel(currentInspection.command);
     if (
       HARNESS_COMMAND_MAPPING[label] === harness &&
@@ -284,6 +292,7 @@ export function findHarnessRootInAncestry(
       result = { pid: currentPid, startTime: currentInspection.startTime };
     }
     currentPid = currentInspection.ppid ?? null;
+    childStartedAt = startedAt;
     currentInspection = undefined;
   }
   return result;
@@ -522,8 +531,8 @@ function deriveCommandLabel(command: string | null): string {
     return "harness";
   }
 
-  const token = command.trim().split(/\s+/)[0] ?? "";
-  const basename = path.basename(token).replace(/\.(exe|cmd|bat)$/i, "");
+  const token = process.platform === "win32" ? commandExecutable(command) : command.trim().split(/\s+/)[0] ?? "";
+  const basename = executableName(token).replace(/\.(exe|cmd|bat)$/i, "");
   const sanitized = sanitizeIdentityComponent(basename);
   return sanitized || "harness";
 }

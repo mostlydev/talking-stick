@@ -11,6 +11,12 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- Releases include a Windows x64 standalone archive (`tt.exe`). `npm run build` and
+  `scripts/build-standalone.mjs` now run on Windows, which has no `chmod`. `tt up` finds
+  `tt.exe` and harness executables through `PATHEXT` instead of always reporting them missing.
+
 ### Changed
 
 - Replace pinned message bodies with a one-row unread bar at the top: the count, the
@@ -29,6 +35,18 @@ changes will be called out under **Breaking changes**.
   input recovers at most once, only after its exact target ends, using the original
   acknowledgement token; an ambiguous recovery or a crash mid-recovery stays held.
   Native cancellation reports success only after interrupted completion is observed (#178).
+- The standalone binary releases its database file as soon as it closes, on every
+  platform. Bun kept the connection open until prepared statements were collected, and
+  services never closed it; Windows exposed this as a locked file.
+- Windows `tt up` can inspect process creation times and ancestry, recognize quoted
+  executable paths and `.exe` names, and confirm live agents and chat consoles (#175).
+  Herdr launch preflight now reports missing session integrations with install commands.
+  Process snapshots refresh outside the room write lock, and a new guardian's identity is
+  read from a fresh snapshot so release can stop it.
+- Windows chat uses the resized pane width immediately after `tt up`, by enabling
+  raw input before attaching the native-scroll input listener.
+- Windows sandboxed Claude wake attempts keep named-pipe connection refusals pending
+  so the native chat console can retry delivery instead of losing the wake.
 
 ## [0.30.0] — 2026-10-22
 

@@ -176,6 +176,17 @@ room per repository at a time. See [Rooms and paths](docs/reference.md#rooms-and
 
 ### Herdr and tmux
 
+Before launching with Herdr, install its session integrations for each requested agent,
+for example `herdr integration install claude` and `herdr integration install codex`.
+These are separate from `tt install`: Herdr needs them to report the pane's session ID.
+`tt up --print` checks `herdr integration status` and reports missing or unverified
+integrations before opening panes. This requirement does not apply to tmux.
+
+On Windows, join confirmation also requires permission to inspect local processes
+through PowerShell/CIM. A restricted account that cannot inspect the harness process
+remains unconfirmed; `tt up` never substitutes a matching executable name for proof
+of the session, PID, and process creation time.
+
 Inside Herdr, or a tmux pane, `tt up` turns the current pane into the console and opens a column of agents beside
 it: Claude, Codex, and Antigravity by default, when installed. `--agents claude,codex` picks agents,
 `--print` previews, and `--new-tab` or `--new-workspace` opens a separate tab or workspace. Each
@@ -189,7 +200,21 @@ duplicate agents that are already running. Details:
 |---|---|
 | Standalone binary (recommended) | `curl -fsSL https://raw.githubusercontent.com/mostlydev/talking-stick/master/scripts/install.sh \| sh` |
 | A specific version | `… \| sh -s -- --version 0.30.0` |
+| Windows (x64) | Download `talking-stick_<version>_windows_x64.tar.gz` from [Releases](https://github.com/mostlydev/talking-stick/releases) (see below) |
 | From source | `git clone … && npm install && npm link` (needs Node ≥ 22) |
+
+**Windows.** The installer script does not run on Windows yet, so install the archive by hand: check
+it against `checksums.txt`, extract it with the built-in `tar -xzf`, put the folder on your `PATH`,
+then run `tt install --all`. `tt.exe` finds its skill files beside it, so keep the folder intact. A
+hand-extracted release does not update itself; download the next one to upgrade.
+
+Codex's Windows sandbox runs commands as a separate account that cannot reach
+`%APPDATA%\talking-stick`. Let it write there in `~/.codex/config.toml`:
+
+```toml
+[sandbox_workspace_write]
+writable_roots = ['C:\Users\<you>\AppData\Roaming\talking-stick']
+```
 
 The installer accepts `--bin-dir DIR` (default `~/.local/bin`) and `--install-dir DIR` (default
 `~/.local/share/talking-stick`). Each release lives in its own directory under `releases/`, with

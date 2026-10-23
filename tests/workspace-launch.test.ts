@@ -27,7 +27,9 @@ function fixture(options: { executables?: string[]; skills?: Array<"claude" | "s
   fs.mkdirSync(repo, { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
   for (const name of options.executables ?? ["tt", "claude", "codex"]) {
-    fs.writeFileSync(path.join(bin, name), "#!/bin/sh\n", { mode: 0o755 });
+    // A Windows host only runs a bare command through a PATHEXT extension.
+    const file = process.platform === "win32" && !path.extname(name) ? `${name}.cmd` : name;
+    fs.writeFileSync(path.join(bin, file), "#!/bin/sh\n", { mode: 0o755 });
   }
   const skillDirs = { claude: [".claude", "skills"], shared: [".agents", "skills"] };
   for (const kind of options.skills ?? ["claude", "shared"]) {
@@ -57,6 +59,23 @@ function member(agentId: string, harness: string | null, status = "active"): Roo
 }
 
 describe("tt up planning", () => {
+  test("preflights Herdr integrations and leaves tmux independent", () => {
+    const { base, herdr } = fixture();
+    herdr.integrationStatus = "claude: current (v11) (hook)\ncodex: not installed (hook)";
+    const missing = planWorkspaceLaunch({ ...base, platform: "win32" });
+    expect(missing.status).toBe("blocked");
+    expect(missing.checks.find((check) => check.name === "codex herdr integration"))
+      .toMatchObject({ status: "failed", remedy: "herdr integration install codex" });
+    expect(planWorkspaceLaunch({ ...base, platform: "linux" }).checks
+      .find((check) => check.name === "codex herdr integration")?.status).toBe("uncertain");
+    herdr.integrationStatus = "claude: outdated (v1) (hook)\ncodex: current (v10) (hook)";
+    expect(planWorkspaceLaunch(base).checks.find((check) => check.name === "claude herdr integration")?.status).toBe("uncertain");
+    herdr.integrationStatus = "unrecognized output";
+    expect(planWorkspaceLaunch(base).checks.find((check) => check.name === "codex herdr integration")?.status).toBe("uncertain");
+    herdr.calls.length = 0;
+    expect(planWorkspaceLaunch({ ...base, backend: "tmux" }).checks.some((check) => check.name.includes("integration"))).toBe(false);
+    expect(herdr.calls.some((args) => args[0] === "integration")).toBe(false);
+  });
   test("defaults to launchers with both a binary and an installed skill", () => {
     const { base, home } = fixture({ executables: ["tt", "claude", "codex", "grok", "opencode", "agy"] });
     expect(installedLaunchAgents(base.env, home)).toEqual(["claude", "codex", "antigravity"]);
@@ -84,7 +103,7 @@ describe("tt up planning", () => {
     const { base, calls, repo, home } = fixture();
     const plan = planWorkspaceLaunch(base);
 
-    expect(calls).toEqual([["pane", "layout", "--pane", "w1:p1"], ["agent", "list"]]);
+    expect(calls).toEqual([["pane", "layout", "--pane", "w1:p1"], ["agent", "list"], ["integration", "status"]]);
     expect(plan.status).toBe("ready");
     expect(plan.chat).toEqual({ action: "launch" });
     expect(plan.agents.map((agent) => [agent.agent, agent.action, agent.prompt_delivery])).toEqual([
@@ -294,6 +313,22 @@ describe("tt up planning", () => {
     const plan = planWorkspaceLaunch(base);
     expect(plan.status).toBe("blocked");
     expect(plan.checks.find((check) => check.name === "tt executable")?.status).toBe("failed");
+  });
+
+  test("resolves Windows executables through PATHEXT and a Path-spelled variable", () => {
+    const { base, home } = fixture({ executables: ["tt.exe", "claude.exe", "codex.cmd"] });
+    // Windows matches PATHEXT case-insensitively; lowercase keeps this
+    // fixture meaningful on case-sensitive Linux filesystems too.
+    const env = { Path: base.env!.PATH, PATHEXT: ".com;.exe;.bat;.cmd" };
+    const plan = planWorkspaceLaunch({ ...base, env, platform: "win32" });
+    expect(plan.status).not.toBe("blocked");
+    for (const name of ["tt", "claude", "codex"]) {
+      expect(plan.checks.find((check) => check.name === `${name} executable`)?.status).toBe("ok");
+    }
+    expect(installedLaunchAgents(env, home, false, "win32")).toEqual(["claude", "codex"]);
+    // Elsewhere an extension-bearing file is not the bare command.
+    expect(planWorkspaceLaunch({ ...base, platform: "linux" }).checks
+      .find((check) => check.name === "tt executable")?.status).toBe("failed");
   });
 
   test("a failed layout read blocks the plan", () => {

@@ -40,9 +40,11 @@ interface BunStatement {
   run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
   get(...params: unknown[]): unknown;
   all(...params: unknown[]): unknown[];
+  finalize(): void;
 }
 
 interface BunDatabase {
+  readonly inTransaction: boolean;
   prepare(sql: string): BunStatement;
   exec(sql: string): void;
   close(): void;
@@ -52,9 +54,20 @@ type BunDatabaseConstructor = new (file: string, options?: { strict?: boolean; r
 
 // bun:sqlite returns null for a missing row where better-sqlite3 returns
 // undefined, and takes `PRAGMA` through exec/query rather than pragma().
+//
+// bun:sqlite also defers closing while any prepared statement is alive, so the
+// file stays open (and locked on Windows) until collection. Track statements
+// weakly and finalize the survivors on close, releasing the file at once as
+// better-sqlite3 does.
 export function wrapBunDatabase(db: BunDatabase): SqliteDatabase {
+  const live = new Set<WeakRef<BunStatement>>();
+  let open = true;
+  const collected = new FinalizationRegistry<WeakRef<BunStatement>>((ref) => live.delete(ref));
   const prepare = (sql: string) => {
     const statement = db.prepare(sql);
+    const ref = new WeakRef(statement);
+    live.add(ref);
+    collected.register(statement, ref);
     return {
       run: (...params: unknown[]) => {
         const result = statement.run(...params);
@@ -66,15 +79,30 @@ export function wrapBunDatabase(db: BunDatabase): SqliteDatabase {
   };
   const wrapper = {
     prepare,
+    get inTransaction() {
+      return db.inTransaction;
+    },
+    // TalkingStickService.close() closes only an open database.
+    get open() {
+      return open;
+    },
     exec(sql: string) {
       db.exec(sql);
       return wrapper;
     },
     pragma(source: string) {
-      return db.prepare(`PRAGMA ${source}`).all();
+      const statement = db.prepare(`PRAGMA ${source}`);
+      try {
+        return statement.all();
+      } finally {
+        statement.finalize();
+      }
     },
     close() {
+      for (const ref of live) ref.deref()?.finalize();
+      live.clear();
       db.close();
+      open = false;
       return wrapper;
     }
   };

@@ -36,6 +36,7 @@ import {
 } from "./native-wake.js";
 import {
   createSystemProcessInspector,
+  refreshWindowsProcessSnapshot,
   type ProcessInspector
 } from "./process-utils.js";
 import type {
@@ -378,6 +379,7 @@ export class TalkingStickService {
   private readonly now: () => Date;
   private readonly ownsDatabase: boolean;
   private readonly processLivenessChecker: ProcessLivenessChecker;
+  private readonly refreshesProcessSnapshot: boolean;
   private readonly receiverLivenessChecker: ProcessLivenessChecker;
   private readonly hostId: string;
   /** Where stored message attachments live; messages may name only files there. */
@@ -392,14 +394,22 @@ export class TalkingStickService {
     this.policy = { ...defaultPolicy, ...options.policy };
     this.hostId = options.hostId ?? os.hostname();
     this.dataDir = options.dataDir ? path.resolve(options.dataDir) : path.dirname(resolveDatabasePath(options));
+    this.refreshesProcessSnapshot = !options.processLivenessChecker || !options.receiverLivenessChecker;
     this.processLivenessChecker =
       options.processLivenessChecker ??
-      createDefaultProcessLivenessChecker(this.hostId);
+      createDefaultProcessLivenessChecker(this.hostId, undefined, () => !this.db.inTransaction);
     this.receiverLivenessChecker =
       options.receiverLivenessChecker ??
-      createExactProcessLivenessChecker(this.hostId);
+      createExactProcessLivenessChecker(this.hostId, undefined, () => !this.db.inTransaction);
     this.wakeTransport = options.wakeTransport ?? null;
     this.nativeWakeTransport = options.nativeWakeTransport ?? null;
+  }
+
+  // Liveness reads only a cached Windows snapshot under the write lock, so
+  // refresh the slow probe before BEGIN instead of while writers wait.
+  private writeTransaction<T>(fn: () => T): T {
+    if (this.refreshesProcessSnapshot && !this.db.inTransaction) refreshWindowsProcessSnapshot();
+    return withImmediateTransaction(this.db, fn);
   }
 
   close(): void {
@@ -489,7 +499,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const roomSelection = input.room_id
         ? this.selectExplicitRoom(input.room_id)
         : this.findOrCreateRoomForJoin(
@@ -638,7 +648,7 @@ export class TalkingStickService {
         !Number.isSafeInteger(input.pid) || input.pid <= 1) return 0;
     const key = [input.harness, `harness:${input.sessionId}`, this.hostId,
       input.pid, input.processStartedAt.trim()] as const;
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       if (input.harness === "codex") {
         this.db.prepare(`DELETE FROM codex_turn_activity WHERE session_id = ? AND host_id = ?
           AND pid = ? AND process_started_at = ?`).run(key[1], key[2], key[3], key[4]);
@@ -689,7 +699,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       const member = this.getMember(input.room_id, input.agent_id);
       if (!member) {
@@ -817,7 +827,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       this.touchMember(input.room_id, input.agent_id, timestamp);
 
@@ -939,7 +949,7 @@ export class TalkingStickService {
 
     while (true) {
       this.warmRoomTurnLiveness(input.room_id);
-      const result = withImmediateTransaction(this.db, () =>
+      const result = this.writeTransaction(() =>
         this.waitForTurnOnce(input)
       );
 
@@ -993,7 +1003,7 @@ export class TalkingStickService {
 
     while (true) {
       this.warmRoomTurnLiveness(input.room_id);
-      const waitResult = withImmediateTransaction(this.db, () =>
+      const waitResult = this.writeTransaction(() =>
         startedAsOwner
           ? this.waitForOwnerEventTurnOnce(input)
           : this.waitForTurnOnce(input)
@@ -1069,7 +1079,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       this.assertCanPark(room, input.agent_id, now);
       this.touchMember(
@@ -1155,7 +1165,7 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       this.assertOwnerMutation(room, input, now);
       // Deliberately do NOT touch the member's last_seen_at here. Lease renewal
@@ -1193,7 +1203,7 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
-    const result: ReleaseStickResult = withImmediateTransaction(this.db, () => {
+    const result: ReleaseStickResult = this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       this.assertOwnerMutation(room, input, now);
       this.touchMember(
@@ -1289,7 +1299,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       if (
         room.owner !== input.agent_id ||
@@ -1351,7 +1361,7 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
-    const result: PassStickResult = withImmediateTransaction(this.db, () => {
+    const result: PassStickResult = this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       this.assertOwnerMutation(room, input, now);
       this.touchMember(
@@ -1439,7 +1449,7 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
     this.warmRoomTurnLiveness(input.room_id);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       const inspection = this.inspectRoomForMutation(room, now);
       if (room.turn_id !== input.expected_turn_id) {
@@ -1649,7 +1659,7 @@ export class TalkingStickService {
     }
     assertEventCursor(input.cursor_event_seq);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       if (!this.getMember(input.room_id, input.agent_id)) {
         throw new ProtocolError(
           "unknown_member",
@@ -1759,7 +1769,7 @@ export class TalkingStickService {
   }
 
   heartbeatReceiver(input: HeartbeatReceiverInput): HeartbeatReceiverResult {
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       assertEventCursor(input.cursor_event_seq);
       const existing = this.db
         .prepare<[string, string], RoomReceiverRow>(
@@ -1802,7 +1812,7 @@ export class TalkingStickService {
   unregisterReceiver(
     input: UnregisterReceiverInput
   ): UnregisterReceiverResult {
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       assertEventCursor(input.cursor_event_seq);
       const result = this.db
         .prepare(
@@ -2121,7 +2131,7 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
 
     const attachments = validateAttachments(input.attachments, this.dataDir);
-    const result = withImmediateTransaction(this.db, () =>
+    const result = this.writeTransaction(() =>
       this.sendMessageLocked({ ...input, attachments }, body, deliveryHint, timestamp));
 
     const { wake_target_ids: wakeTargetIds, ...sendResult } = result;
@@ -2240,7 +2250,7 @@ export class TalkingStickService {
     assertNonEmpty(input.workspace_id, "workspace_id");
     assertNonEmpty(input.surface_id, "surface_id");
     assertNonEmpty(input.harness_session_id, "harness_session_id");
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const member = this.getMember(input.room_id, input.agent_id);
       if (!member) {
         throw new ProtocolError(
@@ -2398,7 +2408,7 @@ export class TalkingStickService {
         generation
       };
     };
-    return this.db.inTransaction ? register() : withImmediateTransaction(this.db, register);
+    return this.db.inTransaction ? register() : this.writeTransaction(register);
   }
 
   private getNativeWakeEndpoint(
@@ -2606,7 +2616,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
-    const asked = withImmediateTransaction(this.db, () => {
+    const asked = this.writeTransaction(() => {
       if (input.request_key !== undefined) {
         const earlier = this.db.prepare<[string, string], VisitorRequestRow>(
           "SELECT * FROM visitor_requests WHERE requester_agent_id = ? AND request_key = ?"
@@ -2694,7 +2704,7 @@ export class TalkingStickService {
     const now = this.now();
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const request = this.requireVisitorRequest(input.request_id);
       const sent = this.sendMessageLocked({
         agent_id: input.agent_id, room_id: request.room_id, body, process_metadata: input.process_metadata
@@ -2775,7 +2785,7 @@ export class TalkingStickService {
         WHERE room_id = ? AND agent_id = ? AND event_seq = ? AND status = 'dispatching'`)
         .run(result.outcome === "steered" ? "woken" : result.outcome, transport ?? null, result.error ?? null, this.now().toISOString(), ...key);
     };
-    const reservation = withImmediateTransaction(this.db, () => {
+    const reservation = this.writeTransaction(() => {
       const changed = this.db.prepare(`UPDATE interrupt_deliveries SET status = 'dispatching'
         WHERE room_id = ? AND agent_id = ? AND event_seq = ? AND status = 'pending'`).run(...key);
       if (changed.changes !== 1) return null;
@@ -2830,7 +2840,7 @@ export class TalkingStickService {
   }
 
   private async dispatchWake(roomId: string, agentId: AgentId): Promise<void> {
-    const reservation = withImmediateTransaction(this.db, () => {
+    const reservation = this.writeTransaction(() => {
       const member = this.getMember(roomId, agentId);
       if (!member) return null;
       if (member.harness_name === "codex" && !this.hasQueueableCodexEvent(roomId, agentId)) {
@@ -2888,7 +2898,7 @@ export class TalkingStickService {
       if (this.codexTurnActive(member) && !(steer && endpoint.transport === "codex_queue")) {
         // A prompt started after our reservation (or during a failed transport).
         // Return only our batch to pending so the Stop hook can reserve it.
-        withImmediateTransaction(this.db, () => {
+        this.writeTransaction(() => {
           const changed = this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0,
             wake_pending = 1, batch_id = NULL WHERE room_id = ? AND agent_id = ? AND batch_id = ?`)
             .run(roomId, agentId, batchId);
@@ -3173,7 +3183,7 @@ export class TalkingStickService {
     if (!input.sessionId.trim() || !input.turnId.trim() || !input.processStartedAt.trim() ||
         !Number.isSafeInteger(input.pid) || input.pid <= 1) return null;
     const key = [`harness:${input.sessionId}`, this.hostId, input.pid, input.processStartedAt.trim()] as const;
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const timestamp = this.now().toISOString();
       if (input.event === "UserPromptSubmit") {
         this.db.prepare(`INSERT INTO codex_turn_activity
@@ -3312,7 +3322,7 @@ export class TalkingStickService {
         AND COALESCE(m.harness_host_id, m.host_id) = ? AND n.consumed_at IS NULL LIMIT 1`)
       .get(room.room_id, input.harness_session_id, this.hostId);
     if (!pendingForSession) return null;
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const members = this.db.prepare<[string, string, string], RoomMemberRow>(`SELECT * FROM room_members
         WHERE room_id = ? AND harness_session_id = ? AND harness_name = 'grok'
           AND COALESCE(harness_host_id, host_id) = ? LIMIT 2`)
@@ -3369,7 +3379,7 @@ export class TalkingStickService {
   }
 
   acknowledgeNativeDelivery(input: { agent_id: string; token: string; harness_session_id?: string | null; host_id?: string | null; process_metadata?: ProcessMetadata }) {
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const batch = this.db.prepare<[string], { room_id: string; agent_id: string; harness_session_id: string;
         host_id: string; event_seqs_json: string; acknowledged_at: string | null }>(
         "SELECT * FROM native_delivery_batches WHERE token = ?").get(input.token);
@@ -3571,7 +3581,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
 
       if (room.state === "closed") {
@@ -4293,7 +4303,7 @@ export class TalkingStickService {
   rekeyRoomPath(input: { room_id: string; canonical_path: string }): PathRoom {
     assertNonEmpty(input.room_id, "room_id");
     assertNonEmpty(input.canonical_path, "canonical_path");
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       if (room.canonical_path !== input.canonical_path) {
         const other = this.findRoomByCanonicalPath(input.canonical_path);
@@ -4315,7 +4325,7 @@ export class TalkingStickService {
    */
   retireUnoccupiedRoom(input: { room_id: string }): { retired: boolean } {
     assertNonEmpty(input.room_id, "room_id");
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const room = this.db.prepare<[string], PathRoomRow>("SELECT * FROM path_rooms WHERE room_id = ?").get(input.room_id);
       if (!room) return { retired: false };
       const agents = this.getMembers(room.room_id).filter((member) => !isObserverMember(member));
@@ -4397,7 +4407,7 @@ export class TalkingStickService {
       }
     }
     const timestamp = this.now().toISOString();
-    return withImmediateTransaction(this.db, () => input.rooms.map((room) => {
+    return this.writeTransaction(() => input.rooms.map((room) => {
       this.requireRoom(room.room_id);
       // The notification must compare against the state protected by this
       // write transaction, including changes committed by another process.
@@ -4474,7 +4484,7 @@ export class TalkingStickService {
     assertNonEmpty(input.context_path, "context_path");
     const resolved = resolveContextPath(input.context_path);
     const now = this.now();
-    return withImmediateTransaction(this.db, () =>
+    return this.writeTransaction(() =>
       this.mapRoomForList(this.findOrCreateRoomForJoin(resolved, false, now.toISOString()).room, now));
   }
 
@@ -5036,7 +5046,7 @@ export class TalkingStickService {
     const now = this.now();
     const timestamp = now.toISOString();
     const mode = normalizeWaitMode(input);
-    withImmediateTransaction(this.db, () => {
+    this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
       if (mode === "parked") {
         this.assertCanPark(room, input.agent_id, now);
@@ -5766,7 +5776,7 @@ export class TalkingStickService {
         !remaining.some(member => this.shouldRetainIdleRoom(member, now));
       if (!ended.length && !expire) continue;
 
-      withImmediateTransaction(this.db, () => {
+      this.writeTransaction(() => {
         const current = this.db.prepare<[string], PathRoomRow>(
           "SELECT * FROM path_rooms WHERE room_id = ?"
         ).get(room.room_id);
@@ -6262,7 +6272,7 @@ export class TalkingStickService {
   }
 
   setHumanChatTheme(input: { room_id: string; agent_id: string; theme: string }): void {
-    withImmediateTransaction(this.db, () => {
+    this.writeTransaction(() => {
       const member = this.getMember(input.room_id, input.agent_id);
       if (!input.agent_id.startsWith("human:") || member?.session_kind !== HUMAN_CHAT_SESSION_KIND) {
         throw new Error("Only a joined human console can save its theme.");
@@ -6281,7 +6291,7 @@ export class TalkingStickService {
   }
 
   clearHumanChat(input: { room_id: string; agent_id: string }): { event_seq: number } {
-    return withImmediateTransaction(this.db, () => {
+    return this.writeTransaction(() => {
       const member = this.getMember(input.room_id, input.agent_id);
       if (!input.agent_id.startsWith("human:") || member?.session_kind !== HUMAN_CHAT_SESSION_KIND) {
         throw new Error("Only a joined human console can clear its room view.");
@@ -6326,7 +6336,7 @@ export class TalkingStickService {
   }
 
   acknowledgeHumanMessage(input: { room_id: string; agent_id: string; event_seq: number }): void {
-    withImmediateTransaction(this.db, () => {
+    this.writeTransaction(() => {
       const member = this.getMember(input.room_id, input.agent_id);
       if (!input.agent_id.startsWith("human:") || member?.session_kind !== HUMAN_CHAT_SESSION_KIND) {
         throw new Error("Only a joined human console can acknowledge its messages.");
@@ -6517,13 +6527,13 @@ function normalizeProcessMetadata(
 
 export function createDefaultProcessLivenessChecker(
   currentHostId: string,
-  injectedInspector?: ProcessInspector
+  injectedInspector?: ProcessInspector,
+  canRefresh?: () => boolean
 ): ProcessLivenessChecker {
   // This cache keeps normal polling from forking `ps` on every room inspection.
-  // A deeper move to out-of-transaction liveness refresh is possible later, but
-  // for the MVP we keep the lock boundary simple and the probe shared/cached.
+  // On Windows the slow CIM snapshot refreshes only outside write transactions.
   const inspector =
-    injectedInspector ?? createSystemProcessInspector({ cacheTtlMs: 1_000 });
+    injectedInspector ?? createSystemProcessInspector({ cacheTtlMs: process.platform === "win32" ? 5_000 : 1_000, canRefresh });
 
   return (metadata) => {
     if (
@@ -6537,10 +6547,6 @@ export function createDefaultProcessLivenessChecker(
     }
 
     if (metadata.host_id && metadata.host_id !== currentHostId) {
-      return "unknown";
-    }
-
-    if (process.platform === "win32") {
       return "unknown";
     }
 
@@ -6566,10 +6572,11 @@ export function createDefaultProcessLivenessChecker(
 
 function createExactProcessLivenessChecker(
   currentHostId: string,
-  injectedInspector?: ProcessInspector
+  injectedInspector?: ProcessInspector,
+  canRefresh?: () => boolean
 ): ProcessLivenessChecker {
   const inspector =
-    injectedInspector ?? createSystemProcessInspector({ cacheTtlMs: 1_000 });
+    injectedInspector ?? createSystemProcessInspector({ cacheTtlMs: process.platform === "win32" ? 5_000 : 1_000, canRefresh });
 
   return (metadata) => {
     if (
@@ -6582,9 +6589,6 @@ function createExactProcessLivenessChecker(
       return "unknown";
     }
     if (metadata.host_id && metadata.host_id !== currentHostId) {
-      return "unknown";
-    }
-    if (process.platform === "win32") {
       return "unknown";
     }
     const inspection = inspector.inspect(metadata.pid!);

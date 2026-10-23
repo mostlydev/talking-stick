@@ -30,7 +30,8 @@ function setup() {
   fs.mkdirSync(repo, { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
   for (const name of ["tt", "claude", "codex", "grok", "opencode", "agy"]) {
-    fs.writeFileSync(path.join(bin, name), "#!/bin/sh\n", { mode: 0o755 });
+    // A Windows host only runs a bare command through a PATHEXT extension.
+    fs.writeFileSync(path.join(bin, process.platform === "win32" ? `${name}.cmd` : name), "#!/bin/sh\n", { mode: 0o755 });
   }
   for (const dir of [[".claude", "skills"], [".agents", "skills"]]) {
     const skill = path.join(home, ...dir, "talking-stick");

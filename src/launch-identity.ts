@@ -1,4 +1,4 @@
-import path from "node:path";
+import { executableName } from "./executable-name.js";
 import { readPaneProcesses, type HerdrAgent, type HerdrRunner } from "./herdr.js";
 import { createSystemProcessInspector } from "./process-utils.js";
 import type { RoomMember } from "./types.js";
@@ -7,6 +7,7 @@ import type { RoomMember } from "./types.js";
 export type StartTimeReader = (pid: number) => string | null;
 
 export interface IdentityDeps {
+  platform?: NodeJS.Platform;
   runner: HerdrRunner;
   readStartTime: StartTimeReader;
 }
@@ -55,7 +56,7 @@ export function proveMemberInPane(
     return { confirmed: false, reason: error instanceof Error ? error.message : String(error) };
   }
   const harness = processes.find((candidate) =>
-    candidate.pid === pid && path.basename(candidate.argv0) === executable
+    candidate.pid === pid && executableName(candidate.argv0, deps.platform) === executableName(executable, deps.platform)
   );
   if (!harness) {
     return { confirmed: false, reason: `Pane ${herdrAgent.pane_id} is not running ${executable} pid ${pid}.` };

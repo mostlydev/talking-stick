@@ -1659,6 +1659,49 @@ test("a quiet room removes the transient empty-Escape hint after three seconds",
   }
 });
 
+test.each([true, false])("terminal starts reading in raw mode and restores it with Herdr scroll (inline=%s)", async inline => {
+  const nativeScroll = await import("../src/cli/native-scroll.js");
+  const close = vi.fn();
+  const subscribe = vi.spyOn(nativeScroll, "subscribePaneScroll").mockReturnValue({ close });
+  const { root, service } = setupService();
+  const input = Object.assign(new PassThrough(), {
+    isRaw: false,
+    setRawMode(raw: boolean) { this.isRaw = raw; }
+  });
+  const rawAtListener: boolean[] = [];
+  const rawAtResume: boolean[] = [];
+  input.on("newListener", event => { if (event === "data") rawAtListener.push(input.isRaw); });
+  const resume = input.resume.bind(input);
+  const resumed = vi.spyOn(input, "resume").mockImplementation(() => {
+    rawAtResume.push(input.isRaw);
+    return resume();
+  });
+  const output = Object.assign(new PassThrough(), { columns: 89, rows: 24 });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); });
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output,
+    terminal: true, inline, color: false, history: 0, show_turn_events: false, poll_ms: 5,
+    herdr: { pane_id: "test-pane", socket_path: "test-socket", runner: () => { throw new Error("no plugin"); } }
+  });
+  try {
+    await until(() => bytes.includes("Type to message the room"));
+    expect(rawAtListener.length).toBeGreaterThan(0);
+    expect(rawAtResume.length).toBeGreaterThan(0);
+    expect(rawAtListener.every(Boolean)).toBe(true);
+    expect(rawAtResume.every(Boolean)).toBe(true);
+    expect(subscribe).toHaveBeenCalledTimes(inline ? 1 : 0);
+  } finally {
+    input.write("/quit\r");
+    await session;
+    resumed.mockRestore();
+    subscribe.mockRestore();
+  }
+  expect(input.isRaw).toBe(false);
+  expect(close).toHaveBeenCalledTimes(inline ? 1 : 0);
+});
+
 test("inline incoming messages erase from the actual draft cursor and restore paste mode on exit", async () => {
   const { root, service } = setupService();
   const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });

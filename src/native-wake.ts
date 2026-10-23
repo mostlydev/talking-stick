@@ -199,11 +199,14 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
       resolve(result);
     };
     // Before the socket connects, no byte can have reached Claude. A missing or
-    // refusing socket means the session is gone; any other early failure (a
+    // refusing Unix socket means the session is gone; any other early failure (a
     // denied connect, a hung one) may be this sender's own, so another local
     // process may still get through.
+    // Windows pipe access denial can surface as ECONNREFUSED under Bun. Keep
+    // that wake pending for an unsandboxed sender instead of declaring it gone.
+    const windowsPipe = request.address.toLowerCase().startsWith("\\\\.\\pipe\\");
     const unsent = (code: string): NativeWakeResult => ({ outcome: "failed", error: "claude_inbox_unreachable",
-      detail: `connect:${code}`, ...(code === "ENOENT" || code === "ECONNREFUSED" ? {} : { local: true }) });
+      detail: `connect:${code}`, ...(code === "ENOENT" || (code === "ECONNREFUSED" && !windowsPipe) ? {} : { local: true }) });
     const timer = setTimeout(() => finish(written
       ? { outcome: "ambiguous", error: "claude_inbox_timeout", detail: "write:timeout" } : unsent("timeout")),
       options.timeout_ms ?? CLAUDE_INBOX_TIMEOUT_MS);

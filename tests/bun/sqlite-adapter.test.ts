@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { openSqlite } from "../../src/sqlite.js";
 import { openDatabase, withImmediateTransaction } from "../../src/db.js";
+import { TalkingStickService } from "../../src/service.js";
 
 const roots: string[] = [];
 const tempFile = (name: string) => {
@@ -13,7 +14,11 @@ const tempFile = (name: string) => {
   roots.push(root);
   return path.join(root, name);
 };
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+// Windows cannot remove a database file that is still open; the wrapper's
+// close() must release it at once.
+afterEach(() => {
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
 
 test("missing rows are undefined, runs report changes, pragma returns rows", () => {
   const db = openSqlite(tempFile("a.sqlite"));
@@ -53,6 +58,20 @@ test("busy timeout waits for a writer instead of failing at once", () => {
   reader.close();
 });
 
+test("close finalizes retained statements and releases the file at once", () => {
+  const file = tempFile("closed.sqlite");
+  const db = openDatabase({ dbPath: file });
+  const retained = db.prepare("SELECT count(*) AS n FROM path_rooms");
+  expect(retained.get()).toEqual({ n: 0 });
+  expect(db.open).toBe(true);
+  db.close();
+  expect(db.open).toBe(false);
+  expect(() => retained.get()).toThrow();
+  // Windows refuses to remove a file that is still open.
+  fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  expect(fs.existsSync(file)).toBe(false);
+});
+
 test("the real schema migrates and immediate transactions roll back on error", () => {
   const db = openDatabase({ dbPath: tempFile("rooms.sqlite") });
   expect(db.prepare("SELECT count(*) AS n FROM path_rooms").get()).toEqual({ n: 0 });
@@ -62,4 +81,13 @@ test("the real schema migrates and immediate transactions roll back on error", (
   // A failed transaction leaves the connection usable.
   expect(withImmediateTransaction(db, () => 7)).toBe(7);
   db.close();
+});
+
+test("closing a service releases its standalone database file", () => {
+  const dataDir = path.dirname(tempFile("unused"));
+  const service = new TalkingStickService({ dataDir, hostId: "local" });
+  service.joinPath({ agent_id: "claude:bun", context_path: dataDir });
+  service.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  expect(fs.existsSync(dataDir)).toBe(false);
 });

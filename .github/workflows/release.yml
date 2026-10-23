@@ -29,6 +29,11 @@ jobs:
             target: bun-darwin-x64
           - runner: macos-14
             target: bun-darwin-arm64
+          # Executables compiled by Bun 1.3.8 see an empty environment under
+          # Codex's Windows sandbox account, so tt cannot identify Codex there.
+          - runner: windows-latest
+            target: bun-windows-x64-baseline
+            bun: 1.4.4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,10 +42,11 @@ jobs:
           cache: npm
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: ${{ env.BUN_VERSION }}
+          bun-version: ${{ matrix.bun || env.BUN_VERSION }}
       - run: npm ci
       - name: Check release version
         if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
         run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
       - run: npm run build
       - run: npm run test:bun
@@ -54,8 +60,13 @@ jobs:
         run: |
           stage="$(mktemp -d)"
           tar -xzf release-dist/*.tar.gz -C "$stage"
-          "$stage/tt" --help >/dev/null
+          tt="$stage/tt"
+          if [ "$RUNNER_OS" = "Windows" ]; then tt="$stage/tt.exe"; fi
+          "$tt" --help >/dev/null
           test -f "$stage/skills/talking-stick/SKILL.md"
+          # A full turn through the compiled binary, including native Windows,
+          # where the install-script test above is skipped.
+          node scripts/rehearse-standalone.mjs "$tt" dist/cli.js
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -78,7 +89,7 @@ jobs:
         working-directory: release-dist
         run: |
           cat *.sha256 > checksums.txt
-          test "$(wc -l < checksums.txt)" -eq 4
+          test "$(wc -l < checksums.txt)" -eq 5
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

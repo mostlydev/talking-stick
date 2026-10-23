@@ -33,6 +33,9 @@ export interface ProcessInspectorOptions {
     }
   ) => string;
   processExists?: (pid: number) => boolean;
+  /** Windows: may this read spawn the snapshot probe? A writer passes false
+   * inside its transaction and refreshes before BEGIN instead. */
+  canRefresh?: () => boolean;
 }
 
 export function terminateKnownProcess(
@@ -76,6 +79,9 @@ export function terminateKnownProcess(
 export function createSystemProcessInspector(
   options: ProcessInspectorOptions = {}
 ): ProcessInspector {
+  if ((options.platform ?? process.platform) === "win32") {
+    return createWindowsProcessInspector(options);
+  }
   const cache = new Map<
     number,
     {
@@ -169,6 +175,62 @@ function inspectSystemProcess(
   }
 }
 
+// A single snapshot supplies the whole ancestry walk without one shell per PID.
+type WindowsSnapshot = { processes?: Map<number, ProcessInspection>; checkedAt: number };
+const windowsSnapshot: WindowsSnapshot = { checkedAt: -Infinity };
+
+function refreshSnapshot(snapshot: WindowsSnapshot, options: ProcessInspectorOptions): void {
+  if (Date.now() - snapshot.checkedAt < (options.cacheTtlMs ?? 5_000)) return;
+  snapshot.processes = undefined;
+  try {
+    const script = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " +
+      "@(Get-CimInstance Win32_Process | ForEach-Object { " +
+      "@{pid=[int]$_.ProcessId; ppid=[int]$_.ParentProcessId; " +
+      "startTime=if ($_.CreationDate) {$_.CreationDate.ToUniversalTime().ToString('o')} else {$null}; " +
+      "command=$_.CommandLine} }) | ConvertTo-Json -Compress";
+    const output = (options.execFile ?? defaultExecFile)("powershell.exe",
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    const rows: unknown = JSON.parse(output.replace(/^\uFEFF/, ""));
+    if (!Array.isArray(rows)) throw new Error("Invalid process snapshot");
+    const parsed = new Map<number, ProcessInspection>();
+    for (const row of rows) {
+      if (!row || typeof row !== "object" || !Number.isSafeInteger(row.pid) ||
+          !Number.isSafeInteger(row.ppid) || typeof row.startTime !== "string" ||
+          !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{7}Z$/.test(row.startTime)) continue;
+      parsed.set(row.pid, { pid: row.pid, ppid: row.ppid, startTime: row.startTime,
+        command: typeof row.command === "string" ? row.command : null });
+    }
+    snapshot.processes = parsed;
+  } catch {
+    // Access denied, timeout and malformed output are unknown, not gone.
+  }
+  snapshot.checkedAt = Date.now();
+}
+
+/** Refresh the shared Windows snapshot outside any database transaction. */
+export function refreshWindowsProcessSnapshot(options: ProcessInspectorOptions = {}): void {
+  if ((options.platform ?? process.platform) === "win32") refreshSnapshot(windowsSnapshot, options);
+}
+
+function createWindowsProcessInspector(options: ProcessInspectorOptions): ProcessInspector {
+  // Identity and service liveness create separate inspectors in the same CLI.
+  // Share their native probe, but keep injected test probes entirely isolated.
+  const snapshot: WindowsSnapshot = options.execFile || options.processExists
+    ? { processes: undefined, checkedAt: -Infinity }
+    : windowsSnapshot;
+  return {
+    inspect(pid) {
+      if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+      if (!(options.processExists ?? processExistsViaSignal)(pid)) return null;
+      // Under a write lock, read the last snapshot rather than stall writers.
+      if (options.canRefresh?.() ?? true) refreshSnapshot(snapshot, options);
+      // A live PID absent from a cached snapshot may have just started.
+      return snapshot.processes?.get(pid);
+    }
+  };
+}
+
 function processExistsViaSignal(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -190,5 +252,6 @@ function defaultExecFile(
   }
 ): string {
   // A stalled process probe must not hold a caller (possibly a writer) forever.
-  return execFileSync(file, args, { ...options, timeout: 1_000 }) as string;
+  return execFileSync(file, args, { ...options, windowsHide: true,
+    timeout: file === "powershell.exe" ? 5_000 : 1_000 }) as string;
 }
