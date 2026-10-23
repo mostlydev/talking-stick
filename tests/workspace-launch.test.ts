@@ -27,7 +27,9 @@ function fixture(options: { executables?: string[]; skills?: Array<"claude" | "s
   fs.mkdirSync(repo, { recursive: true });
   fs.mkdirSync(bin, { recursive: true });
   for (const name of options.executables ?? ["tt", "claude", "codex"]) {
-    fs.writeFileSync(path.join(bin, name), "#!/bin/sh\n", { mode: 0o755 });
+    // A Windows host only runs a bare command through a PATHEXT extension.
+    const file = process.platform === "win32" && !path.extname(name) ? `${name}.cmd` : name;
+    fs.writeFileSync(path.join(bin, file), "#!/bin/sh\n", { mode: 0o755 });
   }
   const skillDirs = { claude: [".claude", "skills"], shared: [".agents", "skills"] };
   for (const kind of options.skills ?? ["claude", "shared"]) {
@@ -294,6 +296,20 @@ describe("tt up planning", () => {
     const plan = planWorkspaceLaunch(base);
     expect(plan.status).toBe("blocked");
     expect(plan.checks.find((check) => check.name === "tt executable")?.status).toBe("failed");
+  });
+
+  test("resolves Windows executables through PATHEXT and a Path-spelled variable", () => {
+    const { base, home } = fixture({ executables: ["tt.exe", "claude.exe", "codex.cmd"] });
+    const env = { Path: base.env!.PATH, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
+    const plan = planWorkspaceLaunch({ ...base, env, platform: "win32" });
+    expect(plan.status).not.toBe("blocked");
+    for (const name of ["tt", "claude", "codex"]) {
+      expect(plan.checks.find((check) => check.name === `${name} executable`)?.status).toBe("ok");
+    }
+    expect(installedLaunchAgents(env, home, false, "win32")).toEqual(["claude", "codex"]);
+    // Elsewhere an extension-bearing file is not the bare command.
+    expect(planWorkspaceLaunch({ ...base, platform: "linux" }).checks
+      .find((check) => check.name === "tt executable")?.status).toBe("failed");
   });
 
   test("a failed layout read blocks the plan", () => {

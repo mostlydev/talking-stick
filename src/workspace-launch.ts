@@ -122,6 +122,7 @@ export interface PlanWorkspaceLaunchInput {
   record?: LaunchRecord | null;
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
+  platform?: NodeJS.Platform;
 }
 
 export function parseLaunchAgents(value: string | undefined): LaunchAgent[] {
@@ -147,12 +148,13 @@ export function parseLaunchAgents(value: string | undefined): LaunchAgent[] {
 // An omitted --agents selects launchers that can run and read their installed
 // Talking Stick skill on this machine. Explicit --agents keeps the usual
 // preflight behavior so a missing pane-shell binary can still be diagnosed.
-export function installedLaunchAgents(env: NodeJS.ProcessEnv = process.env, homeDir?: string, includeExperimental = false): LaunchAgent[] {
+export function installedLaunchAgents(env: NodeJS.ProcessEnv = process.env, homeDir?: string, includeExperimental = false,
+  platform: NodeJS.Platform = process.platform): LaunchAgent[] {
   return LAUNCH_AGENTS.filter((agent) => {
     const adapter = LAUNCH_ADAPTERS[agent];
     if (!adapter.default_enabled && !includeExperimental) return false;
     const skillPath = resolvePrimarySkillTargetPath(adapter.harness as Exclude<HarnessId, "gemini">, { homeDir });
-    return findOnPath(adapter.executable, env.PATH ?? "") !== null && fs.existsSync(path.join(skillPath, "SKILL.md"));
+    return findOnPath(adapter.executable, env, platform) !== null && fs.existsSync(path.join(skillPath, "SKILL.md"));
   });
 }
 
@@ -169,6 +171,7 @@ export function buildBootstrapPrompt(skillPath: string, canonicalPath: string): 
 // describes the side effects a launch would perform. Nothing is created here.
 export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceLaunchPlan {
   const env = input.env ?? process.env;
+  const platform = input.platform ?? process.platform;
   const checks: LaunchCheck[] = [];
   const resolved = resolveContextPath(input.context_path);
   const canonicalPath = resolved.canonical_context_path;
@@ -206,7 +209,7 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
     checks.push({ name: "path", status: "ok", detail: canonicalPath });
   }
 
-  const ttCheck = executableCheck("tt", env);
+  const ttCheck = executableCheck("tt", env, platform);
   if (ttCheck.status === "uncertain") {
     ttCheck.status = "failed";
     ttCheck.detail = "tt is missing from the launcher's PATH; bootstrap commands cannot rely on it.";
@@ -225,7 +228,7 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
     }
     // Herdr launches inside an interactive pane shell whose PATH may differ
     // from ours, so local absence is uncertainty and agent start decides.
-    checks.push(executableCheck(adapter.executable, env));
+    checks.push(executableCheck(adapter.executable, env, platform));
 
     const herdrName = herdrAgentName(agent, canonicalPath);
     const decision = decideAgent(agent, adapter, herdrName, input, herdrAgents);
@@ -412,22 +415,29 @@ function herdrAgentName(agent: LaunchAgent, canonicalPath: string): string {
   return `${agent}-${base || "room"}`.slice(0, 23).replace(/-+$/, "") + `-${hash}`;
 }
 
-function executableCheck(name: string, env: NodeJS.ProcessEnv): LaunchCheck {
-  const found = findOnPath(name, env.PATH ?? "");
+function executableCheck(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): LaunchCheck {
+  const found = findOnPath(name, env, platform);
   return found
     ? { name: `${name} executable`, status: "ok", detail: found }
     : { name: `${name} executable`, status: "uncertain", detail: `${name} is not on this process's PATH; the pane shell may still resolve it.` };
 }
 
-function findOnPath(name: string, searchPath: string): string | null {
-  for (const dir of searchPath.split(path.delimiter)) {
+// Windows resolves a bare command through PATHEXT (tt.exe, codex.cmd), and a
+// copied environment keeps its original "Path" spelling.
+function findOnPath(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
+  const windows = platform === "win32";
+  const searchPath = env.PATH ?? (windows ? env.Path : undefined) ?? "";
+  const extensions = windows ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean) : [""];
+  for (const dir of searchPath.split(windows ? ";" : ":")) {
     if (!dir) continue;
-    const candidate = path.join(dir, name);
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK);
-      if (fs.statSync(candidate).isFile()) return candidate;
-    } catch {
-      // Not here; keep searching.
+    for (const extension of extensions) {
+      const candidate = path.join(dir, name + extension);
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        if (fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        // Not here; keep searching.
+      }
     }
   }
   return null;
