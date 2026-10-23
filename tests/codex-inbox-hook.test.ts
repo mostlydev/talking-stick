@@ -65,12 +65,7 @@ test("a possibly accepted steer stays held beyond both legacy retry paths", asyn
   await service.flushWakes(room.room_id);
   expect(deliver).toHaveBeenCalledTimes(1);
   const oldBatch = (service.db.prepare("SELECT batch_id FROM member_wake_endpoints").get() as { batch_id: string }).batch_id;
-  // Execute the unmodified 0.30.0 expiry statement, not the new guarded code.
-  service.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
-    WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1 AND (
-      SELECT MAX(COALESCE(batch_started_at, last_attempt_at, recorded_at)) FROM member_wake_endpoints
-      WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1) <= ?`)
-    .run(room.room_id, "codex:test", room.room_id, "codex:test", new Date(Date.now() + 86_400_000).toISOString());
+  legacyExpiry(service, room.room_id);
   expect(service.db.prepare("SELECT batch_id FROM member_wake_endpoints").get()).toMatchObject({ batch_id: oldBatch });
   await operator("later work must not resend the first correction");
   expect(deliver).toHaveBeenCalledTimes(1);
@@ -142,12 +137,21 @@ test("without hooks an uncertain steer reuses its original token only after the 
 });
 
 function legacyExpiry(service: TalkingStickService, roomId: string) {
-  // The unmodified 0.30.0 expiry statement, not the new guarded code.
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  // The unmodified 0.30.0 new-event expiry statement, not the new guarded code.
   service.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
     WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1 AND (
       SELECT MAX(COALESCE(batch_started_at, last_attempt_at, recorded_at)) FROM member_wake_endpoints
       WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1) <= ?`)
-    .run(roomId, "codex:test", roomId, "codex:test", new Date(Date.now() + 86_400_000).toISOString());
+    .run(roomId, "codex:test", roomId, "codex:test", future);
+  // The unmodified 0.30.0 silence retry, which also reopens wake_pending.
+  service.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL, wake_pending = 1
+    WHERE awaiting_wait = 1 AND COALESCE(batch_started_at, last_attempt_at, recorded_at) <= ?
+      AND NOT EXISTS (SELECT 1 FROM member_wake_endpoints o WHERE o.room_id = member_wake_endpoints.room_id
+        AND o.agent_id = member_wake_endpoints.agent_id AND o.awaiting_wait = 1
+        AND (o.last_status IN ('queued', 'woken') OR COALESCE(o.batch_started_at, o.last_attempt_at, o.recorded_at) > ?))
+      AND EXISTS (SELECT 1 FROM native_event_receipts n WHERE n.room_id = member_wake_endpoints.room_id
+        AND n.agent_id = member_wake_endpoints.agent_id AND n.consumed_at IS NULL)`).run(future, future);
 }
 
 test("an ambiguous recovery send stays held across every expiry path and is never replayed", async () => {
@@ -163,6 +167,7 @@ test("an ambiguous recovery send stays held across every expiry path and is neve
   await service.flushWakes(room.room_id);
   expect(deliver).toHaveBeenCalledTimes(2);
   expect(service.db.prepare("SELECT delivery_mode FROM native_delivery_batches").get()).toMatchObject({ delivery_mode: "recovery_uncertain" });
+  expect(service.db.prepare("SELECT last_status FROM member_wake_endpoints").get()).toMatchObject({ last_status: "queued" });
   const held = (service.db.prepare("SELECT batch_id FROM member_wake_endpoints").get() as { batch_id: string }).batch_id;
   advance(6 * 60_000);
   await service.flushWakes(room.room_id);

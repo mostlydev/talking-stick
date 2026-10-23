@@ -3047,9 +3047,11 @@ export class TalkingStickService {
       // session releases it. Never a second blind replay.
       this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ? WHERE token = ? AND delivery_mode = 'recovering'")
         .run(result.outcome === "ambiguous" ? "recovery_uncertain" : null, batch.token);
+      // Older binaries' silence retry protects only queued/woken endpoints;
+      // the public state still reads ambiguous from recovery_uncertain.
       this.db.prepare(`UPDATE member_wake_endpoints SET last_status = ?, last_error = ?, last_error_detail = ?, last_attempt_at = ?
         WHERE room_id = ? AND agent_id = ? AND generation = ? AND batch_id = ?`)
-        .run(stored, result.error ?? null, safeWakeDetail(result.detail) ?? null, this.now().toISOString(),
+        .run(result.outcome === "ambiguous" ? "queued" : stored, result.error ?? null, safeWakeDetail(result.detail) ?? null, this.now().toISOString(),
           batch.room_id, batch.agent_id, endpoint.generation, batch.token);
       this.db.prepare("UPDATE interrupt_deliveries SET status = ?, error = ?, attempted_at = ? WHERE delivery_token = ?")
         .run(stored, result.error ?? null, this.now().toISOString(), batch.token);
