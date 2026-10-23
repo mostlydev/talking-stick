@@ -13,27 +13,10 @@ const tempFile = (name: string) => {
   roots.push(root);
   return path.join(root, name);
 };
-// close() defers until unfinalized statements are collected, and Windows
-// cannot remove a database file that is still open.
-// Collection is not deterministic, so collect again between bounded retries.
-// A migrated WAL database can stay locked on Windows runners beyond that; the
-// assertions have already run, so leave that temp directory to the runner.
+// Windows cannot remove a database file that is still open; the wrapper's
+// close() must release it at once.
 afterEach(() => {
-  for (const root of roots.splice(0)) {
-    for (let attempt = 0; ; attempt++) {
-      Bun.gc(true);
-      try { fs.rmSync(root, { recursive: true, force: true }); break; }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
-        if (attempt >= 20) {
-          if (process.platform !== "win32") throw error;
-          console.warn(`left locked temp directory ${root}`);
-          break;
-        }
-        Bun.sleepSync(50);
-      }
-    }
-  }
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("missing rows are undefined, runs report changes, pragma returns rows", () => {
@@ -72,6 +55,18 @@ test("busy timeout waits for a writer instead of failing at once", () => {
   writer.exec("ROLLBACK");
   writer.close();
   reader.close();
+});
+
+test("close finalizes retained statements and releases the file at once", () => {
+  const file = tempFile("closed.sqlite");
+  const db = openDatabase({ dbPath: file });
+  const retained = db.prepare("SELECT count(*) AS n FROM path_rooms");
+  expect(retained.get()).toEqual({ n: 0 });
+  db.close();
+  expect(() => retained.get()).toThrow();
+  // Windows refuses to remove a file that is still open.
+  fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  expect(fs.existsSync(file)).toBe(false);
 });
 
 test("the real schema migrates and immediate transactions roll back on error", () => {
