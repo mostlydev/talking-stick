@@ -404,7 +404,15 @@ blindly queued again after five minutes. Once its matching Stop hook runs, or re
 inspection proves that target ended, unread input can be recovered with the original token and
 event numbers. This is at-least-once delivery: deduplicate work by room and event number, and
 acknowledging either copy consumes both. Inspection is bounded and locally limited to once per
-30 seconds per batch. Standby alone does not release the hold or replay its input. An explicit urgent message
+30 seconds per batch. There is no background watchdog: without Codex hooks, inspection runs
+only when a later room write or flush happens. Recovery replays at most once. If the recovery
+send is itself ambiguous, or the process dies while recovering, the batch stays held until the
+agent reads or acknowledges it, or its session is replaced. A sender that dies mid-steer leaves
+the batch reserved. If it had captured a target turn, recovery treats it as uncertain 30
+seconds later. If it had not, no input was sent, and normal delivery retries after five minutes.
+A cancellation readback that does not list the target keeps polling until the helper's
+timeout; a missing row is not evidence that the turn stopped. Standby alone does not release
+the hold or replay its input. An explicit urgent message
 remains an independent route while a hold is outstanding. Later ordinary input coalesces until receipt; a new explicit urgent
 message has an independent delivery reservation. `--no-daemon`, remote and desktop sessions
 require a reachable matching control endpoint; queue fallback remains available when nothing

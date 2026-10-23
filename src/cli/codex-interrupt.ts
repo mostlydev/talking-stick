@@ -88,7 +88,8 @@ export function interruptCodexThread(
         const target = (message.result.data as Array<{ id?: string; status?: string }> | undefined)
           ?.find(turn => turn.id === targetTurnId);
         if (target?.status === "interrupted") { finish("sent"); return; }
-        if (!target || target.status !== "inProgress") { finish("unconfirmed"); return; }
+        // A missing row is not terminal evidence; keep reading until timeout.
+        if (target && target.status !== "inProgress") { finish("unconfirmed"); return; }
         poll = setTimeout(readCompletion, 100);
       }
     });

@@ -333,6 +333,9 @@ interface InterruptDeliveryRow {
   delivery_token: string | null;
 }
 
+// Possibly delivered steering whose outcome is unknown; reported as ambiguous.
+const HELD_UNCERTAIN_MODES = new Set(["steering", "uncertain", "recovering", "recovery_uncertain"]);
+
 interface SteeringBatch {
   token: string; room_id: string; agent_id: string; harness_session_id: string;
   host_id: string; event_seqs_json: string; target_turn_id: string;
@@ -2476,7 +2479,7 @@ export class TalkingStickService {
     this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
       WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1
         AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b
-          WHERE b.token = member_wake_endpoints.batch_id AND b.delivery_mode IN ('steering', 'steered', 'uncertain')) AND (
+          WHERE b.token = member_wake_endpoints.batch_id AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain')) AND (
         SELECT MAX(COALESCE(batch_started_at, last_attempt_at, recorded_at))
         FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1
       ) <= ?`).run(roomId, agentId, roomId, agentId, retryBefore);
@@ -2814,7 +2817,7 @@ export class TalkingStickService {
       // repeat dispatches of this exact interrupt, never a later urgent event.
       if (endpoint.transport === "codex_queue") this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'steering' WHERE token = ?").run(reservation.token);
       last = await this.deliverWakeEndpoint(endpoint, reservation.text, true, false, reservation.token);
-      if (endpoint.transport === "codex_queue") this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ? WHERE token = ?")
+      if (endpoint.transport === "codex_queue") this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ?, recovery_checked_at = NULL WHERE token = ? AND delivery_mode = 'steering'")
         .run(last.outcome === "steered" ? "steered" : last.outcome === "ambiguous" ? "uncertain" : null, reservation.token);
       transport = endpoint.transport;
       if (last.outcome !== "failed") break;
@@ -2907,7 +2910,7 @@ export class TalkingStickService {
       if (steer && endpoint.transport === "codex_queue") {
         const mode = result.outcome === "steered" ? "steered"
           : result.outcome === "ambiguous" ? "uncertain" : null;
-        this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ? WHERE token = ?").run(mode, batchId);
+        this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ?, recovery_checked_at = NULL WHERE token = ? AND delivery_mode = 'steering'").run(mode, batchId);
       }
       const storedOutcome = result.outcome === "steered" ? "woken"
         : steer && endpoint.transport === "codex_queue" && result.outcome === "ambiguous" ? "queued" : result.outcome;
@@ -2949,10 +2952,26 @@ export class TalkingStickService {
   // Delivered batches keep waiting for the agent, as before.
   private releaseStaleUnconfirmedWakes(): void {
     const before = new Date(this.now().getTime() - 5 * 60_000).toISOString();
+    // onTarget runs before any steer bytes. A stale reservation that never
+    // captured a target was definitely not steered. Its legacy 'queued' status
+    // would block the release below, so reopen exactly that hold here.
+    withImmediateTransaction(this.db, () => {
+      const unsent = this.db.prepare(`SELECT token FROM native_delivery_batches b
+        WHERE b.delivery_mode = 'steering' AND b.target_turn_id IS NULL AND b.acknowledged_at IS NULL
+          AND EXISTS (SELECT 1 FROM member_wake_endpoints w WHERE w.batch_id = b.token
+            AND w.awaiting_wait = 1 AND COALESCE(w.batch_started_at, w.last_attempt_at, w.recorded_at) <= ?)`)
+        .all(before) as Array<{ token: string }>;
+      for (const { token } of unsent) {
+        this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = NULL WHERE token = ?").run(token);
+        this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL, wake_pending = 1
+          WHERE batch_id = ? AND EXISTS (SELECT 1 FROM native_event_receipts n WHERE n.room_id = member_wake_endpoints.room_id
+            AND n.agent_id = member_wake_endpoints.agent_id AND n.consumed_at IS NULL)`).run(token);
+      }
+    });
     this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL, wake_pending = 1
       WHERE awaiting_wait = 1 AND COALESCE(batch_started_at, last_attempt_at, recorded_at) <= ?
         AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b WHERE b.token = member_wake_endpoints.batch_id
-          AND b.delivery_mode IN ('steering', 'steered', 'uncertain'))
+          AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain'))
         AND NOT EXISTS (SELECT 1 FROM member_wake_endpoints o WHERE o.room_id = member_wake_endpoints.room_id
           AND o.agent_id = member_wake_endpoints.agent_id AND o.awaiting_wait = 1
           AND (o.last_status IN ('queued', 'woken', 'steered') OR COALESCE(o.batch_started_at, o.last_attempt_at, o.recorded_at) > ?))
@@ -2976,12 +2995,13 @@ export class TalkingStickService {
 
   /** At-least-once recovery only after the exact target turn is known ended.
    * Keep the original token: late and recovered copies share acknowledgement.
+   * A 'steering' batch whose sender died qualifies 30s after target capture.
    */
   private recoverUncertainSteering(roomId?: string, agentId?: string): Promise<void> | undefined {
     if (!this.nativeWakeTransport?.inspectCodexTurn) return;
     const before = new Date(this.now().getTime() - 30_000).toISOString();
     const batches = this.db.prepare(`SELECT b.* FROM native_delivery_batches b
-      WHERE b.source = 'native' AND b.delivery_mode = 'uncertain' AND b.target_turn_id IS NOT NULL
+      WHERE b.source = 'native' AND b.delivery_mode IN ('uncertain', 'steering') AND b.target_turn_id IS NOT NULL
         AND b.acknowledged_at IS NULL AND (? IS NULL OR b.room_id = ?) AND (? IS NULL OR b.agent_id = ?)
         AND (b.recovery_checked_at IS NULL OR b.recovery_checked_at <= ?)
         AND EXISTS (SELECT 1 FROM native_event_receipts n, json_each(b.event_seqs_json) j
@@ -2998,7 +3018,7 @@ export class TalkingStickService {
         .get(batch.room_id, batch.agent_id) as RoomReceiverRow | undefined;
       if (receiver && this.receiverLiveness(receiver) === "alive") return;
       const claimed = this.db.prepare(`UPDATE native_delivery_batches SET recovery_checked_at = ?
-        WHERE token = ? AND delivery_mode = 'uncertain'
+        WHERE token = ? AND delivery_mode IN ('uncertain', 'steering')
           AND (recovery_checked_at IS NULL OR recovery_checked_at <= ?)`)
         .run(this.now().toISOString(), batch.token, before);
       if (!claimed.changes) return;
@@ -3012,7 +3032,7 @@ export class TalkingStickService {
         if (current?.generation !== endpoint.generation || currentMember?.harness_session_id !== batch.harness_session_id) return;
         const text = this.steeringText(batch);
         if (!text) return;
-        const result = this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'recovering' WHERE token = ? AND delivery_mode = 'uncertain' AND acknowledged_at IS NULL")
+        const result = this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'recovering' WHERE token = ? AND delivery_mode IN ('uncertain', 'steering') AND acknowledged_at IS NULL")
           .run(batch.token);
         if (!result.changes) return;
         this.db.prepare("UPDATE member_wake_endpoints SET batch_started_at = ? WHERE batch_id = ?")
@@ -3022,7 +3042,11 @@ export class TalkingStickService {
       if (!recovery) return;
       const result = await this.deliverWakeEndpoint(endpoint, recovery.text);
       const stored = result.outcome === "steered" ? "woken" : result.outcome;
-      this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = NULL WHERE token = ? AND delivery_mode = 'recovering'").run(batch.token);
+      // An ambiguous recovery send stays held, like a crash while recovering:
+      // the original target already ended, so only a read, an ack, or a new
+      // session releases it. Never a second blind replay.
+      this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ? WHERE token = ? AND delivery_mode = 'recovering'")
+        .run(result.outcome === "ambiguous" ? "recovery_uncertain" : null, batch.token);
       this.db.prepare(`UPDATE member_wake_endpoints SET last_status = ?, last_error = ?, last_error_detail = ?, last_attempt_at = ?
         WHERE room_id = ? AND agent_id = ? AND generation = ? AND batch_id = ?`)
         .run(stored, result.error ?? null, safeWakeDetail(result.detail) ?? null, this.now().toISOString(),
@@ -3085,7 +3109,10 @@ export class TalkingStickService {
               }
               // A wait subprocess may have received the data while its model
               // is busy. Still steer this active turn; never queue it later.
-              this.db.prepare("UPDATE native_delivery_batches SET target_turn_id = ? WHERE token = ?").run(turnId, deliveryToken);
+              // Stamp the capture: a sender that dies mid-steer leaves 'steering',
+              // which recovery treats as uncertain once the RPC deadline has passed.
+              this.db.prepare("UPDATE native_delivery_batches SET target_turn_id = ?, recovery_checked_at = ? WHERE token = ?")
+                .run(turnId, this.now().toISOString(), deliveryToken);
               return true;
             }
           } : {}),
@@ -3400,7 +3427,7 @@ export class TalkingStickService {
       ).get(roomId, targetId, eventSeq);
       const mode = attempt?.delivery_token ? (this.db.prepare("SELECT delivery_mode FROM native_delivery_batches WHERE token = ?")
         .get(attempt.delivery_token) as { delivery_mode: string | null } | undefined)?.delivery_mode : null;
-      const state = mode === "steered" ? "steered" : mode === "steering" || mode === "uncertain" ? "ambiguous" : attempt?.status;
+      const state = mode === "steered" ? "steered" : mode && HELD_UNCERTAIN_MODES.has(mode) ? "ambiguous" : attempt?.status;
       if (attempt) return {
         status: attempt.status === "failed" ? "unreachable" :
           attempt.status === "pending" || attempt.status === "dispatching" ? "pending" : "endpoint",
@@ -3422,7 +3449,7 @@ export class TalkingStickService {
       ?? endpoints.find((row) => row.awaiting_wait && row.last_status);
     const mode = attempted?.batch_id ? (this.db.prepare("SELECT delivery_mode FROM native_delivery_batches WHERE token = ?")
       .get(attempted.batch_id) as { delivery_mode: string | null } | undefined)?.delivery_mode : null;
-    const attemptState = mode === "steered" ? "steered" : mode === "uncertain" || mode === "steering" ? "ambiguous" : attempted?.last_status;
+    const attemptState = mode === "steered" ? "steered" : mode && HELD_UNCERTAIN_MODES.has(mode) ? "ambiguous" : attempted?.last_status;
     if (attempted) return {
       status: attempted.last_status === "failed" ? "unreachable" :
         attempted.dispatch_event_seq === eventSeq ? "endpoint" : "pending",

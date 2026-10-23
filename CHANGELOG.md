@@ -16,7 +16,8 @@ changes will be called out under **Breaking changes**.
 - Operator and urgent messages can steer an active daemon-backed Codex turn instead of
   waiting for it to finish. Exact-turn guards and reserved receipts prevent duplicate
   Stop/queue races. A background receiver does not suppress operator steering; uncertain
-  input recovers only after its exact target ends, using the original acknowledgement token.
+  input recovers at most once, only after its exact target ends, using the original
+  acknowledgement token; an ambiguous recovery or a crash mid-recovery stays held.
   Native cancellation reports success only after interrupted completion is observed (#178).
 
 ## [0.30.0] — 2026-10-22

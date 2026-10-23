@@ -141,6 +141,94 @@ test("without hooks an uncertain steer reuses its original token only after the 
   expect(deliver).toHaveBeenCalledTimes(2);
 });
 
+function legacyExpiry(service: TalkingStickService, roomId: string) {
+  // The unmodified 0.30.0 expiry statement, not the new guarded code.
+  service.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
+    WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1 AND (
+      SELECT MAX(COALESCE(batch_started_at, last_attempt_at, recorded_at)) FROM member_wake_endpoints
+      WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1) <= ?`)
+    .run(roomId, "codex:test", roomId, "codex:test", new Date(Date.now() + 86_400_000).toISOString());
+}
+
+test("an ambiguous recovery send stays held across every expiry path and is never replayed", async () => {
+  const { operator, deliver, native, service, room, advance, ack } = setup();
+  native.inspectCodexTurn = vi.fn(async () => "ended" as const);
+  deliver.mockImplementationOnce(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  deliver.mockImplementationOnce(async () => ({ outcome: "ambiguous", error: "codex_queue_unconfirmed" }));
+  await operator("recover at most once");
+  advance(30_001);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(service.db.prepare("SELECT delivery_mode FROM native_delivery_batches").get()).toMatchObject({ delivery_mode: "recovery_uncertain" });
+  const held = (service.db.prepare("SELECT batch_id FROM member_wake_endpoints").get() as { batch_id: string }).batch_id;
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  legacyExpiry(service, room.room_id);
+  const later = await operator("a later message must not unlock a second replay");
+  expect(later.delivery_state).not.toBe("steered");
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(native.inspectCodexTurn).toHaveBeenCalledTimes(1);
+  expect(service.db.prepare("SELECT batch_id, awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ batch_id: held, awaiting_wait: 1 });
+  ack(deliver.mock.calls[0][0].text);
+  expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 0 });
+});
+
+test("a process that dies mid-recovery leaves the batch held, not open to a blind retry", async () => {
+  const { operator, deliver, service, room, advance } = setup();
+  deliver.mockImplementationOnce(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  await operator("crashed while recovering");
+  service.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'recovering'").run();
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  legacyExpiry(service, room.room_id);
+  await operator("still no blind replay");
+  expect(deliver).toHaveBeenCalledTimes(1);
+  expect(service.db.prepare("SELECT awaiting_wait FROM member_wake_endpoints").get()).toMatchObject({ awaiting_wait: 1 });
+});
+
+test("a sender that dies mid-steer is recovered only after the RPC deadline and the exact turn ends", async () => {
+  const { operator, deliver, native, service, room, advance } = setup();
+  native.inspectCodexTurn = vi.fn(async () => "ended" as const);
+  deliver.mockImplementationOnce(async request => {
+    request.on_steer_target?.("actual-turn");
+    return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+  });
+  await operator("sender died before recording its result");
+  // Reproduce the dead sender: still 'steering', captured at setup time.
+  service.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'steering', recovery_checked_at = ?")
+    .run(new Date(Date.now() - 1_000).toISOString());
+  await service.flushWakes(room.room_id);
+  expect(native.inspectCodexTurn).not.toHaveBeenCalled();
+  advance(30_001);
+  await service.flushWakes(room.room_id);
+  expect(native.inspectCodexTurn).toHaveBeenCalledWith(SESSION, "actual-turn");
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(deliver.mock.calls[1][0].text).toBe(deliver.mock.calls[0][0].text);
+});
+
+test("a stale steering reservation without a captured target is released as unsent", async () => {
+  const { operator, deliver, native, service, room, advance } = setup();
+  native.inspectCodexTurn = vi.fn(async () => "ended" as const);
+  deliver.mockImplementationOnce(async () => ({ outcome: "ambiguous", error: "codex_steer_unconfirmed" }));
+  await operator("no target was ever recorded");
+  service.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'steering'").run();
+  await service.flushWakes(room.room_id);
+  expect(deliver).toHaveBeenCalledTimes(1);
+  advance(6 * 60_000);
+  await service.flushWakes(room.room_id);
+  expect(native.inspectCodexTurn).not.toHaveBeenCalled();
+  expect(deliver).toHaveBeenCalledTimes(2);
+  expect(deliver.mock.calls[1][0].text).toContain("no target was ever recorded");
+});
+
 test("a concurrent acknowledgement prevents recovery after turn inspection", async () => {
   const { operator, deliver, native, service, room, ack } = setup();
   deliver.mockImplementation(async request => {
