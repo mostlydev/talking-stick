@@ -174,7 +174,9 @@ export async function spawnGuardian(input: {
 
   return await new Promise<{ pid: number; process_started_at: string | null }>(
     (resolve, reject) => {
-      const inspector = createSystemProcessInspector();
+      // The guardian did not exist when a shared Windows snapshot was taken;
+      // its one identity read must probe fresh or its start time is lost.
+      const inspector = createSystemProcessInspector({ cacheTtlMs: 0 });
       let stdout = "";
       let stderr = "";
       let settled = false;
