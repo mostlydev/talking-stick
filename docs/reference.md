@@ -577,42 +577,47 @@ Menus and completion lists have a blank row separating them from the transcript.
 Member choices use their agent colors; command results use a separate `│` gutter with
 info, done, or error styling rather than an authored-message layout.
 
-Messages explicitly addressed to your human identity have a subtle background and remain at
-their original position while visible. Only after newer output pushes them above the live
-transcript do they pin at the top. The composer stays at the bottom in both layouts. Pins
-retain the normal header and content, without a status preamble. Messages shown in the pinned
-area are omitted from the live transcript so there is only one visible copy; the complete
-original remains in saved history. The drawer uses one continuous background and a muted
-“Earlier” label to distinguish it from the live timeline.
+Messages explicitly addressed to your human identity have a subtle background at their
+original position in the timeline. When unread messages leave the live viewport, one row on
+that same background appears at the top, like a status bar:
 
-In fullscreen mode, manually scrolling through a pending message suppresses its pin for this
-chat session, without recording an acknowledgement. Pins are hidden while browsing history.
-Inline chat inside Herdr follows the pane's scroll position (`pane.scroll_changed`): scrolling
-the terminal's own scrollback across a committed pending message suppresses its pin the same
-way. Only the operator's own movement counts, never new output or chat's repaint, and after a
-resize only rows written since then are tracked. While the pane is scrolled up, chat buffers
-updates without repainting the view you are reading. Returning to the bottom writes the full
-buffered conversation into native history and pins only messages not scrolled past. Herdr also returns to the bottom before forwarding a
-key, so keyboard input resumes updates even if the scroll stream disconnected. Input does not
-acknowledge a message. Once Herdr trims scrollback at its limit, rows can no longer be placed
-and messages pin as usual. Outside Herdr there is no scroll signal, so a pending message pins
-once pushed off screen; typing alone never dismisses a pin.
+    ▲ 2 unread · codex › Before I merge #180, can you confirm the operator… 4m · /unread
 
-In Herdr, run `tt install herdr` once and restart chat, then **Ctrl-click** a pin to dismiss it.
-The native link handler reaches only the live console in the clicked pane; expired links do
-nothing. This path never enables terminal mouse capture, so default inline scrolling and
-selection keep working. Outside Herdr, or without its plugin, use `/ack`.
+It names the sender of the oldest unread message, previews that message's first line, and
+shows its age. On narrow terminals the `/unread` hint goes first, then the age, then the
+preview; the count always stays. Only that one line is previewed. Message bodies are never
+pinned or repeated above the conversation.
 
-`/ack` dismisses all visible highlighted messages, `/ack #123` dismisses one, and `/ack all`
-dismisses every pending message. Acknowledgement clears the pin and its highlight. Explicit
-`--mouse` remains available for plain click acknowledgement; it captures wheel and drag input
-as well, so inline selection uses Shift-drag (Option-drag in iTerm2). `--no-mouse` wins over
-`--mouse` and does not disable Herdr's native Ctrl-click path.
+Activate the control to visit the oldest missed message in its original timeline. The view
+places its header at the top, and the message you landed on takes the selected-row background.
+The control then reads `▲ 1 of 2 · codex 4m · Enter next · Esc live`. Each activation
+advances to the next missed message and records an acknowledgement only after that target is
+drawn. Context messages are not acknowledged, and clicking them while reviewing does nothing.
+While reading, Enter or Space advances; arrows and Page Up/Down browse; Escape returns to
+the live tail with your draft intact. Incoming messages join the end of the queue. After the
+last visit the control reads `✓ All caught up · Esc live` until you return live.
 
-Acknowledgements are separate from delivery receipts and persist per room and local human
-across chat restarts. Displaying a message or replying does not acknowledge it. Broadcasts,
-visitor replies, messages to other humans and your own messages do not become pins. Only
-messages sent after this feature was activated become pins; the old backlog stays in history.
+In Herdr, run `tt install herdr` once and restart chat, then **Ctrl-click** the unread
+control. The native link handler reaches only the live console in the clicked pane.
+This does not enable terminal mouse capture, so scrolling and selection keep working.
+Outside Herdr, or without its plugin, use `/unread`. The history reader is managed by chat;
+it does not reposition the terminal's own scrollback, whose public Herdr API only exposes
+scroll observations. Explicit `--mouse` enables plain clicking, and captures wheel and drag
+input too; inline selection then uses Shift-drag (Option-drag in iTerm2). `--no-mouse` wins
+and does not disable Herdr Ctrl-click.
+
+Manually traversing a pending message suppresses its unread indicator for this session in
+fullscreen mode and in inline Herdr chat where scroll position is known. This does not
+record a durable acknowledgement. While native Herdr scrollback is away from the tail,
+updates buffer without repainting what you are reading; returning flushes the full history.
+Outside Herdr, native scroll position is unknown, so use the control, `/unread`, or `/ack`.
+Typing alone never acknowledges a message.
+
+`/ack` acknowledges visible highlighted messages, `/ack #123` one message, and `/ack all`
+every pending message. Acknowledgements persist per room and local human across restarts,
+and are separate from delivery receipts. `/clear` hides earlier messages without
+acknowledging them. Broadcasts, visitor replies, messages to other humans, and your own
+messages do not enter the missed-message queue.
 
 Resizing the window reflows the live panel in place, rebuilding only the visible tail and keeping
 native scrollback. Narrowing a terminal can leave repeated recent lines at the scrollback boundary,
@@ -754,12 +759,11 @@ place because Codex, Antigravity, Grok, and OpenCode share that one skill locati
 ### The Herdr plugin
 
 `tt install herdr` links a small Herdr plugin, `talking-stick.chat`, that turns a Ctrl-click on
-a pinned chat message into an acknowledgement without mouse capture. It needs Herdr 0.7.0 or
+the unread control into a history jump without mouse capture. It needs Herdr 0.7.0 or
 newer. The manifest is generated under the data directory and runs `tt chat-link` by absolute
 path (through `<install-dir>/current` for a release, so it survives updates). Each chat
-inside Herdr links its pins to `https://talking-stick.invalid/ack/<token>/<message>`; the token
-names a private socket in `/tmp/tt-chat-<uid>` owned by that chat, which acknowledges only
-pending messages clicked in its own pane. Stale or foreign links do nothing.
+inside Herdr links its unread control to `https://talking-stick.invalid/ack/<token>/<message>`; the token
+names a private socket in `/tmp/tt-chat-<uid>` owned by that chat, which visits pending messages only in its own pane and acknowledges each after drawing it. Stale or foreign links do nothing.
 `tt uninstall herdr` unlinks the plugin and removes the generated files.
 
 ### The Claude Code stop guard

@@ -62,7 +62,8 @@ export const CHAT_COMMANDS: ChatCommandInfo[] = [
     usage: "/bottom",
     description: "jump to the latest messages"
   },
-  { name: "ack", usage: "/ack [#message|all]", description: "acknowledge and dismiss visible pinned messages (or one message/all pending)" },
+  { name: "unread", usage: "/unread", description: "visit the next missed message; Escape returns live" },
+  { name: "ack", usage: "/ack [#message|all]", description: "acknowledge visible messages (or one message/all pending)" },
   { name: "theme", usage: "/theme [lantern|tide|dusk]", description: "show or change the chat palette" },
   { name: "help", usage: "/help", description: "list commands and keys" }
 ];
@@ -477,6 +478,17 @@ export class ChatTranscript {
     this.trimLiveBuffer();
   }
 
+  /** Anchor the original timeline at an event without marking intervening rows read. */
+  scrollToEvent(seq: number, height: number, width: number, context: ChatFormatContext): boolean {
+    const layout = this.layout(width, context);
+    const block = this.blocks.find(candidate => candidate.kind === "event" && candidate.event.event_seq === seq);
+    const row = block && layout.starts.get(block.id);
+    if (row === undefined) return false;
+    // The header lands at the top: partial context above it reads as an orphaned line.
+    this.anchor = this.anchorForRow(layout, Math.min(row, Math.max(0, layout.rows.length - height)));
+    return true;
+  }
+
   // The rows to show in a viewport of `height`, bottom-aligned so a short
   // conversation sits just above the input like a chat, not at the top.
   viewport(
@@ -561,7 +573,7 @@ export class ChatTranscript {
   }
 
   private layout(width: number, context: ChatFormatContext): Layout {
-    const wrapKey = `${width}|${this.epoch}|${context.show_turn_events}|${context.color}|${context.now?.toDateString()}|${context.history_before}`;
+    const wrapKey = `${width}|${this.epoch}|${context.show_turn_events}|${context.color}|${context.now?.toDateString()}|${context.history_before}|${context.focused_event ?? ""}`;
     const key = wrapKey + "|" + [...(context.excluded_events ?? [])].join(",");
     if (this.layoutCache?.key === key) return this.layoutCache.layout;
 
@@ -1036,7 +1048,7 @@ function renderInlineTopPanelFrame(input: ChatScreenInput): ChatFrame {
   const width = Math.max(1, input.columns - 1);
   const pins = renderAttention(input.attention, width, input.rows, input.format);
   const footer = renderInlinePanel({ ...input, attention: undefined, rows: input.rows - pins.lines.length });
-  const context = { ...input.format, excluded_events: new Set(pins.hits.map(hit => hit.event_seq)) };
+  const context = input.format;
   const height = Math.max(0, input.rows - footer.lines.length - pins.lines.length);
   const body = input.transcript.viewport(height, width, context);
   const filtered = input.transcript.historyRows(width, context);
@@ -1122,13 +1134,13 @@ function roomHeader(path: string, width: number, context: ChatFormatContext): st
 // over its last rows), rule, composer, rule, status. Every row stays one cell short of the terminal
 // width so the terminal never auto-wraps a full row.
 export function renderChatScreen(input: ChatScreenInput): ChatFrame {
-  if (!input.transcript.following) return renderChatScreenFrame({ ...input, attention: undefined });
+  if (!input.transcript.following && !input.attention?.reviewing) return renderChatScreenFrame({ ...input, attention: undefined });
   return resolveAttentionFrame(untraversedAttention(input), attention => {
     const frame = renderChatScreenFrame({ ...input, attention });
     const width = Math.max(1, input.columns - 1);
     const pins = renderAttention(attention, width, input.rows, input.format);
     const height = Math.max(0, chatTranscriptHeight(input) - pins.lines.length);
-    const context = { ...input.format, excluded_events: new Set(pins.hits.map(hit => hit.event_seq)) };
+    const context = input.format;
     // A menu overlays recent rows; it must not turn a covered message into
     // an off-the-top pin or move it away from its original timeline position.
     return { frame, visible: input.transcript.humanMessageRows(height, width, context).map(hit => hit.event_seq) };
@@ -1136,6 +1148,7 @@ export function renderChatScreen(input: ChatScreenInput): ChatFrame {
 }
 
 function untraversedAttention(input: ChatScreenInput): HumanAttention | undefined {
+  if (input.attention?.reviewing) return input.attention;
   return input.attention && { ...input.attention,
     messages: input.attention.messages.filter(event => !input.transcript.wasManuallyTraversed(event.event_seq)) };
 }
@@ -1161,7 +1174,7 @@ function renderChatScreenFrame(input: ChatScreenInput): ChatFrame {
     highlight
   );
   const attention = renderAttention(input.attention, width, height, context);
-  const bodyContext = { ...context, excluded_events: new Set(attention.hits.map(hit => hit.event_seq)) };
+  const bodyContext = context;
   const transcriptHeight = Math.max(0, chatTranscriptHeight(input) - attention.lines.length);
   const menuCapacity = Math.min(MAX_MENU_ROWS, Math.max(0, transcriptHeight - (transcriptHeight > 1 ? 1 : 0)));
   const completions = input.completions ?? getChatCompletions(input.draft, []);

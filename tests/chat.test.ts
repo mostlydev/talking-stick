@@ -2463,7 +2463,7 @@ test("human acknowledgement is explicit, durable across console sessions and sco
   expect(read().messages.map(event => event.event_seq)).toEqual([later.event_seq]);
 });
 
-test.each([true, false])("human pins stay visible and click acknowledges only the chosen message (inline=%s)", async inline => {
+test.each([true, false])("unread control visits original messages oldest-first and acknowledges only each visit (inline=%s)", async inline => {
   const { root, service } = setupService();
   const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
   const input = Object.assign(new PassThrough(), { setRawMode() {} });
@@ -2490,15 +2490,25 @@ test.each([true, false])("human pins stay visible and click acknowledges only th
     await until(() => bytes.includes("scroll-pin-11"));
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
     const promoted = screen().map((line, index) => line.includes("first pinned request") ? index : -1).filter(index => index >= 0);
-    expect(promoted).toHaveLength(1);
-    const y = promoted[0];
-    expect(screen()[y - 2].trimEnd()).toBe("Earlier"); // The cue reuses the existing padding row.
+    const y = screen().findIndex(line => line.includes("2 unread"));
+    expect(y).toBeGreaterThanOrEqual(0);
+    expect(promoted).toEqual([y]); // A one-line preview on the control, not a pinned copy.
     expect(screen().findIndex(line => line.startsWith("> "))).toBe(composerRow);
     input.write(`\u001b[<0;5;${y + 1}M`);
     await until(() => service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).total === 1);
     expect(service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).messages[0].event_seq).toBe(second.event_seq);
-    input.write("/ack all\r");
+    await flush();
+    expect(screen().filter(line => line.includes("first pinned request"))).toHaveLength(1);
+    expect(screen().some(line => line.includes("scroll-pin-0"))).toBe(true);
+    const nextY = screen().findIndex(line => line.includes("▲ 1 of 2"));
+    expect(nextY).toBeGreaterThanOrEqual(0);
+    input.write(`\u001b[<0;5;${nextY + 1}M`);
     await until(() => service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).total === 0);
+    await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+    expect(screen().some(line => line.includes("second pinned request"))).toBe(true);
+    expect(screen().some(line => line.includes("All caught up"))).toBe(true);
+    input.write("\u001b");
+    await new Promise(resolve => setTimeout(resolve, 80));
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
     expect(screen().join("\n")).not.toContain("awaiting acknowledgement");
     expect(service.getRoomEvents({ room_id: joined.room_id, include_all: true }).some(event => event.event_seq === second.event_seq)).toBe(true);
@@ -2627,7 +2637,7 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [false
     for (let i = 0; i < 25; i++) service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: `promotion-${i}` });
     await until(() => bytes.includes("promotion-24"));
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
-    expect(screen().filter(line => line.includes("click either copy"))).toHaveLength(1);
+    expect(screen().filter(line => line.includes("click either copy") && !line.includes("unread"))).toHaveLength(0);
     vt.resize(100, 100); output.columns = 100; output.rows = 100; output.emit("resize");
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
     const copies = screen().map((line, index) => line.includes(target) ? index : -1).filter(index => index >= 0);
@@ -2669,12 +2679,12 @@ test.each([true, false])("native Ctrl-click dismisses top pins without capturing
     await until(() => bytes.includes("native-flow-24") && bytes.includes("https://talking-stick.invalid/ack/"));
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
     url = /\u001b\]8;;(https:\/\/talking-stick\.invalid\/ack\/[a-f0-9]{32}\/[1-9][0-9]*)\u001b\\/.exec(bytes)![1];
-    const pinRow = screen().findIndex(line => line.includes("Native acknowledgement target"));
+    const pinRow = screen().findIndex(line => line.includes("1 unread"));
     expect(pinRow).toBeLessThan(5);
-    expect(screen().filter(line => line.includes("Native acknowledgement target"))).toHaveLength(1);
+    expect(screen().map((line, index) => line.includes("Native acknowledgement target") ? index : -1).filter(index => index >= 0)).toEqual([pinRow]);
     expect(await sendChatLinkClick({ url, paneId: "w1:another-pane" })).toBe("ignored");
     expect(pending()).toBe(1);
-    expect(screen()[pinRow]).toContain("Native acknowledgement target");
+    expect(screen()[pinRow]).toContain("1 unread");
     expect(screen().join("\n")).toContain("draft stays put");
     expect(vt.modes.mouseTrackingMode).toBe("none");
     expect(bytes).not.toContain("\u001b[?1000h");
@@ -2686,7 +2696,7 @@ test.each([true, false])("native Ctrl-click dismisses top pins without capturing
     }
     expect(await sendChatLinkClick({ url, paneId: "w1:p42" })).toBe("acked");
     await until(() => pending() === 0);
-    expect(await sendChatLinkClick({ url, paneId: "w1:p42" })).toBe("ignored");
+    expect(await sendChatLinkClick({ url, paneId: "w1:p42" })).toBe("acked"); // Final control returns live.
     if (inline) {
       for (let i = 0; i < 25; i++) service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: `between-pins-${i}` });
       await until(() => bytes.includes("between-pins-24"));
@@ -2765,7 +2775,7 @@ test.each(["live", "away", "away-acked", "away-input", "away-disconnect", "away-
         for (let i = 0; i < 40; i++) expect(lines.filter(line => new RegExp(`\\b${prefix}-${i}\\b`).test(line)), `${prefix}-${i}`).toHaveLength(1);
       }
     };
-    const pinned = () => screen().slice(0, 5).some(line => line.includes("Scrolled-past target"));
+    const pinned = () => screen().slice(0, 5).some(line => line.includes("1 unread"));
     if (scrollBeforePromotion) {
       vt.scrollLines(-1);
       await scroll(1); // A shallow scroll still exposes live-screen rows.
