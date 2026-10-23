@@ -43,6 +43,7 @@ interface BunStatement {
 }
 
 interface BunDatabase {
+  readonly inTransaction: boolean;
   prepare(sql: string): BunStatement;
   exec(sql: string): void;
   close(): void;
@@ -66,6 +67,9 @@ export function wrapBunDatabase(db: BunDatabase): SqliteDatabase {
   };
   const wrapper = {
     prepare,
+    get inTransaction() {
+      return db.inTransaction;
+    },
     exec(sql: string) {
       db.exec(sql);
       return wrapper;
