@@ -334,9 +334,12 @@ export async function runChatSession(
   let releaseChecking = false;
   const refreshReleaseStatus = () => {
     if (!noticeEnabled) return;
-    const installed = isInstalledRelease(runningRoot)
+    // Only an installer-managed layout can self-update or report an installed update.
+    const managed = isInstalledRelease(runningRoot) && process.platform !== "win32";
+    const installed = managed
       ? versionAt(path.join(standaloneInstallDir(runningRoot), "current")) : undefined;
-    const next = releaseNotice(runningVersion, readReleaseCache()?.latestVersion, installed);
+    const notice = releaseNotice(runningVersion, readReleaseCache()?.latestVersion, installed);
+    const next = notice && !managed ? { ...notice, manual: true } : notice;
     if (JSON.stringify(next) !== JSON.stringify(releaseStatus)) { releaseStatus = next; redraw(); }
     if (!releaseChecking && Date.now() - lastReleaseCheck >= 60_000) {
       lastReleaseCheck = Date.now();

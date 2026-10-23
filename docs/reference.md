@@ -93,8 +93,13 @@ process. Live chats never install updates. Startup and chats share a cache under
 directory and a cross-process lock. The public CDN checksum manifest is checked at most
 once every 24 hours plus up to 6 hours of jitter, including failed attempts; no GitHub API
 polling is added. Local footer refreshes do not imply network requests. Scroll/completion
-hints outrank the notice, which compacts or disappears on narrow terminals without
-squeezing the member status. `TT_NO_AUTO_UPDATE=1` also disables the running-chat check.
+hints outrank the notice. The notice yields to the room: it shows in full only while the
+member status keeps at least 40 cells, in its short form while it keeps 32, and otherwise not
+at all. The status keeps the stick holder and compresses other members to `+N`. Copies that no
+installer manages (Windows and hand-extracted archives) say `available · download from GitHub`
+instead, never `installed`; download the next archive from
+<https://github.com/mostlydev/talking-stick/releases>. Development checkouts linked with
+`npm link` show no notice. `TT_NO_AUTO_UPDATE=1` also disables the running-chat check.
 
 `tt self-update` on the standalone binary reruns the installer bundled with the current release,
 keeping the `--install-dir` and `--bin-dir` it was installed with (recorded in

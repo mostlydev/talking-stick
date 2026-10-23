@@ -4,6 +4,7 @@ import stringWidth from "string-width";
 import { draftStyleSpans, type DraftHighlightOptions } from "./chat-draft-highlight.js";
 import { agentStyle, paintStyle, themeStyle, type ChatColorMode } from "./theme.js";
 import type { RoomEvent } from "../types.js";
+import type { ReleaseNotice } from "../release-status.js";
 import {
   formatChatEvent,
   chatSectionLabel,
@@ -918,7 +919,7 @@ export interface ChatScreenInput {
    */
   panel?: string[];
   attention?: HumanAttention;
-  release?: { version: string; state: "available" | "installed" };
+  release?: ReleaseNotice;
   transcript: ChatTranscript;
   format: ChatFormatContext;
   status: Omit<ChatStatusInput, "columns">;
@@ -1227,6 +1228,9 @@ function renderChatScreenFrame(input: ChatScreenInput): ChatFrame {
   };
 }
 
+const FULL_NOTICE_STATUS_CELLS = 40;
+const COMPACT_NOTICE_STATUS_CELLS = 32;
+
 function renderFooter(input: ChatScreenInput, width: number, onMember?: (agent_id: string, start: number, end: number) => void): string {
   const context = input.format;
   const transcript = input.transcript;
@@ -1244,18 +1248,19 @@ function renderFooter(input: ChatScreenInput, width: number, onMember?: (agent_i
   } else if (input.hint) {
     suffix = dim(context, input.hint);
   } else if (input.release) {
-    const { version, state } = input.release;
+    const { version, state, manual } = input.release;
     const installed = state === "installed";
     const versionText = paintStyle(context.color, themeStyle(installed ? "ok" : "accent", context.color_mode), version);
     const full = installed
       ? `${versionText}${dim(context, " installed · ")}${paintStyle(context.color, `1;${themeStyle("warn", context.color_mode)}`, "restart chat")}`
-      : `${versionText}${dim(context, " available · tt self-update")}`;
+      : `${versionText}${dim(context, manual ? " available · download from GitHub" : " available · tt self-update")}`;
     const compact = installed
       ? `${paintStyle(context.color, `1;${themeStyle("warn", context.color_mode)}`, "restart for ")}${versionText}`
       : `${versionText}${dim(context, " available")}`;
-    const status = formatChatStatus({ ...input.status, columns: width + 1 }, context);
-    const budget = width - Math.max(24, textWidth(status)) - 2;
-    suffix = textWidth(full) <= budget ? full : textWidth(compact) <= budget ? compact : "";
+    // The notice yields to the room: the status keeps room for its owner and a
+    // "+N" overflow, so a crowded room shows the compact form or no notice.
+    const room = (notice: string) => width - textWidth(notice) - 2;
+    suffix = room(full) >= FULL_NOTICE_STATUS_CELLS ? full : room(compact) >= COMPACT_NOTICE_STATUS_CELLS ? compact : "";
   } else if (input.draft.line.length === 0) {
     suffix = dim(context, "/ for commands");
   }

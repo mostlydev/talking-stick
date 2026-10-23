@@ -5,7 +5,9 @@ import { resolveDataDir } from "./config.js";
 import { acquireLaunchLock } from "./launch-record.js";
 import { writeFileAtomic } from "./atomic-write.js";
 
-export interface ReleaseNotice { version: string; state: "available" | "installed" }
+/** manual: no installer manages this copy (hand-extracted, or Windows), so
+ * `tt self-update` cannot apply the update and nothing can be "installed". */
+export interface ReleaseNotice { version: string; state: "available" | "installed"; manual?: boolean }
 export interface ReleaseCache { checkedAt: number; nextCheckAt: number; latestVersion?: string }
 export const RELEASE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 const JITTER_MS = 6 * 60 * 60 * 1_000;
