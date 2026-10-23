@@ -11,6 +11,13 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- Operator and urgent messages can steer an active daemon-backed Codex turn instead of
+  waiting for it to finish. Exact-turn guards and reserved receipts prevent duplicate
+  Stop/queue delivery; ambiguous steering remains held across legacy retry paths. Native
+  cancellation reports success only after interrupted completion is observed (#178).
+
 ## [0.30.0] — 2026-10-22
 
 Full notes: [`docs/releases/0.30.0.md`](docs/releases/0.30.0.md).

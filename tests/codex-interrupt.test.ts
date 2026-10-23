@@ -11,7 +11,7 @@ const turnId = "01a0e1ed-5b0a-7463-8d71-5016b3f82b4f";
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-async function serverFor(status: "inProgress" | "completed") {
+async function serverFor(status: "inProgress" | "completed", complete = true) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-codex-interrupt-"));
   const socket = path.join(dir, "control.sock");
   const httpServer = http.createServer();
@@ -29,6 +29,7 @@ async function serverFor(status: "inProgress" | "completed") {
         ? { data: [{ id: turnId, status }] }
         : {};
     client.send(JSON.stringify({ id: request.id, result }));
+    if (request.method === "turn/interrupt" && complete) client.send(JSON.stringify({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "interrupted" } } }));
   }));
   await new Promise<void>((resolve) => httpServer.listen(socket, resolve));
   cleanup.push(async () => {
@@ -58,4 +59,9 @@ test("Codex interrupt leaves a completed turn alone", async () => {
 
 test("Codex interrupt reports an unavailable socket without sending a fallback message", async () => {
   expect(await interruptCodexThread(threadId, "/tmp/no-such-tt-codex-control.sock", 500)).toBe("unavailable");
+});
+
+test("request acceptance alone does not prove the turn stopped", async () => {
+  const { socket } = await serverFor("inProgress", false);
+  expect(await interruptCodexThread(threadId, socket, 100)).toBe("unconfirmed");
 });

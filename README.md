@@ -141,7 +141,7 @@ and an idle agent spends no model turns waiting.
 | Harness | How messages reach it |
 |---|---|
 | Claude Code | Its inbox socket. Your messages arrive at the next tool boundary without cancelling the current tool |
-| Codex | `codex queue` while idle. With the trusted turn hooks, messages that arrive mid-turn wait for the turn's end, and only the ones still unread are delivered then |
+| Codex | Native `turn/steer` for operator messages and urgent prompts in a live daemon-backed turn; `codex queue` while idle or when steering is definitely unavailable. Trusted Stop hooks deliver other unread room events |
 | Grok Build | Hooks during an active turn; an idle session needs a live `tt wait` or cmux |
 | Antigravity, OpenCode, Gemini | cmux only |
 

@@ -1084,8 +1084,9 @@ export class TalkingStickService {
       }
       const generation = member.standby_generation + 1;
       // Explicit standby starts a new wake epoch, even if the previous wake
-      // wasn't followed by a cursor acknowledgement. It does not mark any
-      // event read. Preserve unsent pending work, but invalidate old I/O so a
+      // wasn't followed by a cursor acknowledgement, except held steering
+      // batches: migration 28 preserves those until receipt/wait consumption.
+      // Standby does not mark events read. Preserve unsent work; invalidate old I/O so a
       // late completion cannot reserve or overwrite the new epoch.
       this.db.prepare(`UPDATE member_wake_endpoints
         SET awaiting_wait = 0, batch_id = NULL
@@ -2414,7 +2415,7 @@ export class TalkingStickService {
         FROM interrupt_deliveries i JOIN member_wake_endpoints e
           ON e.room_id = i.room_id AND e.agent_id = i.agent_id AND e.transport = i.transport
           AND e.harness_session_id = i.harness_session_id AND e.host_id = i.host_id
-        WHERE i.room_id = ? AND i.status IN ('queued', 'woken', 'ambiguous', 'failed')
+        WHERE i.room_id = ? AND i.status IN ('queued', 'woken', 'steered', 'ambiguous', 'failed')
       ), ranked AS (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY agent_id, transport ORDER BY last_attempt_at DESC) AS rank
         FROM attempts
@@ -2467,7 +2468,9 @@ export class TalkingStickService {
     // unaccepted batch; silence alone never causes periodic model wakes.
     const retryBefore = new Date(this.now().getTime() - 5 * 60_000).toISOString();
     this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
-      WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1 AND (
+      WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1
+        AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b
+          WHERE b.token = member_wake_endpoints.batch_id AND b.delivery_mode IN ('steering', 'steered', 'uncertain')) AND (
         SELECT MAX(COALESCE(batch_started_at, last_attempt_at, recorded_at))
         FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1
       ) <= ?`).run(roomId, agentId, roomId, agentId, retryBefore);
@@ -2817,9 +2820,18 @@ export class TalkingStickService {
         this.clearReadWake(roomId, agentId);
         return null;
       }
-      // A trusted hook will read still-unconsumed events at turn end. Queuing
-      // them now would leave an unretractable stale prompt if tt wait reads first.
-      if (this.codexTurnActive(member)) return null;
+      const steer = Boolean(this.db.prepare(`SELECT 1 FROM native_event_receipts n
+        JOIN room_events e ON e.room_id = n.room_id AND e.event_seq = n.event_seq
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL
+          AND e.event_type = 'message_sent' AND e.from_agent_id LIKE 'human:%'
+          AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b, json_each(b.event_seqs_json) j
+            WHERE b.room_id = n.room_id AND b.agent_id = n.agent_id AND j.value = n.event_seq
+              AND b.source = 'codex_hook' AND b.acknowledged_at IS NULL AND b.created_at > ?)
+          LIMIT 1`)
+        .get(roomId, agentId, new Date(this.now().getTime() - 5 * 60_000).toISOString()));
+      // Peer messages stay on the trusted Stop path. Operator messages use
+      // native steering instead, with the same reserved receipt batch.
+      if (this.codexTurnActive(member) && !steer) return null;
       const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
         "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?"
       ).get(roomId, agentId);
@@ -2843,13 +2855,6 @@ export class TalkingStickService {
       const text = formatNativeWakeText({ reason: reason?.wake_reason ?? "room_update",
         sender: reason?.wake_from_agent_id ? this.describeWakeSender(roomId, reason.wake_from_agent_id) : null,
         path: this.requireRoom(roomId).canonical_path });
-      // Operator messages may steer at a safe tool boundary without becoming
-      // urgent events or bypassing the normal unread-batch coalescing.
-      const steer = Boolean(this.db.prepare(`SELECT 1 FROM native_event_receipts n
-        JOIN room_events e ON e.room_id = n.room_id AND e.event_seq = n.event_seq
-        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL
-          AND e.event_type = 'message_sent' AND e.from_agent_id LIKE 'human:%' LIMIT 1`)
-        .get(roomId, agentId));
       const nativeText = this.prepareNativeEnvelope(roomId, agentId, undefined, batchId);
       return { endpoints, batchId, text: nativeText ?? text, wakeReason, steer, standbyGeneration: member.standby_generation, failureKey };
     });
@@ -2863,7 +2868,7 @@ export class TalkingStickService {
       if (current?.batch_id !== batchId || current.generation !== endpoint.generation) return;
       const member = this.getMember(roomId, agentId);
       if (!member || !this.usableNativeWakeEndpoints(roomId, member).some((row) => row.transport === endpoint.transport)) return;
-      if (this.codexTurnActive(member)) {
+      if (this.codexTurnActive(member) && !(steer && endpoint.transport === "codex_queue")) {
         // A prompt started after our reservation (or during a failed transport).
         // Return only our batch to pending so the Stop hook can reserve it.
         withImmediateTransaction(this.db, () => {
@@ -2876,13 +2881,28 @@ export class TalkingStickService {
       }
       if (endpoint.transport === "cmux" && wakeReason !== "interrupt" &&
           !(member.wait_intent === "parked" && member.standby_transport === "cmux")) return;
+      if (steer && endpoint.transport === "codex_queue") {
+        this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = 'steering' WHERE token = ?").run(batchId);
+        // Legacy flushers also see a held submission. They must not retry a
+        // steer whose outcome is unknown, and legacy Stop hooks still see
+        // source=native and skip these reserved receipts.
+        this.db.prepare("UPDATE member_wake_endpoints SET last_status = 'queued' WHERE room_id = ? AND agent_id = ? AND batch_id = ?")
+          .run(roomId, agentId, batchId);
+      }
       const result = await this.deliverWakeEndpoint(endpoint, text, false, steer);
+      if (steer && endpoint.transport === "codex_queue") {
+        const mode = result.outcome === "steered" ? "steered"
+          : result.outcome === "ambiguous" ? "uncertain" : null;
+        this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ? WHERE token = ?").run(mode, batchId);
+      }
+      const storedOutcome = result.outcome === "steered" ? "woken"
+        : steer && endpoint.transport === "codex_queue" && result.outcome === "ambiguous" ? "queued" : result.outcome;
       const safeError = result.error ?? null;
       const detail = safeWakeDetail(result.detail) ?? null;
       const recorded = this.db.prepare(`UPDATE member_wake_endpoints
         SET last_attempt_at = ?, last_status = ?, last_error = ?, last_error_detail = ?
         WHERE room_id = ? AND agent_id = ? AND transport = ? AND generation = ? AND batch_id = ?`
-      ).run(this.now().toISOString(), result.outcome, safeError, detail,
+      ).run(this.now().toISOString(), storedOutcome, safeError, detail,
         roomId, agentId, endpoint.transport, endpoint.generation, batchId);
       if (recorded.changes !== 1) return;
       if (result.outcome === "failed" && result.local) anyLocal = true;
@@ -2917,9 +2937,11 @@ export class TalkingStickService {
     const before = new Date(this.now().getTime() - 5 * 60_000).toISOString();
     this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL, wake_pending = 1
       WHERE awaiting_wait = 1 AND COALESCE(batch_started_at, last_attempt_at, recorded_at) <= ?
+        AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b WHERE b.token = member_wake_endpoints.batch_id
+          AND b.delivery_mode IN ('steering', 'steered', 'uncertain'))
         AND NOT EXISTS (SELECT 1 FROM member_wake_endpoints o WHERE o.room_id = member_wake_endpoints.room_id
           AND o.agent_id = member_wake_endpoints.agent_id AND o.awaiting_wait = 1
-          AND (o.last_status IN ('queued', 'woken') OR COALESCE(o.batch_started_at, o.last_attempt_at, o.recorded_at) > ?))
+          AND (o.last_status IN ('queued', 'woken', 'steered') OR COALESCE(o.batch_started_at, o.last_attempt_at, o.recorded_at) > ?))
         AND EXISTS (SELECT 1 FROM native_event_receipts n WHERE n.room_id = member_wake_endpoints.room_id
           AND n.agent_id = member_wake_endpoints.agent_id AND n.consumed_at IS NULL)`).run(before, before);
   }
@@ -2947,7 +2969,7 @@ export class TalkingStickService {
         const member = this.getMember(roomId, agentId);
         result = this.nativeWakeTransport ? await this.nativeWakeTransport.deliver({
           transport: endpoint.transport, address: endpoint.address, secret: endpoint.secret, text, interrupt,
-          steer: steer && endpoint.transport === "claude_inbox",
+          steer,
           start_queued: endpoint.transport === "codex_queue" &&
             !!member && this.getMemberProcessLiveness(member) === "alive"
         }) : { outcome: "failed", error: "native_wake_unavailable" };
@@ -2958,7 +2980,7 @@ export class TalkingStickService {
     // Even injected transports must not leak raw errors through public JSON.
     const safeError = result.error && [
       "claude_inbox_timeout", "claude_inbox_unreachable", "claude_inbox_write_failed", "claude_inbox_closed",
-      "invalid_codex_thread", "codex_unavailable", "codex_thread_not_found", "codex_queue_timeout", "codex_queue_failed",
+      "codex_steer_unconfirmed", "invalid_codex_thread", "codex_unavailable", "codex_thread_not_found", "codex_queue_timeout", "codex_queue_failed",
       "cmux_wake_failed", "native_wake_unavailable", "wake_delivery_unconfirmed"
     ].includes(result.error)
       ? result.error : result.error ? "wake_delivery_failed" : null;
@@ -3041,7 +3063,7 @@ export class TalkingStickService {
                   WHERE w.room_id = b.room_id AND w.agent_id = b.agent_id AND w.batch_id = b.token AND w.awaiting_wait = 1)
                   OR EXISTS (SELECT 1 FROM interrupt_deliveries i WHERE i.room_id = n.room_id
                     AND i.agent_id = n.agent_id AND i.event_seq = n.event_seq
-                    AND i.status IN ('dispatching', 'queued', 'woken', 'ambiguous')))))
+                    AND i.status IN ('dispatching', 'queued', 'woken', 'steered', 'ambiguous')))))
             ) ORDER BY e.event_seq LIMIT 32`)
           .all(member.room_id, member.agent_id, activity.last_hook_event_seq,
             new Date(this.now().getTime() - 5 * 60_000).toISOString()) as RoomEventRow[];
@@ -3248,7 +3270,7 @@ export class TalkingStickService {
         transport: attempt.transport ?? undefined,
         state: attempt.status === "pending" || attempt.status === "dispatching" ? undefined : attempt.status,
         error: attempt.error ?? undefined,
-        interrupt_status: attempt.transport ? attempt.transport === "claude_inbox" ? "injected" : "unsupported" : undefined
+        interrupt_status: attempt.transport ? (attempt.transport === "claude_inbox" || attempt.status === "steered") ? "injected" : "unsupported" : undefined
       };
     }
     const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
@@ -3261,11 +3283,14 @@ export class TalkingStickService {
       row.transport !== "cmux" || hint === "interrupt" || (member.wait_intent === "parked" && member.standby_transport === "cmux"));
     const attempted = endpoints.find((row) => row.awaiting_wait && row.last_status && row.last_status !== "failed")
       ?? endpoints.find((row) => row.awaiting_wait && row.last_status);
+    const mode = attempted?.batch_id ? (this.db.prepare("SELECT delivery_mode FROM native_delivery_batches WHERE token = ?")
+      .get(attempted.batch_id) as { delivery_mode: string | null } | undefined)?.delivery_mode : null;
+    const attemptState = mode === "steered" ? "steered" : mode === "uncertain" || mode === "steering" ? "ambiguous" : attempted?.last_status;
     if (attempted) return {
       status: attempted.last_status === "failed" ? "unreachable" :
         attempted.dispatch_event_seq === eventSeq ? "endpoint" : "pending",
       transport: attempted.transport,
-      state: attempted.dispatch_event_seq === eventSeq ? attempted.last_status ?? undefined : undefined,
+      state: attempted.dispatch_event_seq === eventSeq ? attemptState ?? undefined : undefined,
       ...(attempted.last_error ? { error: attempted.last_error } : {}),
       ...(currentWakeDetail(attempted) && attempted.dispatch_event_seq === eventSeq ? { error_detail: attempted.last_error_detail! } : {})
     };

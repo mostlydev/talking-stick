@@ -7,6 +7,8 @@ type RpcMessage = {
   id?: number;
   result?: Record<string, unknown>;
   error?: { message?: string };
+  method?: string;
+  params?: { threadId?: string; turn?: { id?: string; status?: string } };
 };
 
 export { codexControlSocket } from "../codex-queue-start.js";
@@ -21,6 +23,7 @@ export function interruptCodexThread(
   return new Promise((resolve) => {
     let settled = false;
     let interruptRequested = false;
+    let targetTurnId: string | undefined;
     const socket = new WebSocket(`ws+unix://${socketPath}:/`);
     const finish = (result: CodexInterruptResult) => {
       if (settled) return;
@@ -43,7 +46,12 @@ export function interruptCodexThread(
     socket.on("message", (data) => {
       let message: RpcMessage;
       try { message = JSON.parse(data.toString()) as RpcMessage; }
-      catch { finish("failed"); return; }
+      catch { finish(interruptRequested ? "unconfirmed" : "failed"); return; }
+      if (!settled && interruptRequested && message.method === "turn/completed" &&
+          message.params?.threadId === threadId && message.params.turn?.id === targetTurnId) {
+        finish(message.params.turn?.status === "interrupted" ? "sent" : "unconfirmed");
+        return;
+      }
       if (!message.id || settled) return;
       if (message.error || !message.result) { finish(interruptRequested ? "unconfirmed" : "failed"); return; }
       if (message.id === 1) {
@@ -61,9 +69,10 @@ export function interruptCodexThread(
         const latest = turns?.[0];
         if (!latest?.id || latest.status !== "inProgress") { finish("idle"); return; }
         interruptRequested = true;
+        targetTurnId = latest.id;
         send("turn/interrupt", 4, { threadId, turnId: latest.id });
       } else if (message.id === 4) {
-        finish("sent");
+        // RPC acceptance requests cancellation; only completion proves stopped.
       }
     });
     socket.on("error", () => finish(interruptRequested ? "unconfirmed" : "unavailable"));

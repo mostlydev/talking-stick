@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import net from "node:net";
 import { attachmentInstruction, payloadAttachments } from "./attachments.js";
-import { startQueuedCodexThread } from "./codex-queue-start.js";
+import { codexControlSocket, startQueuedCodexThread } from "./codex-queue-start.js";
+import { steerCodexThread } from "./codex-steer.js";
 import type { RoomEvent } from "./types.js";
 
 export type NativeWakeTransportName = "claude_inbox" | "codex_queue" | "cmux";
 export type NativeWakeReason = "message" | "interrupt" | "turn" | "room_update";
-export type NativeWakeState = "woken" | "queued" | "ambiguous";
+export type NativeWakeState = "woken" | "queued" | "steered" | "ambiguous";
 
 export const CLAUDE_INBOX_TIMEOUT_MS = 2_000;
 export const CODEX_QUEUE_TIMEOUT_MS = 10_000;
@@ -166,6 +167,7 @@ function sanitizeWakeLabel(value: string, max = 64): string {
 export interface NativeWakeOptions {
   timeout_ms?: number;
   env?: NodeJS.ProcessEnv;
+  codex_socket?: string;
 }
 
 export function createSystemNativeWakeTransport(options: NativeWakeOptions = {}): NativeWakeTransport {
@@ -219,9 +221,18 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
   });
 }
 
-export function deliverCodexQueue(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
+export async function deliverCodexQueue(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.address)) {
     return Promise.resolve({ outcome: "failed", error: "invalid_codex_thread" });
+  }
+  if (request.steer || request.interrupt) {
+    const result = await steerCodexThread({ threadId: request.address, text: request.text,
+      clientMessageId: `tt-${createHash("sha256").update(request.text).digest("hex")}`,
+      socketPath: options.codex_socket ?? codexControlSocket(options.env), timeoutMs: options.timeout_ms });
+    if (result === "steered") return { outcome: "steered" };
+    if (result === "ambiguous") return { outcome: "ambiguous", error: "codex_steer_unconfirmed" };
+    // The thread is idle, the method unsupported, or no steer bytes were sent.
+    // Queuing is safe only in these definitely-unsent cases.
   }
   return new Promise((resolve) => {
     const child = execFile("codex", ["queue", "--thread", request.address, "--message", request.text], {
