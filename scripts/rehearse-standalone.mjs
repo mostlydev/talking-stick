@@ -23,11 +23,14 @@ fs.mkdirSync(home, { recursive: true });
 fs.mkdirSync(project, { recursive: true });
 execFileSync("git", ["init", "-q", project]);
 
-// An isolated HOME keeps startup maintenance away from real installs.
+// An isolated HOME keeps startup maintenance away from real installs, and no
+// inherited harness marker may decide the identity instead of the explicit one.
+const harnessMarker = /^(TT_|TALKING_STICK_|CLAUDE|CODEX_|GROK_|CMUX_|ANTIGRAVITY_|GEMINI_CLI|OPENCODE|HERDR_)/;
 const env = {
-  ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"),
-  XDG_CONFIG_HOME: path.join(home, ".config"), TALKING_STICK_DATA_DIR: path.join(root, "data"),
-  TT_ROOM: "", TT_HARNESS_AGENT_ID: "claude:rehearsal",
+  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !harnessMarker.test(name))),
+  HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"),
+  XDG_CONFIG_HOME: path.join(home, ".config"), CODEX_HOME: path.join(home, ".codex"),
+  TALKING_STICK_DATA_DIR: path.join(root, "data"), TT_HARNESS_AGENT_ID: "claude:rehearsal",
   TALKING_STICK_DISABLE_SKILL_SYNC: "1", TALKING_STICK_DISABLE_SKILLER: "1"
 };
 const run = (args, file = tt, prefix = []) => {
@@ -35,26 +38,34 @@ const run = (args, file = tt, prefix = []) => {
   return JSON.parse(output);
 };
 const check = (condition, message, value) => {
-  if (!condition) {
-    console.error(`rehearsal failed: ${message}`, value === undefined ? "" : JSON.stringify(value));
-    process.exit(1);
-  }
+  if (!condition) throw new Error(`rehearsal failed: ${message} ${value === undefined ? "" : JSON.stringify(value)}`);
   console.log(`ok - ${message}`);
 };
+const alive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; }
+};
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+let guardian;
 try {
+  for (const skill of ["talking-stick", "talking-stick-rooms"]) {
+    check(fs.existsSync(path.join(path.dirname(tt), "skills", skill, "SKILL.md")), `the archive bundles ${skill}/SKILL.md`);
+  }
   const joined = run(["join"]);
   check(Boolean(joined.room_id), "join creates the repository room", joined);
   const turn = run(["wait", "--claim", "--timeout", "10"]);
   check(turn.status === "your_turn", "wait --claim grants the turn", turn);
   check(Number.isSafeInteger(turn.guardian_pid) && turn.guardian_pid > 0, "the turn has a guardian", turn);
-  let guardianAlive = false;
-  try { process.kill(turn.guardian_pid, 0); guardianAlive = true; } catch { /* checked below */ }
-  check(guardianAlive, "the guardian process is running", turn.guardian_pid);
+  guardian = turn.guardian_pid;
+  check(alive(guardian), "the guardian process is running", guardian);
   const sent = run(["msg", "send", "room", "from the compiled binary"]);
   check(sent.event_seq > 0, "msg send records an event", sent);
   const released = run(["release", "--status", "done", "--next-action", "none"]);
   check(released.status === "released", "release hands the turn back", released);
+  // Release stops the guardian only when its recorded start time proves the
+  // PID; a lost start time would leave it running until its heartbeat ends.
+  for (let waited = 0; alive(guardian) && waited < 20_000; waited += 100) await sleep(100);
+  check(!alive(guardian), "release stops that exact guardian", guardian);
   const state = run(["state"]);
   check(state.room.owner === null, "the room has no owner after release", state.room);
   const note = run(["notes", "add", "from the binary"]);
@@ -66,6 +77,9 @@ try {
   }
   const left = run(["leave"]);
   check(left.status !== undefined, "leave succeeds", left);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
 } finally {
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

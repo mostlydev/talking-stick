@@ -15,9 +15,18 @@ const tempFile = (name: string) => {
 };
 // close() defers until unfinalized statements are collected, and Windows
 // cannot remove a database file that is still open.
+// Collection is not deterministic, so collect again between bounded retries.
 afterEach(() => {
-  Bun.gc(true);
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    for (let attempt = 0; ; attempt++) {
+      Bun.gc(true);
+      try { fs.rmSync(root, { recursive: true, force: true }); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt >= 20) throw error;
+        Bun.sleepSync(50);
+      }
+    }
+  }
 });
 
 test("missing rows are undefined, runs report changes, pragma returns rows", () => {
