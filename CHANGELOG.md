@@ -13,6 +13,9 @@ changes will be called out under **Breaking changes**.
 
 ### Fixed
 
+- Windows sandboxed Claude wake attempts keep named-pipe connection refusals pending
+  so the native chat console can retry delivery instead of losing the wake.
+
 - Windows chat uses the resized pane width immediately after `tt up`, by enabling
   raw input before attaching the native-scroll input listener.
 

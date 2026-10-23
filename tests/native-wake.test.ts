@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   CLAUDE_INBOX_TIMEOUT_MS,
   CODEX_QUEUE_TIMEOUT_MS,
@@ -459,6 +459,31 @@ describe("native wake dispatch", () => {
 });
 
 describe("system native wake transport", () => {
+  test.each([
+    { address: "\\\\.\\pipe\\LOCAL\\claude-test", code: "ECONNREFUSED", local: true },
+    { address: "\\\\.\\pipe\\LOCAL\\claude-test", code: "ENOENT", local: false },
+    { address: "/tmp/claude-test.sock", code: "ECONNREFUSED", local: false }
+  ])("classifies pre-write $code for $address", async ({ address, code, local }) => {
+    const socket = new net.Socket();
+    const connect = vi.spyOn(net, "createConnection").mockReturnValue(socket);
+    const end = vi.spyOn(socket, "end");
+    try {
+      const result = createSystemNativeWakeTransport().deliver({
+        transport: "claude_inbox", address, secret: "secret", text: "wake"
+      });
+      socket.emit("error", Object.assign(new Error("connect failed"), { code }));
+      expect(await result).toEqual({
+        outcome: "failed", error: "claude_inbox_unreachable", detail: `connect:${code}`,
+        ...(local ? { local: true } : {})
+      });
+      expect(end).not.toHaveBeenCalled();
+    } finally {
+      end.mockRestore();
+      connect.mockRestore();
+      socket.destroy();
+    }
+  });
+
   test("Claude inbox receives exactly auth and user lines without blocking", async () => {
     const socketPath = path.join(tempRoot(), "inbox.sock");
     let receive!: (body: string) => void;
@@ -793,12 +818,12 @@ test("a stale failure detail from an older process never explains a later delive
   expect(health).toMatchObject({ last_status: "queued", last_error_detail: null });
 });
 
-test("a local wake failure stays pending for the next process, once per process", async () => {
+test.each(["EPERM", "ECONNREFUSED"])("a local %s wake failure stays pending for the next process, once per process", async (code) => {
   let attempts = 0;
-  const { service, project } = harness({ native: () => { attempts += 1; return { outcome: "failed", error: "claude_inbox_unreachable", detail: "connect:EPERM", local: true }; } });
+  const { service, project } = harness({ native: () => { attempts += 1; return { outcome: "failed", error: "claude_inbox_unreachable", detail: `connect:${code}`, local: true }; } });
   const roomId = joinPair(service, project);
   const sent = await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "approve" });
-  expect(sent.deliveries?.[0]).toMatchObject({ error: "claude_inbox_unreachable", error_detail: "connect:EPERM" });
+  expect(sent.deliveries?.[0]).toMatchObject({ error: "claude_inbox_unreachable", error_detail: `connect:${code}` });
   await service.flushWakes();
   await service.flushWakes(roomId);
   expect(attempts).toBe(1);
@@ -818,7 +843,7 @@ test("a local wake failure stays pending for the next process, once per process"
   await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId, to_agent_id: "claude:aa", body: "again" });
   const lastDetail = () => service.getRoomHealth({ context_path: project, agent_id: "claude:aa" }).wake_endpoints
     .find((row) => row.agent_id === "claude:aa" && row.transport === "claude_inbox")?.last_error_detail;
-  expect(lastDetail()).toBe("connect:EPERM");
+  expect(lastDetail()).toBe(`connect:${code}`);
   service.registerNativeWakeEndpoint({ agent_id: "claude:aa", room_id: roomId, transport: "claude_inbox",
     address: "/tmp/claude-inbox-2.sock", secret: "s3cret-token", harness_session_id: "claude-session", host_id: HOST });
   expect(lastDetail()).toBeNull();
