@@ -2516,6 +2516,40 @@ test.each([true, false])("unread control visits original messages oldest-first a
 });
 
 
+test("browsing during an unread review never reads context, even after returning live", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
+  const input = Object.assign(new PassThrough(), { setRawMode() {} });
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 28 });
+  const vt = new Terminal({ cols: 100, rows: 28, allowProposedApi: true });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("\u001b[0m", resolve));
+  const screen = () => Array.from({ length: output.rows }, (_, i) => vt.buffer.active.getLine(vt.buffer.active.baseY + i)?.translateToString(true) ?? "");
+  const pending = () => service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).messages.map(event => event.event_seq);
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: false,
+    color: true, history: 0, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Type to message the room"));
+    service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "landed target" });
+    const context = service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "context message" });
+    for (let i = 0; i < 30; i++) service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: `review-flow-${i}` });
+    await until(() => bytes.includes("review-flow-29"));
+    await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+    input.write("/unread\r");
+    await until(() => pending().length === 1);
+    for (let i = 0; i < 6; i++) input.write("\u001b[B"); // Browse down across the context message.
+    await new Promise(resolve => setTimeout(resolve, 30));
+    input.write("\u001b"); // A lone Escape resolves after the key-sequence wait.
+    await new Promise(resolve => setTimeout(resolve, 150)); await flush();
+    expect(screen().some(line => line.includes("review-flow-29"))).toBe(true);
+    input.write("\u001b[1;2A"); // A one-row live scroll near the tail crosses nothing old.
+    await new Promise(resolve => setTimeout(resolve, 60)); await flush();
+    expect(pending()).toEqual([context.event_seq]);
+  } finally { input.end(); await session; vt.dispose(); }
+});
+
 test.each([true, false].flatMap(inline => [undefined, false, true].map(mouse => ({ inline, mouse }))))(
   "pending pins capture mouse only with explicit --mouse (inline=$inline, mouse=$mouse)", async ({ inline, mouse }) => {
   const { root, service } = setupService();

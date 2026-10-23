@@ -1207,7 +1207,7 @@ export async function runChatSession(
         if (visible.length) break;
       }
     }
-    transcript.scrollBy(amount, height, columns - 1, formatContext());
+    transcript.scrollBy(amount, height, columns - 1, formatContext(), unreadReview === null);
     acknowledgeTraversed();
     redraw();
   };

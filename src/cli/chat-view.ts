@@ -450,7 +450,9 @@ export class ChatTranscript {
     deltaRows: number,
     height: number,
     width: number,
-    context: ChatFormatContext
+    context: ChatFormatContext,
+    // An unread review browses context without reading it.
+    trackTraversal = true
   ): void {
     const layout = this.layout(width, context);
     const maxTop = Math.max(0, layout.rows.length - height);
@@ -459,7 +461,7 @@ export class ChatTranscript {
       maxTop,
       Math.max(0, this.topRow(layout, maxTop) + deltaRows)
     );
-    if (top !== previousTop) {
+    if (trackTraversal && top !== previousTop) {
       const start = Math.min(top, previousTop);
       const end = Math.max(top, previousTop) + height;
       this.markHumanMessagesTraversed(layout.human_messages
