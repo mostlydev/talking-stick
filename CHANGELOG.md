@@ -14,7 +14,8 @@ changes will be called out under **Breaking changes**.
 ### Added
 
 - Releases include a Windows x64 standalone archive (`tt.exe`). `npm run build` and
-  `scripts/build-standalone.mjs` now run on Windows, which has no `chmod`.
+  `scripts/build-standalone.mjs` now run on Windows, which has no `chmod`. `tt up` finds
+  `tt.exe` and harness executables through `PATHEXT` instead of always reporting them missing.
 
 ### Changed
 

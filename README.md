@@ -197,6 +197,14 @@ it against `checksums.txt`, extract it with the built-in `tar -xzf`, put the fol
 then run `tt install --all`. `tt.exe` finds its skill files beside it, so keep the folder intact. A
 hand-extracted release does not update itself; download the next one to upgrade.
 
+Codex's Windows sandbox runs commands as a separate account that cannot reach
+`%APPDATA%\talking-stick`. Let it write there in `~/.codex/config.toml`:
+
+```toml
+[sandbox_workspace_write]
+writable_roots = ['C:\Users\<you>\AppData\Roaming\talking-stick']
+```
+
 The installer accepts `--bin-dir DIR` (default `~/.local/bin`) and `--install-dir DIR` (default
 `~/.local/share/talking-stick`). Each release lives in its own directory under `releases/`, with
 the skill files beside the binary. `tt` links to the active release, and skill links go through the
