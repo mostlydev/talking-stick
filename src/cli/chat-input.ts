@@ -73,6 +73,7 @@ export class ChatInputController {
   // While set, keys drive a modal panel (the /roles editor) and never reach
   // readline: nothing typed in a modal can become chat text.
   private modal: ((key: ChatModalKey) => void) | null = null;
+  private modalMouse = false;
   private modalText: ((text: string) => boolean) | null = null;
   // A terminal may deliver ESC and the rest of an arrow sequence separately.
   private modalPending = "";
@@ -163,7 +164,8 @@ export class ChatInputController {
   }
 
   /** Route keys to a modal panel until cleared with null. The draft is untouched. */
-  setModal(handler: ((key: ChatModalKey) => void) | null, text?: (text: string) => boolean): void {
+  setModal(handler: ((key: ChatModalKey) => void) | null, text?: (text: string) => boolean, mouse = false): void {
+    this.modalMouse = mouse;
     this.modal = handler;
     this.modalText = handler && text ? text : null;
     this.pending = "";
@@ -210,6 +212,12 @@ export class ChatInputController {
     let rest = this.modalPending + text;
     this.modalPending = "";
     while (rest && this.modal) {
+      const click = /^\u001b\[<0;(\d+);(\d+)M/.exec(rest);
+      if (this.modalMouse && click) {
+        rest = rest.slice(click[0].length);
+        this.options.onClick?.(Number(click[1]), Number(click[2]));
+        continue;
+      }
       if (this.modalPaste) {
         const end = rest.indexOf(PASTE_END);
         if (end < 0) {

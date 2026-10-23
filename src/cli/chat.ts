@@ -305,6 +305,15 @@ export async function runChatSession(
   let attention: HumanAttention = selfId.startsWith("human:")
     ? runtime.commands.getHumanAttention({ room_id: roomId, human_id: selfId }) : { messages: [], total: 0 };
   let humanAcknowledged = new Set(attention.acknowledged ?? []);
+  let unreadReview: number[] | null = null;
+  let visitedUnread: RoomEvent | undefined;
+  let unreadVisits = 0;
+  let pendingVisit: number | undefined;
+  const viewAttention = (): HumanAttention => unreadReview === null ? attention : {
+    ...attention, reviewing: true, visited: visitedUnread?.event_seq, current: visitedUnread,
+    position: unreadVisits, queued: unreadReview.length,
+    messages: attention.messages.filter(event => unreadReview!.includes(event.event_seq))
+  };
   let visibleAttention = new Set<number>();
   let mouseActive = false;
   let chatLinks: ChatLinkServer | undefined;
@@ -747,6 +756,7 @@ export async function runChatSession(
     delivery_icon: deliveryIcon,
     pin_link: chatLinks?.url,
     human_acknowledged: (event: RoomEvent) => humanAcknowledged.has(event.event_seq),
+    focused_event: visitedUnread?.event_seq,
     tracks_delivery: (event: RoomEvent) => terminal && (deliveryStates.get(event.event_seq)?.size ?? 0) > 0
   });
   const completionsFor = (draft: { line: string; cursor: number }) => getChatCompletions(draft,
@@ -804,7 +814,7 @@ export async function runChatSession(
     const context = formatContext();
     const draft = editor?.draft ?? { line: "", cursor: 0 };
     const input = {
-      room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention, transcript, format: context,
+      room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(), transcript, format: context,
       status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses() },
       draft, hint: currentHint(), completions: editor?.completionVisible ? completionsFor(draft) : [],
       completion_index: editor?.completionIndex ?? 0, ...size
@@ -817,7 +827,7 @@ export async function runChatSession(
     }
     if (nativeAway) { inlineNeedsRebuild = true; return; }
     const frame = renderInlineTopPanel(input);
-    const evicted = inlinePinHistory.evict(all, frame.history_top ?? 0);
+    const evicted = unreadReview === null ? inlinePinHistory.evict(all, frame.history_top ?? 0) : [];
     const history = evicted.map(entry => entry.text);
     nativeScrollLedger.commit(evicted.map(entry => transcript.eventSeqForRow(entry.row)));
     if (!history.length && inlineFrame?.inline_top && JSON.stringify(frame) === JSON.stringify(inlineFrame)) return;
@@ -830,6 +840,7 @@ export async function runChatSession(
     inlineHumanRows.clear();
     visibleAttention = new Set([...(frame.attention ?? []), ...(frame.human_messages ?? [])].map(hit => hit.event_seq));
     syncMouse();
+    completeUnreadVisit(frame);
   };
   const freezeInlineHistory = () => {
     transcript.setOutputBuffered(true);
@@ -854,10 +865,23 @@ export async function runChatSession(
     else onResize();
     transcript.setOutputBuffered(false);
   };
+  // The top viewport repaints from home, so the transcript stops flowing into
+  // native scrollback. Enter it only once an unread message has left the
+  // screen (the bar has something to point at) or a review is open, and stay
+  // until nothing is unread so the view does not flap at the edge.
+  let inlineTopActive = false;
+  const inlineTopMode = () => {
+    if (unreadReview !== null) return true;
+    if (!attention.total) return inlineTopActive = false;
+    if (inlineTopActive) return true;
+    const floor = Math.max(inlineVisibleFloor, inlineOutputRows + inlinePanelRows - dimensions().rows);
+    const visible = new Set([...inlineHumanRows].filter(([row]) => row >= floor && row < inlineOutputRows).map(([, seq]) => seq));
+    return inlineTopActive = attention.messages.some(event => !visible.has(event.event_seq));
+  };
   const drawComposer = () => {
     if (!inline || closed || externalEditorActive) return;
     if (nativeAway) { inlineNeedsRebuild = true; return; }
-    if (attention.total > 0) { drawTopViewport(); return; }
+    if (inlineTopMode()) { drawTopViewport(); return; }
     inlineHistoryInitialized = false;
     nativeScrollLedger.reset();
     const draft = editor?.draft ?? { line: "", cursor: 0 };
@@ -904,7 +928,7 @@ export async function runChatSession(
   const writeInline = (text: string) => {
     if (externalEditorActive) { deferredInline.push(text); return; }
     if (nativeAway) { inlineNeedsRebuild = true; return; }
-    if (attention.total > 0) { drawTopViewport(); return; }
+    if (inlineTopMode()) { drawTopViewport(); return; }
     eraseComposer();
     const lines = text.split(/\r?\n/).flatMap(line => wrapStyledLine(line, Math.max(1, dimensions().columns - 1)));
     output.write(lines.join("\r\n") + "\r\n");
@@ -923,7 +947,7 @@ export async function runChatSession(
         syncMouse();
         const frame = renderChatScreen({
           room_path: joined.canonical_path,
-          room_strip: roomStrip, panel: rolesPanelLines(), attention,
+          room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(),
           transcript,
           format: formatContext(),
           status: {
@@ -943,6 +967,7 @@ export async function runChatSession(
         visibleAttention = new Set([...(frame.attention ?? []), ...(frame.human_messages ?? [])].map(hit => hit.event_seq));
         output.write(diffChatFrame(previousFrame, frame));
         previousFrame = frame;
+        completeUnreadVisit(frame);
       } catch (error) {
         failure = error;
         stop();
@@ -977,7 +1002,7 @@ export async function runChatSession(
     rememberDelivery(seq, agent, state);
     transcript.invalidate();
     if (inline && nativeAway) { inlineNeedsRebuild = true; return; }
-    if (inline && attention.total > 0) { redraw(); return; }
+    if (inline && inlineTopMode()) { redraw(); return; }
     const row = inlineReceiptRows.get(seq);
     const event = trackedEvents.get(seq);
     const header = event ? render(event)?.split("\n")[0] : undefined;
@@ -1048,7 +1073,7 @@ export async function runChatSession(
     // Herdr may rewrap scrollback; committed rows no longer map one to one.
     nativeScrollLedger.reset();
     if (inline && nativeAway) { inlineNeedsRebuild = true; return; }
-    if (inline && attention.total > 0) {
+    if (inline && inlineTopMode()) {
       editor?.resize(dimensions().columns - 1);
       drawTopViewport();
       return;
@@ -1182,7 +1207,8 @@ export async function runChatSession(
         if (visible.length) break;
       }
     }
-    transcript.scrollBy(amount, height, columns - 1, formatContext());
+    transcript.scrollBy(amount, height, columns - 1, formatContext(), unreadReview === null);
+    acknowledgeTraversed();
     redraw();
   };
 
@@ -1268,6 +1294,10 @@ export async function runChatSession(
     const next = runtime.commands.getHumanAttention({ room_id: roomId, human_id: selfId });
     const changed = next.total !== attention.total || next.messages.map(event => event.event_seq).join(",") !== attention.messages.map(event => event.event_seq).join(",");
     const acknowledgementsChanged = next.acknowledged.join(",") !== [...humanAcknowledged].join(",");
+    if (unreadReview !== null) {
+      const previous = new Set(attention.messages.map(event => event.event_seq));
+      for (const event of next.messages) if (!previous.has(event.event_seq)) unreadReview.push(event.event_seq);
+    }
     attention = next;
     humanAcknowledged = new Set(next.acknowledged);
     if (changed || acknowledgementsChanged) {
@@ -1290,13 +1320,90 @@ export async function runChatSession(
       if (parsed === "all" && attention.messages.length) acknowledge("all");
     } catch (error) { print(`! ${sanitizeChatText(error instanceof Error ? error.message : String(error))}`); }
   };
+  // Scrolling the live transcript across a message reads it, durably. A review
+  // is excluded: its jumps and browsing leave context rows unread.
+  const acknowledgeTraversed = () => {
+    if (unreadReview !== null) return;
+    for (const event of attention.messages.filter(candidate => transcript.wasManuallyTraversed(candidate.event_seq))) {
+      acknowledge(String(event.event_seq));
+    }
+  };
+  const completeUnreadVisit = (frame: ChatFrame) => {
+    const seq = pendingVisit;
+    if (seq === undefined || !frame.human_messages?.some(hit => hit.event_seq === seq)) return;
+    pendingVisit = undefined;
+    // Only a target actually drawn in the viewport is acknowledged. Merely
+    // rendering the indicator, searching, or crossing other rows is not read.
+    acknowledge(String(seq));
+  };
+  const closeUnreadReview = () => {
+    unreadReview = null;
+    pendingVisit = undefined;
+    visitedUnread = undefined;
+    unreadVisits = 0;
+    transcript.invalidate();
+    editor?.setModal(null);
+    transcript.scrollToBottom();
+    if (inline) {
+      inlineNeedsRebuild = true;
+      resumeInlineTail();
+    } else { transcript.setOutputBuffered(false); redraw(); }
+  };
+  const visitUnread = (requested?: number): boolean => {
+    if (rolesPanel || roomTree || memberMenu || closed || externalEditorActive) return false;
+    const opening = unreadReview === null;
+    if (opening) {
+      const frame = inline ? inlineFrame : previousFrame;
+      const visible = new Set(frame?.human_messages?.map(hit => hit.event_seq));
+      unreadReview = attention.messages.filter(event => !visible.has(event.event_seq) &&
+        !transcript.wasManuallyTraversed(event.event_seq)).map(event => event.event_seq).sort((a, b) => a - b);
+    }
+    const next = attention.messages.filter(event => unreadReview!.includes(event.event_seq))
+      .sort((a, b) => a.event_seq - b.event_seq)[0];
+    if (!next) { closeUnreadReview(); return false; }
+    if (requested !== undefined && requested !== next.event_seq) { if (opening) unreadReview = null; return false; }
+    const { columns, rows } = dimensions();
+    const height = Math.max(1, chatTranscriptHeight({ columns, rows, draft: editor?.draft ?? { line: "", cursor: 0 }, room_path: joined.canonical_path }) - 1);
+    const context = formatContext();
+    if (inline) freezeInlineHistory();
+    else transcript.setOutputBuffered(true);
+    // A missed target may have been trimmed out of the live transcript. Load
+    // its bounded original neighbourhood from the archive, never just a copy
+    // of its body. No pagination through the entire intervening history.
+    if (!transcript.scrollToEvent(next.event_seq, height, columns - 1, context)) {
+      const before = runtime.commands.getRecentRoomEvents({ room_id: roomId, before_event_seq: next.event_seq, limit: 20, event_types: CONVERSATION_EVENTS });
+      const after = runtime.commands.getRoomEvents({ room_id: roomId, after_event_seq: next.event_seq - 1, limit: 40 });
+      const existing = new Set(transcript.historyRows(columns - 1, context).map(row => transcript.eventSeqForRow(row)));
+      const events = [...before, ...after].filter(event => event.event_seq > clearedThrough && !existing.has(event.event_seq) && render(event) !== null);
+      hydrateReceipts(events);
+      transcript.prependEvents(events, height, columns - 1, context);
+      if (!transcript.scrollToEvent(next.event_seq, height, columns - 1, context)) { closeUnreadReview(); return false; }
+    }
+    visitedUnread = next;
+    unreadVisits += 1;
+    pendingVisit = next.event_seq;
+    transcript.invalidate();
+    editor?.setModal(key => {
+      if (key === "escape" || key === "quit") closeUnreadReview();
+      else if (key === "enter" || key === "space" || key === "no") visitUnread();
+      else if (["up", "down", "page_up", "page_down"].includes(key)) {
+        scrollHistory((key === "up" || key === "page_up" ? -1 : 1) * (key.startsWith("page") ? Math.max(1, height - 1) : 1));
+      }
+    }, undefined, true);
+    redraw();
+    return true;
+  };
   const onClick = (column: number, row: number) => {
     if (options.mouse === false || column < 1 || column >= dimensions().columns || row < 1 || row > dimensions().rows || rolesPanel || roomTree || memberMenu) return;
     if (!mouseActive) return;
     const frame = inline ? inlineFrame : previousFrame;
     const offset = inline && frame ? dimensions().rows - frame.lines.length : 0;
     const hit = frame?.attention?.find(hit => hit.row + offset === row - 1);
-    if (hit) { acknowledge(String(hit.event_seq)); return; }
+    // During a review the control always means "next": a frame drawn before
+    // the landed message's acknowledgement may still name it.
+    if (hit) { if (unreadReview === null) visitUnread(hit.event_seq); else if (!viewAttention().messages.length) closeUnreadReview(); else visitUnread(); return; }
+    // While reviewing, only the control advances; context rows stay unread.
+    if (unreadReview !== null) return;
     const message = inline && !frame?.inline_top
       ? row - 1 < offset ? inlineHumanRows.get(inlineOutputRows - offset + row - 1) : undefined
       : frame?.human_messages?.find(hit => hit.row === row - 1)?.event_seq;
@@ -1342,6 +1449,7 @@ export async function runChatSession(
         return;
       }
       case "bottom":
+        if (unreadReview !== null) { closeUnreadReview(); return; }
         if (inline) {
           print("Use your terminal's scroll-to-bottom shortcut to return to live messages.");
           return;
@@ -1487,6 +1595,9 @@ export async function runChatSession(
         print(`Removed ${sanitizeChatText(target.agent_id)} from the room.${ownershipNote} The harness was not stopped.`, "ok");
         return;
       }
+      case "unread":
+        visitUnread();
+        return;
       case "ack":
         acknowledge(args);
         return;
@@ -1572,7 +1683,7 @@ export async function runChatSession(
       redraw();
       return;
     }
-    if (inline && attention.total > 0) {
+    if (inline && inlineTopMode()) {
       drawTopViewport();
       lastPrinted = event.event_type === "message_sent" ? "message" : "system";
       return;
@@ -1744,9 +1855,10 @@ export async function runChatSession(
     if (terminal && options.herdr && readHerdrPluginState(options.herdr.runner) === "enabled") {
       try {
         chatLinks = await startChatLinkServer({ paneId: options.herdr.pane_id, onAck: seq => {
-          if (closed || externalEditorActive || !attention.messages.some(event => event.event_seq === seq)) return false;
-          acknowledge(String(seq));
-          return !attention.messages.some(event => event.event_seq === seq);
+          if (closed || externalEditorActive) return false;
+          if (unreadReview === null) return visitUnread(seq);
+          if (!viewAttention().messages.length) { closeUnreadReview(); return true; }
+          return visitUnread();
         } });
       } catch { /* Pins and /ack still work without a local link endpoint. */ }
     }
@@ -1760,8 +1872,9 @@ export async function runChatSession(
         const awayChanged = away !== nativeAway;
         if (away && awayChanged) freezeInlineHistory();
         nativeAway = away;
-        const seqs = nativeScrollLedger.observe(scroll);
+        const seqs = unreadReview === null ? nativeScrollLedger.observe(scroll) : [];
         transcript.markHumanMessagesTraversed(seqs);
+        acknowledgeTraversed();
         if (!away && awayChanged && inlineNeedsRebuild) {
           resumeInlineTail();
         } else if (attention.total > 0 && (awayChanged || attention.messages.some(event => seqs.includes(event.event_seq)))) drawComposer();
