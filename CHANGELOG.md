@@ -16,6 +16,9 @@ changes will be called out under **Breaking changes**.
 - Releases include a Windows x64 standalone archive (`tt.exe`). `npm run build` and
   `scripts/build-standalone.mjs` now run on Windows, which has no `chmod`. `tt up` finds
   `tt.exe` and harness executables through `PATHEXT` instead of always reporting them missing.
+- A bottom status notice distinguishes a newer available release from an installed
+  update that needs a chat restart. Startup and running chats share a cached CDN
+  release check, at most once every 24–30 hours including failures, across panes (#180).
 
 ### Changed
 

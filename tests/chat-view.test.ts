@@ -28,6 +28,50 @@ const context = {
   show_turn_events: false
 };
 
+test("release footer prioritizes work hints, preserves status, and remains visible while typing", () => {
+  const base = { transcript: new ChatTranscript(), format: context,
+    status: { members: [], owner: null, owner_since: null, reserved_for: null, now: new Date() },
+    draft: { line: "a draft", cursor: 7 }, hint: null, columns: 100, rows: 24 };
+  for (const render of [renderChatScreen, renderInlinePanel]) {
+    const available = { version: "0.31.0", state: "available" as const };
+    expect(render({ ...base, release: available }).lines.at(-1)).toContain("0.31.0 available · tt self-update");
+    expect(render({ ...base, release: { ...available, state: "installed" } }).lines.at(-1)).toContain("0.31.0 installed · restart chat");
+    expect(render({ ...base, release: available, hint: "database busy" }).lines.at(-1)).toContain("database busy");
+    expect(render({ ...base, release: available, hint: "database busy" }).lines.at(-1)).not.toContain("0.31.0");
+    const short = render({ ...base, columns: 60, release: available }).lines.at(-1)!;
+    expect(short).toContain("0.31.0 available");
+    expect(short).not.toContain("self-update");
+    // Below 32 status cells the notice yields entirely.
+    const tiny = render({ ...base, columns: 45, release: available }).lines.at(-1)!;
+    expect(tiny).not.toContain("0.31.0");
+    const manual = render({ ...base, release: { ...available, manual: true } }).lines.at(-1)!;
+    expect(manual).toContain("0.31.0 available · download from GitHub");
+    expect(manual).not.toContain("self-update");
+    const completion = render({ ...base, release: available, completions: getChatCompletions({ line: "/", cursor: 1 }, []) }).lines.at(-1)!;
+    expect(completion).not.toContain("0.31.0");
+  }
+});
+
+test("a crowded room keeps its owner and compresses members to make room for the notice", () => {
+  const members = ["claude:bb", "codex:aa", "grok:cc", "opencode:dd", "gemini:ee", "claude:ff", "codex:gg"]
+    .map(agent_id => ({ agent_id, status: "active", process_liveness: "alive" }));
+  const status = { members, owner: "codex:aa", owner_since: new Date(Date.now() - 12 * 60_000).toISOString(),
+    reserved_for: null, now: new Date() };
+  const base = { transcript: new ChatTranscript(), format: { ...context, name_of: buildNameResolver(members.map(m => m.agent_id), SELF) },
+    status, draft: { line: "", cursor: 0 }, hint: null, rows: 24 };
+  for (const render of [renderChatScreen, renderInlinePanel]) {
+    const available = { version: "0.31.0", state: "available" as const };
+    const wide = render({ ...base, columns: 100, release: available } as never).lines.at(-1)!;
+    expect(wide).toContain("0.31.0 available · tt self-update");
+    expect(wide).toMatch(/holding/);
+    expect(wide).toMatch(/\+\d/);
+    const narrow = render({ ...base, columns: 60, release: available } as never).lines.at(-1)!;
+    expect(narrow).toContain("0.31.0 available");
+    expect(narrow).not.toContain("self-update");
+    expect(narrow).toMatch(/holding/);
+  }
+});
+
 test("inline panels fit narrow and short terminals with a stable suggestion area", () => {
   for (const columns of [1, 4, 8, 20, 40, 80]) {
     for (const rows of [2, 4, 5, 6, 7, 12, 24]) {

@@ -29,6 +29,14 @@ export function isInstalledRelease(releaseRoot = standaloneRoot()): boolean {
     fs.existsSync(path.join(releaseRoot, "package.json"));
 }
 
+/** An installer-managed release: the releases/ layout plus the receipt
+ * scripts/install.sh writes. Only these can self-update or report an
+ * installed update; a hand-extracted copy of the same layout cannot. */
+export function isManagedRelease(releaseRoot = standaloneRoot(), platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "win32" && isInstalledRelease(releaseRoot) &&
+    fs.existsSync(path.join(standaloneInstallDir(releaseRoot), "install-receipt"));
+}
+
 /** <install-dir> for a release at <install-dir>/releases/<release>. */
 export function standaloneInstallDir(releaseRoot = standaloneRoot()): string {
   return path.dirname(path.dirname(releaseRoot));

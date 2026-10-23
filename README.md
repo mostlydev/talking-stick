@@ -228,11 +228,17 @@ tt self-update                 # reinstall the latest release with the same dire
 tt uninstall --all             # remove
 ```
 
-**Automatic updates.** An installed release checks for a new version once a day, when you start an
-interactive command such as `tt chat`. The check takes at most three seconds; if a newer release
+**Automatic updates.** An installed release checks for a new version at most once every 24–30 hours, when you start an
+interactive command such as `tt chat`. The check has a five-second network deadline; if a newer release
 exists, `tt` downloads and installs it, then asks you to rerun the command. Agent commands, hooks,
 JSON output, redirected terminals, and source checkouts never update. Set `TT_NO_AUTO_UPDATE=1` to
 turn this off; `tt self-update` still works.
+
+The bottom chat status bar shows a newer available version with `tt self-update`, or
+“installed · restart chat” when an update is already on disk. Windows and hand-extracted copies
+show “available · download from GitHub”. Running chats never install
+updates. Panes share one cached check of the public release asset, with jitter and cached
+failures; they do not each poll the GitHub API. `TT_NO_AUTO_UPDATE=1` disables these checks too.
 
 **After any update,** restart running harnesses so they load the new skill and hooks, and reopen
 `tt chat`.
