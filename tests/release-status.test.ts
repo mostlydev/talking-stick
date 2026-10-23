@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { checkRelease, readReleaseCache, releaseNotice, versionFromChecksums, RELEASE_CHECK_INTERVAL_MS } from "../src/release-status.js";
+import { isManagedRelease } from "../src/standalone-mode.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -65,4 +66,18 @@ test("only a newer installed version produces restart advice", () => {
   expect(releaseNotice("0.30.0", "0.32.0", "0.31.0")).toEqual({ version: "0.31.0", state: "installed" });
   expect(releaseNotice("0.31.0", "0.31.0", "0.31.0")).toBeUndefined();
   expect(releaseNotice("0.31.0-rc.1", "0.32.0")).toBeUndefined();
+});
+
+test("only an installer receipt makes a releases/ layout managed", () => {
+  const install = fs.mkdtempSync(path.join(os.tmpdir(), "tt-release-layout-"));
+  roots.push(install);
+  const release = path.join(install, "releases", "0.30.0");
+  fs.mkdirSync(release, { recursive: true });
+  fs.writeFileSync(path.join(release, "package.json"), JSON.stringify({ version: "0.30.0" }));
+  // A hand-extracted copy of the same layout cannot self-update.
+  expect(isManagedRelease(release, "darwin")).toBe(false);
+  fs.writeFileSync(path.join(install, "install-receipt"), "bin_dir=/tmp/bin\n");
+  expect(isManagedRelease(release, "darwin")).toBe(true);
+  expect(isManagedRelease(release, "win32")).toBe(false);
+  expect(isManagedRelease(path.join(install, "loose"), "darwin")).toBe(false);
 });

@@ -9,7 +9,7 @@ import { resolveAttentionFrame, renderAttention, type HumanAttention } from "./c
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { checkRelease, readReleaseCache, releaseNotice, type ReleaseNotice } from "../release-status.js";
-import { isStandalone, isInstalledRelease, standaloneRoot, standaloneInstallDir } from "../standalone-mode.js";
+import { isStandalone, isManagedRelease, standaloneRoot, standaloneInstallDir } from "../standalone-mode.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -335,7 +335,7 @@ export async function runChatSession(
   const refreshReleaseStatus = () => {
     if (!noticeEnabled) return;
     // Only an installer-managed layout can self-update or report an installed update.
-    const managed = isInstalledRelease(runningRoot) && process.platform !== "win32";
+    const managed = isManagedRelease(runningRoot);
     const installed = managed
       ? versionAt(path.join(standaloneInstallDir(runningRoot), "current")) : undefined;
     const notice = releaseNotice(runningVersion, readReleaseCache()?.latestVersion, installed);
