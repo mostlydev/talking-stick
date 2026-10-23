@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.31.0] — 2026-10-23
+
+Full notes: [`docs/releases/0.31.0.md`](docs/releases/0.31.0.md).
+
 ### Added
 
 - Releases include a Windows x64 standalone archive (`tt.exe`). `npm run build` and
