@@ -918,6 +918,7 @@ export interface ChatScreenInput {
    */
   panel?: string[];
   attention?: HumanAttention;
+  release?: { version: string; state: "available" | "installed" };
   transcript: ChatTranscript;
   format: ChatFormatContext;
   status: Omit<ChatStatusInput, "columns">;
@@ -1242,6 +1243,19 @@ function renderFooter(input: ChatScreenInput, width: number, onMember?: (agent_i
       : "↑↓ choose · Tab accept · Esc clear");
   } else if (input.hint) {
     suffix = dim(context, input.hint);
+  } else if (input.release) {
+    const { version, state } = input.release;
+    const installed = state === "installed";
+    const versionText = paintStyle(context.color, themeStyle(installed ? "ok" : "accent", context.color_mode), version);
+    const full = installed
+      ? `${versionText}${dim(context, " installed · ")}${paintStyle(context.color, `1;${themeStyle("warn", context.color_mode)}`, "restart chat")}`
+      : `${versionText}${dim(context, " available · tt self-update")}`;
+    const compact = installed
+      ? `${paintStyle(context.color, `1;${themeStyle("warn", context.color_mode)}`, "restart for ")}${versionText}`
+      : `${versionText}${dim(context, " available")}`;
+    const status = formatChatStatus({ ...input.status, columns: width + 1 }, context);
+    const budget = width - Math.max(24, textWidth(status)) - 2;
+    suffix = textWidth(full) <= budget ? full : textWidth(compact) <= budget ? compact : "";
   } else if (input.draft.line.length === 0) {
     suffix = dim(context, "/ for commands");
   }

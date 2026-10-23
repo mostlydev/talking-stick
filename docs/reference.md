@@ -77,14 +77,24 @@ Help flags are always read-only. `--help` and `-h` take precedence over command 
 even for stateful commands such as `wait`, `release`, `assign`, `notes add`, or `msg send`;
 they do not join rooms, claim turns, spawn guardians, write events, or update session state.
 
-Installer-managed standalone releases check for newer stable versions once daily at human,
+Installer-managed standalone releases check for newer stable versions at most every 24–30 hours at human,
 interactive startup (for example `tt chat`), install under a per-install lock, then ask you to restart
 before the command opens the database. Agent RPCs, hooks, JSON/redirected output, `--print`, and
 development checkouts never auto-install. `TT_NO_AUTO_UPDATE=1` disables automatic checks.
-The version check runs through `curl` with a three-second deadline; installing a newer release then
+The version check runs through `curl` with a five-second network deadline; installing a newer release then
 takes as long as its download. Failures go to stderr and leave the command usable.
 Previous release directories remain available for running processes. Explicit and automatic updates
 share the same lock. Automatic installs keep any npm copy without prompting.
+
+
+Running chats show an unobtrusive footer notice when a newer release is available, or
+“installed · restart chat” only when the active install on disk is newer than the running
+process. Live chats never install updates. Startup and chats share a cache under the data
+directory and a cross-process lock. The public CDN checksum manifest is checked at most
+once every 24 hours plus up to 6 hours of jitter, including failed attempts; no GitHub API
+polling is added. Local footer refreshes do not imply network requests. Scroll/completion
+hints outrank the notice, which compacts or disappears on narrow terminals without
+squeezing the member status. `TT_NO_AUTO_UPDATE=1` also disables the running-chat check.
 
 `tt self-update` on the standalone binary reruns the installer bundled with the current release,
 keeping the `--install-dir` and `--bin-dir` it was installed with (recorded in

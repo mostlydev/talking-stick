@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { checkRelease, newerRelease } from "./release-status.js";
+export { newerRelease } from "./release-status.js";
 import { acquireLaunchLock } from "./launch-record.js";
 import { writeFileAtomic } from "./atomic-write.js";
 import { planStandaloneUpdate } from "./self-update.js";
@@ -28,17 +30,6 @@ export interface AutoUpdateOptions {
 
 function readVersion(root: string): string {
   return (JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as { version: string }).version;
-}
-
-// Only stable releases are eligible: never downgrade a prerelease or development version.
-export function newerRelease(candidate: string, current: string): boolean {
-  if (!/^\d+\.\d+\.\d+$/.test(candidate) || !/^\d+\.\d+\.\d+$/.test(current)) return false;
-  const a = candidate.split(".").map(Number);
-  const b = current.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    if (a[i] !== b[i]) return a[i] > b[i];
-  }
-  return false;
 }
 
 /** Returns true when the caller must stop and ask for a restart before opening the DB. */
@@ -107,19 +98,9 @@ function summarizeError(error: unknown): string {
 }
 
 async function fetchLatestVersion(env: NodeJS.ProcessEnv): Promise<string> {
-  // The installer already requires curl. Use the same system TLS/network path:
-  // compiled Bun fetch can time out on hosts where curl and bun run succeed.
-  const json = await new Promise<string>((resolve, reject) => {
-    const child = execFile("curl", ["-fsS", "--connect-timeout", "3", "--max-time", "3",
-      "-H", "Accept: application/vnd.github+json", "-H", "User-Agent: talking-stick",
-      "https://api.github.com/repos/mostlydev/talking-stick/releases/latest"], {
-      env, encoding: "utf8", timeout: 4_000, maxBuffer: 1024 * 1024
-    }, (error, stdout) => error ? reject(error) : resolve(stdout));
-    child.stdin?.end();
-  });
-  const data = JSON.parse(json) as { tag_name?: unknown };
-  if (typeof data.tag_name !== "string" || !/^v\d+\.\d+\.\d+$/.test(data.tag_name)) throw new Error("invalid GitHub release version");
-  return data.tag_name.slice(1);
+  const cached = await checkRelease({ env });
+  if (!cached?.latestVersion) throw new Error("release version unavailable");
+  return cached.latestVersion;
 }
 
 async function installRelease(root: string, version: string, env: NodeJS.ProcessEnv): Promise<void> {

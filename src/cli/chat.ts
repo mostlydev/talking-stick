@@ -7,6 +7,9 @@ import { isHumanAttentionMessage } from "../human-attention.js";
 import { formatChatNotice, type ChatNoticeKind } from "./chat-notice.js";
 import { resolveAttentionFrame, renderAttention, type HumanAttention } from "./chat-attention.js";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { checkRelease, readReleaseCache, releaseNotice, type ReleaseNotice } from "../release-status.js";
+import { isStandalone, isInstalledRelease, standaloneRoot, standaloneInstallDir } from "../standalone-mode.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -317,6 +320,33 @@ export async function runChatSession(
   };
   let visibleAttention = new Set<number>();
   let mouseActive = false;
+  let releaseStatus: ReleaseNotice | undefined;
+  const noticeEnabled = terminal && selfId.startsWith("human:") && isStandalone() && process.env.TT_NO_AUTO_UPDATE !== "1";
+  const runningRoot = isStandalone() ? standaloneRoot() : fileURLToPath(new URL("../../", import.meta.url));
+  const versionAt = (root: string): string | undefined => {
+    try { const value = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+      return typeof value.version === "string" ? value.version : undefined;
+    } catch { return; }
+  };
+  // Capture once: reading current's manifest later would call the old process new.
+  const runningVersion = versionAt(runningRoot) ?? "unknown";
+  let lastReleaseCheck = -Infinity;
+  let releaseChecking = false;
+  const refreshReleaseStatus = () => {
+    if (!noticeEnabled) return;
+    const installed = isInstalledRelease(runningRoot)
+      ? versionAt(path.join(standaloneInstallDir(runningRoot), "current")) : undefined;
+    const next = releaseNotice(runningVersion, readReleaseCache()?.latestVersion, installed);
+    if (JSON.stringify(next) !== JSON.stringify(releaseStatus)) { releaseStatus = next; redraw(); }
+    if (!releaseChecking && Date.now() - lastReleaseCheck >= 60_000) {
+      lastReleaseCheck = Date.now();
+      releaseChecking = true;
+      void checkRelease().catch(() => undefined).finally(() => {
+        releaseChecking = false;
+        if (!closed) refreshReleaseStatus();
+      });
+    }
+  };
   let chatLinks: ChatLinkServer | undefined;
   let nativeScroll: PaneScrollSubscription | undefined;
   const consoleState = options.console;
@@ -815,7 +845,7 @@ export async function runChatSession(
     const context = formatContext();
     const draft = editor?.draft ?? { line: "", cursor: 0 };
     const input = {
-      room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(), transcript, format: context,
+      room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(), release: releaseStatus, transcript, format: context,
       status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses() },
       draft, hint: currentHint(), completions: editor?.completionVisible ? completionsFor(draft) : [],
       completion_index: editor?.completionIndex ?? 0, ...size
@@ -888,7 +918,7 @@ export async function runChatSession(
     const draft = editor?.draft ?? { line: "", cursor: 0 };
     const frame = resolveAttentionFrame(attention, pins => {
       const frame = renderInlinePanel({
-        room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, transcript, format: formatContext(),
+        room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, release: releaseStatus, transcript, format: formatContext(),
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
           interrupt_statuses: interruptStatuses() },
         draft, hint: currentHint(),
@@ -949,6 +979,7 @@ export async function runChatSession(
         const frame = renderChatScreen({
           room_path: joined.canonical_path,
           room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(),
+          release: releaseStatus,
           transcript,
           format: formatContext(),
           status: {
@@ -1096,7 +1127,7 @@ export async function runChatSession(
       editor?.resize(dimensions().columns - 1);
       const draft = editor?.draft ?? { line: "", cursor: 0 };
       const panel = resolveAttentionFrame(attention, pins => {
-        const frame = renderInlinePanel({ room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, transcript, format: formatContext(),
+        const frame = renderInlinePanel({ room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, release: releaseStatus, transcript, format: formatContext(),
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
           interrupt_statuses: interruptStatuses() },
         draft, hint: currentHint(), completions: editor?.completionVisible ? completionsFor(draft) : [],
@@ -2047,6 +2078,7 @@ export async function runChatSession(
     }
 
     refreshAttention();
+    refreshReleaseStatus();
     redraw();
     if (inline && attention.total) onResize();
 
@@ -2080,6 +2112,7 @@ export async function runChatSession(
           STATE_CHANGE_EVENTS.has(event.event_type)
         );
         const statusStale = Date.now() - lastStatusDraw >= STATUS_REFRESH_MS;
+        if (statusStale) refreshReleaseStatus();
         if (
           stateChanged ||
           statusStale ||
