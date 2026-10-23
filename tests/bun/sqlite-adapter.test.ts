@@ -16,13 +16,20 @@ const tempFile = (name: string) => {
 // close() defers until unfinalized statements are collected, and Windows
 // cannot remove a database file that is still open.
 // Collection is not deterministic, so collect again between bounded retries.
+// A migrated WAL database can stay locked on Windows runners beyond that; the
+// assertions have already run, so leave that temp directory to the runner.
 afterEach(() => {
   for (const root of roots.splice(0)) {
     for (let attempt = 0; ; attempt++) {
       Bun.gc(true);
       try { fs.rmSync(root, { recursive: true, force: true }); break; }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt >= 20) throw error;
+        if ((error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
+        if (attempt >= 20) {
+          if (process.platform !== "win32") throw error;
+          console.warn(`left locked temp directory ${root}`);
+          break;
+        }
         Bun.sleepSync(50);
       }
     }
