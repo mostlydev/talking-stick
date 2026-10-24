@@ -146,6 +146,7 @@ export async function executeWorkspaceLaunch(
   const checkCancelled = () => { if (abort.signal.aborted) throw new Error("Launch interrupted; inspect the recorded panes before retrying."); };
   const chains: Promise<WorkspaceLaunchResult | undefined>[] = [];
   try {
+    let partialLayout = false;
     for (const step of plan.steps) {
       checkCancelled();
       if (step.kind === "prompt" || step.kind === "focus") continue;
@@ -154,24 +155,33 @@ export async function executeWorkspaceLaunch(
         // pane map. The next split depends on a pane ID, not agent readiness.
         const ownSteps = plan.steps.filter((candidate) => candidate.agent === step.agent &&
           (candidate.kind === "start" || candidate.kind === "prompt"));
-        chains.push((async () => {
+        const chain = (async () => {
           for (const own of ownSteps) {
             const result = await executeStep(own);
             if (result) return result;
           }
-        })());
+        })();
+        // Observe rejection immediately, even while the layout walker is
+        // still issuing synchronous calls. Promise.all below still surfaces it.
+        void chain.catch(() => {});
+        chains.push(chain);
       } else {
         const result = await executeStep(step);
-        if (result) return result;
+        if (result) { partialLayout = true; break; }
       }
     }
     await Promise.all(chains);
     checkCancelled();
+    // A classified layout refusal/unknown ID is not cancellation of agents
+    // already starting in known panes. Compute their outcomes after draining.
+    if (partialLayout) return finish("partial");
     for (const step of plan.steps.filter((candidate) => candidate.kind === "focus")) await executeStep(step);
-  } finally {
-    // A layout/record failure must not leave a child running after the caller
-    // releases its launch lock. Timeout and abort both kill the exact child.
+  } catch (error) {
+    // An exceptional failure must not leave owned children running after the
+    // caller releases its launch lock. Classified partial results drain normally.
     abort.abort();
+    throw error;
+  } finally {
     await Promise.allSettled(chains);
     deps.signal?.removeEventListener("abort", cancel);
   }

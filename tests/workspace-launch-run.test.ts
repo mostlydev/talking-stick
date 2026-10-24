@@ -808,3 +808,35 @@ test("cancelling startup drains both chains without focus or join observation", 
   expect(readMembers).not.toHaveBeenCalled();
   expect(herdr.calls.some((call) => call[1] === "focus")).toBe(false);
 });
+
+test("a later split with no returned ID drains an earlier healthy startup without aborting it", async () => {
+  const { herdr, plan, dataDir } = setup();
+  let splits = 0;
+  let missingId = false;
+  let aborted = false;
+  let releaseStart = () => {};
+  const pending = executeWorkspaceLaunch(plan(["claude", "codex"]), {
+    runner: (args, options) => {
+      const result = herdr.runner(args, options);
+      if (args[1] === "split" && ++splits === 2) { missingId = true; return JSON.stringify({ result: { pane: {} } }); }
+      return result;
+    },
+    startRunner: async (args, options) => {
+      await new Promise<void>((resolve) => {
+        releaseStart = resolve;
+        options!.signal!.addEventListener("abort", () => { aborted = true; resolve(); }, { once: true });
+      });
+      return herdr.runner(args);
+    },
+    readStartTime: (pid) => herdr.startTimes.get(pid) ?? null,
+    readMembers: () => herdr.members(), dataDir, record: null
+  });
+  try {
+    await vi.waitFor(() => expect(missingId).toBe(true));
+    expect(aborted).toBe(false);
+  } finally { releaseStart(); }
+  const result = await pending;
+  expect(result.status).toBe("partial");
+  expect(result.agents.map((agent) => agent.state)).toEqual(["started", "ambiguous"]);
+  expect(aborted).toBe(false);
+});
