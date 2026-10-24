@@ -12,21 +12,37 @@ import {
   type WorkspaceLaunchResult
 } from "../workspace-launch-run.js";
 import {
+  LAUNCH_AGENTS,
   parseLaunchAgents,
   installedLaunchAgents,
+  launchUnavailableReason,
   planWorkspaceLaunch,
+  type LaunchAgent,
   type LaunchTopology,
   type WorkspaceLaunchPlan
 } from "../workspace-launch.js";
+import {
+  DEFAULT_AGENT_PAIR,
+  launchDefaultsPath,
+  readLaunchDefaults,
+  resolveAgentChoice,
+  saveAgentChoice,
+  savedAgents,
+  type AgentChoiceSource
+} from "../launch-defaults.js";
+import { AgentPicker, runAgentPicker, type PickerScope } from "./agent-picker.js";
 import { deriveCliIdentity, isKnownHarnessCliEnv } from "./identity.js";
 import { printResult, shouldUseJson } from "./output.js";
 import { getStringOption, hasOption, parseCommand, parseWaitTimeout, type ParsedCommand } from "./parser.js";
 import type { Runtime } from "./runtime.js";
-import { RoomSelectorError, selectedRoom } from "./room-selector.js";
+import { RoomSelectorError, roomShortName, selectedRoom } from "./room-selector.js";
 import { pickDeepestRoom } from "./session.js";
 
 export const UP_USAGE =
-  "tt up [--agents claude,codex,grok,opencode,antigravity] [--path DIR] [--new-tab | --new-workspace] [--print] [--forget] [--timeout 120s] [--json]";
+  "tt up [--agents claude,codex,grok,opencode,antigravity [--save [--room]] | --choose] [--path DIR] [--new-tab | --new-workspace] [--print] [--forget] [--timeout 120s] [--json]";
+
+export type AgentPickerPrompt = (picker: AgentPicker, roomName: string) =>
+  Promise<{ agents: LaunchAgent[]; scope: PickerScope } | null>;
 
 export interface UpCommandOptions {
   env?: NodeJS.ProcessEnv;
@@ -38,6 +54,16 @@ export interface UpCommandOptions {
   stdinIsTTY?: boolean;
   stdoutIsTTY?: boolean;
   startLocalChat?: (runtime: Runtime, contextPath: string, roomId: string) => Promise<void>;
+  pickAgents?: AgentPickerPrompt;
+}
+
+const pickAgentsInTerminal: AgentPickerPrompt = (picker, roomName) =>
+  runAgentPicker(picker, roomName, { input: process.stdin, output: process.stdout, env: process.env });
+
+function describeChoice(source: AgentChoiceSource, dataDir: string): string {
+  if (source === "flag") return "--agents";
+  if (source === "pair") return "default pair; tt up --choose saves another";
+  return `${source === "room" ? "saved for this room" : "saved default"}, ${launchDefaultsPath(dataDir)}`;
 }
 
 export async function handleUpCommand(
@@ -47,12 +73,14 @@ export async function handleUpCommand(
 ): Promise<void> {
   const env = options.env ?? process.env;
   const requestedAgents = getStringOption(parsed, "agents");
-  const agents = requestedAgents === undefined
-    ? installedLaunchAgents(env, options.homeDir)
-    : parseLaunchAgents(requestedAgents);
-  if (agents.length === 0) {
-    throw new Error("No default chat agents with both an executable on PATH and an installed Talking Stick skill were found. Install Claude, Codex, or Antigravity, or use --agents for an optional launcher.");
-  }
+  const requested = requestedAgents === undefined ? undefined : parseLaunchAgents(requestedAgents);
+  const choose = hasOption(parsed, "choose");
+  const save = hasOption(parsed, "save");
+  const json = hasOption(parsed, "json");
+  if (choose && requested) throw new Error("--choose and --agents are mutually exclusive.");
+  if (save && !requested) throw new Error("--save stores the agents named with --agents, e.g. tt up --agents claude,codex --save.");
+  if (hasOption(parsed, "room") && !save) throw new Error("--room only applies with --save.");
+  if ((choose || save) && hasOption(parsed, "print")) throw new Error("--print changes nothing; drop --choose or --save.");
   const topology = parseTopology(parsed);
   const joinTimeoutMs = parseWaitTimeout(parsed) ?? DEFAULT_JOIN_TIMEOUT_MS;
   const contextPath = getStringOption(parsed, "path") ?? process.cwd();
@@ -83,6 +111,45 @@ export async function handleUpCommand(
   // Lock and record follow the room, not the cwd, so two worktrees launching
   // into one room serialize. A room opened below keeps this same path.
   const roomKey = resolvedRoom?.canonical_path ?? resolved.room_path;
+  const dataDir = resolveDataDir({ env });
+  // One gate for "a person is at this terminal", shared with attaching chat. A
+  // harness marker withholds the automatic picker, since a prompt would hang
+  // an agent's tool call, but never an explicit --choose.
+  const terminal = chatTerminalCapable({ isTTY: options.stdinIsTTY ?? process.stdin.isTTY },
+    { isTTY: options.stdoutIsTTY ?? process.stdout.isTTY }, env) && !json;
+  const harnessShell = isKnownHarnessCliEnv(env);
+  if (choose && !terminal) throw new Error("--choose needs an interactive terminal; use tt up --agents claude,codex --save instead.");
+  const launchable = installedLaunchAgents(env, options.homeDir, true);
+  const defaults = requested ? {} : readLaunchDefaults(dataDir);
+  if (save) saveAgentChoice(dataDir, requested!, hasOption(parsed, "room") ? roomKey : null);
+  let choice = resolveAgentChoice({ requested, defaults, roomKey, launchable });
+  const worthAsking = launchable.length > 1 || launchable.some((agent) => !DEFAULT_AGENT_PAIR.includes(agent));
+  const unsaved = !requested && savedAgents(defaults, roomKey) === null;
+  if (choose || (unsaved && worthAsking && terminal && !harnessShell && !hasOption(parsed, "print"))) {
+    const rows = LAUNCH_AGENTS.map((agent) => ({
+      agent,
+      unavailable: choice.unavailable.includes(agent) ? "saved but not installed"
+        : launchUnavailableReason(agent, env, options.homeDir) ?? undefined
+    }));
+    const picked = await (options.pickAgents ?? pickAgentsInTerminal)(
+      new AgentPicker(rows, choice.agents, choice.source === "room" ? "room" : "every"), roomShortName({ canonical_path: roomKey }));
+    if (!picked) {
+      process.stderr.write("[tt up] Cancelled; nothing was launched or saved.\n");
+      process.exitCode = 130;
+      return;
+    }
+    saveAgentChoice(dataDir, picked.agents, picked.scope === "room" ? roomKey : null);
+    process.stderr.write(`[tt up] Saved ${picked.agents.join(", ")} for ${picked.scope === "room" ? "this room" : "every room"}. Change it with tt up --choose.\n`);
+    choice = { agents: picked.agents, source: picked.scope === "room" ? "room" : "default", unavailable: [] };
+  } else if (unsaved && worthAsking && terminal && harnessShell && !hasOption(parsed, "print")) {
+    process.stderr.write("[tt up] Not asking which agents to start: this shell looks like an agent's (tt whoami --explain shows why). Run tt up --choose to pick.\n");
+  }
+  const agents = choice.agents;
+  if (agents.length === 0) {
+    throw new Error(choice.source === "pair"
+      ? "Neither Claude nor Codex has an executable on PATH and an installed Talking Stick skill. Install one, or name agents with --agents."
+      : `None of the saved agents (${choice.unavailable.join(", ")}) can start here. Run tt up --choose, or tt up --agents claude,codex --save.`);
+  }
   // tmux reports agents by matching panes against this room's members.
   let membersRoomId: string | null = resolvedRoom?.room_id ?? null;
   const panes = openPaneSession(env, {
@@ -91,7 +158,6 @@ export async function handleUpCommand(
   });
   const runner = panes.runner;
   const readStartTime = options.readStartTime ?? createSystemStartTimeReader();
-  const dataDir = resolveDataDir({ env });
 
   // A preview takes no lock; a launch plans under the lock so a concurrent
   // launcher cannot act on the same stale view of the room and record.
@@ -117,10 +183,16 @@ export async function handleUpCommand(
         homeDir: options.homeDir
       });
       if (ignoredPin) plan.checks.push(pinWarning);
+      plan.checks.push({ name: "agent choice", status: "ok", detail: `${agents.join(", ")} (${describeChoice(choice.source, dataDir)})` });
+      if (choice.unavailable.length > 0) {
+        plan.checks.push({ name: "saved agents", status: "uncertain",
+          detail: `${choice.unavailable.join(", ")} ${choice.unavailable.length === 1 ? "is" : "are"} saved but cannot start here.`,
+          remedy: "tt up --choose" });
+      }
       if (requestedAgents === undefined) {
-        const optional = installedLaunchAgents(env, options.homeDir, true).filter((agent) => !agents.includes(agent));
+        const optional = launchable.filter((agent) => !agents.includes(agent));
         if (optional.length > 0) {
-          plan.checks.push({ name: "optional launchers", status: "uncertain", detail: `${optional.join(", ")} are installed but require explicit --agents.` });
+          plan.checks.push({ name: "other launchers", status: "uncertain", detail: `${optional.join(", ")} ${optional.length === 1 ? "is" : "are"} installed but not chosen; tt up --choose or --agents adds them.` });
         }
       }
       return plan;
@@ -157,10 +229,7 @@ export async function handleUpCommand(
     });
     if (ignoredPin && shouldUseJson(parsed)) result.next_steps.unshift(`${pinWarning.detail} ${pinWarning.remedy}`);
     if (result.chat.state === "ready" && targetRoomId) {
-      const canAttachChat = !hasOption(parsed, "json") && !isKnownHarnessCliEnv(env) &&
-        chatTerminalCapable({ isTTY: options.stdinIsTTY ?? process.stdin.isTTY },
-          { isTTY: options.stdoutIsTTY ?? process.stdout.isTTY }, env);
-      if (!canAttachChat) {
+      if (!terminal || harnessShell) {
         result.next_steps.push(`Run tt chat --in ${targetRoomId} in this pane to open the console.`);
       } else {
         localChatRoomId = targetRoomId;

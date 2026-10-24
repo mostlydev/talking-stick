@@ -6,6 +6,7 @@ export interface ParsedCommand {
 
 const BOOLEAN_FLAGS = new Set([
   "all",
+  "choose",
   "copy",
   "claim",
   "events",
@@ -31,6 +32,7 @@ const BOOLEAN_FLAGS = new Set([
   "project",
   "quiet",
   "replace",
+  "save",
   "room",
   "shared",
   "stdin",

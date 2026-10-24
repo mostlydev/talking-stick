@@ -151,11 +151,18 @@ export function parseLaunchAgents(value: string | undefined): LaunchAgent[] {
 export function installedLaunchAgents(env: NodeJS.ProcessEnv = process.env, homeDir?: string, includeExperimental = false,
   platform: NodeJS.Platform = process.platform): LaunchAgent[] {
   return LAUNCH_AGENTS.filter((agent) => {
-    const adapter = LAUNCH_ADAPTERS[agent];
-    if (!adapter.default_enabled && !includeExperimental) return false;
-    const skillPath = resolvePrimarySkillTargetPath(adapter.harness as Exclude<HarnessId, "gemini">, { homeDir });
-    return findOnPath(adapter.executable, env, platform) !== null && fs.existsSync(path.join(skillPath, "SKILL.md"));
+    if (!LAUNCH_ADAPTERS[agent].default_enabled && !includeExperimental) return false;
+    return launchUnavailableReason(agent, env, homeDir, platform) === null;
   });
+}
+
+/** Why an omitted --agents could not start this launcher here, or null when it can. */
+export function launchUnavailableReason(agent: LaunchAgent, env: NodeJS.ProcessEnv = process.env, homeDir?: string,
+  platform: NodeJS.Platform = process.platform): string | null {
+  const adapter = LAUNCH_ADAPTERS[agent];
+  if (findOnPath(adapter.executable, env, platform) === null) return "not installed";
+  const skillPath = resolvePrimarySkillTargetPath(adapter.harness as Exclude<HarnessId, "gemini">, { homeDir });
+  return fs.existsSync(path.join(skillPath, "SKILL.md")) ? null : `skill missing · tt install ${adapter.harness}`;
 }
 
 export function buildBootstrapPrompt(skillPath: string, canonicalPath: string): string {
