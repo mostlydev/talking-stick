@@ -204,7 +204,7 @@ the launch directory. An explicit `--in` remains strict.
 | Method | Command |
 |---|---|
 | Standalone binary (recommended) | `curl -fsSL https://raw.githubusercontent.com/mostlydev/talking-stick/master/scripts/install.sh \| sh` |
-| A specific version | `… \| sh -s -- --version 0.31.0` |
+| A specific version | `… \| sh -s -- --version 0.32.0` |
 | Windows (x64) | Download `talking-stick_<version>_windows_x64.tar.gz` from [Releases](https://github.com/mostlydev/talking-stick/releases) (see below) |
 | From source | `git clone … && npm install && npm link` (needs Node ≥ 22) |
 

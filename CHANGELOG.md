@@ -962,6 +962,7 @@ contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
 [0.32.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.32.0
+[0.31.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.31.0
 [0.30.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.30.0
 [0.29.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.29.0
 [0.28.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.28.1
