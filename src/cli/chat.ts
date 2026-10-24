@@ -373,7 +373,7 @@ export async function runChatSession(
   // this human, across their consoles, until acknowledged. Other traffic is 0.
   const personalUnread = (id: string): number => {
     if (!selfId.startsWith("human:")) return 0;
-    try { return runtime.commands.getHumanAttention({ room_id: id, human_id: selfId }).total; }
+    try { return runtime.commands.countHumanAttention({ room_id: id, human_id: selfId }); }
     catch { return 0; }
   };
   let cycleOrder: PathRoom[] = [];
@@ -463,9 +463,6 @@ export async function runChatSession(
   const treeResolvedCache = new Map<string, string>();
   const treeRooms = (): NavigatorRoom[] => {
     const rooms = runtime.commands.listRooms({}).rooms.filter(room => room.state !== "closed");
-    const activity = new Map(runtime.commands.summarizeRoomActivity(selfId, rooms.map(room => ({
-      room_id: room.room_id, after_event_seq: consoleState?.last_seen.get(room.room_id) ?? consoleState?.start_seq ?? 0
-    }))).map(entry => [entry.room_id, entry]));
     return rooms.map(room => {
       // Agentless reads never join or refresh presence in another room.
       const members = runtime.commands.getRoomState({ room_id: room.room_id }).members.filter(member =>
@@ -1392,12 +1389,14 @@ export async function runChatSession(
       resumeInlineTail();
     } else { transcript.setOutputBuffered(false); redraw(); }
   };
-  const visitUnread = (requested?: number): boolean => {
+  // The bar control skips messages already on screen; Ctrl-G passes
+  // includeVisible so every press lands on exactly one message for you.
+  const visitUnread = (requested?: number, includeVisible = false): boolean => {
     if (rolesPanel || roomTree || memberMenu || closed || externalEditorActive) return false;
     const opening = unreadReview === null;
     if (opening) {
       const frame = inline ? inlineFrame : previousFrame;
-      const visible = new Set(frame?.human_messages?.map(hit => hit.event_seq));
+      const visible = new Set(includeVisible ? [] : frame?.human_messages?.map(hit => hit.event_seq));
       unreadReview = attention.messages.filter(event => !visible.has(event.event_seq) &&
         !transcript.wasManuallyTraversed(event.event_seq)).map(event => event.event_seq).sort((a, b) => a - b);
     }
@@ -1436,19 +1435,13 @@ export async function runChatSession(
     redraw();
     return true;
   };
-  // Ctrl-G from the composer: the next unread message addressed to this human.
-  // Nothing else in the room is ever a target. A message already drawn in the
-  // transcript has been seen, so it is acknowledged rather than jumped to; the
-  // top bar's own row only points at a message and never counts as shown.
+  // Ctrl-G from the composer: the oldest unread message addressed to this
+  // human, one per press, even when it is already on screen. Nothing else in
+  // the room is ever a target, and nothing is read until it is drawn.
   const nextUnread = () => {
     if (rolesPanel || roomTree || memberMenu || closed || externalEditorActive) return;
-    const drawn = new Set((inline ? inlineFrame : previousFrame)?.human_messages?.map(hit => hit.event_seq));
-    // The same targets a review would open with; when there are none, stay put.
-    if (attention.messages.some(event => !drawn.has(event.event_seq) &&
-        !transcript.wasManuallyTraversed(event.event_seq)) && visitUnread()) return;
-    const shown = attention.messages.filter(event => drawn.has(event.event_seq));
-    for (const event of shown) acknowledge(String(event.event_seq));
-    hint = shown.length > 0 ? `${shown.length} ${shown.length === 1 ? "message" : "messages"} for you marked read` : "Nothing unread for you";
+    if (attention.messages.length > 0 && visitUnread(undefined, true)) return;
+    hint = "Nothing unread for you";
     hintDraft = editor?.draft.line;
     redraw();
   };

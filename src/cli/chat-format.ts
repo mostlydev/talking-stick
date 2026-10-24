@@ -285,15 +285,9 @@ function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): s
     const lines = body.length > 0 ? styled.split("\n") : [];
     const rendered = [header, ...[...lines, ...images].map((line) => `  ${line}`)];
     const focused = context.focused_event === event.event_seq;
-    const forYou = isHumanDirected(event) && !context.human_acknowledged?.(event);
-    if (context.color && (focused || forYou)) {
+    if (context.color && (focused || isHumanDirected(event) && !context.human_acknowledged?.(event))) {
       const background = `\u001b[${themeStyle(focused ? "selection" : "attention", context.color_mode, true)}m`;
       return rendered.map(line => background + line.replace(/\u001b\[0m/g, `\u001b[0m${background}`) + "\u001b[0m").join("\n");
-    }
-    // While an unread review shows a message in place, its surroundings are
-    // only context: dim them so they never read as more messages for you.
-    if (context.color && context.focused_event !== undefined) {
-      return rendered.map(line => `\u001b[2m${line.replace(/\u001b\[0m/g, "\u001b[0m\u001b[2m")}\u001b[0m`).join("\n");
     }
     return rendered.join("\n");
   }

@@ -2606,6 +2606,49 @@ test.each([true, false])("Ctrl-G visits only messages for the human, oldest firs
   } finally { input.end(); await session; vt.dispose(); }
 });
 
+test.each([true, false])("Ctrl-G lands on one visible message for you per press (inline=%s)", async inline => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
+  const input = Object.assign(new PassThrough(), { setRawMode() {} });
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 28 });
+  const vt = new Terminal({ cols: 100, rows: 28, allowProposedApi: true });
+  vt.onData(data => input.write(data));
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const pending = () => service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).messages.map(event => event.event_seq);
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline,
+    color: true, history: 0, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Type to message the room"));
+    const first = service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "visible one" });
+    const second = service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "visible two" });
+    await until(() => bytes.includes("visible two"));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    input.write("\u0007");
+    await until(() => pending().length === 1);
+    expect(pending()).toEqual([second.event_seq]);
+    input.write("\u0007");
+    await until(() => pending().length === 0);
+    expect(first.event_seq).toBeLessThan(second.event_seq);
+  } finally { input.end(); await session; vt.dispose(); }
+});
+
+test("the badge count matches the attention bar's count", () => {
+  const { root, service } = setupService();
+  const room = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  service.joinPath({ agent_id: "human:op:chat:deadbeef", context_path: root });
+  service.joinPath({ agent_id: "claude:bb", context_path: root });
+  service.sendMessage({ agent_id: "codex:aa", room_id: room.room_id, to_agent_id: "human:op:chat:deadbeef", body: "for op" });
+  service.sendMessage({ agent_id: "codex:aa", room_id: room.room_id, body: "broadcast" });
+  service.sendMessage({ agent_id: "codex:aa", room_id: room.room_id, to_agent_id: "claude:bb", body: "agents" });
+  for (const human of ["human:op", "human:op:chat:0badc0de"]) {
+    const input = { room_id: room.room_id, human_id: human };
+    expect(service.countHumanAttention(input)).toBe(1);
+    expect(service.countHumanAttention(input)).toBe(service.getHumanAttention(input).total);
+  }
+});
+
 test("room badges count only messages for the human, across consoles, until acknowledged", async () => {
   const { root, service } = setupService();
   const api = path.join(root, "api");

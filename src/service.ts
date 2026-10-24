@@ -6309,6 +6309,23 @@ export class TalkingStickService {
   }
 
   getHumanAttention(input: { room_id: string; human_id: string }): { messages: RoomEvent[]; total: number; acknowledged: number[] } {
+    const { where, values } = this.humanAttentionFilter(input);
+    const total = this.db.prepare<unknown[], { count: number }>(`SELECT COUNT(*) AS count FROM room_events e WHERE ${where}`).get(...values)?.count ?? 0;
+    const messages = this.db.prepare<unknown[], RoomEventRow>(`SELECT e.* FROM room_events e WHERE ${where} ORDER BY e.event_seq LIMIT 200`)
+      .all(...values).map(row => this.mapEvent(row));
+    const acknowledged = this.db.prepare<[string, string], { event_seq: number }>(
+      "SELECT event_seq FROM human_message_acknowledgements WHERE room_id = ? AND human_id = ? ORDER BY event_seq")
+      .all(input.room_id, humanAttentionIdentity(input.human_id)).map(row => row.event_seq);
+    return { messages, total, acknowledged };
+  }
+
+  /** Just the number getHumanAttention would report, for room badges. */
+  countHumanAttention(input: { room_id: string; human_id: string }): number {
+    const { where, values } = this.humanAttentionFilter(input);
+    return this.db.prepare<unknown[], { count: number }>(`SELECT COUNT(*) AS count FROM room_events e WHERE ${where}`).get(...values)?.count ?? 0;
+  }
+
+  private humanAttentionFilter(input: { room_id: string; human_id: string }): { where: string; values: unknown[] } {
     const human = humanAttentionIdentity(input.human_id);
     if (!human.startsWith("human:")) throw new Error("Human attention requires a human identity.");
     // Recipient filtering precedes LIMIT; ordinary delivery receipts never dismiss a pin.
@@ -6326,13 +6343,7 @@ export class TalkingStickService {
       AND NOT EXISTS (SELECT 1 FROM human_message_acknowledgements a
         WHERE a.room_id = e.room_id AND a.human_id = ? AND a.event_seq = e.event_seq)`;
     const values = [input.room_id, this.getHumanChatClearCursor(input), human, human, human, human];
-    const total = this.db.prepare<unknown[], { count: number }>(`SELECT COUNT(*) AS count FROM room_events e WHERE ${where}`).get(...values)?.count ?? 0;
-    const messages = this.db.prepare<unknown[], RoomEventRow>(`SELECT e.* FROM room_events e WHERE ${where} ORDER BY e.event_seq LIMIT 200`)
-      .all(...values).map(row => this.mapEvent(row));
-    const acknowledged = this.db.prepare<[string, string], { event_seq: number }>(
-      "SELECT event_seq FROM human_message_acknowledgements WHERE room_id = ? AND human_id = ? ORDER BY event_seq")
-      .all(input.room_id, human).map(row => row.event_seq);
-    return { messages, total, acknowledged };
+    return { where, values };
   }
 
   acknowledgeHumanMessage(input: { room_id: string; agent_id: string; event_seq: number }): void {

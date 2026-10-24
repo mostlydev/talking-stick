@@ -652,25 +652,27 @@ broadcasts and messages between agents never do. Messages for you have a subtle 
 their original position in the timeline. When one leaves the live viewport, one row on that
 same background appears at the top, like a status bar:
 
-    ▲ 2 for you · codex › Before I merge #180, can you confirm the operator… 4m · ^G
+    ▲ 2 for you · codex › Before I merge #180, can you confirm the operator… 4m · Ctrl-G
 
 It names the sender of the oldest unread message for you, previews that message's first line,
-and shows its age. On narrow terminals the `^G` hint goes first, then the age, then the
-preview; the count always stays. Only that one line is previewed. Message bodies are never
+and shows its age, then the key that opens it: `Ctrl-G`, or `Ctrl-G or Ctrl-click` in Herdr
+with its plugin. On narrow terminals the age goes first, then the preview, then the sender; the
+key stays while it fits, and the count always stays. While reading, `Ctrl-G next · Esc live`
+likewise outlasts the sender and age. Only that one line is previewed. Message bodies are never
 pinned or repeated above the conversation.
 
 Press **Ctrl-G** from the composer, at any time and without losing your draft, to jump to the
 oldest unread message for you in its original timeline. Activating the control or `/unread`
-does the same. The view places its header at the top, the message you landed on takes the
-selected-row background, and the surrounding messages are dimmed as context. The control then
-reads `▲ 1 of 2 · codex 4m · ^G next · Esc live`. Each Ctrl-G or activation
+does the same. The view places its header at the top, and the message you landed on takes the
+selected-row background. The control then
+reads `▲ 1 of 2 · codex 4m · Ctrl-G next · Esc live`. Each Ctrl-G or activation
 advances to the next missed message and records an acknowledgement only after that target is
 drawn. Context messages are not acknowledged, and clicking them while reviewing does nothing.
 While reading, Ctrl-G, Enter or Space advances; arrows and Page Up/Down browse; Escape returns to
 the live tail with your draft intact. Incoming messages join the end of the queue. After the
-last visit the control reads `✓ All caught up · Esc live` until you return live. When every
-unread message for you is already on screen, Ctrl-G marks those read instead of moving; with
-none, it says `Nothing unread for you`. A pasted Ctrl-G character never navigates.
+last visit the control reads `✓ All caught up · Esc live` until you return live. Ctrl-G lands on
+one message per press, including messages already on screen; with none, it says `Nothing unread
+for you`. A pasted Ctrl-G character never navigates.
 
 Room badges count the same way: `#api 1@` in the room strip, and `1 for you` in `/rooms`,
 count unread messages addressed to you across all of your consoles, until acknowledged. In
