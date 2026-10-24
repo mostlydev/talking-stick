@@ -84,7 +84,7 @@ export function formatChatHelp(width: number, color: boolean, keys = false, inli
     ["Ctrl+V", "Attach the clipboard's image as [Image #N]; delete the marker to drop it"],
     ["Esc", "Clear text; interrupt agents when the draft is empty"],
     ["Ctrl+C", "Clear the draft"],
-    ["Ctrl+G", "Jump to the next unread message for you; Esc returns live"],
+    ["Ctrl+G", "Jump to the next unread message for you; type or press Esc to return"],
     ["Ctrl+T", "Browse folders and rooms"],
     ["Alt+← / Alt+→", "Previous / next open room in this repository"],
     ["Ctrl+PgUp / PgDn", "Room-switch fallback if the terminal captures Alt+Arrow"],

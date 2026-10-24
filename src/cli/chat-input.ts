@@ -52,6 +52,12 @@ const PASTE_START = "\u001b[200~";
 const PASTE_END = "\u001b[201~";
 const MAX_PASTE_LENGTH = 65_536;
 
+// Printable characters, Backspace, and Ctrl-V's image paste edit the draft.
+function typesText(char: string): boolean {
+  const code = char.codePointAt(0) ?? 0;
+  return code >= 0x20 || char === "\b" || char === "\u0016";
+}
+
 export type ChatModalKey = "up" | "down" | "left" | "right" | "space" | "enter" | "escape" | "default" | "yes" | "no" | "tab" | "edit" | "instructions" | "preview" | "undo" | "reset" | "help" | "quit" | "page_up" | "page_down" | "notifications" | "parent" | "search" | "sort" | "all" | "next_unread";
 
 // Readline edits a private buffer; it never writes to the physical terminal.
@@ -77,6 +83,8 @@ export class ChatInputController {
   private modal: ((key: ChatModalKey) => void) | null = null;
   private modalMouse = false;
   private modalText: ((text: string) => boolean) | null = null;
+  // A modal that typing dismisses: typed text closes it and goes to the draft.
+  private modalTypeThrough: (() => void) | null = null;
   // A terminal may deliver ESC and the rest of an arrow sequence separately.
   private modalPending = "";
   // Pasted text is never a modal command: swallow it until the paste ends.
@@ -165,11 +173,17 @@ export class ChatInputController {
     this.options.onChange();
   }
 
-  /** Route keys to a modal panel until cleared with null. The draft is untouched. */
-  setModal(handler: ((key: ChatModalKey) => void) | null, text?: (text: string) => boolean, mouse = false): void {
+  /**
+   * Route keys to a modal panel until cleared with null. The draft is untouched.
+   * With typeThrough, typing or pasting calls it to close the panel, and that
+   * input then edits the draft instead of driving the panel.
+   */
+  setModal(handler: ((key: ChatModalKey) => void) | null, text?: (text: string) => boolean, mouse = false,
+    typeThrough?: () => void): void {
     this.modalMouse = mouse;
     this.modal = handler;
     this.modalText = handler && text ? text : null;
+    this.modalTypeThrough = handler && typeThrough ? typeThrough : null;
     this.pending = "";
     this.modalPending = "";
     if (this.modalEscapeTimer) clearTimeout(this.modalEscapeTimer);
@@ -199,7 +213,8 @@ export class ChatInputController {
     return this.modal !== null;
   }
 
-  private feedModal(text: string): void {
+  /** Feed a modal; returns input it handed back to the composer by closing. */
+  private feedModal(text: string): string {
     const keys: Array<[string, ChatModalKey]> = [
       ["\u001b[A", "up"], ["\u001bOA", "up"], ["\u001b[B", "down"], ["\u001bOB", "down"],
       ["\u001b[C", "right"], ["\u001bOC", "right"], ["\u001b[D", "left"], ["\u001bOD", "left"],
@@ -221,6 +236,7 @@ export class ChatInputController {
         this.options.onClick?.(Number(click[1]), Number(click[2]));
         continue;
       }
+      if (this.modalTypeThrough && rest.startsWith(PASTE_START)) return this.typeThrough(rest);
       if (this.modalPaste) {
         const end = rest.indexOf(PASTE_END);
         if (end < 0) {
@@ -228,7 +244,7 @@ export class ChatInputController {
           let keep = Math.min(PASTE_END.length - 1, rest.length);
           while (keep > 0 && !PASTE_END.startsWith(rest.slice(-keep))) keep--;
           this.modalPending = keep > 0 ? rest.slice(-keep) : "";
-          return;
+          return "";
         }
         rest = rest.slice(end + PASTE_END.length);
         this.modalPaste = false;
@@ -252,7 +268,7 @@ export class ChatInputController {
             this.options.onChange();
           }
         }, 50);
-        return;
+        return "";
       }
       const enhanced = /^\u001b\[[\d:;]*[u~]/.exec(rest)?.[0];
       const legacy = enhanced === undefined ? null
@@ -262,6 +278,7 @@ export class ChatInputController {
         continue;
       }
       const char = [...rest][0];
+      if (this.modalTypeThrough && typesText(char)) return this.typeThrough(rest);
       if (char !== "\u001b" && this.modalText?.(char)) {
         rest = rest.slice(char.length);
         continue;
@@ -276,6 +293,13 @@ export class ChatInputController {
       const sequence = /^\u001b\[[0-?]*[ -/]*[@-~]/.exec(rest)?.[0] ?? /^\u001b./.exec(rest)?.[0] ?? rest[0];
       rest = rest.slice(sequence.length);
     }
+    return "";
+  }
+
+  private typeThrough(rest: string): string {
+    this.modalTypeThrough?.();
+    // Closing the panel resets input state; the whole remainder is the draft's.
+    return this.modal ? "" : rest;
   }
 
   /** Insert text at the cursor, e.g. an image marker once the clipboard is read. */
@@ -361,14 +385,17 @@ export class ChatInputController {
 
   private readonly onData = (data: Buffer | string) => {
     if (this.closed) return;
+    let text = typeof data === "string" ? data : this.decoder.write(data);
     if (this.modal) {
-      this.feedModal(typeof data === "string" ? data : this.decoder.write(data));
-      this.options.onChange();
-      return;
+      text = this.feedModal(text);
+      if (!text) {
+        this.options.onChange();
+        return;
+      }
     }
     if (this.escapeTimer) clearTimeout(this.escapeTimer);
     this.escapeTimer = null;
-    this.pending += typeof data === "string" ? data : this.decoder.write(data);
+    this.pending += text;
     this.consume();
     if (this.pending && this.paste === null && !this.imagePending) {
       this.escapeTimer = setTimeout(() => {
@@ -472,16 +499,14 @@ export class ChatInputController {
         const rest = this.pending.slice(1);
         this.pending = "";
         this.options.onNextUnread?.();
-        if (this.modal) this.feedModal(rest);
-        else this.pending = rest;
+        this.pending = this.modal ? this.feedModal(rest) : rest;
         continue;
       }
       if (this.pending[0] === "\u0014") {
         const rest = this.pending.slice(1);
         this.pending = "";
         this.options.onRoomTree?.();
-        if (this.modal) this.feedModal(rest);
-        else this.pending = rest;
+        this.pending = this.modal ? this.feedModal(rest) : rest;
         continue;
       }
       if (this.pending[0] === "\u001b") {

@@ -75,7 +75,7 @@ into each harness keeps them in sync. The footer shows who holds the stick.
 | `/roles` | Assign roles, edit their definitions, and set harness defaults |
 | `/clear` | Clear your room view; reopening resumes here. Saved messages remain available with `/older` |
 | Cmd+V / Ctrl+V, a dragged-in image, or `/attach <file>` | Attach an image; agents get its path and read it |
-| Ctrl-G, Ctrl-click the ▲ bar in Herdr, or `/unread` | Jump to the next unread message addressed to you, oldest first, keeping your draft; each visited message is marked read. Other room traffic is never a target. Esc returns live |
+| Ctrl-G, Ctrl-click the ▲ bar in Herdr, or `/unread` | Jump to the next unread message addressed to you, oldest first, keeping your draft; each visited message is marked read. Other room traffic is never a target. Typing returns to your draft, and Esc returns live |
 | `/theme tide` | Save the palette: Lantern (warm default), Tide (teal), or Dusk (lavender) |
 | Shift+Enter or Alt+Enter | Insert a newline; the draft wraps as you type |
 | `/who`, `/help` | Members and stick holder; all commands |
