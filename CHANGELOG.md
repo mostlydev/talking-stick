@@ -11,6 +11,15 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.32.0] — 2026-10-24
+
+Full notes: [`docs/releases/0.32.0.md`](docs/releases/0.32.0.md).
+
+### Breaking changes
+
+- Without `--agents` or a saved choice, `tt up` starts Claude and Codex, when installed, instead
+  of every default launcher. Antigravity, like Grok and OpenCode, now starts only when chosen.
+
 ### Added
 
 - The first plain `tt up` in a terminal asks which agents to start and whether to remember the
@@ -19,11 +28,6 @@ changes will be called out under **Breaking changes**.
   in the data directory. It never asks under `--json`, `--print`, a redirected terminal or an
   agent's shell. A saved agent that is no longer installed asks again in a terminal, and is
   otherwise skipped with a note, never replaced.
-
-### Changed
-
-- Without `--agents` or a saved choice, `tt up` starts Claude and Codex, when installed, instead
-  of every default launcher. Antigravity, like Grok and OpenCode, now starts only when chosen.
 
 ### Fixed
 
@@ -957,6 +961,8 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.32.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.32.0
+[0.31.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.31.0
 [0.30.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.30.0
 [0.29.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.29.0
 [0.28.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.28.1
