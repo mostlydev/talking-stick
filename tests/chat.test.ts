@@ -2634,6 +2634,50 @@ test.each([true, false])("Ctrl-G lands on one visible message for you per press 
   } finally { input.end(); await session; vt.dispose(); }
 });
 
+test.each([true, false])("typing during a Ctrl-G review returns to the composer with the keys (inline=%s)", async inline => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
+  const input = Object.assign(new PassThrough(), { setRawMode() {} });
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 28 });
+  const vt = new Terminal({ cols: 100, rows: 28, allowProposedApi: true });
+  vt.onData(data => input.write(data));
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("\u001b[0m", resolve));
+  const screen = () => Array.from({ length: output.rows }, (_, i) => vt.buffer.active.getLine(vt.buffer.active.baseY + i)?.translateToString(true) ?? "");
+  const sent = () => service.getRoomEvents({ room_id: joined.room_id, after_event_seq: 0, limit: 200 })
+    .filter(event => event.event_type === "message_sent" && event.from_agent_id?.startsWith("human:")).length;
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline,
+    color: true, history: 0, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Type to message the room"));
+    service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "first for op" });
+    service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "second for op" });
+    await until(() => bytes.includes("second for op"));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    input.write("half typed\u001b[D\u001b[D\u001b[D\u001b[D\u001b[D");
+    await new Promise(resolve => setTimeout(resolve, 60));
+    input.write("\u0007");
+    await new Promise(resolve => setTimeout(resolve, 60)); await flush();
+    expect(screen().join("\n")).toContain("type to reply");
+    // The first key leaves the review; the whole chunk lands at the cursor.
+    input.write("n q");
+    await new Promise(resolve => setTimeout(resolve, 60)); await flush();
+    expect(screen().join("\n")).not.toContain("type to reply");
+    expect(screen().some(line => line.includes("> half n qtyped"))).toBe(true);
+    // Enter leaves a review without sending the draft.
+    input.write("\u0007");
+    await new Promise(resolve => setTimeout(resolve, 60)); await flush();
+    expect(screen().join("\n")).toContain("type to reply");
+    input.write("\r");
+    await new Promise(resolve => setTimeout(resolve, 60)); await flush();
+    expect(screen().join("\n")).not.toContain("type to reply");
+    expect(screen().some(line => line.includes("> half n qtyped"))).toBe(true);
+    expect(sent()).toBe(0);
+  } finally { input.end(); await session; vt.dispose(); }
+});
+
 test("the badge count matches the attention bar's count", () => {
   const { root, service } = setupService();
   const room = service.joinPath({ agent_id: "codex:aa", context_path: root });

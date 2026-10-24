@@ -62,10 +62,11 @@ test("missed-message control is one banded row previewing the message it visits 
   expect(linked(34)).toContain("Ctrl-G");
   expect(renderAttention({ messages: [], total: 0 }, 100, 30, context).lines).toEqual([]);
   const reviewing = { messages: [newer], total: 1, reviewing: true, visited: 42, current: event, position: 1, queued: 2 };
-  expect(plain(100, reviewing)).toBe(" ▲ 1 of 2 · codex 4m · Ctrl-G next · Esc live ");
-  expect(plain(36, reviewing)).toBe(" ▲ 1 of 2 · Ctrl-G next · Esc live ");
+  expect(plain(100, reviewing)).toBe(" ▲ 1 of 2 · codex 4m · Ctrl-G next · type to reply ");
+  expect(plain(41, reviewing)).toBe(" ▲ 1 of 2 · Ctrl-G next · type to reply ");
+  expect(plain(36, reviewing)).toBe(" ▲ 1 of 2 · Ctrl-G next ");
   expect(plain(22, reviewing)).toBe(" ▲ 1 of 2 · Ctrl-G ");
-  expect(plain(100, { messages: [], total: 0, reviewing: true, visited: 42 })).toBe(" ✓ All caught up · Esc live ");
+  expect(plain(100, { messages: [], total: 0, reviewing: true, visited: 42 })).toBe(" ✓ All caught up · type to reply ");
 });
 
 test("the control row carries the unread background across its full width", async () => {

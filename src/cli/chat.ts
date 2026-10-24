@@ -1435,9 +1435,10 @@ export async function runChatSession(
     unreadVisits += 1;
     pendingVisit = next.event_seq;
     transcript.invalidate();
+    // Typing, pasting or Enter returns to the composer with the draft; Enter
+    // never sends from a review. Only Ctrl-G and the bar move on.
     editor?.setModal(key => {
-      if (key === "escape" || key === "quit") closeUnreadReview();
-      else if (key === "enter" || key === "space" || key === "no") visitUnread();
+      if (key === "escape" || key === "enter") closeUnreadReview();
       else if (key === "next_unread") {
         // However the review began, Ctrl-G covers every message still unread
         // for you, including ones on screen that the bar's queue skipped.
@@ -1447,7 +1448,7 @@ export async function runChatSession(
       else if (["up", "down", "page_up", "page_down"].includes(key)) {
         scrollHistory((key === "up" || key === "page_up" ? -1 : 1) * (key.startsWith("page") ? Math.max(1, height - 1) : 1));
       }
-    }, undefined, true);
+    }, undefined, true, closeUnreadReview);
     redraw();
     return true;
   };

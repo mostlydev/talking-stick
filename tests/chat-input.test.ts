@@ -71,6 +71,64 @@ describe("enhanced keyboard reports", () => {
     } finally { editor.close(); }
   });
 
+  test("typing dismisses a type-through modal and edits the draft at its cursor", async () => {
+    const keys: string[] = [];
+    let closes = 0;
+    let editor!: ChatInputController;
+    const open = () => editor.setModal(key => keys.push(key), undefined, false, () => { closes++; editor.setModal(null); });
+    const made = setup(false, undefined, { onNextUnread: open });
+    editor = made.editor;
+    const { input } = made;
+    try {
+      input.write("half typed\u001b[D\u001b[D\u001b[D\u001b[D\u001b[D");
+      await new Promise(resolve => setTimeout(resolve, 60));
+      expect(editor.draft).toEqual({ line: "half typed", cursor: 5 });
+      open();
+      input.write("\u0007\u001b[A\u001b[6~\r\u001b[27u");
+      await new Promise(resolve => setTimeout(resolve, 80));
+      expect(keys).toEqual(["next_unread", "up", "page_down", "enter", "escape"]);
+      // One chunk: the first key closes the modal and none of the rest is lost.
+      input.write("hello ");
+      expect(closes).toBe(1);
+      expect(editor.modalActive).toBe(false);
+      expect(editor.draft).toEqual({ line: "half hello typed", cursor: 11 });
+      // Letters and Space that drive other modals are plain text here.
+      for (const char of ["n", "q", " ", "j"]) { open(); input.write(char); }
+      expect(closes).toBe(5);
+      expect(editor.draft.line).toBe("half hello nq jtyped");
+      open();
+      input.write("\u007f");
+      expect(editor.draft.line).toBe("half hello nq typed");
+      // A paste lands in the draft; its control bytes are never hotkeys.
+      open();
+      input.write("\u001b[200~x\u0007y\u001b[201~");
+      expect(editor.draft.line).toBe("half hello nq xytyped");
+      // Ctrl-G from the composer opens the modal; text after it in the same chunk is typed.
+      input.write("\u0007ab");
+      expect(closes).toBe(8);
+      expect(editor.draft.line).toBe("half hello nq xyabtyped");
+      expect(keys).toEqual(["next_unread", "up", "page_down", "enter", "escape"]);
+    } finally { editor.close(); }
+  });
+
+  test("a forwarded Cmd+V dismisses a type-through modal and pastes into the draft", async () => {
+    const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode: vi.fn() });
+    const onClipboardPaste = vi.fn(async () => "pasted");
+    const editor = new ChatInputController({ input, columns: 40, onSubmit: vi.fn(), onQuit: vi.fn(), onScroll: vi.fn(),
+      onBottom: vi.fn(), onChange: vi.fn(), onClear: vi.fn(), onImagePaste: vi.fn(async () => null), onClipboardPaste, complete: () => null });
+    const keys: string[] = [];
+    try {
+      input.write("a ");
+      editor.setModal(key => keys.push(key), undefined, false, () => editor.setModal(null));
+      input.write("\u001b[118;9u!");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(editor.modalActive).toBe(false);
+      expect(onClipboardPaste).toHaveBeenCalledOnce();
+      expect(editor.draft.line).toBe("a pasted!");
+      expect(keys).toEqual([]);
+    } finally { editor.close(); }
+  });
+
   test("a forwarded Cmd+V inserts the clipboard paste as is", async () => {
     const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode: vi.fn() });
     const onImagePaste = vi.fn(async () => "[Image #1]");

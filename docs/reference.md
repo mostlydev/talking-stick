@@ -657,7 +657,7 @@ same background appears at the top, like a status bar:
 It names the sender of the oldest unread message for you, previews that message's first line,
 and shows its age, then the key that opens it: `Ctrl-G`, or `Ctrl-G or Ctrl-click` in Herdr
 with its plugin. On narrow terminals the age goes first, then the preview, then the sender; the
-key stays while it fits, and the count always stays. While reading, `Ctrl-G next · Esc live`
+key stays while it fits, and the count always stays. While reading, `Ctrl-G next · type to reply`
 likewise outlasts the sender and age. Only that one line is previewed. Message bodies are never
 pinned or repeated above the conversation.
 
@@ -665,12 +665,13 @@ Press **Ctrl-G** from the composer, at any time and without losing your draft, t
 oldest unread message for you in its original timeline. Activating the control or `/unread`
 does the same. The view places its header at the top, and the message you landed on takes the
 selected-row background. The control then
-reads `▲ 1 of 2 · codex 4m · Ctrl-G next · Esc live`. Each Ctrl-G or activation
+reads `▲ 1 of 2 · codex 4m · Ctrl-G next · type to reply`. Each Ctrl-G or activation
 advances to the next missed message and records an acknowledgement only after that target is
 drawn. Context messages are not acknowledged, and clicking them while reviewing does nothing.
-While reading, Ctrl-G, Enter or Space advances; arrows and Page Up/Down browse; Escape returns to
-the live tail with your draft intact. Incoming messages join the end of the queue. After the
-last visit the control reads `✓ All caught up · Esc live` until you return live. Ctrl-G lands on
+While reading, Ctrl-G advances and arrows and Page Up/Down browse. Typing or pasting returns to
+the live tail and goes into your draft at its cursor, so you can reply straight away; Enter or
+Escape returns without sending. Incoming messages join the end of the queue. After the last
+visit the control reads `✓ All caught up · type to reply` until you return live. Ctrl-G lands on
 one message per press, including messages already on screen; with none, it says `Nothing unread
 for you`. A pasted Ctrl-G character never navigates.
 

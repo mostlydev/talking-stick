@@ -29,7 +29,7 @@ export function renderAttention(attention: HumanAttention | undefined, width: nu
   const sender = (event: RoomEvent | undefined) => event?.from_agent_id ? formatChatAgent(context, event.from_agent_id) : undefined;
   let label: string;
   if (!attention.messages.length) {
-    label = fit([`${paint(themeStyle("ok", context.color_mode), "✓")} All caught up`, muted("Esc live")], width, muted);
+    label = fit([`${paint(themeStyle("ok", context.color_mode), "✓")} All caught up`, muted("type to reply")], width, muted);
   } else if (attention.reviewing) {
     const current = attention.current;
     const position = accent(`▲ ${attention.position ?? 1} of ${attention.queued ?? attention.messages.length}`);
@@ -37,8 +37,8 @@ export function renderAttention(attention: HumanAttention | undefined, width: nu
     // The key outlasts who sent it and when: it is how the reader moves on.
     const join = (parts: Array<string | undefined>) => ` ${parts.filter(Boolean).join(muted(" · "))} `;
     label = truncateStyled([
-      join([position, about, `${accent("Ctrl-G")} ${muted("next · Esc live")}`]),
-      join([position, `${accent("Ctrl-G")} ${muted("next · Esc live")}`]),
+      join([position, about, `${accent("Ctrl-G")} ${muted("next · type to reply")}`]),
+      join([position, `${accent("Ctrl-G")} ${muted("next · type to reply")}`]),
       join([position, `${accent("Ctrl-G")} ${muted("next")}`]),
       join([position, accent("Ctrl-G")])
     ].find(candidate => textWidth(candidate) <= width) ?? join([position]), width);
