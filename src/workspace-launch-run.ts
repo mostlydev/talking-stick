@@ -368,6 +368,7 @@ async function observeJoins(
   const deadline = now() + (deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS);
   const proofDeps = { runner: deps.runner, readStartTime: deps.readStartTime };
   const lastReason = new Map<LaunchAgent, string>();
+  const noticed = new Map<LaunchAgent, string>();
   const seconds = Math.round((deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS) / 1000);
   let lastProgress = "";
   const report = () => {
@@ -416,7 +417,17 @@ async function observeJoins(
           track(outcome.agent, "confirmed", proof.reason);
           break;
         }
+        // Say once, while still waiting, why an otherwise matching member is
+        // unproven; a later recorded start can still confirm it.
+        // Other members of the same harness alternate with this reason, so
+        // remember what was said rather than comparing with the last reason.
+        if (proof.unrecordedStart && noticed.get(outcome.agent) !== proof.reason) {
+          noticed.set(outcome.agent, proof.reason);
+          deps.onProgress?.(`${outcome.agent}: ${proof.reason} Still waiting up to ${seconds}s in case it records one.`);
+        }
         lastReason.set(outcome.agent, proof.reason);
+        // The exact session matched, so no other member can prove this pane.
+        if (proof.unrecordedStart) break;
       }
     }
     report();

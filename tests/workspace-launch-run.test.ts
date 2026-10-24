@@ -140,6 +140,36 @@ describe("tt up execution", () => {
     expect(plan.checks.find((check: { name: string }) => check.name === "other launchers")?.detail).toContain("grok, opencode, antigravity");
   });
 
+  test("a matching member with no recorded start is explained once, stays unconfirmed, and a later start still confirms", async () => {
+    const { run, herdr, setMembers } = setup();
+    const withoutStart = () => herdr.members().map((member) =>
+      member.harness_name ? { ...member, harness_process_started_at: null } : member);
+    // A second, unrelated Claude member alternates its own reason each poll.
+    const stranger = () => ({ ...herdr.members().find((member) => member.harness_name)!,
+      agent_id: "claude:other", harness_session_id: "harness:someone-else" });
+    let polls = 0;
+    setMembers(() => (++polls < 6 ? [...withoutStart(), stranger()] : herdr.members()));
+    const messages: string[] = [];
+    const result = await run(["claude"], "here", (message) => messages.push(message));
+    const notices = messages.filter((message) => message.includes("recorded no process start time"));
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatch(/^claude: claude:\d+ matches the session and claude pid \d+ in pane w1:p2, but recorded no process start time/);
+    expect(notices[0]).toContain("One possible cause is a Windows account that cannot inspect processes");
+    expect(notices[0]).toContain("Still waiting up to 10s");
+    expect(result.status).toBe("launched");
+    expect(result.agents[0]).toMatchObject({ agent: "claude", state: "confirmed" });
+  });
+
+  test("a member that never records a start stays unconfirmed with that reason after the full wait", async () => {
+    const { run, herdr, setMembers } = setup();
+    setMembers(() => herdr.members().map((member) =>
+      member.harness_name ? { ...member, harness_process_started_at: null } : member));
+    const result = await run(["claude"]);
+    expect(result.status).toBe("partial");
+    expect(result.agents[0].state).toBe("started");
+    expect(result.agents[0].detail).toMatch(/no verified join within 10s: .*recorded no process start time/);
+  });
+
   test.each(["opencode", "antigravity"] as const)("confirms a %s join in its pane", async (agent) => {
     const { run } = setup();
     const result = await run([agent]);

@@ -185,7 +185,8 @@ integrations before opening panes. This requirement does not apply to tmux.
 On Windows, join confirmation also requires permission to inspect local processes
 through PowerShell/CIM. A restricted account that cannot inspect the harness process
 remains unconfirmed; `tt up` never substitutes a matching executable name for proof
-of the session, PID, and process creation time.
+of the session, PID, and process creation time. When a member matches its pane's session
+and process but recorded no start time, `tt up` says so while it waits.
 
 Inside Herdr, or a tmux pane, `tt up` turns the current pane into the console and opens a column of agents beside
 it. The first time, it asks which agents to start and remembers the answer; `tt up --choose`
