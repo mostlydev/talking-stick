@@ -854,7 +854,7 @@ export async function runChatSession(
     return {
       room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(), release: releaseStatus, transcript, format: formatContext(),
       status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses() },
-      draft, hint: currentHint(), completions: editor?.completionVisible ? completionsFor(draft) : [],
+      draft, hint: currentHint(), completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
       completion_index: editor?.completionIndex ?? 0, ...dimensions()
     };
   };
@@ -935,7 +935,7 @@ export async function runChatSession(
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
           interrupt_statuses: interruptStatuses() },
         draft, hint: currentHint(),
-        completions: editor?.completionVisible ? completionsFor(draft) : [],
+        completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
         completion_index: editor?.completionIndex ?? 0,
         ...dimensions()
       });
@@ -1005,7 +1005,7 @@ export async function runChatSession(
           },
           draft: editor?.draft ?? { line: "", cursor: 0 },
           hint: currentHint(),
-          completions: editor?.completionVisible ? completionsFor(editor.draft) : [],
+          completions: editor?.completionVisible && unreadReview === null ? completionsFor(editor.draft) : [],
           completion_index: editor?.completionIndex ?? 0,
           ...dimensions()
         });
@@ -1143,7 +1143,7 @@ export async function runChatSession(
         const frame = renderInlinePanel({ room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, release: releaseStatus, transcript, format: formatContext(),
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
           interrupt_statuses: interruptStatuses() },
-        draft, hint: currentHint(), completions: editor?.completionVisible ? completionsFor(draft) : [],
+        draft, hint: currentHint(), completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
         completion_index: editor?.completionIndex ?? 0, ...dimensions() });
         const height = Math.max(0, dimensions().rows - frame.lines.length);
         return { frame, visible: transcript.humanMessageRows(height, Math.max(1, dimensions().columns - 1), formatContext()).map(hit => hit.event_seq) };
