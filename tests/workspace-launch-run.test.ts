@@ -236,6 +236,8 @@ describe("tt up execution", () => {
     } finally { stdout.mockRestore(); vi.unstubAllEnvs(); }
     const result = JSON.parse(output.join(""));
     expect(result.room_id).toBe("local");
+    expect(result.checks).toContainEqual(expect.objectContaining({ name: "inherited room pin", status: "uncertain",
+      remedy: expect.stringContaining("Clear TT_ROOM") }));
     expect(result.steps.filter((step: { argv: string[] }) => step.argv.includes("--env"))
       .every((step: { argv: string[] }) => step.argv.includes("TT_ROOM=local"))).toBe(true);
     expect(openRoom).not.toHaveBeenCalled();
@@ -264,7 +266,7 @@ describe("tt up execution", () => {
     } finally { stdout.mockRestore(); }
   });
 
-  test("a stale pin opens a replacement room after preflight and pins every launched pane to it", async () => {
+  test.each(["json", "text"])("a stale pin opens a replacement room and reports recovery in %s mode", async format => {
     const { herdr, repo, dataDir, home, bin } = setup();
     const openRoom = vi.fn(() => ({ room_id: "replacement", canonical_path: repo }));
     const runtime = { commands: {
@@ -272,16 +274,26 @@ describe("tt up execution", () => {
       getRoomState: () => ({ members: herdr.members() })
     } } as unknown as Runtime;
     const output: string[] = [];
+    const progress: string[] = [];
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { output.push(String(chunk)); return true; });
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(chunk => { progress.push(String(chunk)); return true; });
     try {
-      await handleUpCommand(runtime, parseCommand(["up", "--agents", "claude", "--path", repo, "--json"]), {
+      await handleUpCommand(runtime, parseCommand(["up", "--agents", "claude", "--path", repo, `--${format}`]), {
         env: { PATH: bin, TALKING_STICK_DATA_DIR: dataDir, TT_ROOM: "deleted", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" },
-        homeDir: home, runner: herdr.runner, readStartTime: pid => herdr.startTimes.get(pid) ?? null
+        homeDir: home, runner: herdr.runner, readStartTime: pid => herdr.startTimes.get(pid) ?? null,
+        stdinIsTTY: false, stdoutIsTTY: false
       });
     } finally { stdout.mockRestore(); stderr.mockRestore(); }
     expect(openRoom).toHaveBeenCalledExactlyOnceWith({ context_path: repo });
-    expect(JSON.parse(output.join(""))).toMatchObject({ status: "launched" });
+    if (format === "json") {
+      expect(JSON.parse(output.join(""))).toMatchObject({ status: "launched",
+        next_steps: expect.arrayContaining([expect.stringContaining("Ignored TT_ROOM")]) });
+      expect(progress.join("")).not.toContain("Ignored TT_ROOM");
+    } else {
+      expect(output.join("")).toContain("— launched");
+      expect(progress.filter(line => line.includes("Ignored TT_ROOM"))).toHaveLength(1);
+      expect(progress.join("")).toContain("Clear TT_ROOM");
+    }
     const splits = herdr.calls.filter(call => call[1] === "split");
     expect(splits.length).toBeGreaterThan(0);
     expect(splits.every(call => call.includes("TT_ROOM=replacement"))).toBe(true);
