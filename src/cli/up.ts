@@ -19,10 +19,10 @@ import {
   type WorkspaceLaunchPlan
 } from "../workspace-launch.js";
 import { deriveCliIdentity, isKnownHarnessCliEnv } from "./identity.js";
-import { printResult } from "./output.js";
+import { printResult, shouldUseJson } from "./output.js";
 import { getStringOption, hasOption, parseCommand, parseWaitTimeout, type ParsedCommand } from "./parser.js";
 import type { Runtime } from "./runtime.js";
-import { selectedRoom } from "./room-selector.js";
+import { RoomSelectorError, selectedRoom } from "./room-selector.js";
 import { pickDeepestRoom } from "./session.js";
 
 export const UP_USAGE =
@@ -62,7 +62,23 @@ export async function handleUpCommand(
   // Panes start in the caller's directory; the room is chosen separately and
   // pinned by id, so a linked worktree or a subdirectory launches into the
   // room an ordinary join from here would use (or the one named with --in).
-  const resolvedRoom = selectedRoom(runtime, parsed) ??
+  let pinnedRoom: ReturnType<typeof selectedRoom> = null;
+  let ignoredPin = false;
+  try {
+    pinnedRoom = selectedRoom(runtime, parsed, env);
+  } catch (error) {
+    // A closed/deleted room pin is inherited by panes from an earlier launch.
+    // Only that missing inherited selection may recover via the current path.
+    if (getStringOption(parsed, "in") !== undefined ||
+        !(error instanceof RoomSelectorError) || error.reason !== "not_found") throw error;
+    ignoredPin = true;
+  }
+  const pinWarning = {
+    name: "inherited room pin", status: "uncertain" as const,
+    detail: "Ignored TT_ROOM because it names no open room; using the launch directory.",
+    remedy: "Clear TT_ROOM in this pane before using other room commands."
+  };
+  const resolvedRoom = pinnedRoom ??
     pickDeepestRoom(runtime.commands.listRooms({ context_path: canonicalPath }).rooms);
   // Lock and record follow the room, not the cwd, so two worktrees launching
   // into one room serialize. A room opened below keeps this same path.
@@ -100,6 +116,7 @@ export async function handleUpCommand(
         env,
         homeDir: options.homeDir
       });
+      if (ignoredPin) plan.checks.push(pinWarning);
       if (requestedAgents === undefined) {
         const optional = installedLaunchAgents(env, options.homeDir, true).filter((agent) => !agents.includes(agent));
         if (optional.length > 0) {
@@ -124,6 +141,9 @@ export async function handleUpCommand(
     if (forget && plan.status !== "blocked") {
       fs.rmSync(launchRecordPath(dataDir, roomKey), { force: true });
     }
+    if (ignoredPin && !shouldUseJson(parsed)) {
+      process.stderr.write(`[tt up] ${pinWarning.detail} ${pinWarning.remedy}\n`);
+    }
     const result = await executeWorkspaceLaunch(plan, {
       runner,
       readStartTime,
@@ -135,6 +155,7 @@ export async function handleUpCommand(
       now: options.now,
       onProgress: (message) => { process.stderr.write(`[tt up] ${message}\n`); }
     });
+    if (ignoredPin && shouldUseJson(parsed)) result.next_steps.unshift(`${pinWarning.detail} ${pinWarning.remedy}`);
     if (result.chat.state === "ready" && targetRoomId) {
       const canAttachChat = !hasOption(parsed, "json") && !isKnownHarnessCliEnv(env) &&
         chatTerminalCapable({ isTTY: options.stdinIsTTY ?? process.stdin.isTTY },

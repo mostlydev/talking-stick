@@ -131,6 +131,9 @@ experimental launchers; `--new-tab` or `--new-workspace` opens a separate tab or
 - Panes start in the directory you launch from and are pinned to one room (`TT_ROOM`, and
   `tt chat --in` for the console): the room an ordinary `tt join` there selects, or the one named
   with `--in`. A room that does not exist yet is created only after preflight passes.
+  Reusing a pane whose inherited `TT_ROOM` points to a closed or deleted room falls back to
+  the launch directory. An explicit `--in`, an ambiguous room name or a storage failure
+  still stops the launch.
 - Progress, including the created tab or workspace and the join wait, goes to stderr; JSON results
   stay on stdout. `--json`, redirected terminals, and harness tool calls report chat as ready and
   print a `tt chat --in` step instead of attaching chat. Current-tab splits keep focus; a requested

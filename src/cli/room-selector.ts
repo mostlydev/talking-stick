@@ -5,6 +5,13 @@ import type { PathRoom } from "../types.js";
 import { getStringOption, type ParsedCommand } from "./parser.js";
 import type { Runtime } from "./runtime.js";
 
+export class RoomSelectorError extends Error {
+  constructor(readonly reason: "not_found" | "ambiguous", message: string) {
+    super(message);
+    this.name = "RoomSelectorError";
+  }
+}
+
 // `--in` wins over TT_ROOM; both name a room explicitly, bypassing path
 // resolution. A launcher pins agents with TT_ROOM=<room_id>. (`--room` is
 // already the msg flag for addressing the whole room.)
@@ -31,7 +38,7 @@ export function resolveRoomSelector(rooms: readonly PathRoom[], selector: string
     const anchor = resolveContextPath(contextPath).workspace_root;
     const root = open.find((room) => room.canonical_path === anchor);
     if (root) return root;
-    throw new Error(`No open room at the repository root ${anchor}. Run \`tt join ${anchor}\` first.`);
+    throw new RoomSelectorError("not_found", `No open room at the repository root ${anchor}. Run \`tt join ${anchor}\` first.`);
   }
   const byId = open.filter((room) => room.room_id === wanted);
   if (byId.length === 1) return byId[0];
@@ -41,9 +48,9 @@ export function resolveRoomSelector(rooms: readonly PathRoom[], selector: string
         room.canonical_path.endsWith(`${path.sep}${wanted.split("/").join(path.sep)}`));
   if (byPath.length === 1) return byPath[0];
   if (byPath.length === 0) {
-    throw new Error(`No open room matches ${selector}. Run \`tt room list\` to see rooms.`);
+    throw new RoomSelectorError("not_found", `No open room matches ${selector}. Run \`tt room list\` to see rooms.`);
   }
-  throw new Error(`${selector} matches several rooms: ${byPath.map((room) =>
+  throw new RoomSelectorError("ambiguous", `${selector} matches several rooms: ${byPath.map((room) =>
     `${room.canonical_path} (${room.room_id})`).join(", ")}. Use a longer path or the room id.`);
 }
 
