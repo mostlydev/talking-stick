@@ -750,8 +750,8 @@ describe("tt chat session", () => {
     expect(service.getDirectedMessages({ room_id: room.room_id, agent_id: "human:op", after_event_seq: start })
       .map((event) => (event.payload as { body: string }).body)).toEqual(["to op", "to both"]);
     expect(formatRoomStrip([
-      { name: "web", unread: 0, directed: 0 }, { name: "api", unread: 3, directed: 1 }, { name: "docs", unread: 2, directed: 0 }
-    ], { color: false, name_of: (id: string) => id } as never)).toBe("#api 1@ · #docs 2● · #web");
+      { name: "web", directed: 0 }, { name: "api", directed: 1 }, { name: "docs", directed: 0 }
+    ], { color: false, name_of: (id: string) => id } as never)).toBe("#api 1@ · #docs · #web");
   });
 
   test("an explicit room declared only on a worktree branch keeps the repository's strip", async () => {
@@ -2533,7 +2533,7 @@ test.each([true, false])("unread control visits original messages oldest-first a
     await until(() => bytes.includes("scroll-pin-11"));
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
     const promoted = screen().map((line, index) => line.includes("first pinned request") ? index : -1).filter(index => index >= 0);
-    const y = screen().findIndex(line => line.includes("2 unread"));
+    const y = screen().findIndex(line => line.includes("2 for you"));
     expect(y).toBeGreaterThanOrEqual(0);
     expect(promoted).toEqual([y]); // A one-line preview on the control, not a pinned copy.
     expect(screen().findIndex(line => line.startsWith("> "))).toBe(composerRow);
@@ -2558,6 +2558,92 @@ test.each([true, false])("unread control visits original messages oldest-first a
   } finally { input.end(); await session; vt.dispose(); }
 });
 
+
+test.each([true, false])("Ctrl-G visits only messages for the human, oldest first, and keeps the draft (inline=%s)", async inline => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
+  service.joinPath({ agent_id: "claude:peer", context_path: root });
+  const input = Object.assign(new PassThrough(), { setRawMode() {} });
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 28 });
+  const vt = new Terminal({ cols: 100, rows: 28, allowProposedApi: true });
+  vt.onData(data => input.write(data));
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("\u001b[0m", resolve));
+  const screen = () => Array.from({ length: output.rows }, (_, i) => vt.buffer.active.getLine(vt.buffer.active.baseY + i)?.translateToString(true) ?? "");
+  const pending = () => service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).messages.map(event => event.event_seq);
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline,
+    color: true, history: 0, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Type to message the room"));
+    const first = service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "first for op" });
+    service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: "a broadcast to the room" });
+    service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "claude:peer", body: "agent to agent" });
+    const second = service.sendMessage({ agent_id: "claude:peer", room_id: joined.room_id, to_agent_id: "human:op", body: "second for op" });
+    for (let i = 0; i < 30; i++) service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: `chatter-${i}` });
+    await until(() => bytes.includes("chatter-29"));
+    await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+    // Only the two messages addressed to the human count; nothing else does.
+    expect(pending()).toEqual([first.event_seq, second.event_seq]);
+    expect(screen().some(line => line.includes("2 for you"))).toBe(true);
+    input.write("half typed");
+    input.write("\u0007");
+    await until(() => pending().length === 1);
+    expect(pending()).toEqual([second.event_seq]);
+    await flush();
+    expect(screen().some(line => line.includes("first for op"))).toBe(true);
+    input.write("\u0007");
+    await until(() => pending().length === 0);
+    await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+    expect(screen().some(line => line.includes("second for op"))).toBe(true);
+    input.write("\u001b");
+    await new Promise(resolve => setTimeout(resolve, 150)); await flush();
+    expect(screen().some(line => line.includes("> half typed"))).toBe(true);
+    input.write("\u0007");
+    await new Promise(resolve => setTimeout(resolve, 60)); await flush();
+    expect(screen().join("\n")).toContain("Nothing unread for you");
+  } finally { input.end(); await session; vt.dispose(); }
+});
+
+test("room badges count only messages for the human, across consoles, until acknowledged", async () => {
+  const { root, service } = setupService();
+  const api = path.join(root, "api");
+  fs.mkdirSync(path.join(api, ".talking-stick"), { recursive: true });
+  fs.writeFileSync(path.join(api, ".talking-stick", "room.toml"), 'name = "api"\n');
+  service.joinPath({ agent_id: "claude:root", context_path: root });
+  const apiRoom = service.joinPath({ agent_id: "codex:api", context_path: api });
+  // Addressed to an earlier console of the same human, which has since left,
+  // plus traffic that is not for them.
+  service.joinPath({ agent_id: "human:op:chat:deadbeef", context_path: api });
+  const earlier = service.sendMessage({ agent_id: "codex:api", room_id: apiRoom.room_id, to_agent_id: "human:op:chat:deadbeef", body: "for an older console" });
+  service.leaveRoom({ room_id: apiRoom.room_id, agent_id: "human:op:chat:deadbeef" });
+  service.joinPath({ agent_id: "claude:api", context_path: api });
+  service.sendMessage({ agent_id: "codex:api", room_id: apiRoom.room_id, body: "broadcast" });
+  service.sendMessage({ agent_id: "codex:api", room_id: apiRoom.room_id, to_agent_id: "claude:api", body: "agent to agent" });
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let transcript = "";
+  output.on("data", chunk => { transcript += chunk.toString(); });
+  const identity = observerIdentity();
+  const run = runChatConsole({ runtime: { commands: new TalkingStickCommands(service), close: () => {} },
+    identity, context_path: root, input, output,
+    terminal: false, color: false, history: 10, show_turn_events: false, poll_ms: 5 });
+  const roomsListing = async () => {
+    const from = transcript.length;
+    input.write("/rooms\n");
+    await until(() => transcript.slice(from).includes("Open with /rooms"));
+    return transcript.slice(from);
+  };
+  await until(() => transcript.includes("In the room: claude"));
+  expect(await roomsListing()).toMatch(/api.* · 1 for you/);
+  const members = () => service.getRoomState({ room_id: apiRoom.room_id }).members.map(member => member.agent_id);
+  await until(() => members().includes(identity.agent_id));
+  service.acknowledgeHumanMessage({ room_id: apiRoom.room_id, agent_id: identity.agent_id, event_seq: earlier.event_seq });
+  expect(await roomsListing()).not.toContain("for you");
+  input.write("/quit\n");
+  await run;
+});
 
 test("browsing during an unread review never reads context, even after returning live", async () => {
   const { root, service } = setupService();
@@ -2714,7 +2800,7 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [false
     for (let i = 0; i < 25; i++) service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: `promotion-${i}` });
     await until(() => bytes.includes("promotion-24"));
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
-    expect(screen().filter(line => line.includes("click either copy") && !line.includes("unread"))).toHaveLength(0);
+    expect(screen().filter(line => line.includes("click either copy") && !line.includes("for you"))).toHaveLength(0);
     vt.resize(100, 100); output.columns = 100; output.rows = 100; output.emit("resize");
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
     const copies = screen().map((line, index) => line.includes(target) ? index : -1).filter(index => index >= 0);
@@ -2756,12 +2842,12 @@ test.each([true, false])("native Ctrl-click dismisses top pins without capturing
     await until(() => bytes.includes("native-flow-24") && bytes.includes("https://talking-stick.invalid/ack/"));
     await new Promise(resolve => setTimeout(resolve, 30)); await flush();
     url = /\u001b\]8;;(https:\/\/talking-stick\.invalid\/ack\/[a-f0-9]{32}\/[1-9][0-9]*)\u001b\\/.exec(bytes)![1];
-    const pinRow = screen().findIndex(line => line.includes("1 unread"));
+    const pinRow = screen().findIndex(line => line.includes("1 for you"));
     expect(pinRow).toBeLessThan(5);
     expect(screen().map((line, index) => line.includes("Native acknowledgement target") ? index : -1).filter(index => index >= 0)).toEqual([pinRow]);
     expect(await sendChatLinkClick({ url, paneId: "w1:another-pane" })).toBe("ignored");
     expect(pending()).toBe(1);
-    expect(screen()[pinRow]).toContain("1 unread");
+    expect(screen()[pinRow]).toContain("1 for you");
     expect(screen().join("\n")).toContain("draft stays put");
     expect(vt.modes.mouseTrackingMode).toBe("none");
     expect(bytes).not.toContain("\u001b[?1000h");
@@ -2852,7 +2938,7 @@ test.each(["live", "away", "away-acked", "away-input", "away-disconnect", "away-
         for (let i = 0; i < 40; i++) expect(lines.filter(line => new RegExp(`\\b${prefix}-${i}\\b`).test(line)), `${prefix}-${i}`).toHaveLength(1);
       }
     };
-    const pinned = () => screen().slice(0, 5).some(line => line.includes("1 unread"));
+    const pinned = () => screen().slice(0, 5).some(line => line.includes("1 for you"));
     if (scrollBeforePromotion) {
       vt.scrollLines(-1);
       await scroll(1); // A shallow scroll still exposes live-screen rows.

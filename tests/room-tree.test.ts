@@ -57,7 +57,7 @@ test("render shows own-room counts, unread counts, collapsed totals and current 
   expect(text).toContain("* ● 2");
   expect(text).toContain("api +3 below");
   tree.selected = path.join(root, "api"); tree.key("right");
-  expect(tree.render(10, root, false).join("\n")).toContain("deep ● 3 · 4 unread");
+  expect(tree.render(10, root, false).join("\n")).toContain("deep ● 3 · 4 for you");
   expect(tree.render(3, root, false)).toHaveLength(3);
 });
 

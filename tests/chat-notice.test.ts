@@ -47,13 +47,13 @@ test("missed-message control is one banded row previewing the message it visits 
     expect(control.hits).toEqual([{ event_seq: 42, row: 0 }]);
   }
   const plain = (width: number, value: HumanAttention = attention) => renderAttention(value, width, 30, { ...context, pin_link: undefined }).lines[0];
-  expect(plain(100)).toBe(" ▲ 2 unread · codex › Oldest first line of the request. 4m · /unread ");
-  expect(plain(48)).toBe(" ▲ 2 unread · codex › Oldest first line of… 4m ");
-  expect(plain(30)).toBe(" ▲ 2 unread · codex › Oldest…");
-  expect(plain(12)).toBe(" ▲ 2 unread ");
+  expect(plain(100)).toBe(" ▲ 2 for you · codex › Oldest first line of the request. 4m · ^G ");
+  expect(plain(48)).toBe(" ▲ 2 for you · codex › Oldest first line of… 4m ");
+  expect(plain(30)).toBe(" ▲ 2 for you · codex › Oldest…");
+  expect(plain(12)).toBe(" ▲ 2 for you");
   expect(renderAttention({ messages: [], total: 0 }, 100, 30, context).lines).toEqual([]);
   const reviewing = { messages: [newer], total: 1, reviewing: true, visited: 42, current: event, position: 1, queued: 2 };
-  expect(plain(100, reviewing)).toBe(" ▲ 1 of 2 · codex 4m · Enter next · Esc live ");
+  expect(plain(100, reviewing)).toBe(" ▲ 1 of 2 · codex 4m · ^G next · Esc live ");
   expect(plain(22, reviewing)).toBe(" ▲ 1 of 2 · codex 4m ");
   expect(plain(100, { messages: [], total: 0, reviewing: true, visited: 42 })).toBe(" ✓ All caught up · Esc live ");
 });

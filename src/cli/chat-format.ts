@@ -285,9 +285,15 @@ function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): s
     const lines = body.length > 0 ? styled.split("\n") : [];
     const rendered = [header, ...[...lines, ...images].map((line) => `  ${line}`)];
     const focused = context.focused_event === event.event_seq;
-    if (context.color && (focused || isHumanDirected(event) && !context.human_acknowledged?.(event))) {
+    const forYou = isHumanDirected(event) && !context.human_acknowledged?.(event);
+    if (context.color && (focused || forYou)) {
       const background = `\u001b[${themeStyle(focused ? "selection" : "attention", context.color_mode, true)}m`;
       return rendered.map(line => background + line.replace(/\u001b\[0m/g, `\u001b[0m${background}`) + "\u001b[0m").join("\n");
+    }
+    // While an unread review shows a message in place, its surroundings are
+    // only context: dim them so they never read as more messages for you.
+    if (context.color && context.focused_event !== undefined) {
+      return rendered.map(line => `\u001b[2m${line.replace(/\u001b\[0m/g, "\u001b[0m\u001b[2m")}\u001b[0m`).join("\n");
     }
     return rendered.join("\n");
   }
@@ -542,20 +548,18 @@ export function formatDuration(now: Date, sinceIso: string): string {
 
 export interface RoomStripEntry {
   name: string;
-  unread: number;
   /** Unread messages addressed to this console. */
   directed: number;
 }
 
-// Other rooms in the repository, most urgent first: `#api 1@ · #web 2● · #docs`.
-// `@` counts messages addressed to you; `●` counts other unread messages.
+// Other rooms in the repository, most urgent first: `#api 1@ · #web · #docs`.
+// `@` counts unread messages addressed to you; other traffic is not counted.
 export function formatRoomStrip(entries: readonly RoomStripEntry[], context: ChatFormatContext): string {
   return [...entries]
-    .sort((left, right) => right.directed - left.directed || right.unread - left.unread || left.name.localeCompare(right.name))
+    .sort((left, right) => right.directed - left.directed || left.name.localeCompare(right.name))
     .map((entry) => {
       const name = `#${sanitizeChatText(entry.name).replace(/\s+/g, "-")}`;
       if (entry.directed > 0) return paint(context, `1;${themeStyle("warn", context.color_mode)}`, `${name} ${entry.directed}@`);
-      if (entry.unread > 0) return paint(context, "1", `${name} ${entry.unread}●`);
       return paint(context, "2", name);
     })
     .join(paint(context, "2", " · "));

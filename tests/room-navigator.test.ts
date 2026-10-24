@@ -120,7 +120,7 @@ test("collapsed large branches roll up hidden agents, consoles and unread counts
   nav.key("tab");
   const text = nav.render(15, "", false).join("\n");
   expect(text).toContain("▸ group");
-  expect(text).toContain("+35 agents · 35 consoles · 35 unread below");
+  expect(text).toContain("+35 agents · 35 consoles · 35 for you below");
   expect(text).not.toContain("r34");
 });
 

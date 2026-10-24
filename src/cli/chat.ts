@@ -369,6 +369,13 @@ export async function runChatSession(
   let viewedSeq = 0;
   let roomStrip = "";
   let stripOrder: PathRoom[] = [];
+  // Room badges count exactly what the attention bar would there: messages to
+  // this human, across their consoles, until acknowledged. Other traffic is 0.
+  const personalUnread = (id: string): number => {
+    if (!selfId.startsWith("human:")) return 0;
+    try { return runtime.commands.getHumanAttention({ room_id: id, human_id: selfId }).total; }
+    catch { return 0; }
+  };
   let cycleOrder: PathRoom[] = [];
   let roomNames = new Map<string, string>();
   // Every open room in this repository except the current one, for /go completion.
@@ -431,8 +438,7 @@ export async function runChatSession(
     cycleOrder = rooms;
     const next = formatRoomStrip(listed.map((room) => ({
       name: roomNames.get(room.room_id) ?? roomShortName(room),
-      unread: activity.get(room.room_id)?.unread_messages ?? 0,
-      directed: activity.get(room.room_id)?.unread_directed ?? 0
+      directed: personalUnread(room.room_id)
     })), formatContext());
     const changed = next !== roomStrip;
     roomStrip = next;
@@ -469,7 +475,7 @@ export async function runChatSession(
       return { id: room.room_id, path: room.canonical_path, name: roomShortName(room), agents, consoles,
         active: members.length > 0,
         last_activity_at: runtime.commands.getRoomActivity({ room_id: room.room_id }).last_event_at ?? "",
-        unread: room.room_id === roomId ? 0 : activity.get(room.room_id)?.unread_messages ?? 0 };
+        unread: room.room_id === roomId ? 0 : personalUnread(room.room_id) };
     });
   };
   const refreshTree = () => { if (roomTree) roomTree.rooms = treeRooms(); };
@@ -729,6 +735,8 @@ export async function runChatSession(
   let screenActive = false;
   let failure: unknown;
   let hint: string | null = null;
+  // The draft a hint was shown over; only editing it clears that hint.
+  let hintDraft: string | undefined;
   let interruptHint: { text: string; until: number } | null = null;
   const interruptIndicators = new Map<string,
     { kind: "claude"; session_id: string } | { kind: "timed"; label: string; until: number }>();
@@ -1420,13 +1428,29 @@ export async function runChatSession(
     transcript.invalidate();
     editor?.setModal(key => {
       if (key === "escape" || key === "quit") closeUnreadReview();
-      else if (key === "enter" || key === "space" || key === "no") visitUnread();
+      else if (key === "enter" || key === "space" || key === "no" || key === "next_unread") visitUnread();
       else if (["up", "down", "page_up", "page_down"].includes(key)) {
         scrollHistory((key === "up" || key === "page_up" ? -1 : 1) * (key.startsWith("page") ? Math.max(1, height - 1) : 1));
       }
     }, undefined, true);
     redraw();
     return true;
+  };
+  // Ctrl-G from the composer: the next unread message addressed to this human.
+  // Nothing else in the room is ever a target. A message already drawn in the
+  // transcript has been seen, so it is acknowledged rather than jumped to; the
+  // top bar's own row only points at a message and never counts as shown.
+  const nextUnread = () => {
+    if (rolesPanel || roomTree || memberMenu || closed || externalEditorActive) return;
+    const drawn = new Set((inline ? inlineFrame : previousFrame)?.human_messages?.map(hit => hit.event_seq));
+    // The same targets a review would open with; when there are none, stay put.
+    if (attention.messages.some(event => !drawn.has(event.event_seq) &&
+        !transcript.wasManuallyTraversed(event.event_seq)) && visitUnread()) return;
+    const shown = attention.messages.filter(event => drawn.has(event.event_seq));
+    for (const event of shown) acknowledge(String(event.event_seq));
+    hint = shown.length > 0 ? `${shown.length} ${shown.length === 1 ? "message" : "messages"} for you marked read` : "Nothing unread for you";
+    hintDraft = editor?.draft.line;
+    redraw();
   };
   const onClick = (column: number, row: number) => {
     if (options.mouse === false || column < 1 || column >= dimensions().columns || row < 1 || row > dimensions().rows || rolesPanel || roomTree || memberMenu) return;
@@ -1560,7 +1584,7 @@ export async function runChatSession(
         if (editor) { openRoomTree(); return; }
         if (!consoleState) { print("This console shows one room."); return; }
         print(["Active rooms on this host:", ...treeRooms().filter(room => room.active).map(room =>
-          `${room.id === roomId ? "*" : " "} #${sanitizeChatText(room.name)}  ${sanitizeChatText(room.path)}  ${room.agents} agents · ${room.consoles} consoles · ${room.id}`),
+          `${room.id === roomId ? "*" : " "} #${sanitizeChatText(room.name)}  ${sanitizeChatText(room.path)}  ${room.agents} agents · ${room.consoles} consoles${room.unread ? ` · ${room.unread} for you` : ""} · ${room.id}`),
           "Open with /rooms <room-id>. /go stays within this repository."].join("\n"));
         return;
       }
@@ -1927,7 +1951,7 @@ export async function runChatSession(
         input: options.input,
         columns: dimensions().columns - 1,
         onChange: () => {
-          if (editor?.draft.line) { hint = null; interruptHint = null; }
+          if (editor?.draft.line && editor.draft.line !== hintDraft) { hint = null; interruptHint = null; hintDraft = undefined; }
           redraw();
         },
         onSubmit: submit,
@@ -1937,6 +1961,7 @@ export async function runChatSession(
         onEmptyEscape,
         onCycleRoom,
         onRoomTree: openRoomTree,
+        onNextUnread: nextUnread,
         onImagePaste: pasteImage,
         onClipboardPaste: pasteClipboard,
         transformPaste: (text) => images.fromPastedText(text),
@@ -2005,6 +2030,7 @@ export async function runChatSession(
         onEmptyEscape,
         onCycleRoom,
         onRoomTree: openRoomTree,
+        onNextUnread: nextUnread,
         onImagePaste: pasteImage,
         onClipboardPaste: pasteClipboard,
         transformPaste: (text) => images.fromPastedText(text),

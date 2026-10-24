@@ -20,6 +20,8 @@ export interface ChatInputOptions {
   onEmptyEscape?: () => void;
   /** Alt+Left / Alt+Right: move to the previous or next room. */
   onRoomTree?: () => void;
+  /** Ctrl-G: the next unread message addressed to this human. */
+  onNextUnread?: () => void;
   onCycleRoom?: (direction: -1 | 1) => void;
   /**
    * Ctrl+V, or a paste with no text: the clipboard image's marker, or null.
@@ -50,7 +52,7 @@ const PASTE_START = "\u001b[200~";
 const PASTE_END = "\u001b[201~";
 const MAX_PASTE_LENGTH = 65_536;
 
-export type ChatModalKey = "up" | "down" | "left" | "right" | "space" | "enter" | "escape" | "default" | "yes" | "no" | "tab" | "edit" | "instructions" | "preview" | "undo" | "reset" | "help" | "quit" | "page_up" | "page_down" | "notifications" | "parent" | "search" | "sort" | "all";
+export type ChatModalKey = "up" | "down" | "left" | "right" | "space" | "enter" | "escape" | "default" | "yes" | "no" | "tab" | "edit" | "instructions" | "preview" | "undo" | "reset" | "help" | "quit" | "page_up" | "page_down" | "notifications" | "parent" | "search" | "sort" | "all" | "next_unread";
 
 // Readline edits a private buffer; it never writes to the physical terminal.
 // Terminal-only controls are consumed before readline's keypress decoder.
@@ -205,7 +207,8 @@ export class ChatInputController {
       ["\t", "tab"], ["e", "edit"], ["i", "instructions"], ["p", "preview"], ["v", "notifications"], ["u", "undo"], ["r", "reset"], ["?", "help"], ["q", "quit"],
       ["\u001b[5~", "page_up"], ["\u001b[6~", "page_down"],
       ["k", "up"], ["j", "down"], ["h", "left"], ["l", "right"], ["\u0003", "escape"],
-      ["\u007f", "parent"], ["\b", "parent"], ["/", "search"], ["s", "sort"], ["a", "all"]
+      ["\u007f", "parent"], ["\b", "parent"], ["/", "search"], ["s", "sort"], ["a", "all"],
+      ["\u0007", "next_unread"]
     ];
     if (this.modalEscapeTimer) clearTimeout(this.modalEscapeTimer);
     this.modalEscapeTimer = null;
@@ -464,6 +467,15 @@ export class ChatInputController {
         this.requestImage();
         continue;
       }
+      // Ctrl-G. A pasted ^G arrives inside the paste markers above and stays text.
+      if (this.pending[0] === "\u0007") {
+        const rest = this.pending.slice(1);
+        this.pending = "";
+        this.options.onNextUnread?.();
+        if (this.modal) this.feedModal(rest);
+        else this.pending = rest;
+        continue;
+      }
       if (this.pending[0] === "\u0014") {
         const rest = this.pending.slice(1);
         this.pending = "";
@@ -580,7 +592,7 @@ export class ChatInputController {
         this.pending = this.pending.slice(1);
         continue;
       }
-      const next = this.pending.search(/[\u001b\u0014\u0016\t\r\n]/);
+      const next = this.pending.search(/[\u0007\u001b\u0014\u0016\t\r\n]/);
       const length = next < 0 ? this.pending.length : next;
       const text = this.pending.slice(0, length);
       this.pending = this.pending.slice(length);

@@ -647,30 +647,39 @@ Menus and completion lists have a blank row separating them from the transcript.
 Member choices use their agent colors; command results use a separate `│` gutter with
 info, done, or error styling rather than an authored-message layout.
 
-Messages explicitly addressed to your human identity have a subtle background at their
-original position in the timeline. When unread messages leave the live viewport, one row on
-that same background appears at the top, like a status bar:
+Only messages explicitly addressed to your human identity count as unread for you: room
+broadcasts and messages between agents never do. Messages for you have a subtle background at
+their original position in the timeline. When one leaves the live viewport, one row on that
+same background appears at the top, like a status bar:
 
-    ▲ 2 unread · codex › Before I merge #180, can you confirm the operator… 4m · /unread
+    ▲ 2 for you · codex › Before I merge #180, can you confirm the operator… 4m · ^G
 
-It names the sender of the oldest unread message, previews that message's first line, and
-shows its age. On narrow terminals the `/unread` hint goes first, then the age, then the
+It names the sender of the oldest unread message for you, previews that message's first line,
+and shows its age. On narrow terminals the `^G` hint goes first, then the age, then the
 preview; the count always stays. Only that one line is previewed. Message bodies are never
 pinned or repeated above the conversation.
 
-Activate the control to visit the oldest missed message in its original timeline. The view
-places its header at the top, and the message you landed on takes the selected-row background.
-The control then reads `▲ 1 of 2 · codex 4m · Enter next · Esc live`. Each activation
+Press **Ctrl-G** from the composer, at any time and without losing your draft, to jump to the
+oldest unread message for you in its original timeline. Activating the control or `/unread`
+does the same. The view places its header at the top, the message you landed on takes the
+selected-row background, and the surrounding messages are dimmed as context. The control then
+reads `▲ 1 of 2 · codex 4m · ^G next · Esc live`. Each Ctrl-G or activation
 advances to the next missed message and records an acknowledgement only after that target is
 drawn. Context messages are not acknowledged, and clicking them while reviewing does nothing.
-While reading, Enter or Space advances; arrows and Page Up/Down browse; Escape returns to
+While reading, Ctrl-G, Enter or Space advances; arrows and Page Up/Down browse; Escape returns to
 the live tail with your draft intact. Incoming messages join the end of the queue. After the
-last visit the control reads `✓ All caught up · Esc live` until you return live.
+last visit the control reads `✓ All caught up · Esc live` until you return live. When every
+unread message for you is already on screen, Ctrl-G marks those read instead of moving; with
+none, it says `Nothing unread for you`. A pasted Ctrl-G character never navigates.
+
+Room badges count the same way: `#api 1@` in the room strip, and `1 for you` in `/rooms`,
+count unread messages addressed to you across all of your consoles, until acknowledged. In
+fullscreen, `↓ N more` counts every message below the viewport and is not a personal count.
 
 In Herdr, run `tt install herdr` once and restart chat, then **Ctrl-click** the unread
 control. The native link handler reaches only the live console in the clicked pane.
 This does not enable terminal mouse capture, so scrolling and selection keep working.
-Outside Herdr, or without its plugin, use `/unread`. The history reader is managed by chat;
+Outside Herdr, or without its plugin, use Ctrl-G or `/unread`. The history reader is managed by chat;
 it does not reposition the terminal's own scrollback, whose public Herdr API only exposes
 scroll observations. Explicit `--mouse` enables plain clicking, and captures wheel and drag
 input too; inline selection then uses Shift-drag (Option-drag in iTerm2). `--no-mouse` wins
@@ -685,7 +694,7 @@ chat where scroll position is known. Browsing during an unread review never does
 Herdr chat, only rows written while the bar was showing can be placed in native scrollback;
 a message that scrolled off before the bar appeared stays unread until you visit it. While native Herdr scrollback is away from the tail,
 updates buffer without repainting what you are reading; returning flushes the full history.
-Outside Herdr, native scroll position is unknown, so use the control, `/unread`, or `/ack`.
+Outside Herdr, native scroll position is unknown, so use Ctrl-G, the control, `/unread`, or `/ack`.
 Typing alone never acknowledges a message.
 
 `/ack` acknowledges visible highlighted messages, `/ack #123` one message, and `/ack all`

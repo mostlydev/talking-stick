@@ -33,13 +33,13 @@ export function renderAttention(attention: HumanAttention | undefined, width: nu
   } else if (attention.reviewing) {
     const current = attention.current;
     label = fit([accent(`▲ ${attention.position ?? 1} of ${attention.queued ?? attention.messages.length}`),
-      current && `${sender(current)} ${age(current)}`, muted("Enter next · Esc live")], width, muted);
+      current && `${sender(current)} ${age(current)}`, muted("^G next · Esc live")], width, muted);
   } else {
     // Like a pinned prompt: one line of the message the control visits next.
-    const head = [accent(`▲ ${attention.messages.length} unread`), sender(oldest)].filter(Boolean).join(" · ");
+    const head = [accent(`▲ ${attention.messages.length} for you`), sender(oldest)].filter(Boolean).join(" · ");
     const preview = sanitizeChatText(String(oldest.payload?.body ?? "")).split("\n").map(line => line.trim()).find(Boolean) ?? "";
     // The preview outranks the hint, and the hint outranks nothing else.
-    const tails: Array<[string[], number]> = [[[age(oldest), muted("/unread")], 24], [[age(oldest)], 10], [[], 0]];
+    const tails: Array<[string[], number]> = [[[age(oldest), muted("^G")], 24], [[age(oldest)], 10], [[], 0]];
     label = ` ${head} `;
     for (const [tail, minimum] of tails) {
       const suffix = tail.length ? ` ${tail.join(muted(" · "))} ` : "";

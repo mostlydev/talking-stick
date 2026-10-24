@@ -127,7 +127,7 @@ export class RoomTree {
         .reduce((count, room) => count + room.agents, 0);
       const name = sanitizeChatText(row.path === this.root ? path.basename(this.root) : path.basename(row.path));
       const marker = row.path === this.current ? " *" : "";
-      const counts = own ? ` ● ${room?.agents ?? 0}${room?.unread ? ` · ${room.unread} unread` : ""}` : "";
+      const counts = own ? ` ● ${room?.agents ?? 0}${room?.unread ? ` · ${room.unread} for you` : ""}` : "";
       const rollup = !this.expanded.has(row.path) && below ? dim(` +${below} below`) : "";
       return `${row.path === this.selected ? "›" : " "} ${"  ".repeat(row.depth)}${this.childrenCache.get(row.path)?.length === 0 ? "·" : this.expanded.has(row.path) ? "▾" : "▸"} ${own ? name : dim(name)}${marker}${counts}${rollup}`;
     });
