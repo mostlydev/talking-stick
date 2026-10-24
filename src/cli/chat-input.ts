@@ -271,6 +271,8 @@ export class ChatInputController {
         return "";
       }
       const enhanced = /^\u001b\[[\d:;]*[u~]/.exec(rest)?.[0];
+      // Cmd-V has no legacy form; the composer reads the whole report.
+      if (this.modalTypeThrough && enhanced !== undefined && isSuperPaste(enhanced)) return this.typeThrough(rest);
       const legacy = enhanced === undefined ? null
         : isShiftEnter(enhanced) ? "\r" : legacyKey(enhanced);
       if (enhanced !== undefined && legacy !== null) {

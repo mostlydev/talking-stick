@@ -111,6 +111,24 @@ describe("enhanced keyboard reports", () => {
     } finally { editor.close(); }
   });
 
+  test("a forwarded Cmd+V dismisses a type-through modal and pastes into the draft", async () => {
+    const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode: vi.fn() });
+    const onClipboardPaste = vi.fn(async () => "pasted");
+    const editor = new ChatInputController({ input, columns: 40, onSubmit: vi.fn(), onQuit: vi.fn(), onScroll: vi.fn(),
+      onBottom: vi.fn(), onChange: vi.fn(), onClear: vi.fn(), onImagePaste: vi.fn(async () => null), onClipboardPaste, complete: () => null });
+    const keys: string[] = [];
+    try {
+      input.write("a ");
+      editor.setModal(key => keys.push(key), undefined, false, () => editor.setModal(null));
+      input.write("\u001b[118;9u!");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(editor.modalActive).toBe(false);
+      expect(onClipboardPaste).toHaveBeenCalledOnce();
+      expect(editor.draft.line).toBe("a pasted!");
+      expect(keys).toEqual([]);
+    } finally { editor.close(); }
+  });
+
   test("a forwarded Cmd+V inserts the clipboard paste as is", async () => {
     const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode: vi.fn() });
     const onImagePaste = vi.fn(async () => "[Image #1]");
