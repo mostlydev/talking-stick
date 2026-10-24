@@ -1,7 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 // Herdr calls are injected so tests can assert exact argv without a live server.
 export type HerdrRunner = (args: readonly string[], options?: { timeoutMs?: number }) => string;
+
+export type HerdrStartRunner = (args: readonly string[], options?: { timeoutMs?: number; signal?: AbortSignal }) => Promise<string>;
 
 export const HERDR_TIMEOUT_MS = 10_000;
 
@@ -60,6 +62,40 @@ export function createSystemHerdrRunner(
     });
 }
 
+// The same executable and environment as the synchronous runner; only long
+// agent startup calls use this so unrelated agents can become ready together.
+export function createSystemHerdrStartRunner(env: NodeJS.ProcessEnv = process.env): HerdrStartRunner {
+  const binary = env.HERDR_BIN_PATH?.trim() || "herdr";
+  return (args, options = {}) => new Promise((resolve, reject) => {
+    let completion: { error: Error | null; stdout: string; stderr: string } | undefined;
+    const child = execFile(binary, [...args], {
+      encoding: "utf8", timeout: options.timeoutMs ?? HERDR_TIMEOUT_MS,
+      killSignal: "SIGKILL", signal: options.signal, env
+    }, (error, stdout, stderr) => {
+      completion = { error, stdout, stderr };
+    });
+    // Abort can call execFile's callback before the process exits. Do not
+    // release the launch lock until this exact child's stdio has closed.
+    child.once("close", () => {
+      if (!completion) { reject(new Error("Herdr child closed without a result.")); return; }
+      const { error, stdout, stderr } = completion;
+      if (error) reject(Object.assign(error, { stdout, stderr }));
+      else resolve(stdout);
+    });
+    child.stdin?.end();
+  });
+}
+
+export async function runHerdrStartJson(runner: HerdrStartRunner, args: readonly string[],
+  options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
+  let output: string;
+  try { output = await runner(args, options); }
+  catch (error) {
+    throw new HerdrError(`herdr ${args.join(" ")} failed: ${describeError(error)}`, args, herdrErrorCode(error));
+  }
+  return parseHerdrResult(output, args, false);
+}
+
 // Only trust the pane identity Herdr placed in this process's environment.
 export function readHerdrContext(
   env: NodeJS.ProcessEnv = process.env
@@ -89,7 +125,11 @@ export function runHerdrJson(
       herdrErrorCode(error)
     );
   }
-  if (options.allowEmptySuccess && output.trim() === "") return {};
+  return parseHerdrResult(output, args, options.allowEmptySuccess ?? false);
+}
+
+function parseHerdrResult(output: string, args: readonly string[], allowEmptySuccess: boolean): Record<string, unknown> {
+  if (allowEmptySuccess && output.trim() === "") return {};
   let parsed: unknown;
   try {
     parsed = JSON.parse(output);

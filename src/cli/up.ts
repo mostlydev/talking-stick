@@ -1,5 +1,5 @@
 import { resolveDataDir } from "../config.js";
-import type { HerdrRunner } from "../herdr.js";
+import type { HerdrRunner, HerdrStartRunner } from "../herdr.js";
 import { createSystemStartTimeReader, type StartTimeReader } from "../launch-identity.js";
 import { acquireLaunchLock, readLaunchRecord, launchRecordPath } from "../launch-record.js";
 import { openPaneSession } from "../pane-backend.js";
@@ -47,6 +47,7 @@ export type AgentPickerPrompt = (picker: AgentPicker, roomName: string) =>
 export interface UpCommandOptions {
   env?: NodeJS.ProcessEnv;
   runner?: HerdrRunner;
+  startRunner?: HerdrStartRunner;
   readStartTime?: StartTimeReader;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -157,6 +158,7 @@ export async function handleUpCommand(
   let membersRoomId: string | null = resolvedRoom?.room_id ?? null;
   const panes = openPaneSession(env, {
     runner: options.runner,
+    startRunner: options.startRunner,
     readMembers: () => roomWithMembers(runtime, parsed, membersRoomId)?.members ?? []
   });
   const runner = panes.runner;
@@ -223,17 +225,29 @@ export async function handleUpCommand(
       ? `Skipped ${choice.unavailable.join(", ")}: saved but cannot start here. Run tt up --choose to change the saved agents.`
       : null;
     if (skipped && !shouldUseJson(parsed)) process.stderr.write(`[tt up] ${skipped}\n`);
-    const result = await executeWorkspaceLaunch(plan, {
-      runner,
-      readStartTime,
-      readMembers: () => roomWithMembers(runtime, parsed, targetRoomId)?.members ?? null,
-      dataDir,
-      record,
-      joinTimeoutMs,
-      sleep: options.sleep,
-      now: options.now,
-      onProgress: (message) => { process.stderr.write(`[tt up] ${message}\n`); }
-    });
+    const startupAbort = new AbortController();
+    const cancelStartup = () => startupAbort.abort();
+    process.once("SIGINT", cancelStartup);
+    process.once("SIGTERM", cancelStartup);
+    let result: WorkspaceLaunchResult;
+    try {
+      result = await executeWorkspaceLaunch(plan, {
+        runner,
+        startRunner: panes.startRunner,
+        signal: startupAbort.signal,
+        readStartTime,
+        readMembers: () => roomWithMembers(runtime, parsed, targetRoomId)?.members ?? null,
+        dataDir,
+        record,
+        joinTimeoutMs,
+        sleep: options.sleep,
+        now: options.now,
+        onProgress: (message) => { process.stderr.write(`[tt up] ${message}\n`); }
+      });
+    } finally {
+      process.off("SIGINT", cancelStartup);
+      process.off("SIGTERM", cancelStartup);
+    }
     if (ignoredPin && shouldUseJson(parsed)) result.next_steps.unshift(`${pinWarning.detail} ${pinWarning.remedy}`);
     if (skipped && shouldUseJson(parsed)) result.next_steps.unshift(skipped);
     if (result.chat.state === "ready" && targetRoomId) {
