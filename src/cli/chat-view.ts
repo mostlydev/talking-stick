@@ -63,7 +63,7 @@ export const CHAT_COMMANDS: ChatCommandInfo[] = [
     usage: "/bottom",
     description: "jump to the latest messages"
   },
-  { name: "unread", usage: "/unread", description: "visit the next missed message; Escape returns live" },
+  { name: "unread", usage: "/unread", description: "visit the next message for you (Ctrl-G); Escape returns live" },
   { name: "ack", usage: "/ack [#message|all]", description: "acknowledge visible messages (or one message/all pending)" },
   { name: "theme", usage: "/theme [lantern|tide|dusk]", description: "show or change the chat palette" },
   { name: "help", usage: "/help", description: "list commands and keys" }
@@ -84,6 +84,7 @@ export function formatChatHelp(width: number, color: boolean, keys = false, inli
     ["Ctrl+V", "Attach the clipboard's image as [Image #N]; delete the marker to drop it"],
     ["Esc", "Clear text; interrupt agents when the draft is empty"],
     ["Ctrl+C", "Clear the draft"],
+    ["Ctrl+G", "Jump to the next unread message for you; Esc returns live"],
     ["Ctrl+T", "Browse folders and rooms"],
     ["Alt+← / Alt+→", "Previous / next open room in this repository"],
     ["Ctrl+PgUp / PgDn", "Room-switch fallback if the terminal captures Alt+Arrow"],
@@ -1048,6 +1049,13 @@ export function renderInlineTopPanel(input: ChatScreenInput): ChatFrame {
   });
 }
 
+/** Transcript rows in the inline top viewport, after the bar and the footer. */
+export function inlineTopTranscriptHeight(input: ChatScreenInput): number {
+  const pins = renderAttention(input.attention, Math.max(1, input.columns - 1), input.rows, input.format);
+  const footer = renderInlinePanel({ ...input, attention: undefined, rows: input.rows - pins.lines.length });
+  return Math.max(0, input.rows - footer.lines.length - pins.lines.length);
+}
+
 function renderInlineTopPanelFrame(input: ChatScreenInput): ChatFrame {
   const width = Math.max(1, input.columns - 1);
   const pins = renderAttention(input.attention, width, input.rows, input.format);
@@ -1238,7 +1246,7 @@ function renderFooter(input: ChatScreenInput, width: number, onMember?: (agent_i
   if (!transcript.following) {
     const label =
       transcript.unread > 0
-        ? `↓ ${transcript.unread} new · ctrl+end`
+        ? `↓ ${transcript.unread} more · ctrl+end`
         : "scrolled · ctrl+end";
     suffix = paintStyle(context.color, `1;${themeStyle("warn", context.color_mode)}`, label);
   } else if ((input.completions?.length ?? 0) > 0) {

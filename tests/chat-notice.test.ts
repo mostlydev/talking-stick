@@ -47,14 +47,24 @@ test("missed-message control is one banded row previewing the message it visits 
     expect(control.hits).toEqual([{ event_seq: 42, row: 0 }]);
   }
   const plain = (width: number, value: HumanAttention = attention) => renderAttention(value, width, 30, { ...context, pin_link: undefined }).lines[0];
-  expect(plain(100)).toBe(" ▲ 2 unread · codex › Oldest first line of the request. 4m · /unread ");
-  expect(plain(48)).toBe(" ▲ 2 unread · codex › Oldest first line of… 4m ");
-  expect(plain(30)).toBe(" ▲ 2 unread · codex › Oldest…");
-  expect(plain(12)).toBe(" ▲ 2 unread ");
+  // The key that opens the bar outlasts the age and the preview at every width it fits.
+  expect(plain(100)).toBe(" ▲ 2 for you · codex › Oldest first line of the request. 4m · Ctrl-G ");
+  for (const width of [48, 34, 26]) {
+    expect(plain(width)).toContain("Ctrl-G");
+    expect(plain(width).length).toBeLessThanOrEqual(width);
+  }
+  expect(plain(22)).toBe(" ▲ 2 for you · Ctrl-G ");
+  expect(plain(16)).toBe(" ▲ 2 · Ctrl-G ");
+  expect(plain(12)).toBe(" ▲ 2 for you");
+  // With Herdr's native link, the bar names both ways to open it while there is room.
+  const linked = (width: number) => renderAttention(attention, width, 30, context).lines[0].replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "");
+  expect(linked(100)).toContain("Ctrl-G or Ctrl-click");
+  expect(linked(34)).toContain("Ctrl-G");
   expect(renderAttention({ messages: [], total: 0 }, 100, 30, context).lines).toEqual([]);
   const reviewing = { messages: [newer], total: 1, reviewing: true, visited: 42, current: event, position: 1, queued: 2 };
-  expect(plain(100, reviewing)).toBe(" ▲ 1 of 2 · codex 4m · Enter next · Esc live ");
-  expect(plain(22, reviewing)).toBe(" ▲ 1 of 2 · codex 4m ");
+  expect(plain(100, reviewing)).toBe(" ▲ 1 of 2 · codex 4m · Ctrl-G next · Esc live ");
+  expect(plain(36, reviewing)).toBe(" ▲ 1 of 2 · Ctrl-G next · Esc live ");
+  expect(plain(22, reviewing)).toBe(" ▲ 1 of 2 · Ctrl-G ");
   expect(plain(100, { messages: [], total: 0, reviewing: true, visited: 42 })).toBe(" ✓ All caught up · Esc live ");
 });
 

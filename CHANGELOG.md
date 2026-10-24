@@ -11,6 +11,13 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- Chat's unread view is only about messages addressed to you (#196). Ctrl-G jumps from the
+  composer to the oldest unread message for you, keeping the draft, and again for the next;
+  Escape returns live. The bar ends with `Ctrl-G`, kept even on narrow terminals, and the room strip and `/rooms` count only messages for you across
+  your consoles, until acknowledged. Fullscreen's backlog indicator now reads `↓ N more`.
+
 ## [0.32.0] — 2026-10-24
 
 Full notes: [`docs/releases/0.32.0.md`](docs/releases/0.32.0.md).

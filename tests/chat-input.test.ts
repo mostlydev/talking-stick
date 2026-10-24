@@ -6,7 +6,7 @@ import { completeChatInput, getChatCompletions } from "../src/cli/chat-view.js";
 function setup(
   menu = false,
   wheel?: (row: number, direction: number) => void,
-  extra: { onRoomTree?: () => void; onRightClick?: (column: number, row: number) => void; onEmptyEscape?: () => void; now?: () => number } = {}
+  extra: { onRoomTree?: () => void; onNextUnread?: () => void; onRightClick?: (column: number, row: number) => void; onEmptyEscape?: () => void; now?: () => number } = {}
 ) {
   const input = Object.assign(new PassThrough(), {
     isRaw: false,
@@ -25,6 +25,7 @@ function setup(
     onWheel: wheel,
     onRightClick: extra.onRightClick,
     onRoomTree: extra.onRoomTree,
+    onNextUnread: extra.onNextUnread,
     onBottom: bottom,
     onChange: vi.fn(),
     onClear: vi.fn(),
@@ -52,6 +53,21 @@ describe("enhanced keyboard reports", () => {
       expect(onRoomTree).toHaveBeenCalledOnce();
       input.write("sent\r");
       expect(submit).toHaveBeenCalledWith("sent");
+    } finally { editor.close(); }
+  });
+
+  test("Ctrl-G asks for the next message for you and keeps the draft; a pasted ^G stays text", () => {
+    const onNextUnread = vi.fn();
+    const { editor, input } = setup(false, undefined, { onNextUnread });
+    try {
+      input.write("half typed\u0007");
+      expect(onNextUnread).toHaveBeenCalledOnce();
+      expect(editor.draft).toEqual({ line: "half typed", cursor: 10 });
+      input.write("\u001b[103;5u"); // The same key as a kitty report.
+      expect(onNextUnread).toHaveBeenCalledTimes(2);
+      input.write("\u001b[200~a\u0007b\u001b[201~");
+      expect(onNextUnread).toHaveBeenCalledTimes(2);
+      expect(editor.draft.line).toBe("half typedab"); // Pasted control characters are dropped, never acted on.
     } finally { editor.close(); }
   });
 

@@ -477,6 +477,10 @@ export class TalkingStickCommands {
     return this.service.getHumanAttention(input);
   }
 
+  countHumanAttention(input: { room_id: string; human_id: string }): number {
+    return this.service.countHumanAttention(input);
+  }
+
   getHumanChatClearCursor(input: { room_id: string; human_id: string }): number {
     return this.service.getHumanChatClearCursor(input);
   }

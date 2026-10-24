@@ -148,9 +148,9 @@ export class RoomNavigator {
       const name = safe(directory) + (room && room.name !== path.basename(row.path) ? ` #${safe(room.name)}` : "");
       const hidden = row.hiddenRoom ? row.hiddenRoom.active ? " (room outside filter)" : " (inactive room)" : "";
       const label = room ? accent(name) : paintStyle(color, themeStyle("muted"), name + hidden);
-      const counts = room ? `${row.path === this.current ? " *" : ""} · ${room.agents} agents · ${room.consoles} consoles${room.unread ? ` · ${room.unread} unread` : ""}${fs.existsSync(room.path) ? "" : " (unavailable)"}${room.last_activity_at ? ` · ${formatRelativeTime(room.last_activity_at)}` : " · no events"}` : "";
+      const counts = room ? `${row.path === this.current ? " *" : ""} · ${room.agents} agents · ${room.consoles} consoles${room.unread ? ` · ${room.unread} for you` : ""}${fs.existsSync(room.path) ? "" : " (unavailable)"}${room.last_activity_at ? ` · ${formatRelativeTime(room.last_activity_at)}` : " · no events"}` : "";
       const rollup = !row.expanded && row.children.length
-        ? ` · +${row.agents - (room?.agents ?? 0)} agents · ${row.consoles - (room?.consoles ?? 0)} consoles${row.unread - (room?.unread ?? 0) ? ` · ${row.unread - (room?.unread ?? 0)} unread` : ""} below` : "";
+        ? ` · +${row.agents - (room?.agents ?? 0)} agents · ${row.consoles - (room?.consoles ?? 0)} consoles${row.unread - (room?.unread ?? 0) ? ` · ${row.unread - (room?.unread ?? 0)} for you` : ""} below` : "";
       return `${row.path === selected?.path ? accent("›") : " "} ${"  ".repeat(row.depth)}${row.children.length ? row.expanded ? "▾" : "▸" : "·"} ${label}${counts}${rollup}`;
     });
     if (!lines.length) lines.push("No matching rooms.");

@@ -436,7 +436,7 @@ describe("screen rendering", () => {
       rows: 10
     });
     expect(frame.lines.join("\n")).toContain("/quit  leave the chat");
-    expect(frame.lines.at(-1)).toContain("↓ 1 new · ctrl+end");
+    expect(frame.lines.at(-1)).toContain("↓ 1 more · ctrl+end");
   });
 
   test("short overlays keep the selected suggestion visible without moving the composer", () => {

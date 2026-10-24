@@ -134,3 +134,11 @@ test("modal keys survive split escape sequences and pasted text is never a comma
     controller.close();
   }
 });
+
+test("the global next-unread key never changes or discards a roles draft", () => {
+  const dirty = press(editor(), "down", "right", "space").state;
+  expect(rolesEditorDirty(dirty)).toBe(true);
+  const after = rolesEditorKey(dirty, "next_unread");
+  expect(after.action).toEqual({ kind: "none" });
+  expect(rolesEditorDraft(after.state)).toEqual(rolesEditorDraft(dirty));
+});

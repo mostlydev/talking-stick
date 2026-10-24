@@ -46,6 +46,7 @@ import {
   truncateStyled,
   wrapStyledLine,
   chatTranscriptHeight,
+  inlineTopTranscriptHeight,
   chatWheelRegion,
   chatMemberAt,
   CHAT_COMMANDS,
@@ -369,6 +370,13 @@ export async function runChatSession(
   let viewedSeq = 0;
   let roomStrip = "";
   let stripOrder: PathRoom[] = [];
+  // Room badges count exactly what the attention bar would there: messages to
+  // this human, across their consoles, until acknowledged. Other traffic is 0.
+  const personalUnread = (id: string): number => {
+    if (!selfId.startsWith("human:")) return 0;
+    try { return runtime.commands.countHumanAttention({ room_id: id, human_id: selfId }); }
+    catch { return 0; }
+  };
   let cycleOrder: PathRoom[] = [];
   let roomNames = new Map<string, string>();
   // Every open room in this repository except the current one, for /go completion.
@@ -431,8 +439,7 @@ export async function runChatSession(
     cycleOrder = rooms;
     const next = formatRoomStrip(listed.map((room) => ({
       name: roomNames.get(room.room_id) ?? roomShortName(room),
-      unread: activity.get(room.room_id)?.unread_messages ?? 0,
-      directed: activity.get(room.room_id)?.unread_directed ?? 0
+      directed: personalUnread(room.room_id)
     })), formatContext());
     const changed = next !== roomStrip;
     roomStrip = next;
@@ -457,9 +464,6 @@ export async function runChatSession(
   const treeResolvedCache = new Map<string, string>();
   const treeRooms = (): NavigatorRoom[] => {
     const rooms = runtime.commands.listRooms({}).rooms.filter(room => room.state !== "closed");
-    const activity = new Map(runtime.commands.summarizeRoomActivity(selfId, rooms.map(room => ({
-      room_id: room.room_id, after_event_seq: consoleState?.last_seen.get(room.room_id) ?? consoleState?.start_seq ?? 0
-    }))).map(entry => [entry.room_id, entry]));
     return rooms.map(room => {
       // Agentless reads never join or refresh presence in another room.
       const members = runtime.commands.getRoomState({ room_id: room.room_id }).members.filter(member =>
@@ -469,7 +473,7 @@ export async function runChatSession(
       return { id: room.room_id, path: room.canonical_path, name: roomShortName(room), agents, consoles,
         active: members.length > 0,
         last_activity_at: runtime.commands.getRoomActivity({ room_id: room.room_id }).last_event_at ?? "",
-        unread: room.room_id === roomId ? 0 : activity.get(room.room_id)?.unread_messages ?? 0 };
+        unread: room.room_id === roomId ? 0 : personalUnread(room.room_id) };
     });
   };
   const refreshTree = () => { if (roomTree) roomTree.rooms = treeRooms(); };
@@ -729,6 +733,8 @@ export async function runChatSession(
   let screenActive = false;
   let failure: unknown;
   let hint: string | null = null;
+  // The draft a hint was shown over; only editing it clears that hint.
+  let hintDraft: string | undefined;
   let interruptHint: { text: string; until: number } | null = null;
   const interruptIndicators = new Map<string,
     { kind: "claude"; session_id: string } | { kind: "timed"; label: string; until: number }>();
@@ -843,16 +849,19 @@ export async function runChatSession(
     output.write(active ? "\u001b[?1000h\u001b[?1006h" : "\u001b[?1000l\u001b[?1006l");
     mouseActive = active;
   };
+  const topViewportInput = () => {
+    const draft = editor?.draft ?? { line: "", cursor: 0 };
+    return {
+      room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(), release: releaseStatus, transcript, format: formatContext(),
+      status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses() },
+      draft, hint: currentHint(), completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
+      completion_index: editor?.completionIndex ?? 0, ...dimensions()
+    };
+  };
   const drawTopViewport = () => {
     const size = dimensions();
-    const context = formatContext();
-    const draft = editor?.draft ?? { line: "", cursor: 0 };
-    const input = {
-      room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(), release: releaseStatus, transcript, format: context,
-      status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses() },
-      draft, hint: currentHint(), completions: editor?.completionVisible ? completionsFor(draft) : [],
-      completion_index: editor?.completionIndex ?? 0, ...size
-    };
+    const input = topViewportInput();
+    const context = input.format;
     const all = transcript.historyRows(Math.max(1, size.columns - 1), context);
     if (!inlineHistoryInitialized) {
       const footer = renderInlinePanel({ ...input, attention: undefined });
@@ -864,7 +873,8 @@ export async function runChatSession(
     const evicted = unreadReview === null ? inlinePinHistory.evict(all, frame.history_top ?? 0) : [];
     const history = evicted.map(entry => entry.text);
     nativeScrollLedger.commit(evicted.map(entry => transcript.eventSeqForRow(entry.row)));
-    if (!history.length && inlineFrame?.inline_top && JSON.stringify(frame) === JSON.stringify(inlineFrame)) return;
+    // An unchanged frame is already on screen, so a visit it shows is complete.
+    if (!history.length && inlineFrame?.inline_top && JSON.stringify(frame) === JSON.stringify(inlineFrame)) { completeUnreadVisit(frame); return; }
     output.write("\u001b[?2026h" + appendNativeHistory(history, size.rows) + "\u001b[H\u001b[J" + frame.lines.join("\r\n") +
       `\u001b[${frame.cursor.row + 1};${frame.cursor.col + 1}H\u001b[?2026l`);
     inlineFrame = frame;
@@ -925,7 +935,7 @@ export async function runChatSession(
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
           interrupt_statuses: interruptStatuses() },
         draft, hint: currentHint(),
-        completions: editor?.completionVisible ? completionsFor(draft) : [],
+        completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
         completion_index: editor?.completionIndex ?? 0,
         ...dimensions()
       });
@@ -995,7 +1005,7 @@ export async function runChatSession(
           },
           draft: editor?.draft ?? { line: "", cursor: 0 },
           hint: currentHint(),
-          completions: editor?.completionVisible ? completionsFor(editor.draft) : [],
+          completions: editor?.completionVisible && unreadReview === null ? completionsFor(editor.draft) : [],
           completion_index: editor?.completionIndex ?? 0,
           ...dimensions()
         });
@@ -1133,7 +1143,7 @@ export async function runChatSession(
         const frame = renderInlinePanel({ room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, release: releaseStatus, transcript, format: formatContext(),
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
           interrupt_statuses: interruptStatuses() },
-        draft, hint: currentHint(), completions: editor?.completionVisible ? completionsFor(draft) : [],
+        draft, hint: currentHint(), completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
         completion_index: editor?.completionIndex ?? 0, ...dimensions() });
         const height = Math.max(0, dimensions().rows - frame.lines.length);
         return { frame, visible: transcript.humanMessageRows(height, Math.max(1, dimensions().columns - 1), formatContext()).map(hit => hit.event_seq) };
@@ -1384,12 +1394,14 @@ export async function runChatSession(
       resumeInlineTail();
     } else { transcript.setOutputBuffered(false); redraw(); }
   };
-  const visitUnread = (requested?: number): boolean => {
+  // The bar control skips messages already on screen; Ctrl-G passes
+  // includeVisible so every press lands on exactly one message for you.
+  const visitUnread = (requested?: number, includeVisible = false): boolean => {
     if (rolesPanel || roomTree || memberMenu || closed || externalEditorActive) return false;
     const opening = unreadReview === null;
     if (opening) {
       const frame = inline ? inlineFrame : previousFrame;
-      const visible = new Set(frame?.human_messages?.map(hit => hit.event_seq));
+      const visible = new Set(includeVisible ? [] : frame?.human_messages?.map(hit => hit.event_seq));
       unreadReview = attention.messages.filter(event => !visible.has(event.event_seq) &&
         !transcript.wasManuallyTraversed(event.event_seq)).map(event => event.event_seq).sort((a, b) => a - b);
     }
@@ -1398,7 +1410,12 @@ export async function runChatSession(
     if (!next) { closeUnreadReview(); return false; }
     if (requested !== undefined && requested !== next.event_seq) { if (opening) unreadReview = null; return false; }
     const { columns, rows } = dimensions();
-    const height = Math.max(1, chatTranscriptHeight({ columns, rows, draft: editor?.draft ?? { line: "", cursor: 0 }, room_path: joined.canonical_path }) - 1);
+    // Measure the transcript as it will be drawn, review bar and spacer
+    // included, so a visit near the end still shows the whole message.
+    const barRows = renderAttention({ ...attention, reviewing: true }, columns - 1, rows, formatContext()).lines.length || 1;
+    const height = Math.max(1, inline
+      ? inlineTopTranscriptHeight({ ...topViewportInput(), attention: { ...attention, reviewing: true } })
+      : chatTranscriptHeight({ columns, rows, draft: editor?.draft ?? { line: "", cursor: 0 }, room_path: joined.canonical_path }) - barRows);
     const context = formatContext();
     if (inline) freezeInlineHistory();
     else transcript.setOutputBuffered(true);
@@ -1421,12 +1438,28 @@ export async function runChatSession(
     editor?.setModal(key => {
       if (key === "escape" || key === "quit") closeUnreadReview();
       else if (key === "enter" || key === "space" || key === "no") visitUnread();
+      else if (key === "next_unread") {
+        // However the review began, Ctrl-G covers every message still unread
+        // for you, including ones on screen that the bar's queue skipped.
+        for (const event of attention.messages) if (!unreadReview!.includes(event.event_seq)) unreadReview!.push(event.event_seq);
+        visitUnread();
+      }
       else if (["up", "down", "page_up", "page_down"].includes(key)) {
         scrollHistory((key === "up" || key === "page_up" ? -1 : 1) * (key.startsWith("page") ? Math.max(1, height - 1) : 1));
       }
     }, undefined, true);
     redraw();
     return true;
+  };
+  // Ctrl-G from the composer: the oldest unread message addressed to this
+  // human, one per press, even when it is already on screen. Nothing else in
+  // the room is ever a target, and nothing is read until it is drawn.
+  const nextUnread = () => {
+    if (rolesPanel || roomTree || memberMenu || closed || externalEditorActive) return;
+    if (attention.messages.length > 0 && visitUnread(undefined, true)) return;
+    hint = "Nothing unread for you";
+    hintDraft = editor?.draft.line;
+    redraw();
   };
   const onClick = (column: number, row: number) => {
     if (options.mouse === false || column < 1 || column >= dimensions().columns || row < 1 || row > dimensions().rows || rolesPanel || roomTree || memberMenu) return;
@@ -1560,7 +1593,7 @@ export async function runChatSession(
         if (editor) { openRoomTree(); return; }
         if (!consoleState) { print("This console shows one room."); return; }
         print(["Active rooms on this host:", ...treeRooms().filter(room => room.active).map(room =>
-          `${room.id === roomId ? "*" : " "} #${sanitizeChatText(room.name)}  ${sanitizeChatText(room.path)}  ${room.agents} agents · ${room.consoles} consoles · ${room.id}`),
+          `${room.id === roomId ? "*" : " "} #${sanitizeChatText(room.name)}  ${sanitizeChatText(room.path)}  ${room.agents} agents · ${room.consoles} consoles${room.unread ? ` · ${room.unread} for you` : ""} · ${room.id}`),
           "Open with /rooms <room-id>. /go stays within this repository."].join("\n"));
         return;
       }
@@ -1927,7 +1960,7 @@ export async function runChatSession(
         input: options.input,
         columns: dimensions().columns - 1,
         onChange: () => {
-          if (editor?.draft.line) { hint = null; interruptHint = null; }
+          if (editor?.draft.line && editor.draft.line !== hintDraft) { hint = null; interruptHint = null; hintDraft = undefined; }
           redraw();
         },
         onSubmit: submit,
@@ -1937,6 +1970,7 @@ export async function runChatSession(
         onEmptyEscape,
         onCycleRoom,
         onRoomTree: openRoomTree,
+        onNextUnread: nextUnread,
         onImagePaste: pasteImage,
         onClipboardPaste: pasteClipboard,
         transformPaste: (text) => images.fromPastedText(text),
@@ -2005,6 +2039,7 @@ export async function runChatSession(
         onEmptyEscape,
         onCycleRoom,
         onRoomTree: openRoomTree,
+        onNextUnread: nextUnread,
         onImagePaste: pasteImage,
         onClipboardPaste: pasteClipboard,
         transformPaste: (text) => images.fromPastedText(text),

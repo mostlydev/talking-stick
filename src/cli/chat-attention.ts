@@ -32,22 +32,38 @@ export function renderAttention(attention: HumanAttention | undefined, width: nu
     label = fit([`${paint(themeStyle("ok", context.color_mode), "✓")} All caught up`, muted("Esc live")], width, muted);
   } else if (attention.reviewing) {
     const current = attention.current;
-    label = fit([accent(`▲ ${attention.position ?? 1} of ${attention.queued ?? attention.messages.length}`),
-      current && `${sender(current)} ${age(current)}`, muted("Enter next · Esc live")], width, muted);
+    const position = accent(`▲ ${attention.position ?? 1} of ${attention.queued ?? attention.messages.length}`);
+    const about = current && `${sender(current)} ${age(current)}`;
+    // The key outlasts who sent it and when: it is how the reader moves on.
+    const join = (parts: Array<string | undefined>) => ` ${parts.filter(Boolean).join(muted(" · "))} `;
+    label = truncateStyled([
+      join([position, about, `${accent("Ctrl-G")} ${muted("next · Esc live")}`]),
+      join([position, `${accent("Ctrl-G")} ${muted("next · Esc live")}`]),
+      join([position, `${accent("Ctrl-G")} ${muted("next")}`]),
+      join([position, accent("Ctrl-G")])
+    ].find(candidate => textWidth(candidate) <= width) ?? join([position]), width);
   } else {
     // Like a pinned prompt: one line of the message the control visits next.
-    const head = [accent(`▲ ${attention.messages.length} unread`), sender(oldest)].filter(Boolean).join(" · ");
+    const count = accent(`▲ ${attention.messages.length} for you`);
+    const head = [count, sender(oldest)].filter(Boolean).join(" · ");
     const preview = sanitizeChatText(String(oldest.payload?.body ?? "")).split("\n").map(line => line.trim()).find(Boolean) ?? "";
-    // The preview outranks the hint, and the hint outranks nothing else.
-    const tails: Array<[string[], number]> = [[[age(oldest), muted("/unread")], 24], [[age(oldest)], 10], [[], 0]];
-    label = ` ${head} `;
-    for (const [tail, minimum] of tails) {
-      const suffix = tail.length ? ` ${tail.join(muted(" · "))} ` : "";
+    // The key is how this bar is opened, so it outlasts the age, the preview
+    // and the sender. In Herdr with its plugin, a Ctrl-click works too.
+    const key = accent("Ctrl-G");
+    const keys = context.pin_link ? `${key} ${muted("or")} ${accent("Ctrl-click")}` : key;
+    const withPreview = (tail: string[], minimum: number): string | undefined => {
+      const suffix = ` ${tail.join(muted(" · "))} `;
       const room = width - textWidth(` ${head} › `) - textWidth(suffix);
-      if (room < Math.min(minimum, textWidth(preview))) continue;
-      label = room > 0 && preview ? ` ${head} ${muted("›")} ${ellipsize(preview, room)}${suffix}` : ` ${head}${suffix}`;
-      break;
-    }
+      if (!preview || room < Math.min(minimum, textWidth(preview))) return undefined;
+      return ` ${head} ${muted("›")} ${ellipsize(preview, room)}${suffix}`;
+    };
+    const fits = (candidate: string | undefined) => candidate !== undefined && textWidth(candidate) <= width;
+    label = [
+      withPreview([age(oldest), keys], 24), withPreview([age(oldest), key], 24),
+      withPreview([keys], 10), withPreview([key], 10),
+      ` ${head} · ${keys} `, ` ${head} · ${key} `, ` ${count} · ${key} `,
+      ` ${accent(`▲ ${attention.messages.length}`)} · ${key} `
+    ].find(fits) ?? ` ${count} `;
     label = truncateStyled(label, width);
   }
   const content = context.color ? band(label, width, context) : label;
