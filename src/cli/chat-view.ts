@@ -1049,6 +1049,13 @@ export function renderInlineTopPanel(input: ChatScreenInput): ChatFrame {
   });
 }
 
+/** Transcript rows in the inline top viewport, after the bar and the footer. */
+export function inlineTopTranscriptHeight(input: ChatScreenInput): number {
+  const pins = renderAttention(input.attention, Math.max(1, input.columns - 1), input.rows, input.format);
+  const footer = renderInlinePanel({ ...input, attention: undefined, rows: input.rows - pins.lines.length });
+  return Math.max(0, input.rows - footer.lines.length - pins.lines.length);
+}
+
 function renderInlineTopPanelFrame(input: ChatScreenInput): ChatFrame {
   const width = Math.max(1, input.columns - 1);
   const pins = renderAttention(input.attention, width, input.rows, input.format);

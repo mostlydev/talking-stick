@@ -54,6 +54,7 @@ test("missed-message control is one banded row previewing the message it visits 
     expect(plain(width).length).toBeLessThanOrEqual(width);
   }
   expect(plain(22)).toBe(" ▲ 2 for you · Ctrl-G ");
+  expect(plain(16)).toBe(" ▲ 2 · Ctrl-G ");
   expect(plain(12)).toBe(" ▲ 2 for you");
   // With Herdr's native link, the bar names both ways to open it while there is room.
   const linked = (width: number) => renderAttention(attention, width, 30, context).lines[0].replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "");

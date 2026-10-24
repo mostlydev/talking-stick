@@ -61,7 +61,8 @@ export function renderAttention(attention: HumanAttention | undefined, width: nu
     label = [
       withPreview([age(oldest), keys], 24), withPreview([age(oldest), key], 24),
       withPreview([keys], 10), withPreview([key], 10),
-      ` ${head} · ${keys} `, ` ${head} · ${key} `, ` ${count} · ${key} `
+      ` ${head} · ${keys} `, ` ${head} · ${key} `, ` ${count} · ${key} `,
+      ` ${accent(`▲ ${attention.messages.length}`)} · ${key} `
     ].find(fits) ?? ` ${count} `;
     label = truncateStyled(label, width);
   }
