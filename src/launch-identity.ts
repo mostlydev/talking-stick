@@ -15,6 +15,9 @@ export interface IdentityDeps {
 export interface IdentityProof {
   confirmed: boolean;
   reason: string;
+  /** The exact session and pane process match, but the member stored no
+   * start time of its own, so the process incarnation cannot be compared. */
+  unrecordedStart?: true;
 }
 
 export const HARNESS_SESSION_PREFIX = "harness:";
@@ -45,8 +48,7 @@ export function proveMemberInPane(
     return { confirmed: false, reason: `Pane ${herdrAgent.pane_id} hosts a different ${executable} session.` };
   }
   const pid = member.harness_pid;
-  const recordedStart = member.harness_process_started_at?.trim();
-  if (!pid || !recordedStart) {
+  if (!pid) {
     return { confirmed: false, reason: `${member.agent_id} has no recorded harness process.` };
   }
   let processes;
@@ -60,6 +62,12 @@ export function proveMemberInPane(
   );
   if (!harness) {
     return { confirmed: false, reason: `Pane ${herdrAgent.pane_id} is not running ${executable} pid ${pid}.` };
+  }
+  // Only after the session and pane process match: a member that could not
+  // read its own process start still cannot be told from a reused pid.
+  const recordedStart = member.harness_process_started_at?.trim();
+  if (!recordedStart) {
+    return { confirmed: false, unrecordedStart: true, reason: `${member.agent_id} matches the session and ${executable} pid ${pid} in pane ${herdrAgent.pane_id}, but recorded no process start time, so its join cannot be proven. One possible cause is a Windows account that cannot inspect processes, such as Codex's sandbox; see the README note on Windows join confirmation.` };
   }
   if (deps.readStartTime(pid)?.trim() !== recordedStart) {
     return { confirmed: false, reason: `${executable} pid ${pid} is a different process incarnation.` };

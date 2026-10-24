@@ -105,5 +105,17 @@ describe("Windows process identity", () => {
     expect(proveMemberInPane({ ...member, harness_pid: 43 }, agent, "codex", deps).confirmed).toBe(false);
     expect(proveMemberInPane(member, agent, "codex", { ...deps, readStartTime: () => "old" }).confirmed).toBe(false);
     expect(proveChatMemberInPane(member, "pane", { ...deps, readStartTime: () => "old" })).toBe(false);
+
+    // No recorded start: explained only after the session and pane process match.
+    const unrecorded = { ...member, harness_process_started_at: null };
+    expect(proveMemberInPane(unrecorded, agent, "codex", deps)).toMatchObject({ confirmed: false, unrecordedStart: true });
+    for (const proof of [
+      proveMemberInPane(unrecorded, { ...agent, session_id: "other" }, "codex", deps),
+      proveMemberInPane({ ...unrecorded, harness_pid: 43 }, agent, "codex", deps),
+      proveMemberInPane({ ...unrecorded, harness_pid: null }, agent, "codex", deps)
+    ]) {
+      expect(proof.confirmed).toBe(false);
+      expect(proof.unrecordedStart).toBeUndefined();
+    }
   });
 });

@@ -368,6 +368,7 @@ async function observeJoins(
   const deadline = now() + (deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS);
   const proofDeps = { runner: deps.runner, readStartTime: deps.readStartTime };
   const lastReason = new Map<LaunchAgent, string>();
+  const noticed = new Map<LaunchAgent, string>();
   const seconds = Math.round((deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS) / 1000);
   let lastProgress = "";
   const report = () => {
@@ -409,14 +410,28 @@ async function observeJoins(
         continue;
       }
       const executable = launchAdapter(outcome.agent).executable;
+      // Several rows can share one harness session, so every candidate is
+      // tried; a matching row without a start time never ends the search.
+      let unrecorded: string | undefined;
       for (const member of members.filter((candidate) => isLiveMember(candidate, outcome.agent))) {
         const proof = proveMemberInPane(member, herdrAgent, executable, proofDeps);
         if (proof.confirmed) {
           outcome.member_id = member.agent_id;
           track(outcome.agent, "confirmed", proof.reason);
+          unrecorded = undefined;
           break;
         }
-        lastReason.set(outcome.agent, proof.reason);
+        if (proof.unrecordedStart) unrecorded ??= proof.reason;
+        else lastReason.set(outcome.agent, proof.reason);
+      }
+      // Only when nothing proved the pane: explain the closest match once,
+      // and keep it as the reason so an unrelated member cannot replace it.
+      if (unrecorded) {
+        lastReason.set(outcome.agent, unrecorded);
+        if (noticed.get(outcome.agent) !== unrecorded) {
+          noticed.set(outcome.agent, unrecorded);
+          deps.onProgress?.(`${outcome.agent}: ${unrecorded} Still waiting up to ${seconds}s in case it records one.`);
+        }
       }
     }
     report();

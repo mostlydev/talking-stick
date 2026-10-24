@@ -27,6 +27,11 @@ changes will be called out under **Breaking changes**.
 
 ### Fixed
 
+- While waiting for joins, `tt up` says when a member matches its pane's session and process
+  but recorded no process start time, which it needs to prove the join, and names a Windows
+  account that cannot inspect processes as one possible cause (#189). The wait, the proof and
+  the unconfirmed result are unchanged, and a start recorded later still confirms.
+
 - `tt up` starts independent Herdr agents concurrently after creating their panes,
   preserving each agent's startup and join checks. A slow or blocked neighbour no longer
   delays the next startup; layout stays ordered and no uncertain call is retried (#182).
