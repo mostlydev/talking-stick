@@ -148,7 +148,7 @@ describe("tt up execution", () => {
     const stranger = () => ({ ...herdr.members().find((member) => member.harness_name)!,
       agent_id: "claude:other", harness_session_id: "harness:someone-else" });
     let polls = 0;
-    setMembers(() => (++polls < 6 ? [...withoutStart(), stranger()] : herdr.members()));
+    setMembers(() => (++polls < 6 ? (polls % 2 ? [...withoutStart(), stranger()] : [stranger(), ...withoutStart()]) : herdr.members()));
     const messages: string[] = [];
     const result = await run(["claude"], "here", (message) => messages.push(message));
     const notices = messages.filter((message) => message.includes("recorded no process start time"));
@@ -160,13 +160,27 @@ describe("tt up execution", () => {
     expect(result.agents[0]).toMatchObject({ agent: "claude", state: "confirmed" });
   });
 
+  test("a row sharing the session without a start never hides a later row that proves the pane", async () => {
+    const { run, herdr, setMembers } = setup();
+    setMembers(() => herdr.members().flatMap((member) => member.harness_name
+      ? [{ ...member, agent_id: "claude:alias", harness_process_started_at: null }, member] : [member]));
+    const messages: string[] = [];
+    const result = await run(["claude"], "here", (message) => messages.push(message));
+    expect(result.status).toBe("launched");
+    expect(result.agents[0]).toMatchObject({ state: "confirmed", member_id: expect.not.stringMatching(/alias/) });
+    expect(messages.some((message) => message.includes("recorded no process start time"))).toBe(false);
+  });
+
   test("a member that never records a start stays unconfirmed with that reason after the full wait", async () => {
     const { run, herdr, setMembers } = setup();
-    setMembers(() => herdr.members().map((member) =>
-      member.harness_name ? { ...member, harness_process_started_at: null } : member));
+    const stranger = () => ({ ...herdr.members().find((member) => member.harness_name)!,
+      agent_id: "claude:other", harness_session_id: "harness:someone-else" });
+    setMembers(() => [...herdr.members().map((member) =>
+      member.harness_name ? { ...member, harness_process_started_at: null } : member), stranger()]);
     const result = await run(["claude"]);
     expect(result.status).toBe("partial");
     expect(result.agents[0].state).toBe("started");
+    // A stranger later in the scan does not replace the closer explanation.
     expect(result.agents[0].detail).toMatch(/no verified join within 10s: .*recorded no process start time/);
   });
 

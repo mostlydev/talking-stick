@@ -410,24 +410,28 @@ async function observeJoins(
         continue;
       }
       const executable = launchAdapter(outcome.agent).executable;
+      // Several rows can share one harness session, so every candidate is
+      // tried; a matching row without a start time never ends the search.
+      let unrecorded: string | undefined;
       for (const member of members.filter((candidate) => isLiveMember(candidate, outcome.agent))) {
         const proof = proveMemberInPane(member, herdrAgent, executable, proofDeps);
         if (proof.confirmed) {
           outcome.member_id = member.agent_id;
           track(outcome.agent, "confirmed", proof.reason);
+          unrecorded = undefined;
           break;
         }
-        // Say once, while still waiting, why an otherwise matching member is
-        // unproven; a later recorded start can still confirm it.
-        // Other members of the same harness alternate with this reason, so
-        // remember what was said rather than comparing with the last reason.
-        if (proof.unrecordedStart && noticed.get(outcome.agent) !== proof.reason) {
-          noticed.set(outcome.agent, proof.reason);
-          deps.onProgress?.(`${outcome.agent}: ${proof.reason} Still waiting up to ${seconds}s in case it records one.`);
+        if (proof.unrecordedStart) unrecorded ??= proof.reason;
+        else lastReason.set(outcome.agent, proof.reason);
+      }
+      // Only when nothing proved the pane: explain the closest match once,
+      // and keep it as the reason so an unrelated member cannot replace it.
+      if (unrecorded) {
+        lastReason.set(outcome.agent, unrecorded);
+        if (noticed.get(outcome.agent) !== unrecorded) {
+          noticed.set(outcome.agent, unrecorded);
+          deps.onProgress?.(`${outcome.agent}: ${unrecorded} Still waiting up to ${seconds}s in case it records one.`);
         }
-        lastReason.set(outcome.agent, proof.reason);
-        // The exact session matched, so no other member can prove this pane.
-        if (proof.unrecordedStart) break;
       }
     }
     report();
