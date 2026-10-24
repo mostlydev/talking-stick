@@ -83,6 +83,8 @@ test("the real schema migrates and immediate transactions roll back on error", (
   db.close();
 });
 
+// On Windows the join also spawns a PowerShell/CIM process probe. One v0.32.0
+// release run took 5.6s here against Bun's 5s default; a rerun passed.
 test("closing a service releases its standalone database file", () => {
   const dataDir = path.dirname(tempFile("unused"));
   const service = new TalkingStickService({ dataDir, hostId: "local" });
@@ -90,4 +92,4 @@ test("closing a service releases its standalone database file", () => {
   service.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
   expect(fs.existsSync(dataDir)).toBe(false);
-});
+}, 30_000);
