@@ -142,7 +142,10 @@ data directory, with rooms keyed by their path. A saved agent that is no longer 
 again in a terminal; elsewhere it is skipped with a note (stderr, or `next_steps` under `--json`),
 never replaced by another.
 
-- Each agent receives the skill bootstrap prompt, and its join to the exact room is verified.
+- Pane creation stays ordered; independent Herdr agent startups overlap. Each agent receives
+  the skill bootstrap prompt only after its own startup succeeds, and its join to the exact room is verified.
+  tmux already submits startup commands without waiting for readiness. Cancelling startup kills
+  its outstanding Herdr CLI children; inspect recorded panes before retrying an uncertain start.
   `--timeout 120s` bounds that join observation in addition to each startup timeout.
 - Panes start in the directory you launch from and are pinned to one room (`TT_ROOM`, and
   `tt chat --in` for the console): the room an ordinary `tt join` there selects, or the one named

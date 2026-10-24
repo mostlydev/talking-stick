@@ -3,6 +3,8 @@ import {
   HerdrError,
   listHerdrAgents,
   runHerdrJson,
+  runHerdrStartJson,
+  type HerdrStartRunner,
   type HerdrRunner
 } from "./herdr.js";
 import {
@@ -33,6 +35,8 @@ const CALL_HEADROOM_MS = 15_000;
 
 export interface ExecuteLaunchDeps {
   runner: HerdrRunner;
+  startRunner?: HerdrStartRunner;
+  signal?: AbortSignal;
   readStartTime: StartTimeReader;
   // Reads the exact room's members; null while no room exists yet.
   readMembers: () => RoomMember[] | null;
@@ -63,7 +67,8 @@ export interface WorkspaceLaunchResult {
   destination: { workspace_id: string | null; tab_id: string | null; tab_number: number | null; label: string; focused: boolean; focus_error?: string } | null;
 }
 
-// Runs the plan's steps in order. Each external side effect is recorded before
+// Creates panes in order and overlaps independent agent startup chains.
+// Each external side effect is recorded before
 // and after it happens, and nothing is retried after an uncertain result.
 export async function executeWorkspaceLaunch(
   plan: WorkspaceLaunchPlan,
@@ -86,6 +91,7 @@ export async function executeWorkspaceLaunch(
       ? "Chat will open in this pane after agent startup." : plan.chat.reason ?? ""
   };
   let destination: WorkspaceLaunchResult["destination"] = null;
+  const focusFailed = () => Boolean(destination?.focus_error);
   const finish = (status: WorkspaceLaunchResult["status"]): WorkspaceLaunchResult => ({
     status,
     canonical_path: plan.canonical_path,
@@ -133,8 +139,55 @@ export async function executeWorkspaceLaunch(
   const resolve = (argv: string[]) => argv.map((arg) => panes.get(arg) ?? arg);
   const stopped = new Set<LaunchAgent>();
 
-  for (const step of plan.steps) {
-    if (step.agent && stopped.has(step.agent)) continue;
+  const abort = new AbortController();
+  const cancel = () => abort.abort();
+  deps.signal?.addEventListener("abort", cancel, { once: true });
+  if (deps.signal?.aborted) cancel();
+  const checkCancelled = () => { if (abort.signal.aborted) throw new Error("Launch interrupted; inspect the recorded panes before retrying."); };
+  const chains: Promise<WorkspaceLaunchResult | undefined>[] = [];
+  try {
+    let partialLayout = false;
+    for (const step of plan.steps) {
+      checkCancelled();
+      if (step.kind === "prompt" || step.kind === "focus") continue;
+      if (step.kind === "start" && step.agent) {
+        // A chain can mutate its own outcome and the shared record, never the
+        // pane map. The next split depends on a pane ID, not agent readiness.
+        const ownSteps = plan.steps.filter((candidate) => candidate.agent === step.agent &&
+          (candidate.kind === "start" || candidate.kind === "prompt"));
+        const chain = (async () => {
+          for (const own of ownSteps) {
+            const result = await executeStep(own);
+            if (result) return result;
+          }
+        })();
+        // Observe rejection immediately, even while the layout walker is
+        // still issuing synchronous calls. Promise.all below still surfaces it.
+        void chain.catch(() => {});
+        chains.push(chain);
+      } else {
+        const result = await executeStep(step);
+        if (result) { partialLayout = true; break; }
+      }
+    }
+    await Promise.all(chains);
+    checkCancelled();
+    // A classified layout refusal/unknown ID is not cancellation of agents
+    // already starting in known panes. Compute their outcomes after draining.
+    if (partialLayout) return finish("partial");
+    for (const step of plan.steps.filter((candidate) => candidate.kind === "focus")) await executeStep(step);
+  } catch (error) {
+    // An exceptional failure must not leave owned children running after the
+    // caller releases its launch lock. Classified partial results drain normally.
+    abort.abort();
+    throw error;
+  } finally {
+    await Promise.allSettled(chains);
+    deps.signal?.removeEventListener("abort", cancel);
+  }
+
+  async function executeStep(step: LaunchStep): Promise<WorkspaceLaunchResult | undefined> {
+    if (step.agent && stopped.has(step.agent)) return;
     let argv = resolve(step.argv).slice(1);
     if (step.kind === "anchor") {
       record.anchor = { state: "creating", pane_id: null };
@@ -157,13 +210,15 @@ export async function executeWorkspaceLaunch(
       track(step.agent, "starting", "Starting the agent.", paneId);
     }
 
-    progress(step.description);
+    progress(step.agent ? `${step.agent}: ${step.description}` : step.description);
     if (step.kind === "focus" && argv.some((arg) => /^<.+>$/.test(arg))) {
       if (destination) destination.focus_error = "Herdr did not return the destination ID; no focus command was sent.";
       progress("Destination ID missing; select the new tab/workspace manually.");
-      continue;
+      return;
     }
-    const outcome = runStep(deps.runner, step, argv);
+    const outcome = step.kind === "start" || step.kind === "prompt"
+      ? await runStartStep(deps.startRunner ?? (async (args, options) => deps.runner(args, options)), step, argv, abort.signal)
+      : runStep(deps.runner, step, argv);
     if (outcome.kind === "ok") {
       if (step.produces) {
         const paneId = createdPaneId(outcome.result);
@@ -206,7 +261,7 @@ export async function executeWorkspaceLaunch(
         destination.focused = true;
         progress(`Showing ${argv[2]}.`);
       }
-      continue;
+      return;
     }
 
     const state: LaunchAgentState = outcome.code === "agent_not_ready" ? "blocked"
@@ -215,7 +270,7 @@ export async function executeWorkspaceLaunch(
     progress(`${step.agent ?? step.kind}: ${state} — ${outcome.message}`);
     if (step.kind === "focus") {
       if (destination) destination.focus_error = outcome.message;
-      continue;
+      return;
     }
     if (step.kind === "anchor") {
       record.anchor = { state: state === "ambiguous" ? "ambiguous" : "failed", pane_id: null };
@@ -233,7 +288,7 @@ export async function executeWorkspaceLaunch(
       chat.state = state === "ambiguous" ? "ambiguous" : "failed";
       chat.detail = outcome.message;
       chat.pane_id = argv[2];
-      continue;
+      return;
     }
     if (step.agent) {
       track(step.agent, state, outcome.message);
@@ -247,7 +302,7 @@ export async function executeWorkspaceLaunch(
   );
   const complete = launched.every((outcome) => outcome.state === "confirmed") &&
     (chat.state === "ready" || chat.state === "opened" || chat.state === "skipped") &&
-    plan.status === "ready" && !destination?.focus_error;
+    plan.status === "ready" && !focusFailed();
   return finish(complete ? "launched" : "partial");
 
   function failAnchorOrAgent(step: LaunchStep, message: string, state: LaunchAgentState): WorkspaceLaunchResult {
@@ -287,6 +342,16 @@ function runStep(runner: HerdrRunner, step: LaunchStep, args: string[]): StepOut
   }
 }
 
+async function runStartStep(runner: HerdrStartRunner, step: LaunchStep, args: string[], signal: AbortSignal): Promise<StepOutcome> {
+  const timeoutMs = (step.kind === "start" ? AGENT_START_TIMEOUT_MS : AGENT_PROMPT_TIMEOUT_MS) + CALL_HEADROOM_MS;
+  try {
+    return { kind: "ok", result: await runHerdrStartJson(runner, args, { timeoutMs, signal }) };
+  } catch (error) {
+    return { kind: "error", code: error instanceof HerdrError ? error.code : null,
+      message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 // Join proof is the member's harness session, process, and start time matching
 // the pane we created. Herdr idle is not required: a parked agent can look busy.
 async function observeJoins(
@@ -318,6 +383,7 @@ async function observeJoins(
 
   if (pending().length > 0 || chat.state === "submitted") report();
   while (pending().length > 0 || chat.state === "submitted") {
+    if (deps.signal?.aborted) throw new Error("Launch interrupted; inspect the recorded panes before retrying.");
     let herdrAgents: ReturnType<typeof listHerdrAgents> = [];
     try {
       herdrAgents = listHerdrAgents(deps.runner);

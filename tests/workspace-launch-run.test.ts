@@ -702,3 +702,141 @@ describe("tt up execution", () => {
     acquireLaunchLock(dataDir, repo, { timeoutMs: 0 })();
   });
 });
+
+describe("overlapping agent startup", () => {
+  test("starts independent agents before either settles, keeps prompts ordered and focuses last", async () => {
+    const { herdr, plan, dataDir, repo } = setup();
+    const launch = plan(["claude", "codex"], "new-tab");
+    // Exercise the supported second-step prompt path too; current adapters
+    // normally submit the bootstrap as the initial argument.
+    launch.steps.splice(launch.steps.findIndex((step) => step.kind === "start") + 1, 0,
+      { kind: "prompt", agent: "claude", description: "claude: submit prompt", argv: ["herdr", "agent", "prompt", "test-claude", "hello"] });
+    const pending = new Map<string, () => void>();
+    const dispatched: string[] = [];
+    const running = executeWorkspaceLaunch(launch, {
+      runner: herdr.runner,
+      startRunner: async (args) => {
+        const agent = args[1] === "prompt" ? "claude" : args[args.indexOf("--kind") + 1];
+        const key = `${agent}:${args[1]}`;
+        dispatched.push(key);
+        await new Promise<void>((resolve) => pending.set(key, resolve));
+        return args[1] === "prompt" ? JSON.stringify({ result: {} }) : herdr.runner(args);
+      },
+      readStartTime: (pid) => herdr.startTimes.get(pid) ?? null,
+      readMembers: () => herdr.members(), dataDir, record: null
+    });
+    await vi.waitFor(() => expect(pending.size).toBe(2));
+    expect(herdr.calls.filter((call) => call[1] === "split")).toHaveLength(2);
+    expect(dispatched).toEqual(["claude:start", "codex:start"]);
+    expect(readLaunchRecord(dataDir, repo)?.agents).toMatchObject({ claude: { state: "starting" }, codex: { state: "starting" } });
+    pending.get("claude:start")!();
+    await vi.waitFor(() => expect(dispatched).toContain("claude:prompt"));
+    expect(herdr.calls.some((call) => call[1] === "focus")).toBe(false);
+    pending.get("codex:start")!();
+    pending.get("claude:prompt")!();
+    const result = await running;
+    expect(result.status).toBe("launched");
+    expect(result.agents.map((agent) => agent.state)).toEqual(["confirmed", "confirmed"]);
+    const lastMutation = herdr.calls.filter((call) => ["start", "focus"].includes(call[1])).at(-1);
+    expect(lastMutation?.[1]).toBe("focus");
+    expect(readLaunchRecord(dataDir, repo)?.agents).toMatchObject({ claude: { state: "confirmed" }, codex: { state: "confirmed" } });
+  });
+
+  test.each(["not_ready", "timeout"] as const)("a %s start leaves its neighbour independent and never prompts or retries it", async (behavior) => {
+    const { herdr, plan, dataDir } = setup();
+    herdr.startBehavior.claude = behavior;
+    const launch = plan(["claude", "codex"]);
+    launch.steps.push({ kind: "prompt", agent: "claude", description: "claude: prompt", argv: ["herdr", "agent", "prompt", "test", "hello"] });
+    const asyncCalls: string[][] = [];
+    const result = await executeWorkspaceLaunch(launch, {
+      runner: herdr.runner,
+      startRunner: async (args) => { asyncCalls.push([...args]); return herdr.runner(args); },
+      readStartTime: (pid) => herdr.startTimes.get(pid) ?? null,
+      readMembers: () => herdr.members(), dataDir, record: null
+    });
+    expect(result.status).toBe("partial");
+    expect(result.agents.map((agent) => agent.state)).toEqual([behavior === "not_ready" ? "blocked" : "ambiguous", "confirmed"]);
+    expect(asyncCalls).toHaveLength(2);
+    expect(asyncCalls.every((args) => args[1] === "start")).toBe(true);
+  });
+});
+
+
+test("a fatal layout failure aborts and drains an in-flight startup before returning", async () => {
+  const { herdr, plan, dataDir } = setup();
+  let started = false;
+  let drained = false;
+  await expect(executeWorkspaceLaunch(plan(["claude", "codex"]), {
+    runner: herdr.runner,
+    startRunner: async (_args, options) => {
+      started = true;
+      await new Promise<void>((resolve) => options!.signal!.addEventListener("abort", () => setImmediate(resolve), { once: true }));
+      drained = true;
+      throw new Error("aborted");
+    },
+    readStartTime: (pid) => herdr.startTimes.get(pid) ?? null,
+    readMembers: () => herdr.members(), dataDir, record: null,
+    onProgress: (message) => { if (started && message.includes("Create a fresh shell pane for codex")) throw new Error("record/progress failure"); }
+  })).rejects.toThrow("record/progress failure");
+  expect(started).toBe(true);
+  expect(drained).toBe(true);
+});
+
+
+test("cancelling startup drains both chains without focus or join observation", async () => {
+  const { herdr, plan, dataDir } = setup();
+  const controller = new AbortController();
+  let inFlight = 0;
+  const readMembers = vi.fn(() => herdr.members());
+  const pending = executeWorkspaceLaunch(plan(["claude", "codex"], "new-tab"), {
+    runner: herdr.runner,
+    signal: controller.signal,
+    startRunner: async (_args, options) => {
+      inFlight++;
+      await new Promise<void>((resolve) => options!.signal!.addEventListener("abort", () => setImmediate(resolve), { once: true }));
+      inFlight--;
+      throw new Error("cancelled");
+    },
+    readStartTime: (pid) => herdr.startTimes.get(pid) ?? null,
+    readMembers, dataDir, record: null
+  });
+  const rejected = expect(pending).rejects.toThrow("Launch interrupted");
+  await vi.waitFor(() => expect(inFlight).toBe(2));
+  controller.abort();
+  await rejected;
+  expect(inFlight).toBe(0);
+  expect(readMembers).not.toHaveBeenCalled();
+  expect(herdr.calls.some((call) => call[1] === "focus")).toBe(false);
+});
+
+test("a later split with no returned ID drains an earlier healthy startup without aborting it", async () => {
+  const { herdr, plan, dataDir } = setup();
+  let splits = 0;
+  let missingId = false;
+  let aborted = false;
+  let releaseStart = () => {};
+  const pending = executeWorkspaceLaunch(plan(["claude", "codex"]), {
+    runner: (args, options) => {
+      const result = herdr.runner(args, options);
+      if (args[1] === "split" && ++splits === 2) { missingId = true; return JSON.stringify({ result: { pane: {} } }); }
+      return result;
+    },
+    startRunner: async (args, options) => {
+      await new Promise<void>((resolve) => {
+        releaseStart = resolve;
+        options!.signal!.addEventListener("abort", () => { aborted = true; resolve(); }, { once: true });
+      });
+      return herdr.runner(args);
+    },
+    readStartTime: (pid) => herdr.startTimes.get(pid) ?? null,
+    readMembers: () => herdr.members(), dataDir, record: null
+  });
+  try {
+    await vi.waitFor(() => expect(missingId).toBe(true));
+    expect(aborted).toBe(false);
+  } finally { releaseStart(); }
+  const result = await pending;
+  expect(result.status).toBe("partial");
+  expect(result.agents.map((agent) => agent.state)).toEqual(["started", "ambiguous"]);
+  expect(aborted).toBe(false);
+});

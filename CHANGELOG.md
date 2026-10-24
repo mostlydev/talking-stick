@@ -27,6 +27,10 @@ changes will be called out under **Breaking changes**.
 
 ### Fixed
 
+- `tt up` starts independent Herdr agents concurrently after creating their panes,
+  preserving each agent's startup and join checks. A slow or blocked neighbour no longer
+  delays the next startup; layout stays ordered and no uncertain call is retried (#182).
+
 - `tt up` recovers from an inherited `TT_ROOM` naming a closed or deleted room by
   selecting the room for the launch directory. Explicit `--in` selectors, ambiguous
   inherited names and storage errors still fail rather than launching into another room (#176).
