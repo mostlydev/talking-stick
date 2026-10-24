@@ -188,8 +188,9 @@ remains unconfirmed; `tt up` never substitutes a matching executable name for pr
 of the session, PID, and process creation time.
 
 Inside Herdr, or a tmux pane, `tt up` turns the current pane into the console and opens a column of agents beside
-it: Claude, Codex, and Antigravity by default, when installed. `--agents claude,codex` picks agents,
-`--print` previews, and `--new-tab` or `--new-workspace` opens a separate tab or workspace. Each
+it. The first time, it asks which agents to start and remembers the answer; `tt up --choose`
+changes it, and `--agents claude,codex` picks for one run. Without a saved choice, scripts and
+agents get Claude and Codex, when installed. `--print` previews, and `--new-tab` or `--new-workspace` opens a separate tab or workspace. Each
 agent gets the skill prompt, and `tt up` checks that it joined the right room. Reruns don't
 duplicate agents that are already running. Details:
 [Herdr launch](docs/reference.md#herdr-launch-tt-up).

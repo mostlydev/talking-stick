@@ -120,7 +120,7 @@ describe("tt up execution", () => {
     }
   });
 
-  test("omitting --agents selects every installed launcher", async () => {
+  test("omitting --agents with nothing saved selects the Claude and Codex pair", async () => {
     const { herdr, repo, home, bin, dataDir } = setup();
     const runtime = { commands: {
       listRooms: () => ({ rooms: [{ canonical_path: repo, room_id: "room-1" }] }),
@@ -135,8 +135,9 @@ describe("tt up execution", () => {
       });
     } finally { stdout.mockRestore(); }
     const plan = JSON.parse(output.join(""));
-    expect(plan.agents.map((agent: { agent: string }) => agent.agent)).toEqual(["claude", "codex", "antigravity"]);
-    expect(plan.checks.find((check: { name: string }) => check.name === "optional launchers")?.detail).toContain("grok, opencode");
+    expect(plan.agents.map((agent: { agent: string }) => agent.agent)).toEqual(["claude", "codex"]);
+    expect(plan.checks.find((check: { name: string }) => check.name === "agent choice")?.detail).toContain("default pair");
+    expect(plan.checks.find((check: { name: string }) => check.name === "other launchers")?.detail).toContain("grok, opencode, antigravity");
   });
 
   test.each(["opencode", "antigravity"] as const)("confirms a %s join in its pane", async (agent) => {

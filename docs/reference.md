@@ -42,7 +42,7 @@ tt health [path] [--verbose|--all]                        # concise safety/actio
 tt status [path] [--verbose|--all]                        # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
 tt chat [path] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse]   # operator console
-tt up [--agents claude,codex,grok,opencode,antigravity] [--path DIR] [--in ROOM] [--new-tab|--new-workspace] [--print] [--forget] [--timeout 120s] # experimental Herdr/tmux launcher
+tt up [--agents claude,codex,grok,opencode,antigravity [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab|--new-workspace] [--print] [--forget] [--timeout 120s] # experimental Herdr/tmux launcher
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--attach IMAGE]... [--path DIR]
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
 tt ack <delivery-token> [--json]                          # acknowledge a native delivery envelope
@@ -120,11 +120,27 @@ require `--reason` unless the command includes `--operator-requested`.
 
 ### Herdr launch (`tt up`)
 
-Experimental. In Herdr, `tt up` defaults to installed Claude, Codex, and Antigravity launchers
-whose executable and Talking Stick skill are both present. The invoking pane becomes chat; agent
-panes split to its right with equal shares of the side column. Grok and OpenCode launchers
-require an explicit `--agents` list. `--print` previews the selected agents and any installed
-experimental launchers; `--new-tab` or `--new-workspace` opens a separate tab or workspace.
+Experimental. The invoking pane becomes chat; agent panes split to its right with equal shares of
+the side column. `--print` previews the selected agents and where that choice came from;
+`--new-tab` or `--new-workspace` opens a separate tab or workspace.
+
+Which agents start, first match wins:
+
+1. `--agents claude,codex`.
+2. The choice saved for this room.
+3. The choice saved for every room.
+4. Claude and Codex, whichever have both an executable on `PATH` and an installed Talking Stick
+   skill. Antigravity, Grok and OpenCode start only when chosen.
+
+The first plain `tt up` in a terminal, with nothing saved and more than one launchable agent,
+asks which agents to start and whether to remember the answer for every room or only this one.
+It never asks under `--json`, `--print`, a redirected terminal, or a shell that looks like an
+agent's (it prints a note instead). `tt up --choose` asks again; `tt up --agents a,b --save`
+saves without asking, and `--save --room` saves for this room only. Saving for every room drops
+this room's own choice, so the new one applies here too. Choices live in `launch.json` in the
+data directory, with rooms keyed by their path. A saved agent that is no longer installed asks
+again in a terminal; elsewhere it is skipped with a note (stderr, or `next_steps` under `--json`),
+never replaced by another.
 
 - Each agent receives the skill bootstrap prompt, and its join to the exact room is verified.
   `--timeout 120s` bounds that join observation in addition to each startup timeout.

@@ -11,6 +11,20 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- The first plain `tt up` in a terminal asks which agents to start and whether to remember the
+  choice for every room or only this one (#183). `tt up --choose` asks again, and
+  `tt up --agents a,b --save [--room]` saves without asking. Choices are kept in `launch.json`
+  in the data directory. It never asks under `--json`, `--print`, a redirected terminal or an
+  agent's shell. A saved agent that is no longer installed asks again in a terminal, and is
+  otherwise skipped with a note, never replaced.
+
+### Changed
+
+- Without `--agents` or a saved choice, `tt up` starts Claude and Codex, when installed, instead
+  of every default launcher. Antigravity, like Grok and OpenCode, now starts only when chosen.
+
 ### Fixed
 
 - `tt up` recovers from an inherited `TT_ROOM` naming a closed or deleted room by
