@@ -136,9 +136,11 @@ The first plain `tt up` in a terminal, with nothing saved and more than one laun
 asks which agents to start and whether to remember the answer for every room or only this one.
 It never asks under `--json`, `--print`, a redirected terminal, or a shell that looks like an
 agent's (it prints a note instead). `tt up --choose` asks again; `tt up --agents a,b --save`
-saves without asking, and `--save --room` saves for this room only. Choices live in
-`launch.json` in the data directory, with rooms keyed by their path. A saved agent that is no
-longer installed is reported and skipped, never replaced by another.
+saves without asking, and `--save --room` saves for this room only. Saving for every room drops
+this room's own choice, so the new one applies here too. Choices live in `launch.json` in the
+data directory, with rooms keyed by their path. A saved agent that is no longer installed asks
+again in a terminal; elsewhere it is skipped with a note (stderr, or `next_steps` under `--json`),
+never replaced by another.
 
 - Each agent receives the skill bootstrap prompt, and its join to the exact room is verified.
   `--timeout 120s` bounds that join observation in addition to each startup timeout.

@@ -121,11 +121,14 @@ export async function handleUpCommand(
   if (choose && !terminal) throw new Error("--choose needs an interactive terminal; use tt up --agents claude,codex --save instead.");
   const launchable = installedLaunchAgents(env, options.homeDir, true);
   const defaults = requested ? {} : readLaunchDefaults(dataDir);
-  if (save) saveAgentChoice(dataDir, requested!, hasOption(parsed, "room") ? roomKey : null);
+  if (save) saveAgentChoice(dataDir, requested!, roomKey, hasOption(parsed, "room") ? "room" : "every");
   let choice = resolveAgentChoice({ requested, defaults, roomKey, launchable });
   const worthAsking = launchable.length > 1 || launchable.some((agent) => !DEFAULT_AGENT_PAIR.includes(agent));
   const unsaved = !requested && savedAgents(defaults, roomKey) === null;
-  if (choose || (unsaved && worthAsking && terminal && !harnessShell && !hasOption(parsed, "print"))) {
+  // A saved agent that can no longer start asks again too, rather than
+  // quietly launching whoever is left.
+  const ask = (unsaved && worthAsking) || choice.unavailable.length > 0;
+  if (choose || (ask && terminal && !harnessShell && !hasOption(parsed, "print"))) {
     const rows = LAUNCH_AGENTS.map((agent) => ({
       agent,
       unavailable: choice.unavailable.includes(agent) ? "saved but not installed"
@@ -138,10 +141,10 @@ export async function handleUpCommand(
       process.exitCode = 130;
       return;
     }
-    saveAgentChoice(dataDir, picked.agents, picked.scope === "room" ? roomKey : null);
+    saveAgentChoice(dataDir, picked.agents, roomKey, picked.scope);
     process.stderr.write(`[tt up] Saved ${picked.agents.join(", ")} for ${picked.scope === "room" ? "this room" : "every room"}. Change it with tt up --choose.\n`);
     choice = { agents: picked.agents, source: picked.scope === "room" ? "room" : "default", unavailable: [] };
-  } else if (unsaved && worthAsking && terminal && harnessShell && !hasOption(parsed, "print")) {
+  } else if (ask && terminal && harnessShell && !hasOption(parsed, "print")) {
     process.stderr.write("[tt up] Not asking which agents to start: this shell looks like an agent's (tt whoami --explain shows why). Run tt up --choose to pick.\n");
   }
   const agents = choice.agents;
@@ -216,6 +219,10 @@ export async function handleUpCommand(
     if (ignoredPin && !shouldUseJson(parsed)) {
       process.stderr.write(`[tt up] ${pinWarning.detail} ${pinWarning.remedy}\n`);
     }
+    const skipped = choice.unavailable.length > 0
+      ? `Skipped ${choice.unavailable.join(", ")}: saved but cannot start here. Run tt up --choose to change the saved agents.`
+      : null;
+    if (skipped && !shouldUseJson(parsed)) process.stderr.write(`[tt up] ${skipped}\n`);
     const result = await executeWorkspaceLaunch(plan, {
       runner,
       readStartTime,
@@ -228,6 +235,7 @@ export async function handleUpCommand(
       onProgress: (message) => { process.stderr.write(`[tt up] ${message}\n`); }
     });
     if (ignoredPin && shouldUseJson(parsed)) result.next_steps.unshift(`${pinWarning.detail} ${pinWarning.remedy}`);
+    if (skipped && shouldUseJson(parsed)) result.next_steps.unshift(skipped);
     if (result.chat.state === "ready" && targetRoomId) {
       if (!terminal || harnessShell) {
         result.next_steps.push(`Run tt chat --in ${targetRoomId} in this pane to open the console.`);

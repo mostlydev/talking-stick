@@ -93,15 +93,21 @@ export function resolveAgentChoice(input: {
 /**
  * Saves under a lock, re-reading inside it, so two rooms saving at once keep
  * each other's override. A malformed file is refused rather than overwritten.
+ * Saving for every room drops this room's override, which would otherwise
+ * keep winning here; other rooms' overrides stay.
  */
-export function saveAgentChoice(dataDir: string, agents: readonly LaunchAgent[], roomKey: string | null): void {
+export function saveAgentChoice(dataDir: string, agents: readonly LaunchAgent[], roomKey: string, scope: "every" | "room"): void {
   const release = acquireLaunchLock(dataDir, launchDefaultsPath(dataDir));
   try {
     const current = readLaunchDefaults(dataDir);
     const list = agentList([...agents], "agents");
-    const next: LaunchDefaults = roomKey === null
-      ? { ...current, agents: list }
-      : { ...current, rooms: { ...current.rooms, [roomKey]: list } };
+    const rooms = { ...current.rooms };
+    if (scope === "room") rooms[roomKey] = list;
+    else delete rooms[roomKey];
+    const next: LaunchDefaults = {
+      ...(scope === "every" ? { agents: list } : current.agents ? { agents: current.agents } : {}),
+      ...(Object.keys(rooms).length > 0 ? { rooms } : {})
+    };
     writeFileAtomic(launchDefaultsPath(dataDir), `${JSON.stringify(next, null, 2)}\n`);
   } finally {
     release();

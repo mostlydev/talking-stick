@@ -17,7 +17,8 @@ changes will be called out under **Breaking changes**.
   choice for every room or only this one (#183). `tt up --choose` asks again, and
   `tt up --agents a,b --save [--room]` saves without asking. Choices are kept in `launch.json`
   in the data directory. It never asks under `--json`, `--print`, a redirected terminal or an
-  agent's shell. A saved agent that is no longer installed is reported, never replaced.
+  agent's shell. A saved agent that is no longer installed asks again in a terminal, and is
+  otherwise skipped with a note, never replaced.
 
 ### Changed
 
