@@ -194,6 +194,9 @@ agent gets the skill prompt, and `tt up` checks that it joined the right room. R
 duplicate agents that are already running. Details:
 [Herdr launch](docs/reference.md#herdr-launch-tt-up).
 
+If a reused pane still has a `TT_ROOM` pin for a closed room, `tt up` selects the room for
+the launch directory. An explicit `--in` remains strict.
+
 ## Installing and updating
 
 | Method | Command |

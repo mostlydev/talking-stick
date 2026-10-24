@@ -11,6 +11,12 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- `tt up` recovers from an inherited `TT_ROOM` naming a closed or deleted room by
+  selecting the room for the launch directory. Explicit `--in` selectors, ambiguous
+  inherited names and storage errors still fail rather than launching into another room (#176).
+
 ## [0.31.0] — 2026-10-23
 
 Full notes: [`docs/releases/0.31.0.md`](docs/releases/0.31.0.md).

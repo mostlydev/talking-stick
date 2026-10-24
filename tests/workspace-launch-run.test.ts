@@ -216,6 +216,90 @@ describe("tt up execution", () => {
     expect(herdr.calls.some((call) => ["split", "create", "start", "run"].includes(call[1]))).toBe(false);
   });
 
+  test.each(["closed", "missing"])("a %s inherited room pin falls back to the path without creating anything in preview", async state => {
+    const { herdr, repo, dataDir, home, bin } = setup();
+    const local = { room_id: "local", canonical_path: repo, state: "idle" };
+    const rooms = [local, ...(state === "closed" ? [{ room_id: "old", canonical_path: repo, state: "closed" }] : [])];
+    const openRoom = vi.fn();
+    const runtime = { commands: {
+      listRooms: (input: { context_path?: string }) => ({ rooms: input.context_path ? [local] : rooms }),
+      getRoomState: () => ({ members: [] }), openRoom
+    } } as unknown as Runtime;
+    const output: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { output.push(String(chunk)); return true; });
+    vi.stubEnv("TT_ROOM", "old");
+    try {
+      await handleUpCommand(runtime, parseCommand(["up", "--agents", "claude", "--path", repo, "--forget", "--print", "--json"]), {
+        env: { PATH: bin, TALKING_STICK_DATA_DIR: dataDir, TT_ROOM: "old", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" },
+        homeDir: home, runner: herdr.runner
+      });
+    } finally { stdout.mockRestore(); vi.unstubAllEnvs(); }
+    const result = JSON.parse(output.join(""));
+    expect(result.room_id).toBe("local");
+    expect(result.steps.filter((step: { argv: string[] }) => step.argv.includes("--env"))
+      .every((step: { argv: string[] }) => step.argv.includes("TT_ROOM=local"))).toBe(true);
+    expect(openRoom).not.toHaveBeenCalled();
+    expect(herdr.calls.some(call => ["split", "create", "start", "run"].includes(call[1]))).toBe(false);
+  });
+
+  test("an existing inherited room pin is honored and an explicit missing selector stays strict", async () => {
+    const { herdr, repo, dataDir, home, bin } = setup();
+    const foreign = path.join(path.dirname(repo), "foreign");
+    fs.mkdirSync(foreign);
+    const local = { room_id: "local", canonical_path: repo, state: "idle" };
+    const selected = { room_id: "foreign", canonical_path: foreign, state: "idle" };
+    const runtime = { commands: {
+      listRooms: (input: { context_path?: string }) => ({ rooms: input.context_path ? [local] : [local, selected] }),
+      getRoomState: () => ({ members: [] })
+    } } as unknown as Runtime;
+    const options = { env: { PATH: bin, TALKING_STICK_DATA_DIR: dataDir, TT_ROOM: "foreign", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" },
+      homeDir: home, runner: herdr.runner };
+    const output: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { output.push(String(chunk)); return true; });
+    try {
+      await handleUpCommand(runtime, parseCommand(["up", "--agents", "claude", "--path", repo, "--print", "--json"]), options);
+      expect(JSON.parse(output.join("")).room_id).toBe("foreign");
+      await expect(handleUpCommand(runtime, parseCommand(["up", "--agents", "claude", "--path", repo, "--in", "missing", "--print", "--json"]), options))
+        .rejects.toThrow(/No open room matches missing/);
+    } finally { stdout.mockRestore(); }
+  });
+
+  test("a stale pin opens a replacement room after preflight and pins every launched pane to it", async () => {
+    const { herdr, repo, dataDir, home, bin } = setup();
+    const openRoom = vi.fn(() => ({ room_id: "replacement", canonical_path: repo }));
+    const runtime = { commands: {
+      listRooms: () => ({ rooms: [] }), openRoom,
+      getRoomState: () => ({ members: herdr.members() })
+    } } as unknown as Runtime;
+    const output: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { output.push(String(chunk)); return true; });
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await handleUpCommand(runtime, parseCommand(["up", "--agents", "claude", "--path", repo, "--json"]), {
+        env: { PATH: bin, TALKING_STICK_DATA_DIR: dataDir, TT_ROOM: "deleted", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" },
+        homeDir: home, runner: herdr.runner, readStartTime: pid => herdr.startTimes.get(pid) ?? null
+      });
+    } finally { stdout.mockRestore(); stderr.mockRestore(); }
+    expect(openRoom).toHaveBeenCalledExactlyOnceWith({ context_path: repo });
+    expect(JSON.parse(output.join(""))).toMatchObject({ status: "launched" });
+    const splits = herdr.calls.filter(call => call[1] === "split");
+    expect(splits.length).toBeGreaterThan(0);
+    expect(splits.every(call => call.includes("TT_ROOM=replacement"))).toBe(true);
+  });
+
+  test("ambiguous inherited selectors and storage failures do not silently fall back", async () => {
+    const { herdr, repo, dataDir, home, bin } = setup();
+    const options = { env: { PATH: bin, TALKING_STICK_DATA_DIR: dataDir, TT_ROOM: "same", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1" },
+      homeDir: home, runner: herdr.runner };
+    const runtime = { commands: { listRooms: () => ({ rooms: ["one", "two"].map(name => ({
+      room_id: name, canonical_path: path.join(repo, name, "same"), state: "idle"
+    })) }) } } as unknown as Runtime;
+    const parsed = parseCommand(["up", "--agents", "claude", "--path", repo, "--print", "--json"]);
+    await expect(handleUpCommand(runtime, parsed, options)).rejects.toThrow(/matches several rooms/);
+    const broken = { commands: { listRooms: () => { throw new Error("database unavailable"); } } } as unknown as Runtime;
+    await expect(handleUpCommand(broken, parsed, options)).rejects.toThrow("database unavailable");
+  });
+
   test("a blocked launch never opens a room", async () => {
     const { herdr, repo, dataDir, home, bin } = setup();
     let opened = 0;

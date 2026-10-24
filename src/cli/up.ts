@@ -22,7 +22,7 @@ import { deriveCliIdentity, isKnownHarnessCliEnv } from "./identity.js";
 import { printResult } from "./output.js";
 import { getStringOption, hasOption, parseCommand, parseWaitTimeout, type ParsedCommand } from "./parser.js";
 import type { Runtime } from "./runtime.js";
-import { selectedRoom } from "./room-selector.js";
+import { RoomSelectorError, selectedRoom } from "./room-selector.js";
 import { pickDeepestRoom } from "./session.js";
 
 export const UP_USAGE =
@@ -62,7 +62,16 @@ export async function handleUpCommand(
   // Panes start in the caller's directory; the room is chosen separately and
   // pinned by id, so a linked worktree or a subdirectory launches into the
   // room an ordinary join from here would use (or the one named with --in).
-  const resolvedRoom = selectedRoom(runtime, parsed) ??
+  let pinnedRoom: ReturnType<typeof selectedRoom> = null;
+  try {
+    pinnedRoom = selectedRoom(runtime, parsed, env);
+  } catch (error) {
+    // A closed/deleted room pin is inherited by panes from an earlier launch.
+    // Only that missing inherited selection may recover via the current path.
+    if (getStringOption(parsed, "in") !== undefined ||
+        !(error instanceof RoomSelectorError) || error.reason !== "not_found") throw error;
+  }
+  const resolvedRoom = pinnedRoom ??
     pickDeepestRoom(runtime.commands.listRooms({ context_path: canonicalPath }).rooms);
   // Lock and record follow the room, not the cwd, so two worktrees launching
   // into one room serialize. A room opened below keeps this same path.
