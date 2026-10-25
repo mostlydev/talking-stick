@@ -40,7 +40,8 @@ export function systemProcessLiveness(): ProcessLivenessReader {
   return (pid, startedAt) => {
     const inspection = inspector.inspect(pid);
     if (inspection === null) return "gone";
-    if (!inspection?.startTime) return "unknown";
+    // Without both start times nothing proves the recorded process is gone.
+    if (!inspection?.startTime || !startedAt.trim()) return "unknown";
     return inspection.startTime.trim() === startedAt.trim() ? "alive" : "gone";
   };
 }
@@ -86,7 +87,10 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
   fs.mkdirSync(path.dirname(paths.log), { recursive: true, mode: 0o700 });
   const log = options.log ?? ((line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const liveness = options.processLiveness ?? systemProcessLiveness();
-  const release = acquireOwnerLock(paths.lock, { pid: process.pid, process_started_at: getCurrentProcessStartedAt() ?? "" }, liveness);
+  // Ownership names this exact process; without its start time it can't be proven later.
+  const selfStartedAt = getCurrentProcessStartedAt();
+  if (!selfStartedAt?.trim()) throw new Error("The supervisor can't read its own process start time, so it won't take ownership.");
+  const release = acquireOwnerLock(paths.lock, { pid: process.pid, process_started_at: selfStartedAt }, liveness);
   // Everything opened after the lock registers its cleanup, so any failure,
   // at startup or later, closes it all and releases ownership, newest first.
   const cleanups: Array<() => unknown> = [release];

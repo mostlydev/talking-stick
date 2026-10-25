@@ -39,7 +39,11 @@ export function startIntakeServer(
 ): Promise<{ close(): Promise<void> }> {
   fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   try { fs.unlinkSync(socketPath); } catch { /* none */ }
+  // Connections are tracked so closing the server never waits on an idle client.
+  const connections = new Set<net.Socket>();
   const server = net.createServer((connection) => {
+    connections.add(connection);
+    connection.on("close", () => connections.delete(connection));
     // Decoding on the stream keeps a multibyte character split across chunks intact.
     connection.setEncoding("utf8");
     let buffer = "";
@@ -91,7 +95,10 @@ export function startIntakeServer(
     server.once("error", reject);
     server.listen(socketPath, () => {
       fs.chmodSync(socketPath, 0o600);
-      resolve({ close: () => new Promise<void>((done) => server.close(() => done())) });
+      resolve({ close: () => new Promise<void>((done) => {
+        server.close(() => done());
+        for (const connection of connections) connection.destroy();
+      }) });
     });
   });
 }

@@ -7,7 +7,7 @@ import type { ParsedCommand } from "../src/cli/parser.js";
 import { TalkingStickService } from "../src/index.js";
 import { SupervisorStore } from "../src/supervisor/state.js";
 import { launchAgentPlist, installLaunchAgent, supervisorProgram, uninstallLaunchAgent } from "../src/supervisor/launchd.js";
-import { createFileLog, rotateLog, runSupervisor, supervisorPaths, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
+import { createFileLog, rotateLog, runSupervisor, supervisorPaths, systemProcessLiveness, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
 import { sendControl } from "../src/supervisor/intake.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
 
@@ -106,7 +106,7 @@ describe("controls", () => {
     await run(["add", "w1"], { harness: "claude", cwd });
     expect((await run(["status"], {}, "codex")).workers).toHaveLength(1);
     expect(await run(["approvals"], {}, "codex")).toEqual({ pending_approvals: [] });
-    for (const args of [["pause", "w1"], ["stop", "w1"], ["restart", "w1"], ["add", "w2"], ["install"], ["interrupt", "w1"]]) {
+    for (const args of [["pause", "w1"], ["stop", "w1"], ["restart", "w1"], ["add", "w2"], ["install"], ["interrupt", "w1"], ["run"]]) {
       await expect(run(args, { harness: "claude", cwd }, "codex")).rejects.toThrow("not a codex session");
     }
   });
@@ -285,4 +285,43 @@ test("every worker gets the supervisor's data directory; only prompt-capable one
     controller.abort();
     await running;
   }
+});
+
+// Codex's review of #207 (#32563).
+test("a database that can't open after taking ownership still releases it", async () => {
+  const { dataDir } = setup();
+  const paths = supervisorPaths(dataDir);
+  fs.mkdirSync(paths.database, { recursive: true });
+  await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive", log: () => {} })).rejects.toThrow();
+  expect(fs.existsSync(paths.lock)).toBe(false);
+});
+
+test.each(["socket", "control"] as const)("an idle client on the %s socket can't hold shutdown open", async (which) => {
+  const { dataDir } = setup();
+  const controller = new AbortController();
+  const net = await import("node:net");
+  let client: import("node:net").Socket | undefined;
+  let done = false;
+  const running = runSupervisor({ dataDir, adapters: {}, signal: controller.signal, processLiveness: () => "alive", log: () => {} })
+    .then(() => { done = true; });
+  try {
+    const paths = supervisorPaths(dataDir);
+    const target = which === "socket" ? paths.socket : paths.control;
+    const deadline = Date.now() + 3_000;
+    while (!fs.existsSync(target) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    client = net.createConnection(target);
+    await new Promise<void>((resolve, reject) => { client!.once("connect", resolve); client!.once("error", reject); });
+    client.on("error", () => {});
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(done).toBe(true);
+  } finally {
+    client?.destroy();
+    controller.abort();
+    await running;
+  }
+});
+
+test("a live pid with no recorded start time is unknown, never gone", () => {
+  expect(systemProcessLiveness()(process.pid, "")).toBe("unknown");
 });

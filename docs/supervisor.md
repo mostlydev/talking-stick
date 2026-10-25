@@ -103,7 +103,8 @@ reached only through its own `tt` calls.
 `src/supervisor/daemon.ts`:
 
 - **One owner** per data directory: a lock file names the owner's exact process, and is taken
-  over only once that process is gone. Reapers are serialized by a guard directory, so two
+  over only once that process is gone. A daemon that can't read its own start time won't take
+  ownership, and a recorded owner with no start time is never read as gone. Reapers are serialized by a guard directory, so two
   contenders never both take a dead owner's lock.
 - **Startup reconciliation** is mandatory: the first tick refuses to run before it.
   - A recorded generation whose exact process is alive, or can't be read, holds its worker
@@ -267,8 +268,9 @@ release's `<install-dir>/current/tt supervisor run`, which follows self-update.
 
 `status`, `approvals` and `logs` are readable by anyone. Every other command is for a human until
 a scoped operator policy exists:
-- `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped),
+- `run`, `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped),
   `interrupt`, `approve`, `deny`, `reconcile <batch> --resend|--drop`, `install` and `uninstall`.
+  launchd starts `run` with no harness around it.
 - They refuse `--agent`, and refuse to run inside a harness session, detected from the environment
   and from process ancestry. Each is audited with its actor.
 - The daemon checks the control token and refuses a non-human approval actor.

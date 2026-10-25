@@ -119,13 +119,14 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   const now = () => new Date().toISOString();
   const paths = supervisorPaths(dataDir);
 
+  // Until a scoped operator policy exists, only a human changes the
+  // supervisor, including starting its daemon by hand; agents may read its
+  // status, approvals and logs. launchd runs it with no harness around it.
+  if (!["status", "approvals", "logs"].includes(action)) requireHuman(`Change the supervisor (${action})`);
   if (action === "run") {
     await runSupervisor({ dataDir, adapters: builtinAdapters(), log: createFileLog(paths.log) });
     return;
   }
-  // Until a scoped operator policy exists, only a human changes the
-  // supervisor; agents may read its status, approvals and logs.
-  if (!["status", "approvals", "logs"].includes(action)) requireHuman(`Change the supervisor (${action})`);
   if (action === "install") {
     const program = supervisorProgram({ standalone: isStandalone(), execPath: process.execPath, cliEntry: cliEntry(),
       releaseRoot: isStandalone() && isInstalledRelease() ? standaloneRoot() : null });
