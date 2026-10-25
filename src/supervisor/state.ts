@@ -45,6 +45,7 @@ export interface GenerationRow {
   ended_at: string | null;
   exit_json: string | null;
   last_model_activity_at: string | null;
+  delivery_token_hash: string | null;
 }
 
 export interface InputRow {
@@ -56,6 +57,7 @@ export interface InputRow {
   state: InputState;
   native_turn_id: string | null;
   turn_outcome: "success" | "error" | "interrupted" | null;
+  batch_token: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -156,6 +158,13 @@ const MIGRATIONS: Array<{ id: number; up: string }> = [{
     worker_id TEXT,
     detail TEXT
   );`
+}, {
+  id: 2,
+  // The supervisor bridge: each generation's delivery token, hashed, and the
+  // tt batch an intake came from, so a re-sent batch is journalled once.
+  up: `ALTER TABLE generations ADD COLUMN delivery_token_hash TEXT;
+  ALTER TABLE inputs ADD COLUMN batch_token TEXT;
+  CREATE UNIQUE INDEX inputs_batch ON inputs (batch_token) WHERE batch_token IS NOT NULL;`
 }];
 
 export function supervisorDatabasePath(dataDir: string): string {
@@ -250,10 +259,11 @@ export class SupervisorStore {
     return (this.latestGeneration(workerId)?.generation ?? 0) + 1;
   }
 
-  recordGeneration(row: Omit<GenerationRow, "ended_at" | "exit_json" | "last_model_activity_at">): void {
-    this.db.prepare(`INSERT INTO generations (worker_id, generation, pid, process_started_at, pgid, session_id, state, started_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(row.worker_id, row.generation, row.pid, row.process_started_at, row.pgid,
-        row.session_id, row.state, row.started_at);
+  recordGeneration(row: Omit<GenerationRow, "ended_at" | "exit_json" | "last_model_activity_at" | "delivery_token_hash">
+    & { delivery_token_hash?: string | null }): void {
+    this.db.prepare(`INSERT INTO generations (worker_id, generation, pid, process_started_at, pgid, session_id, state, started_at,
+      delivery_token_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(row.worker_id, row.generation, row.pid, row.process_started_at,
+        row.pgid, row.session_id, row.state, row.started_at, row.delivery_token_hash ?? null);
   }
 
   updateGeneration(workerId: string, generation: number, fields: Partial<Pick<GenerationRow,
@@ -294,10 +304,25 @@ export class SupervisorStore {
       "SELECT COUNT(*) AS count FROM crashes WHERE worker_id = ? AND at >= ?").get(workerId, since)?.count ?? 0;
   }
 
-  journalInput(row: Omit<InputRow, "state" | "native_turn_id" | "turn_outcome" | "updated_at">): void {
-    this.db.prepare(`INSERT INTO inputs (input_id, worker_id, generation, mode, source, state, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'journalled', ?, ?)`).run(row.input_id, row.worker_id, row.generation, row.mode,
-        row.source, row.created_at, row.created_at);
+  journalInput(row: Omit<InputRow, "state" | "native_turn_id" | "turn_outcome" | "updated_at" | "batch_token">
+    & { batch_token?: string | null }): void {
+    this.db.prepare(`INSERT INTO inputs (input_id, worker_id, generation, mode, source, state, created_at, updated_at, batch_token)
+      VALUES (?, ?, ?, ?, ?, 'journalled', ?, ?, ?)`).run(row.input_id, row.worker_id, row.generation, row.mode,
+        row.source, row.created_at, row.created_at, row.batch_token ?? null);
+  }
+
+  inputForBatch(batchToken: string): InputRow | null {
+    return this.db.prepare<[string], InputRow>("SELECT * FROM inputs WHERE batch_token = ?").get(batchToken) ?? null;
+  }
+
+  /** The next tt envelope this generation journalled but has not dispatched. */
+  nextIntake(workerId: string, generation: number): InputRow | null {
+    return this.db.prepare<[string, number], InputRow>(`SELECT * FROM inputs WHERE worker_id = ? AND generation = ?
+      AND source = 'tt_envelope' AND state = 'journalled' ORDER BY created_at, rowid LIMIT 1`).get(workerId, generation) ?? null;
+  }
+
+  setInputMode(inputId: string, mode: InputMode): void {
+    this.db.prepare("UPDATE inputs SET mode = ? WHERE input_id = ? AND state = 'journalled'").run(mode, inputId);
   }
 
   /** Moves one generation's input forward only; final states never change. */

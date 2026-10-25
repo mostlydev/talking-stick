@@ -1,7 +1,9 @@
 import fs from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Harness, HarnessAdapter, InputMode, InputOutcome, WorkerEvent, WorkerHandle, WorkerSpec } from "./adapter.js";
 import type { GenerationState, SupervisorStore, WorkerRow } from "./state.js";
+import type { IntakeAnswer, IntakeMessage } from "./intake.js";
+import type { RoomBridge } from "./room-bridge.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
 // running and acts. Its tick reads process liveness only; it never prompts a
@@ -27,6 +29,13 @@ export interface SupervisorOptions {
   newId?: () => string;
   /** How long one worker may hold up a tick; TICK_WAIT_MS by default. */
   tickWaitMs?: number;
+  /** The room side and the intake socket; without them workers get no supervisor endpoint. */
+  bridge?: RoomBridge;
+  socketPath?: string;
+}
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 /** A decision names the exact request occurrence, not just its native id. */
@@ -61,6 +70,14 @@ export class Supervisor {
   private readonly reportedState = new Map<string, GenerationState>();
   private reconciled = false;
   private readonly tickWaitMs: number;
+  private readonly bridge: RoomBridge | null;
+  private readonly socketPath: string | null;
+  /** This daemon's delivery tokens; only hashes are stored. */
+  private readonly deliveryTokens = new Map<string, { generation: number; token: string; address: string }>();
+  /** Envelope text is kept in memory only, never in the journal. */
+  private readonly intakeText = new Map<string, string>();
+  private readonly draining = new Map<string, Promise<void>>();
+  private readonly recoveryRefused = new Set<string>();
 
   constructor(options: SupervisorOptions) {
     this.store = options.store;
@@ -69,6 +86,8 @@ export class Supervisor {
     this.now = options.now ?? (() => new Date());
     this.newId = options.newId ?? randomUUID;
     this.tickWaitMs = options.tickWaitMs ?? TICK_WAIT_MS;
+    this.bridge = options.bridge ?? null;
+    this.socketPath = options.socketPath ?? null;
   }
 
   private at(): string {
@@ -125,6 +144,8 @@ export class Supervisor {
       const reported = this.reportedState.get(worker.worker_id) ?? "idle";
       this.store.updateGeneration(worker.worker_id, handle.generation, { state: liveness === "unknown" ? "unknown" : reported });
       this.expireApprovals(worker.worker_id, handle);
+      if (liveness === "alive") this.recoverMembership(worker, handle);
+      this.drain(worker.worker_id);
       return;
     }
     if (worker.hold_reason || this.starting.has(worker.worker_id)) return;
@@ -152,12 +173,18 @@ export class Supervisor {
     // The intent carries the session it means to resume, so a failed attempt
     // never loses the conversation for the next one.
     const generation = this.store.nextGenerationNumber(worker.worker_id);
+    // Only a worker that can take a prompt gets a supervisor endpoint.
+    const supervised = this.bridge && this.socketPath && adapter.capabilities().prompt
+      ? { token: randomBytes(24).toString("base64url"), address: `${this.socketPath}#${worker.worker_id}@${generation}` }
+      : null;
     this.store.recordGeneration({ worker_id: worker.worker_id, generation, pid: null, process_started_at: null,
-      pgid: null, session_id: resume ?? null, state: "starting", started_at: this.at() });
+      pgid: null, session_id: resume ?? null, state: "starting", started_at: this.at(),
+      delivery_token_hash: supervised ? hashToken(supervised.token) : null });
     this.starting.add(worker.worker_id);
     let handle: WorkerHandle;
     try {
-      handle = await adapter.start({ ...spec, ...(resume ? { resume_session_id: resume } : { resume_session_id: undefined }) },
+      handle = await adapter.start({ ...spec, ...(resume ? { resume_session_id: resume } : { resume_session_id: undefined }),
+        ...(supervised ? { supervisor_env: { TT_SUPERVISOR_ENDPOINT: supervised.address, TT_SUPERVISOR_TOKEN: supervised.token } } : {}) },
         generation, (child) => this.store.updateGeneration(worker.worker_id, generation,
           { pid: child.pid, process_started_at: child.processStartedAt, pgid: child.pgid }));
     } catch (error) {
@@ -176,6 +203,7 @@ export class Supervisor {
     });
     this.handles.set(worker.worker_id, handle);
     this.reportedState.set(worker.worker_id, "idle");
+    if (supervised) this.deliveryTokens.set(worker.worker_id, { generation, ...supervised });
     handle.onEvent((event) => this.onEvent(worker.worker_id, generation, event));
     // A control change while it started wins: the start was for an older version.
     const current = this.store.worker(worker.worker_id);
@@ -221,6 +249,7 @@ export class Supervisor {
       case "turn_completed":
         this.store.completeTurn(workerId, generation, event.native_turn_id, event.outcome, at);
         report("idle", { last_model_activity_at: at });
+        this.drain(workerId);
         break;
       case "approval_requested":
         if (!this.store.recordApproval({ approval_id: this.newId(), worker_id: workerId, generation,
@@ -249,6 +278,7 @@ export class Supervisor {
   private ended(workerId: string, handle: WorkerHandle, exit: Record<string, unknown>): void {
     if (this.handles.get(workerId) !== handle) return;
     this.handles.delete(workerId);
+    if (this.deliveryTokens.get(workerId)?.generation === handle.generation) this.deliveryTokens.delete(workerId);
     const { uncertain } = this.store.endGeneration(workerId, handle.generation, this.at(), exit);
     this.store.audit(this.at(), "supervisor", "exit", workerId, { generation: handle.generation, ...exit, uncertain });
     const worker = this.store.worker(workerId);
@@ -277,6 +307,109 @@ export class Supervisor {
       if (this.store.settleApproval(approval.approval_id, "expired", "supervisor", this.at())) {
         this.deliverAnswer(handle, approval.approval_id, approval.native_request_id, "deny", "Expired without a decision.");
       }
+    }
+  }
+
+  /**
+   * tt hands this daemon an envelope for a worker it owns. It is journalled
+   * under its batch token before the answer, so queued means durably
+   * received, never that a turn started. A batch already journalled answers
+   * queued again without a second copy.
+   */
+  acceptIntake(message: IntakeMessage): IntakeAnswer {
+    const handle = this.handles.get(message.worker_id);
+    const worker = this.store.worker(message.worker_id);
+    const row = handle ? this.store.generation(message.worker_id, handle.generation) : null;
+    if (!handle || !worker || !row || handle.generation !== message.generation) return { outcome: "failed", error: "stale_generation" };
+    if (!row.delivery_token_hash || row.delivery_token_hash !== hashToken(message.token)) return { outcome: "failed", error: "bad_token" };
+    if (worker.desired !== "running" || worker.hold_reason || this.stopping.has(message.worker_id)) {
+      return { outcome: "failed", error: "not_running" };
+    }
+    const spec = JSON.parse(worker.spec_json) as WorkerSpec;
+    if (!this.adapters[spec.harness]?.capabilities().prompt) return { outcome: "failed", error: "unsupported" };
+    if (this.store.inputForBatch(message.batch_token)) return { outcome: "queued" };
+    const inputId = this.newId();
+    this.store.journalInput({ input_id: inputId, worker_id: message.worker_id, generation: handle.generation, mode: "start_turn",
+      source: "tt_envelope", batch_token: message.batch_token, created_at: this.at() });
+    this.intakeText.set(inputId, message.text);
+    this.drain(message.worker_id);
+    return { outcome: "queued" };
+  }
+
+  /** Writes journalled envelopes in order, one at a time per worker. */
+  private drain(workerId: string): void {
+    if (!this.bridge) return;
+    const previous = this.draining.get(workerId) ?? Promise.resolve();
+    const next = previous.then(() => this.drainOnce(workerId)).catch(() => {});
+    this.draining.set(workerId, next);
+  }
+
+  private async drainOnce(workerId: string): Promise<void> {
+    for (;;) {
+      const handle = this.handles.get(workerId);
+      const worker = this.store.worker(workerId);
+      const token = this.deliveryTokens.get(workerId);
+      if (!handle || !worker || !token || token.generation !== handle.generation || !this.bridge) return;
+      if (worker.desired !== "running" || worker.hold_reason || this.stopping.has(workerId)) return;
+      const input = this.store.nextIntake(workerId, handle.generation);
+      if (!input) return;
+      const text = this.intakeText.get(input.input_id);
+      const spec = JSON.parse(worker.spec_json) as WorkerSpec;
+      const busy = this.reportedState.get(workerId) === "busy";
+      // Only Codex can steer a running turn; anything else waits for it to end.
+      if (busy && spec.harness !== "codex") return;
+      const fence = (transition: "writing" | "written" | "unsent") => this.bridge!.fence({ endpoint_address: token.address,
+        delivery_secret: token.token, batch_token: input.batch_token!, transition });
+      // Fenced before any byte is written; a refused fence means nothing was.
+      try {
+        if (!text) throw new SupervisorError("The envelope's text is gone.");
+        fence("writing");
+      } catch (error) {
+        this.store.updateInput(input.input_id, workerId, handle.generation, "rejected", this.at());
+        this.store.audit(this.at(), "supervisor", "intake_refused", workerId, { batch_token: input.batch_token, error: String(error) });
+        this.intakeText.delete(input.input_id);
+        continue;
+      }
+      this.store.setInputMode(input.input_id, busy ? "steer" : "start_turn");
+      this.store.updateInput(input.input_id, workerId, handle.generation, "dispatching", this.at());
+      let outcome: InputOutcome;
+      try {
+        outcome = await handle.submit({ input_id: input.input_id, text, mode: busy ? "steer" : "start_turn" });
+      } catch {
+        outcome = "uncertain";
+      }
+      this.intakeText.delete(input.input_id);
+      this.store.updateInput(input.input_id, workerId, handle.generation, outcome, this.at());
+      // Written or not, the room keeps the fence until the model's tt ack or an
+      // operator's reconcile: a write cannot be proven unwritten afterwards.
+      if (outcome !== "uncertain" && outcome !== "rejected") {
+        try { fence("written"); } catch (error) {
+          this.store.audit(this.at(), "supervisor", "fence_written_failed", workerId, { batch_token: input.batch_token, error: String(error) });
+        }
+      }
+      if (outcome === "accepted" || outcome === "written") this.reportedState.set(workerId, "busy");
+    }
+  }
+
+  /**
+   * An owned worker whose harness reported its session ended, though its
+   * process runs on, is rejoined through the room's authorized recovery, with
+   * its own credential and exact process. It writes no presence beyond that
+   * join, sends no prompt, and stops at member_revoked.
+   */
+  private recoverMembership(worker: WorkerRow, handle: WorkerHandle): void {
+    const token = this.deliveryTokens.get(worker.worker_id);
+    const session = handle.sessionId();
+    if (!this.bridge || !token || token.generation !== handle.generation || !session) return;
+    const spec = JSON.parse(worker.spec_json) as WorkerSpec;
+    const result = this.bridge.recover({ harness: spec.harness, session_id: session, pid: handle.pid,
+      process_started_at: handle.processStartedAt, endpoint_address: token.address, delivery_secret: token.token });
+    for (const agentId of result.recovered) this.store.audit(this.at(), "supervisor", "recovered_membership", worker.worker_id, { agent_id: agentId });
+    for (const refused of result.refused) {
+      const key = `${worker.worker_id}\u0000${handle.generation}\u0000${refused.agent_id}\u0000${refused.error}`;
+      if (this.recoveryRefused.has(key)) continue;
+      this.recoveryRefused.add(key);
+      this.store.audit(this.at(), "supervisor", "recovery_refused", worker.worker_id, refused);
     }
   }
 

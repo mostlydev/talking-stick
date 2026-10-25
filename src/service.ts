@@ -1108,6 +1108,26 @@ export class TalkingStickService {
     return result;
   }
 
+  /** fenceManagedDelivery for a supervisor that knows only the batch token, not the room or member. */
+  fenceManagedBatch(input: { endpoint_address: string; delivery_secret: string; batch_token: string;
+    transition: "writing" | "written" | "unsent" }): { status: "managed_writing" | "managed_written" | "unsent" } {
+    const batch = this.db.prepare<[string], { room_id: string; agent_id: string }>(
+      "SELECT room_id, agent_id FROM native_delivery_batches WHERE token = ?").get(input.batch_token);
+    if (!batch) throw new ProtocolError("invalid_input", "That batch is not an open delivery.");
+    return this.fenceManagedDelivery({ ...input, room_id: batch.room_id, agent_id: batch.agent_id });
+  }
+
+  /** The lost memberships of one exact harness process, for its supervisor's recovery join. */
+  findLostMembersForProcess(input: { harness_name: string; harness_session_id: string; pid: number; process_started_at: string }):
+    Array<{ room_id: string; agent_id: AgentId; canonical_path: string }> {
+    return this.db.prepare<[string, string, string, number, string], { room_id: string; agent_id: string }>(
+      `SELECT room_id, agent_id FROM lost_room_members WHERE harness_name = ? AND session_id = ? AND host_id = ?
+       AND pid = ? AND process_started_at = ?`).all(input.harness_name, input.harness_session_id, this.hostId,
+        input.pid, input.process_started_at.trim())
+      .filter((row) => this.getLostMember(row.room_id, row.agent_id))
+      .map((row) => ({ ...row, canonical_path: this.requireRoom(row.room_id).canonical_path }));
+  }
+
   /**
    * An operator's decision on a fenced managed batch whose effect is unknown:
    * resend lets tt offer it again, drop marks it read without delivering it.
@@ -2916,6 +2936,15 @@ export class TalkingStickService {
             input.agent_id,
             input.transport
           );
+      }
+      // A new supervisor generation is offered what the last one never got:
+      // unread work outside every fenced batch.
+      if (input.transport === "supervisor" && this.db.prepare(`SELECT 1 FROM native_event_receipts n
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL AND ${UNFENCED_MANAGED_RECEIPT} LIMIT 1`)
+        .get(input.room_id, input.agent_id)) {
+        this.db.prepare(`UPDATE member_wake_endpoints SET wake_pending = 1, wake_reason = COALESCE(wake_reason, 'message')
+          WHERE room_id = ? AND agent_id = ? AND transport = 'supervisor' AND awaiting_wait = 0`).run(input.room_id, input.agent_id);
+        this.wakeRooms.add(input.room_id);
       }
       return {
         status: "native_wake_endpoint_registered",

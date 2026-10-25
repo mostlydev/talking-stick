@@ -183,7 +183,12 @@ Fencing for writing also refuses a batch any of whose events is gone, already re
 another managed batch, since its text would repeat that event. The batch is released unwritten,
 and tt builds a new envelope from what remains unread. A crash between fence and write is held for
 that decision. Intake that was journalled but never
-fenced may be re-offered by tt.
+fenced may be re-offered by tt: when the next generation registers its endpoint, tt wakes it for
+unread work outside every fenced batch.
+
+The daemon writes one worker's envelopes in order: it starts a turn when the worker is idle,
+steers when a Codex worker is busy, and otherwise waits for the turn to end. An envelope whose
+writing fence is refused is rejected without being written. Envelope text is kept only in memory.
 
 Events in a fenced batch are left out of every later envelope, from a wake, a Codex or Grok
 hook, or an interrupt, and a member whose only pending work is fenced isn't woken at all. A member with a supervisor endpoint has no other native
@@ -214,8 +219,8 @@ didn't start.
 | Slice | Owner | Contents | State |
 | --- | --- | --- | --- |
 | S2a1 | Claude | adapter types, state, reconcile loop, owner lock, FakeAdapter tests | merged (#203) |
-| S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | this change |
-| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | next |
+| S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | #204 |
+| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | this change |
 | S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | after S2a2 |
 | S2b | Claude | Claude stream-json adapter | after S2a |
 | S2c | Codex | Codex app-server adapter | after S2a |
