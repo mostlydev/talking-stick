@@ -1,5 +1,5 @@
 import { humanAttentionIdentity, isHumanDirected } from "./human-attention.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -119,7 +119,11 @@ import type {
   WaitMode,
   WaitWakeReason,
   UnregisterReceiverInput,
-  UnregisterReceiverResult
+  UnregisterReceiverResult,
+  HeldRecipient,
+  JoinRecovery,
+  LostMember,
+  RecoveryNoticeStatus
 } from "./types.js";
 
 interface PathRoomRow {
@@ -226,6 +230,57 @@ interface NoteRow {
 
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
 const ENDED_MEMBER_GRACE_MS = 60 * 60 * 1000;
+
+// A recovery notice repeats at most this often while messages keep arriving.
+const LOST_NOTICE_INTERVAL_MS = 30 * 60 * 1000;
+const LIFECYCLE_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const LIFECYCLE_LOG_MAX_ROWS = 2000;
+
+type LostMemberState = Partial<Record<(typeof LOST_MEMBER_STATE_TABLES)[number], Array<Record<string, unknown>>>>;
+
+interface LostMemberRow {
+  room_id: string;
+  agent_id: string;
+  harness_name: string;
+  session_id: string;
+  host_id: string;
+  pid: number;
+  process_started_at: string;
+  process_kind: HarnessProcessKind | null;
+  lost_at: string;
+  lost_event_seq: number;
+  hook_reason: string | null;
+  member_json: string;
+  state_json: string;
+  cursor_event_seq: number;
+  notice_status: string | null;
+  notice_at: string | null;
+  first_gone_at: string | null;
+}
+
+// Per-member delivery state that deleting the member row would cascade away.
+// A lost member keeps it, so recovery resumes the same batches and receipts.
+const LOST_MEMBER_STATE_TABLES = ["member_wake_endpoints", "native_delivery_batches",
+  "native_event_receipts", "message_receipts", "interrupt_deliveries"] as const;
+
+function hashCredential(secret: string): string {
+  return createHash("sha256").update(secret).digest("hex");
+}
+
+/**
+ * Whether a harness process holds one session at a time, so a later session
+ * starting in it replaces the earlier one. Shared hosts such as a Codex
+ * app-server run several threads at once. Only this classification is kept:
+ * a command line can carry a prompt or a credential.
+ */
+export function classifyHarnessProcess(harness: string, command: string | null | undefined): HarnessProcessKind | null {
+  if (!command) return null;
+  if (harness === "claude") return /(^|\s)(-p|--print)(\s|$)|stream-json/.test(command) ? "shared_host" : "single_session";
+  if (harness === "codex") return /(^|\s)(app-server|exec|mcp-server|daemon)(\s|$)/.test(command) ? "shared_host" : "single_session";
+  return null;
+}
+
+export type HarnessProcessKind = "single_session" | "shared_host";
 
 /** The process fields a liveness reading of a member depends on. */
 function livenessIdentity(member: RoomMemberRow): string {
@@ -517,6 +572,11 @@ export class TalkingStickService {
         roomSelection.room.room_id,
         input.agent_id
       );
+      const joinMetadata = normalizeProcessMetadata(input.process_metadata);
+      const recovered = !existingMember && input.recover
+        ? this.recoverLostMember(roomSelection.room.room_id, input.agent_id, joinMetadata,
+          input.recovery_credentials?.[roomSelection.room.room_id])
+        : null;
       const hadOtherMembers = this.getMembers(
         roomSelection.room.room_id
       ).some((member) => member.agent_id !== input.agent_id);
@@ -539,6 +599,10 @@ export class TalkingStickService {
         timestamp,
         input.process_metadata
       );
+      if (recovered) {
+        const dropped = this.restoreLostMemberState(recovered.state, recovered.sameProcess);
+        if (dropped) recovered.recovery.dropped_receipts = dropped;
+      }
       const supersededAgentIds = this.retireSupersededHarnessSessions(
         roomSelection.room.room_id,
         input.agent_id,
@@ -558,10 +622,12 @@ export class TalkingStickService {
           from_agent_id: input.agent_id,
           to_agent_id: null,
           handoff: null,
-          reason: null,
+          reason: recovered ? "recovered" : null,
           created_at: timestamp
         });
       }
+      const recoveryCredential = joiningObserver ? undefined
+        : this.issueRecoveryCredential(freshRoom.room_id, input.agent_id, joinMetadata, timestamp);
       const warning = joinWarnings(
         roomSelection.warning,
         movedFrom.length > 0
@@ -594,7 +660,9 @@ export class TalkingStickService {
         members,
         policy: { ...this.policy },
         room_state: this.mapRoom(roomInspection, now),
-        handoff_template: handoffTemplate()
+        handoff_template: handoffTemplate(),
+        ...(recovered ? { recovered: recovered.recovery } : {}),
+        ...(recoveryCredential ? { recovery_credential: recoveryCredential } : {})
       };
     });
   }
@@ -645,16 +713,25 @@ export class TalkingStickService {
     return others.map((room) => room.canonical_path);
   }
 
-  /** A hook's exact session identity is evidence that PID liveness cannot give. */
+  /**
+   * A hook's exact session identity is evidence that PID liveness cannot give.
+   * SessionEnd does not prove the session is gone for good: a harness also
+   * reports it when it unloads an idle conversation that stays open. Claude and
+   * Codex members are kept as lost, recoverable by that session's explicit
+   * join; Grok members are removed as before.
+   */
   recordSessionLifecycle(input: {
     harness: string; sessionId: string; pid: number; processStartedAt: string;
     event: "SessionStart" | "SessionEnd";
+    hookReason?: string | null; hookSource?: string | null; processKind?: HarnessProcessKind | null;
   }): number {
     if (!input.sessionId.trim() || !input.processStartedAt.trim() ||
         !Number.isSafeInteger(input.pid) || input.pid <= 1) return 0;
     const key = [input.harness, `harness:${input.sessionId}`, this.hostId,
       input.pid, input.processStartedAt.trim()] as const;
     return this.writeTransaction(() => {
+      const timestamp = this.now().toISOString();
+      const log = (outcome: string) => this.recordLifecycleLog(input, key, outcome, timestamp);
       if (input.harness === "codex") {
         this.db.prepare(`DELETE FROM codex_turn_activity WHERE session_id = ? AND host_id = ?
           AND pid = ? AND process_started_at = ?`).run(key[1], key[2], key[3], key[4]);
@@ -664,17 +741,30 @@ export class TalkingStickService {
           AND session_id = ? AND host_id = ? AND pid = ? AND process_started_at = ?`).run(...key);
         this.db.prepare(`DELETE FROM ended_room_members WHERE harness_name = ?
           AND session_id = ? AND host_id = ?`).run(input.harness, `harness:${input.sessionId}`, this.hostId);
+        // Another session starting in a one-session process ends the lost one.
+        const replaced = this.db.prepare<[string, string, number, string, string], LostMemberRow>(
+          `SELECT * FROM lost_room_members WHERE harness_name = ? AND host_id = ? AND pid = ?
+           AND process_started_at = ? AND session_id != ?`).all(key[0], key[2], key[3], key[4], key[1])
+          .filter(lost => (input.processKind ?? lost.process_kind) === "single_session");
+        for (const lost of replaced) this.forgetLostMember(lost.room_id, lost.agent_id);
+        log(replaced.length ? `started; ended lost ${replaced.map(lost => lost.agent_id).join(",")}` : "started");
         return 0;
       }
-      const timestamp = this.now().toISOString();
       this.db.prepare("INSERT OR REPLACE INTO ended_harness_sessions VALUES (?, ?, ?, ?, ?, ?)")
         .run(...key, timestamp);
       const members = this.db.prepare<[string, string, string, number, string], RoomMemberRow>(
         `SELECT * FROM room_members WHERE harness_name = ? AND harness_session_id = ?
          AND harness_host_id = ? AND harness_pid = ? AND trim(harness_process_started_at) = ?`
       ).all(...key);
+      const keep = input.harness !== "grok";
       for (const member of members) {
         const room = this.requireRoom(member.room_id);
+        const snapshot = keep ? {
+          member_json: JSON.stringify(member),
+          state_json: JSON.stringify(Object.fromEntries(LOST_MEMBER_STATE_TABLES.map((table) => [table,
+            this.db.prepare(`SELECT * FROM ${table} WHERE room_id = ? AND agent_id = ?`).all(member.room_id, member.agent_id)]))),
+          cursor_event_seq: this.lossCursor(member.room_id, member.agent_id)
+        } : null;
         this.db.prepare("INSERT OR REPLACE INTO ended_room_members VALUES (?, ?, ?, ?, ?, ?, ?)")
           .run(member.room_id, member.agent_id, ...key);
         const owner = room.owner === member.agent_id ? null : room.owner;
@@ -689,12 +779,265 @@ export class TalkingStickService {
             owner ? room.pending_handoff_event_seq : null,
             room.state === "closed" ? "closed" : owner ? "owned" : reserved ? "reserved" : "idle",
             timestamp, room.room_id);
-        this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "leave",
+        const leaveSeq = this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "leave",
           from_agent_id: member.agent_id, to_agent_id: null, handoff: null,
-          reason: "session_ended", created_at: timestamp });
+          reason: keep ? "member_lost" : "session_ended", created_at: timestamp });
+        if (snapshot) {
+          this.db.prepare(`INSERT OR REPLACE INTO lost_room_members (room_id, agent_id, harness_name,
+            session_id, host_id, pid, process_started_at, process_kind, lost_at, lost_event_seq,
+            hook_reason, member_json, state_json, cursor_event_seq)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(member.room_id, member.agent_id,
+              ...key, input.processKind ?? null, timestamp, leaveSeq, input.hookReason ?? null,
+              snapshot.member_json, snapshot.state_json, snapshot.cursor_event_seq);
+        }
       }
+      log(members.length ? `${keep ? "lost" : "ended"} ${members.map(member => member.agent_id).join(",")}` : "no member");
       return members.length;
     });
+  }
+
+  /** Raw lifecycle hook facts, kept for diagnosis; never message content. */
+  private recordLifecycleLog(
+    input: { harness: string; event: string; hookReason?: string | null; hookSource?: string | null; processKind?: HarnessProcessKind | null },
+    key: readonly [string, string, string, number, string],
+    outcome: string,
+    timestamp: string
+  ): void {
+    this.db.prepare(`INSERT INTO harness_lifecycle_log (harness_name, event, session_id, host_id, pid,
+      process_started_at, process_kind, hook_reason, hook_source, outcome, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.harness, input.event, key[1], key[2], key[3], key[4],
+        input.processKind ?? null, input.hookReason?.slice(0, 64) ?? null,
+        input.hookSource?.slice(0, 64) ?? null, outcome, timestamp);
+    this.db.prepare("DELETE FROM harness_lifecycle_log WHERE received_at < ? OR id <= (SELECT MAX(id) FROM harness_lifecycle_log) - ?")
+      .run(new Date(Date.parse(timestamp) - LIFECYCLE_LOG_RETENTION_MS).toISOString(), LIFECYCLE_LOG_MAX_ROWS);
+  }
+
+  /**
+   * Where a lost member's reading resumes: after what it is known to have
+   * received, but before any native delivery it never consumed.
+   */
+  private lossCursor(roomId: string, agentId: AgentId): number {
+    const receiver = this.db.prepare<[string, string], { cursor_event_seq: number }>(
+      "SELECT cursor_event_seq FROM room_receivers WHERE room_id = ? AND agent_id = ?").get(roomId, agentId);
+    const receipts = this.db.prepare<[string, string], { consumed: number | null; pending: number | null }>(
+      `SELECT MAX(CASE WHEN consumed_at IS NOT NULL THEN event_seq END) AS consumed,
+        MIN(CASE WHEN consumed_at IS NULL THEN event_seq END) AS pending
+       FROM native_event_receipts WHERE room_id = ? AND agent_id = ?`).get(roomId, agentId);
+    const known = Math.max(receiver?.cursor_event_seq ?? 0, receipts?.consumed ?? 0);
+    const cursor = known || this.latestEventSeq(roomId);
+    return receipts?.pending ? Math.min(cursor, receipts.pending - 1) : cursor;
+  }
+
+  /**
+   * A lost member that nothing has since overridden. An old binary's join,
+   * leave or kick for that agent supersedes the snapshot.
+   */
+  private getLostMember(roomId: string, agentId: AgentId): LostMemberRow | null {
+    const lost = this.db.prepare<[string, string], LostMemberRow>(
+      "SELECT * FROM lost_room_members WHERE room_id = ? AND agent_id = ?").get(roomId, agentId);
+    if (!lost || this.getMember(roomId, agentId)) return null;
+    const overridden = this.db.prepare(`SELECT 1 FROM room_events WHERE room_id = ? AND event_seq > ?
+      AND event_type IN ('join', 'leave', 'kick') AND (from_agent_id = ? OR to_agent_id = ?) LIMIT 1`)
+      .get(roomId, lost.lost_event_seq, agentId, agentId);
+    return overridden ? null : lost;
+  }
+
+  private getLostMembers(roomId: string): LostMemberRow[] {
+    return this.db.prepare<[string], { agent_id: string }>("SELECT agent_id FROM lost_room_members WHERE room_id = ?")
+      .all(roomId).map(row => this.getLostMember(roomId, row.agent_id))
+      .filter((lost): lost is LostMemberRow => lost !== null);
+  }
+
+  /**
+   * An explicit leave or kick of a lost member: it ends the membership and
+   * keeps that session out of the room, whatever SessionStart says later.
+   */
+  private revokeLostMember(lost: LostMemberRow, by: AgentId, timestamp: string): void {
+    this.forgetLostMember(lost.room_id, lost.agent_id);
+    this.db.prepare(`INSERT OR REPLACE INTO revoked_room_members (room_id, agent_id, harness_session_id, revoked_at, revoked_by)
+      VALUES (?, ?, ?, ?, ?)`).run(lost.room_id, lost.agent_id, lost.session_id, timestamp, by);
+  }
+
+  /** Ends a lost membership for good, with its recovery credential. */
+  private forgetLostMember(roomId: string, agentId: AgentId): void {
+    this.db.prepare("DELETE FROM lost_room_members WHERE room_id = ? AND agent_id = ?").run(roomId, agentId);
+    this.db.prepare("DELETE FROM member_credentials WHERE room_id = ? AND agent_id = ?").run(roomId, agentId);
+  }
+
+  private lostMemberError(lost: LostMemberRow, problem?: string): ProtocolError {
+    const why = `the harness reported this session ended${lost.hook_reason ? ` (${lost.hook_reason})` : ""}`;
+    return new ProtocolError("member_lost", problem
+      ? `Membership in this room was lost at ${lost.lost_at}, and it cannot be recovered: ${problem}.`
+      : `Membership in this room was lost at ${lost.lost_at}: ${why}. Run tt join to recover it.`, {
+      agent_id: lost.agent_id, lost_at: lost.lost_at, hook_reason: lost.hook_reason,
+      ...(problem ? {} : { recover_with: "tt join --json" })
+    });
+  }
+
+  /**
+   * Restores a lost membership for the same harness session, on its explicit
+   * join. The same process may recover on its identity alone; a resumed
+   * process also needs the credential issued at an earlier join and its own
+   * SessionStart for the session. Never restores a lease, claim or turn.
+   */
+  private recoverLostMember(
+    roomId: string,
+    agentId: AgentId,
+    metadata: RequiredProcessMetadata,
+    credential: string | undefined
+  ): { recovery: JoinRecovery; state: LostMemberState; sameProcess: boolean } | null {
+    const stale = this.db.prepare("SELECT 1 FROM lost_room_members WHERE room_id = ? AND agent_id = ?").get(roomId, agentId);
+    const lost = this.getLostMember(roomId, agentId);
+    if (!lost) {
+      if (stale) this.forgetLostMember(roomId, agentId);
+      return null;
+    }
+    if (metadata.harness_name !== lost.harness_name || metadata.harness_session_id !== lost.session_id) {
+      throw this.lostMemberError(lost, "this is not the session that was lost");
+    }
+    const sameProcess = metadata.harness_host_id === lost.host_id && metadata.harness_pid === lost.pid &&
+      metadata.harness_process_started_at?.trim() === lost.process_started_at;
+    // Without the credential, only a session that was never issued one, such
+    // as one enrolled before credentials existed, recovers: on its exact
+    // process, or on a SessionStart from the joining process.
+    let evidence: JoinRecovery["evidence"] = "process_identity";
+    const stored = this.db.prepare<[string, string], { harness_session_id: string; secret_hash: string }>(
+      "SELECT harness_session_id, secret_hash FROM member_credentials WHERE room_id = ? AND agent_id = ?").get(roomId, agentId);
+    const issued = stored?.harness_session_id === lost.session_id ? stored : undefined;
+    if (issued || credential !== undefined) {
+      if (!issued || credential === undefined || issued.secret_hash !== hashCredential(credential)) {
+        throw this.lostMemberError(lost, credential === undefined
+          ? "the recovery credential issued to this session is missing"
+          : "the recovery credential does not match");
+      }
+      evidence = "credential";
+    }
+    if (!sameProcess) {
+      const started = this.db.prepare(`SELECT 1 FROM harness_lifecycle_log WHERE harness_name = ? AND event = 'SessionStart'
+        AND session_id = ? AND host_id = ? AND pid = ? AND process_started_at = ? AND received_at >= ? LIMIT 1`)
+        .get(lost.harness_name, lost.session_id, metadata.harness_host_id, metadata.harness_pid,
+          metadata.harness_process_started_at?.trim() ?? "", lost.lost_at);
+      if (!started) throw this.lostMemberError(lost, "this process has not reported starting the session");
+      // As before credentials existed, that SessionStart alone lets a session
+      // never issued one back in.
+      if (evidence !== "credential") evidence = "session_start";
+    }
+    this.db.prepare("DELETE FROM ended_room_members WHERE room_id = ? AND agent_id = ?").run(roomId, agentId);
+    if (sameProcess) {
+      this.db.prepare(`DELETE FROM ended_harness_sessions WHERE harness_name = ? AND session_id = ?
+        AND host_id = ? AND pid = ? AND process_started_at = ?`)
+        .run(lost.harness_name, lost.session_id, lost.host_id, lost.pid, lost.process_started_at);
+    }
+    this.db.prepare("DELETE FROM lost_room_members WHERE room_id = ? AND agent_id = ?").run(roomId, agentId);
+    const oldest = this.db.prepare<[string], { seq: number | null }>(
+      "SELECT MIN(event_seq) AS seq FROM room_events WHERE room_id = ?").get(roomId)?.seq ?? null;
+    return {
+      recovery: {
+        lost_at: lost.lost_at,
+        hook_reason: lost.hook_reason,
+        evidence,
+        replay_from_event_seq: lost.cursor_event_seq,
+        ...(oldest !== null && lost.cursor_event_seq < oldest - 1
+          ? { gap: { from_event_seq: lost.cursor_event_seq + 1, to_event_seq: oldest - 1 } } : {})
+      },
+      state: JSON.parse(lost.state_json) as LostMemberState,
+      sameProcess
+    };
+  }
+
+  /**
+   * Puts a recovered member's delivery state back exactly as it was, so its
+   * batch tokens, receipts and fenced steering survive. Its old wake endpoints
+   * come back only for the same process; another process registers its own.
+   */
+  private restoreLostMemberState(state: LostMemberState, sameProcess: boolean): number {
+    const eventExists = this.db.prepare("SELECT 1 FROM room_events WHERE event_seq = ?");
+    let dropped = 0;
+    for (const table of LOST_MEMBER_STATE_TABLES) {
+      if (table === "member_wake_endpoints" && !sameProcess) continue;
+      for (const row of state[table] ?? []) {
+        // A receipt for an event the room no longer has cannot come back.
+        if (typeof row.event_seq === "number" && !eventExists.get(row.event_seq)) {
+          dropped++;
+          continue;
+        }
+        const columns = Object.keys(row);
+        this.db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+          .run(...columns.map((column) => row[column] as string | number | null));
+      }
+    }
+    return dropped;
+  }
+
+  /** Issues a session's recovery credential once; only its hash is stored. */
+  private issueRecoveryCredential(roomId: string, agentId: AgentId, metadata: RequiredProcessMetadata, timestamp: string): string | undefined {
+    if (metadata.session_kind !== "harness_cli" || !metadata.harness_session_id) return undefined;
+    const stored = this.db.prepare<[string, string], { harness_session_id: string }>(
+      "SELECT harness_session_id FROM member_credentials WHERE room_id = ? AND agent_id = ?").get(roomId, agentId);
+    if (stored?.harness_session_id === metadata.harness_session_id) return undefined;
+    const secret = randomBytes(24).toString("base64url");
+    this.db.prepare(`INSERT OR REPLACE INTO member_credentials (room_id, agent_id, harness_session_id, secret_hash, issued_at)
+      VALUES (?, ?, ?, ?, ?)`).run(roomId, agentId, metadata.harness_session_id, hashCredential(secret), timestamp);
+    return secret;
+  }
+
+  /**
+   * One body-free notice through a lost member's own native endpoint, telling
+   * the still-open session how to recover. Only for the exact process that
+   * was lost, while it runs, and at most once per interval. Queued is not
+   * delivered: a queued notice waits for that harness to start a turn.
+   */
+  private async sendRecoveryNotice(roomId: string, agentId: AgentId): Promise<RecoveryNoticeStatus> {
+    const now = this.now();
+    // Reserve the notice for this loss before any I/O, so concurrent senders,
+    // in this process or another, see it as sent. A reservation that never
+    // completed counts as ambiguous until the interval passes.
+    const reserved = this.writeTransaction(() => {
+      const lost = this.getLostMember(roomId, agentId);
+      if (!lost) return "recovered" as const;
+      if (lost.notice_at && now.getTime() - Date.parse(lost.notice_at) < LOST_NOTICE_INTERVAL_MS &&
+          (lost.notice_status === "sending" || lost.notice_status === "injected" ||
+           lost.notice_status === "queued" || lost.notice_status === "ambiguous")) {
+        return "already_sent" as const;
+      }
+      this.db.prepare(`UPDATE lost_room_members SET notice_status = 'sending', notice_at = ?
+        WHERE room_id = ? AND agent_id = ? AND lost_event_seq = ?`)
+        .run(now.toISOString(), roomId, agentId, lost.lost_event_seq);
+      return lost;
+    });
+    if (typeof reserved === "string") return reserved;
+    const lost = reserved;
+    const record = (status: RecoveryNoticeStatus): RecoveryNoticeStatus => {
+      this.writeTransaction(() => this.db.prepare(`UPDATE lost_room_members SET notice_status = ?
+        WHERE room_id = ? AND agent_id = ? AND lost_event_seq = ? AND notice_status = 'sending' AND notice_at = ?`)
+        .run(status, roomId, agentId, lost.lost_event_seq, now.toISOString()));
+      return status;
+    };
+    const liveness = this.processLivenessChecker({ host_id: lost.host_id, pid: lost.pid,
+      process_started_at: lost.process_started_at, harness_name: lost.harness_name,
+      harness_session_id: lost.session_id, harness_host_id: lost.host_id, harness_pid: lost.pid,
+      harness_process_started_at: lost.process_started_at });
+    if (liveness !== "alive") return record("process_not_running");
+    const endpoints = ((JSON.parse(lost.state_json) as LostMemberState).member_wake_endpoints ?? [])
+      .map((row) => row as { transport: string; address: string; secret: string | null })
+      .filter(endpoint => endpoint.transport === "claude_inbox" || endpoint.transport === "codex_queue");
+    if (!endpoints.length || !this.nativeWakeTransport) return record("unreachable");
+    const room = this.requireRoom(roomId);
+    const text = `[talking-stick] Your membership in room ${room.canonical_path} was lost at ${lost.lost_at}: ` +
+      "the harness reported this session ended. Run `tt join --json` to recover it, then `tt wait --json` for the messages waiting for you.";
+    for (const endpoint of endpoints) {
+      let result: NativeWakeResult;
+      try {
+        result = await this.nativeWakeTransport.deliver({ transport: endpoint.transport as NativeWakeTransportName,
+          address: endpoint.address, secret: endpoint.secret, text });
+      } catch {
+        // A throw after writing may still have landed.
+        return record("ambiguous");
+      }
+      if (result.outcome === "failed") continue;
+      return record(result.outcome === "queued" ? "queued" : result.outcome === "ambiguous" ? "ambiguous" : "injected");
+    }
+    return record("unreachable");
   }
 
   leaveRoom(input: LeaveRoomInput): LeaveRoomResult {
@@ -709,12 +1052,22 @@ export class TalkingStickService {
       const room = this.requireRoom(input.room_id);
       const member = this.getMember(input.room_id, input.agent_id);
       if (!member) {
+        // Leaving is final, for a lost membership too.
+        const lost = this.getLostMember(input.room_id, input.agent_id);
+        if (lost) {
+          this.revokeLostMember(lost, input.agent_id, timestamp);
+          this.appendEvent({ room_id: input.room_id, turn_id: room.turn_id, event_type: "leave",
+            from_agent_id: input.agent_id, to_agent_id: null, handoff: null, reason: null, created_at: timestamp });
+          return { status: "left", room_id: input.room_id, canonical_path: room.canonical_path,
+            remaining_members: this.getMembers(input.room_id).length };
+        }
         throw new ProtocolError(
           "unknown_member",
           "Agent is not a member of this room.",
           { agent_id: input.agent_id }
         );
       }
+      this.forgetLostMember(input.room_id, input.agent_id);
 
       this.db
         .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
@@ -838,6 +1191,18 @@ export class TalkingStickService {
       this.touchMember(input.room_id, input.agent_id, timestamp);
 
       const target = this.getMember(input.room_id, input.target_agent_id);
+      const lostTarget = target ? null : this.getLostMember(input.room_id, input.target_agent_id);
+      if (lostTarget) {
+        // A kick is final: the lost session can no longer recover or rejoin.
+        this.revokeLostMember(lostTarget, input.agent_id, timestamp);
+        this.appendEvent({ room_id: input.room_id, turn_id: room.turn_id, event_type: "kick",
+          from_agent_id: input.agent_id, to_agent_id: input.target_agent_id, handoff: null,
+          reason: input.reason ?? null, created_at: timestamp });
+        return { status: "kicked", room_id: input.room_id, canonical_path: room.canonical_path,
+          kicked_agent_id: input.target_agent_id, remaining_members: this.getMembers(input.room_id).length,
+          target_was_owner: false, target_was_reserved_for: false };
+      }
+      if (target) this.forgetLostMember(input.room_id, input.target_agent_id);
       if (!target) {
         throw new ProtocolError(
           "unknown_target",
@@ -1576,9 +1941,14 @@ export class TalkingStickService {
           )
         : { rows: mappedMembers, hidden: undefined };
 
+    const lostMembers = this.getLostMembers(input.room_id).map((lost): LostMember => ({
+      agent_id: lost.agent_id, harness_name: lost.harness_name, lost_at: lost.lost_at,
+      hook_reason: lost.hook_reason, notice_status: lost.notice_status, notice_at: lost.notice_at
+    }));
     return {
       room: this.mapRoom(inspection, now),
       members: memberView.rows,
+      ...(lostMembers.length ? { lost_members: lostMembers } : {}),
       cursor_event_seq: this.latestEventSeq(input.room_id),
       ...(memberView.hidden ? { hidden: { members: memberView.hidden } } : {})
     };
@@ -1985,7 +2355,7 @@ export class TalkingStickService {
     // "known" lets a non-member send (role notices); "visitor" also leaves a
     // member's presence untouched, since asking is not taking part.
     sender: "member" | "known" | "visitor" = "member", link: { request_id?: string; in_reply_to?: string } = {}): {
-    event_seq: number; event_id: string; created_at: string; wake_target_ids: AgentId[];
+    event_seq: number; event_id: string; created_at: string; wake_target_ids: AgentId[]; held?: HeldRecipient[];
   } {
     // Validated by sendMessage before the transaction: checking a stored
     // image reads it, which must not happen while holding the write lock.
@@ -2017,8 +2387,15 @@ export class TalkingStickService {
       );
     }
     const named = [...new Set(input.to_agent_ids ?? [])];
+    // A lost member still gets the message when it recovers, but is never
+    // woken through its old registration.
+    const lostIds = new Set<AgentId>();
     for (const recipient of input.to_agent_id ? [input.to_agent_id] : named) {
       const target = this.getMember(input.room_id, recipient);
+      if (!target && this.getLostMember(input.room_id, recipient)) {
+        lostIds.add(recipient);
+        continue;
+      }
       if (!target) {
         throw new ProtocolError(
           "unknown_recipient",
@@ -2040,9 +2417,9 @@ export class TalkingStickService {
     // An answer to a visitor goes to someone outside the room, so it wakes
     // nobody inside it; the visitor pulls answers with tt room replies.
     const wakeTargets: AgentId[] = link.in_reply_to ? [] : directed
-      ? [directed]
+      ? (lostIds.has(directed) ? [] : [directed])
       : scoped
-        ? scoped
+        ? scoped.filter((agentId) => !lostIds.has(agentId))
         : humanSender
           ? this.getMembers(input.room_id)
               .filter((member) => member.agent_id !== input.agent_id &&
@@ -2097,12 +2474,32 @@ export class TalkingStickService {
       }
     }
 
+    // A room message is readable by lost members once they recover, so the
+    // sender learns who it did not reach now.
+    const held = link.in_reply_to ? [] : (directed || scoped
+      ? [...lostIds].map((agentId) => this.getLostMember(input.room_id, agentId)!)
+      : this.getLostMembers(input.room_id).filter((lost) => lost.agent_id !== input.agent_id))
+      .map((lost): HeldRecipient => ({ agent_id: lost.agent_id, reason: "member_lost", lost_at: lost.lost_at }));
     return {
       event_seq: eventSeq,
       event_id: row?.event_id ?? "",
       created_at: timestamp,
-      wake_target_ids: wakeTargets.filter((target) => target !== input.agent_id)
+      wake_target_ids: wakeTargets.filter((target) => target !== input.agent_id),
+      ...(held.length ? { held } : {})
     };
+  }
+
+  /**
+   * Recovery notices for held recipients of a directed message or an
+   * operator's room message; an agent's room message notifies nobody.
+   */
+  private async noticeHeldRecipients(input: Pick<SendMessageInput, "agent_id" | "room_id" | "to_agent_id" | "to_agent_ids">, held: HeldRecipient[] | undefined): Promise<HeldRecipient[] | undefined> {
+    if (!held?.length) return held;
+    const notify = Boolean(input.to_agent_id || input.to_agent_ids?.length || input.agent_id.startsWith("human:"));
+    if (!notify) return held;
+    return Promise.all(held.map(async (recipient) => ({
+      ...recipient, notice: await this.sendRecoveryNotice(input.room_id, recipient.agent_id)
+    })));
   }
 
   sendMessage(input: SendMessageInput): SendMessageResult {
@@ -2594,12 +2991,14 @@ export class TalkingStickService {
   ): Promise<SendMessageResult> {
     const result = this.sendMessage(input);
     const targets = result.deliveries?.map((delivery) => delivery.agent_id) ?? [];
-    if (targets.length === 0) return Promise.resolve(result);
-    return Promise.all(targets.map((target) => this.flushWakes(input.room_id, target).then(() => {
+    const held = this.noticeHeldRecipients(input, result.held);
+    if (targets.length === 0) return held.then((notified) => ({ ...result, ...(notified ? { held: notified } : {}) }));
+    return Promise.all([Promise.all(targets.map((target) => this.flushWakes(input.room_id, target).then(() => {
       const delivery = this.describeDelivery(input.room_id, target, result.event_seq, input.delivery_hint);
       onDelivery?.(delivery, result);
       return delivery;
-    }))).then((deliveries) => ({ ...result, ...this.singleDeliveryFields(deliveries), deliveries }));
+    }))), held]).then(([deliveries, notified]) => ({ ...result, ...this.singleDeliveryFields(deliveries), deliveries,
+      ...(notified ? { held: notified } : {}) }));
   }
 
   // A question from outside the room: the requester need not be a member and
@@ -2657,6 +3056,8 @@ export class TalkingStickService {
         recipients = [...new Set(selectors.map((selector) => {
           const exact = agents.find((member) => member.agent_id === selector);
           if (exact) return exact.agent_id;
+          // A lost member is held for, by its exact id only.
+          if (this.getLostMember(room.room_id, selector)) return selector;
           const matches = agents.filter((member) => member.display_name === selector || member.agent_id.startsWith(`${selector}:`));
           if (matches.length > 1) {
             throw new ProtocolError("ambiguous_recipient", `${selector} matches several agents in this room.`,
@@ -2695,10 +3096,14 @@ export class TalkingStickService {
       return { ...base, deduplicated: true, event_seq: request.event_seq, event_id: event?.event_id ?? "",
         created_at: request.created_at };
     }
-    const { wake_target_ids: targets, ...stored } = sent;
-    const deliveries = await Promise.all(targets.map((target) => this.flushWakes(request.room_id, target)
-      .then(() => this.describeDelivery(request.room_id, target, sent.event_seq, "normal"))));
-    return { ...base, deduplicated: false, ...stored, ...this.singleDeliveryFields(deliveries), deliveries };
+    const { wake_target_ids: targets, held, ...stored } = sent;
+    const [deliveries, notified] = await Promise.all([
+      Promise.all(targets.map((target) => this.flushWakes(request.room_id, target)
+        .then(() => this.describeDelivery(request.room_id, target, sent.event_seq, "normal")))),
+      this.noticeHeldRecipients({ agent_id: input.agent_id, room_id: request.room_id, to_agent_ids: recipients }, held)
+    ]);
+    return { ...base, deduplicated: false, ...stored, ...this.singleDeliveryFields(deliveries), deliveries,
+      ...(notified ? { held: notified } : {}) };
   }
 
   // A member's answer to a visitor's question, recorded in the question's
@@ -4629,6 +5034,15 @@ export class TalkingStickService {
   ): void {
     const existing = this.getMember(roomId, agentId);
     const normalized = normalizeProcessMetadata(options.processMetadata);
+    const lost = existing ? null : this.getLostMember(roomId, agentId);
+    if (lost) throw this.lostMemberError(lost);
+    const revoked = existing ? undefined : this.db.prepare<[string, string], { revoked_at: string; revoked_by: string; harness_session_id: string }>(
+      "SELECT revoked_at, revoked_by, harness_session_id FROM revoked_room_members WHERE room_id = ? AND agent_id = ?"
+    ).all(roomId, agentId).find((row) => !normalized.harness_session_id || row.harness_session_id === normalized.harness_session_id);
+    if (revoked) {
+      throw new ProtocolError("member_revoked", `This session was removed from the room by ${revoked.revoked_by} at ${revoked.revoked_at} ` +
+        "and cannot rejoin it; a new harness session can.", { agent_id: agentId });
+    }
     if (this.db.prepare("SELECT 1 FROM ended_room_members WHERE room_id = ? AND agent_id = ?").get(roomId, agentId) ||
         (normalized.harness_session_id && normalized.harness_pid &&
         this.db.prepare(`SELECT 1 FROM ended_harness_sessions WHERE harness_name = ?
@@ -5763,6 +6177,7 @@ export class TalkingStickService {
         AND host_id = ? AND pid = ? AND process_started_at = ? AND ended_at = ?`).run(
           ended.harness_name, ended.session_id, ended.host_id, ended.pid, ended.process_started_at, ended.ended_at);
     }
+    this.purgeEndedLostMembers(now);
     const expireRooms = this.policy.idleRoomTtlMs > 0;
     const cutoffMs = now.getTime() - this.policy.idleRoomTtlMs;
 
@@ -5820,6 +6235,34 @@ export class TalkingStickService {
               event_type: "leave", from_agent_id: member.agent_id, to_agent_id: null,
               handoff: null, reason: "process_ended", created_at: now.toISOString() });
           }
+        }
+      });
+    }
+  }
+
+  /**
+   * A lost member whose exact process has read gone for the whole grace has
+   * ended for good, under the same first-reading rule as members.
+   */
+  private purgeEndedLostMembers(now: Date): void {
+    const rows = this.db.prepare<[], LostMemberRow>("SELECT * FROM lost_room_members").all();
+    for (const lost of rows) {
+      const reading = this.processLivenessChecker({ host_id: lost.host_id, pid: lost.pid,
+        process_started_at: lost.process_started_at, harness_name: lost.harness_name,
+        harness_session_id: lost.session_id, harness_host_id: lost.host_id, harness_pid: lost.pid,
+        harness_process_started_at: lost.process_started_at });
+      if (reading === "unknown" || (reading === "alive" && !lost.first_gone_at)) continue;
+      this.writeTransaction(() => {
+        const same = "room_id = ? AND agent_id = ? AND lost_event_seq = ?";
+        const key = [lost.room_id, lost.agent_id, lost.lost_event_seq] as const;
+        if (reading === "alive") {
+          this.db.prepare(`UPDATE lost_room_members SET first_gone_at = NULL WHERE ${same}`).run(...key);
+        } else if (!lost.first_gone_at) {
+          this.db.prepare(`UPDATE lost_room_members SET first_gone_at = ? WHERE ${same} AND first_gone_at IS NULL`)
+            .run(now.toISOString(), ...key);
+        } else if (parseTimestampMs(lost.first_gone_at) < now.getTime() - ENDED_MEMBER_GRACE_MS &&
+            this.db.prepare(`SELECT 1 FROM lost_room_members WHERE ${same} AND first_gone_at = ?`).get(...key, lost.first_gone_at)) {
+          this.forgetLostMember(lost.room_id, lost.agent_id);
         }
       });
     }

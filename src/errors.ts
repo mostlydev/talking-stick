@@ -7,6 +7,8 @@ export type ProtocolErrorCode =
   | "no_recipients"
   | "unknown_member"
   | "session_ended"
+  | "member_lost"
+  | "member_revoked"
   | "operator_only"
   | "observer_cannot_hold_turn"
   | "unknown_target"
@@ -55,6 +57,9 @@ export interface ProtocolErrorDetails {
   candidates?: string[];
   receiver_id?: string;
   receiver_pid?: number;
+  lost_at?: string;
+  hook_reason?: string | null;
+  recover_with?: string;
 }
 
 export class ProtocolError extends Error {

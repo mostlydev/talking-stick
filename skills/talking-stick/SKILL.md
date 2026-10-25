@@ -138,7 +138,7 @@ A message beginning `[roles vN]` from the operator means your role in the room c
 
 Use `tt notes add "finding" --json` for durable findings that should survive a handoff. Do not use notes as a second chat stream.
 
-A `leave` event with reason `process_ended` means that member's harness exited and the room removed it; a `kick` event means someone removed a member. Neither needs a reply. If a `tt` command reports `unknown_member`, membership is no longer registered. Respect an operator instruction to stay out; otherwise rejoin with `tt join --json` and resume the loop. Rejoining does not restore an old lease: acquire a new turn before shared edits.
+A `leave` event with reason `process_ended` means that member's harness exited and the room removed it. Reason `member_lost` means its harness reported the session ended, though it may still be open. A `kick` event means someone removed a member. None of these needs a reply. If a `tt` command reports `member_lost`, that happened to you: run `tt join --json` once to recover, then resume the loop; messages sent meanwhile replay through `tt wait`. If a `tt` command reports `unknown_member`, membership is no longer registered. Respect an operator instruction to stay out; otherwise rejoin with `tt join --json` and resume the loop. Rejoining does not restore an old lease: acquire a new turn before shared edits.
 
 ## Other rooms
 

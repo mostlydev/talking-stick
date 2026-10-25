@@ -488,6 +488,65 @@ const migrations: Migration[] = [
       FOREIGN KEY (room_id, agent_id)
         REFERENCES room_members(room_id, agent_id) ON DELETE CASCADE
     );`
+  },
+  {
+    id: 30,
+    name: "member_lost",
+    // A harness SessionEnd keeps what recovery needs instead of deleting it.
+    // Older binaries see the member removed, as before.
+    up: `CREATE TABLE lost_room_members (
+      room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      harness_name TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      host_id TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      process_started_at TEXT NOT NULL,
+      process_kind TEXT,
+      lost_at TEXT NOT NULL,
+      lost_event_seq INTEGER NOT NULL,
+      hook_reason TEXT,
+      member_json TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      cursor_event_seq INTEGER NOT NULL,
+      notice_status TEXT,
+      notice_at TEXT,
+      first_gone_at TEXT,
+      PRIMARY KEY (room_id, agent_id)
+    );
+    CREATE TABLE member_credentials (
+      room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      harness_session_id TEXT NOT NULL,
+      secret_hash TEXT NOT NULL,
+      issued_at TEXT NOT NULL,
+      PRIMARY KEY (room_id, agent_id)
+    );
+    -- An explicit leave or kick of a lost member keeps that session out of the
+    -- room for good: a later SessionStart does not undo it.
+    CREATE TABLE revoked_room_members (
+      room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      harness_session_id TEXT NOT NULL,
+      revoked_at TEXT NOT NULL,
+      revoked_by TEXT NOT NULL,
+      PRIMARY KEY (room_id, agent_id, harness_session_id)
+    );
+    CREATE TABLE harness_lifecycle_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      harness_name TEXT NOT NULL,
+      event TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      host_id TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      process_started_at TEXT NOT NULL,
+      process_kind TEXT,
+      hook_reason TEXT,
+      hook_source TEXT,
+      outcome TEXT NOT NULL,
+      received_at TEXT NOT NULL
+    );
+    CREATE INDEX harness_lifecycle_log_session ON harness_lifecycle_log(harness_name, session_id, received_at);`
   }
 ];
 

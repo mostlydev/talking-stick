@@ -308,9 +308,14 @@ function describeSystemEvent(
 
   switch (event.event_type) {
     case "join":
-      return `${name(event.from_agent_id)} joined`;
+      return event.reason === "recovered"
+        ? `${name(event.from_agent_id)} recovered its membership`
+        : `${name(event.from_agent_id)} joined`;
     case "leave":
-      return `${name(event.from_agent_id)} left`;
+      // The session may still be open; messages to it wait for it to rejoin.
+      return event.reason === "member_lost"
+        ? `${name(event.from_agent_id)} lost its membership: its harness reported the session ended`
+        : `${name(event.from_agent_id)} left`;
     case "kick":
       return `${name(event.to_agent_id)} was removed by ${name(event.from_agent_id)}`;
     case "close":
