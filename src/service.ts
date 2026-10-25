@@ -3749,6 +3749,9 @@ export class TalkingStickService {
       for (const member of members) {
         // Ambiguous local identities never receive one another's hook feedback.
         if (members.filter(candidate => candidate.room_id === member.room_id).length !== 1) continue;
+        // A supervised worker receives room work only through its supervisor's
+        // journalled intake, never as hook feedback that bypasses it.
+        if (this.getNativeWakeEndpoint(member.room_id, member.agent_id, "supervisor")) continue;
         if (!recovered.length) {
           const batch = this.db.prepare(`SELECT * FROM native_delivery_batches WHERE room_id = ? AND agent_id = ?
             AND harness_session_id = ? AND host_id = ? AND source = 'native' AND delivery_mode = 'uncertain'
@@ -3878,6 +3881,8 @@ export class TalkingStickService {
         return null;
       }
       const member = members[0];
+      // A supervised worker receives room work only through its supervisor.
+      if (this.getNativeWakeEndpoint(room.room_id, member.agent_id, "supervisor")) return null;
       // A failed hook write must not strand events forever. Retrying can
       // create another token for the same IDs; model event-ID dedup and exact
       // acknowledgements intentionally make either token safe to accept.

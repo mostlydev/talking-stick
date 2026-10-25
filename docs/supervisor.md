@@ -187,7 +187,10 @@ fenced may be re-offered by tt.
 
 Events in a fenced batch are left out of every later envelope, from a wake, a Codex or Grok
 hook, or an interrupt, and a member whose only pending work is fenced isn't woken at all. A member with a supervisor endpoint has no other native
-endpoint: registering the supervisor removes them, and registering another is refused.
+endpoint: registering the supervisor removes them, and registering another is refused. Its active
+delivery hooks (Codex's UserPromptSubmit and Stop, Grok's tool hooks) return no envelopes, so
+no room work bypasses the supervisor's journal. Lifecycle hooks are unaffected, and unsupervised
+sessions behave as before.
 
 The delivery token only fences and clears its own generation's batches. Control authority is
 separate, and neither ever grants the other.

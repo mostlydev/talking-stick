@@ -246,3 +246,26 @@ describe("overlapping envelopes", () => {
     expect(service.db.prepare("SELECT 1 FROM native_delivery_batches WHERE token = ?").get(second)).toBeUndefined();
   });
 });
+
+// Codex's #32429: active delivery hooks never bypass the supervisor.
+describe("hooks of a supervised worker", () => {
+  test("a Codex Stop hook delivers nothing, even unfenced work, while the member is supervised", async () => {
+    const { service, roomId, register, send } = setup("codex");
+    register(1);
+    await send("queued, unfenced");
+    service.registerStandby({ agent_id: "codex:w", room_id: roomId, transport: "manual" });
+    service.handleCodexTurnHook({ sessionId: "w", pid: 600, processStartedAt: "s", turnId: "turn-y", event: "UserPromptSubmit" });
+    expect(service.handleCodexTurnHook({ sessionId: "w", pid: 600, processStartedAt: "s", turnId: "turn-y", event: "Stop" })).toBeNull();
+  });
+
+  test("a Grok hook delivers nothing while the member is supervised, and as before when it is not", async () => {
+    const supervised = setup("grok");
+    supervised.register(1);
+    await supervised.send("for the supervisor");
+    expect(supervised.service.prepareGrokHookDelivery({ context_path: supervised.project, harness_session_id: "harness:w" })).toBeNull();
+
+    const plain = setup("grok");
+    await plain.send("for the hook");
+    expect(plain.service.prepareGrokHookDelivery({ context_path: plain.project, harness_session_id: "harness:w" })).toContain("for the hook");
+  });
+});
