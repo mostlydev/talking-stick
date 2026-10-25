@@ -1108,6 +1108,123 @@ export class TalkingStickService {
     return result;
   }
 
+  /** fenceManagedDelivery for a supervisor that knows only the batch token, not the room or member. */
+  fenceManagedBatch(input: { endpoint_address: string; delivery_secret: string; batch_token: string;
+    transition: "writing" | "written" | "unsent" }): { status: "managed_writing" | "managed_written" | "unsent" } {
+    const batch = this.db.prepare<[string], { room_id: string; agent_id: string }>(
+      "SELECT room_id, agent_id FROM native_delivery_batches WHERE token = ?").get(input.batch_token);
+    if (!batch) throw new ProtocolError("invalid_input", "That batch is not an open delivery.");
+    return this.fenceManagedDelivery({ ...input, room_id: batch.room_id, agent_id: batch.agent_id });
+  }
+
+  /** The present memberships of one harness session, whatever process last joined. */
+  findMembersForSession(input: { harness_name: string; harness_session_id: string }):
+    Array<{ room_id: string; agent_id: AgentId; canonical_path: string; harness_pid: number | null; harness_process_started_at: string | null }> {
+    return this.db.prepare<[string, string, string], RoomMemberRow>(`SELECT * FROM room_members WHERE harness_name = ?
+      AND harness_session_id = ? AND harness_host_id = ?`).all(input.harness_name, input.harness_session_id, this.hostId)
+      .map((member) => ({ room_id: member.room_id, agent_id: member.agent_id, canonical_path: this.requireRoom(member.room_id).canonical_path,
+        harness_pid: member.harness_pid, harness_process_started_at: member.harness_process_started_at?.trim() ?? null }));
+  }
+
+  /**
+   * A supervised worker's new process never inherits its old process's turn:
+   * the stick or reservation that exact prior process held is released, not
+   * moved. Nothing is acquired on the new process's behalf.
+   */
+  releasePriorProcessGrant(input: { room_id: string; agent_id: AgentId; harness_pid: number; harness_process_started_at: string }):
+    { released: boolean } {
+    return this.writeTransaction(() => ({ released: this.releaseGrantLocked(input) }));
+  }
+
+  private releaseGrantLocked(input: { room_id: string; agent_id: AgentId; harness_pid: number; harness_process_started_at: string }): boolean {
+    const member = this.getMember(input.room_id, input.agent_id);
+    const room = this.requireRoom(input.room_id);
+    if (!member || member.harness_pid !== input.harness_pid ||
+        member.harness_process_started_at?.trim() !== input.harness_process_started_at.trim()) return false;
+    const owned = room.owner === input.agent_id;
+    const reserved = room.reserved_for === input.agent_id;
+    if (!owned && !reserved) return false;
+    const owner = owned ? null : room.owner;
+    const reservedFor = reserved ? null : room.reserved_for;
+    const timestamp = this.now().toISOString();
+    this.db.prepare(`UPDATE path_rooms SET owner = ?, reserved_for = ?, lease_id = ?, lease_expires_at = ?,
+      claim_expires_at = ?, pending_handoff_event_seq = ?, state = ?, updated_at = ? WHERE room_id = ?`).run(owner, reservedFor,
+        owner ? room.lease_id : null, owner ? room.lease_expires_at : null, reservedFor ? room.claim_expires_at : null,
+        owner ? room.pending_handoff_event_seq : null,
+        room.state === "closed" ? "closed" : owner ? "owned" : reservedFor ? "reserved" : "idle", timestamp, room.room_id);
+    this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "release", from_agent_id: input.agent_id,
+      to_agent_id: null, handoff: null, reason: "process_replaced", created_at: timestamp });
+    return true;
+  }
+
+  /**
+   * Re-binds a supervised worker's present membership to its current
+   * process and endpoint, in one transaction. The membership must still be
+   * exactly the one the supervisor saw (same session and prior process), and
+   * the session's credential must match; a membership removed meanwhile is
+   * never recreated. Only a replaced process's stick or reservation is
+   * released; the same process keeps its turn.
+   */
+  rebindSupervisedMember(input: {
+    room_id: string; agent_id: AgentId; harness_session_id: string; credential: string;
+    prior_pid: number; prior_process_started_at: string; process_metadata: ProcessMetadata;
+    endpoint_address: string; delivery_secret: string;
+  }): { status: "rebound" } {
+    return this.writeTransaction(() => {
+      const member = this.getMember(input.room_id, input.agent_id);
+      if (!member) throw new ProtocolError("unknown_member", "That membership no longer exists.", { agent_id: input.agent_id });
+      if (member.harness_session_id !== input.harness_session_id || member.harness_pid !== input.prior_pid ||
+          member.harness_process_started_at?.trim() !== input.prior_process_started_at.trim()) {
+        throw new ProtocolError("invalid_input", "That membership changed since the supervisor read it.", { agent_id: input.agent_id });
+      }
+      if (!this.verifyRecoveryCredential({ room_id: input.room_id, agent_id: input.agent_id,
+        harness_session_id: input.harness_session_id, credential: input.credential })) {
+        throw new ProtocolError("invalid_input", "The recovery credential does not match this session.", { agent_id: input.agent_id });
+      }
+      const current = normalizeProcessMetadata(input.process_metadata);
+      const replaced = current.harness_pid !== input.prior_pid ||
+        current.harness_process_started_at?.trim() !== input.prior_process_started_at.trim();
+      if (replaced) {
+        this.releaseGrantLocked({ room_id: input.room_id, agent_id: input.agent_id, harness_pid: input.prior_pid,
+          harness_process_started_at: input.prior_process_started_at });
+        this.applyPresence(input.room_id, input.agent_id, this.now().toISOString(), {
+          processMetadata: input.process_metadata, recordWait: false, allowCreate: false, requireMember: true });
+      }
+      this.registerNativeWakeEndpoint({ agent_id: input.agent_id, room_id: input.room_id, transport: "supervisor",
+        address: input.endpoint_address, secret: input.delivery_secret, harness_session_id: input.harness_session_id,
+        host_id: current.harness_host_id ?? this.hostId });
+      return { status: "rebound" as const };
+    });
+  }
+
+  /** Whether a credential is the one issued to this member's session. */
+  verifyRecoveryCredential(input: { room_id: string; agent_id: AgentId; harness_session_id: string; credential: string }): boolean {
+    const stored = this.db.prepare<[string, string], { harness_session_id: string; secret_hash: string }>(
+      "SELECT harness_session_id, secret_hash FROM member_credentials WHERE room_id = ? AND agent_id = ?").get(input.room_id, input.agent_id);
+    return Boolean(stored && stored.harness_session_id === input.harness_session_id && stored.secret_hash === hashCredential(input.credential));
+  }
+
+  /** The lost memberships of one harness session, from any of its processes. */
+  findLostMembersForSession(input: { harness_name: string; harness_session_id: string }):
+    Array<{ room_id: string; agent_id: AgentId; canonical_path: string }> {
+    return this.db.prepare<[string, string, string], { room_id: string; agent_id: string }>(
+      "SELECT room_id, agent_id FROM lost_room_members WHERE harness_name = ? AND session_id = ? AND host_id = ?")
+      .all(input.harness_name, input.harness_session_id, this.hostId)
+      .filter((row) => this.getLostMember(row.room_id, row.agent_id))
+      .map((row) => ({ ...row, canonical_path: this.requireRoom(row.room_id).canonical_path }));
+  }
+
+  /** The lost memberships of one exact harness process, for its supervisor's recovery join. */
+  findLostMembersForProcess(input: { harness_name: string; harness_session_id: string; pid: number; process_started_at: string }):
+    Array<{ room_id: string; agent_id: AgentId; canonical_path: string }> {
+    return this.db.prepare<[string, string, string, number, string], { room_id: string; agent_id: string }>(
+      `SELECT room_id, agent_id FROM lost_room_members WHERE harness_name = ? AND session_id = ? AND host_id = ?
+       AND pid = ? AND process_started_at = ?`).all(input.harness_name, input.harness_session_id, this.hostId,
+        input.pid, input.process_started_at.trim())
+      .filter((row) => this.getLostMember(row.room_id, row.agent_id))
+      .map((row) => ({ ...row, canonical_path: this.requireRoom(row.room_id).canonical_path }));
+  }
+
   /**
    * An operator's decision on a fenced managed batch whose effect is unknown:
    * resend lets tt offer it again, drop marks it read without delivering it.
@@ -2916,6 +3033,15 @@ export class TalkingStickService {
             input.agent_id,
             input.transport
           );
+      }
+      // A new supervisor generation is offered what the last one never got:
+      // unread work outside every fenced batch.
+      if (input.transport === "supervisor" && this.db.prepare(`SELECT 1 FROM native_event_receipts n
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL AND ${UNFENCED_MANAGED_RECEIPT} LIMIT 1`)
+        .get(input.room_id, input.agent_id)) {
+        this.db.prepare(`UPDATE member_wake_endpoints SET wake_pending = 1, wake_reason = COALESCE(wake_reason, 'message')
+          WHERE room_id = ? AND agent_id = ? AND transport = 'supervisor' AND awaiting_wait = 0`).run(input.room_id, input.agent_id);
+        this.wakeRooms.add(input.room_id);
       }
       return {
         status: "native_wake_endpoint_registered",

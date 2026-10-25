@@ -37,6 +37,12 @@ export interface WorkerSpec {
   /** Resume this native session; a worker that cannot resume is held, never restarted fresh. */
   resume_session_id?: string;
   env: EnvReference[];
+  /**
+   * Set by the supervisor for one start and never stored: the worker's
+   * supervisor endpoint and delivery token, given only to workers that can
+   * take a prompt. Adapters pass these to the child as environment variables.
+   */
+  supervisor_env?: Record<string, string>;
 }
 
 export type InputMode = "start_turn" | "steer";

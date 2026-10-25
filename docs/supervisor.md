@@ -115,7 +115,8 @@ reached only through its own `tt` calls.
   (`crash_loop`). A restart resumes the recorded native session. If the adapter can't resume, or
   the resume fails, the worker is held (`resume_failed`) instead of starting a new conversation.
   Each start intent records the session it means to resume, so a retry after a failed attempt
-  still resumes the original conversation.
+  still resumes the original conversation. A configured `resume_session_id` seeds only the first
+  start; after that the latest generation decides.
   An operator's restart stops the running generation and resumes its session. Only a fresh
   restart begins a new conversation.
 - **When a generation ends**, its written inputs become `uncertain`, its pending approvals expire,
@@ -183,7 +184,12 @@ Fencing for writing also refuses a batch any of whose events is gone, already re
 another managed batch, since its text would repeat that event. The batch is released unwritten,
 and tt builds a new envelope from what remains unread. A crash between fence and write is held for
 that decision. Intake that was journalled but never
-fenced may be re-offered by tt.
+fenced may be re-offered by tt: when the next generation registers its endpoint, tt wakes it for
+unread work outside every fenced batch.
+
+The daemon writes one worker's envelopes in order: it starts a turn when the worker is idle,
+steers when a Codex worker is busy, and otherwise waits for the turn to end. An envelope whose
+writing fence is refused is rejected without being written. Envelope text is kept only in memory.
 
 Events in a fenced batch are left out of every later envelope, from a wake, a Codex or Grok
 hook, or an interrupt, and a member whose only pending work is fenced isn't woken at all. A member with a supervisor endpoint has no other native
@@ -205,17 +211,38 @@ performs the explicit recovery join:
 - it proves the worker's exact process identity;
 - it then re-registers the endpoint.
 
+A resumed generation of a session also re-binds memberships still bound to an earlier generation:
+- A present membership moves to the new process only with the session's own credential, in one
+  room transaction (`rebindSupervisedMember`). The membership must still be exactly the one the
+  supervisor read, and one removed meanwhile is never recreated. Only a replaced process's stick or
+  reservation is released (`release`, reason `process_replaced`), never moved. The same process
+  whose endpoint was lost keeps its turn.
+- A membership lost before the crash is recovered through the room's rules. The supervisor first
+  records the session start it observed through the protocol on that exact process, since a
+  headless worker loads no user hooks.
+
 Recovery necessarily records presence through that join, but it renews no lease, sends no prompt
 and fabricates no model activity. It stops at `member_revoked`, and never acts for a session it
 didn't start.
+
+The daemon writes nothing while a worker waits for an approval or input, reads unknown,
+disconnected or unauthenticated, or has a turn it didn't see start. A Codex turn is steered only
+while the supervisor knows it's running.
+
+## What the supervisor does not prove
+
+A managed worker's wake and recovery are proven for processes the supervisor owns. They don't
+show that an existing terminal session whose native conversation was unloaded gets woken
+hands-free. That gap, from the membership recovery work, stays open, and neither the overnight
+incident nor existing sessions are claimed solved by headless-worker tests.
 
 ## Slices
 
 | Slice | Owner | Contents | State |
 | --- | --- | --- | --- |
 | S2a1 | Claude | adapter types, state, reconcile loop, owner lock, FakeAdapter tests | merged (#203) |
-| S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | this change |
-| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | next |
+| S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | #204 |
+| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | this change |
 | S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | after S2a2 |
 | S2b | Claude | Claude stream-json adapter | after S2a |
 | S2c | Codex | Codex app-server adapter | after S2a |
