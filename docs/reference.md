@@ -997,8 +997,11 @@ An explicit `tt leave` or `tt kick` of a lost member also keeps that harness ses
 out of the room: later joins fail with `member_revoked`, even after a session-start
 event. A new harness session can join. A loss also ends for good when another session
 starts in the same single-session process (not a Codex app-server or `claude -p`
-host), or when the exact process has read gone for an hour. Grok members are
-removed on the end event as before. Each lifecycle event is logged in the room
+host), or when the exact process has read gone for an hour. Grok is unchanged:
+the installed `tt grok-session-hook` only records the session in
+`grok-sessions.jsonl` and ends no membership, and a Grok end reported through
+`tt session-hook grok` still removes the member, with reason `session_ended`
+and no lost snapshot. Each lifecycle event is logged in the room
 database's `harness_lifecycle_log` for 30 days. The log keeps the hook's reason and
 source and whether the process is single-session, never its command line.
 
