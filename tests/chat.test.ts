@@ -2755,6 +2755,47 @@ test.each([true, false])("Ctrl-G visits only messages for the human, oldest firs
   } finally { input.end(); await session; vt.dispose(); }
 });
 
+test.each([true, false])("during Ctrl-G review only the message under review is bright, however old (inline=%s)", async inline => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
+  service.joinPath({ agent_id: "human:op", context_path: root, process_metadata: observerIdentity().process_metadata });
+  const old = service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "old note for op" });
+  service.db.prepare("UPDATE room_events SET created_at = ? WHERE event_seq = ?")
+    .run(new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString(), old.event_seq);
+  service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: "fresh room context" });
+  const input = Object.assign(new PassThrough(), { setRawMode() {} });
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 28 });
+  const vt = new Terminal({ cols: 100, rows: 28, allowProposedApi: true });
+  vt.onData(data => input.write(data));
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("\u001b[0m", resolve));
+  // Whether a body is drawn dim, read from the terminal's cells.
+  const dim = (body: string) => {
+    for (let y = 0; y < output.rows; y++) {
+      const line = vt.buffer.active.getLine(vt.buffer.active.baseY + y);
+      const x = (line?.translateToString(true) ?? "").indexOf(body);
+      if (x >= 0) return Boolean(line!.getCell(x)?.isDim());
+    }
+    return null;
+  };
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline,
+    color: true, history: 10, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Type to message the room"));
+    await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+    expect([dim("old note for op"), dim("fresh room context")]).toEqual([true, false]);
+    input.write("\u0007");
+    await until(() => service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).total === 0);
+    await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+    expect([dim("old note for op"), dim("fresh room context")]).toEqual([false, true]);
+    input.write("\u001b");
+    await new Promise(resolve => setTimeout(resolve, 150)); await flush();
+    expect([dim("old note for op"), dim("fresh room context")]).toEqual([true, false]);
+  } finally { input.end(); await session; vt.dispose(); }
+});
+
 test.each([true, false])("Ctrl-G lands on one visible message for you per press (inline=%s)", async inline => {
   const { root, service } = setupService();
   const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });

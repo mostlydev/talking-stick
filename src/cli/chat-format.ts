@@ -257,7 +257,11 @@ export function formatChatEvent(
   event: RoomEvent,
   context: ChatFormatContext
 ): string | null {
-  const historical = context.dim_history !== false && isHistoricalChatEvent(event, context);
+  // While reviewing unread messages, only the one under review reads at full
+  // brightness, however old; everything around it is gray. Otherwise history is.
+  const historical = context.focused_event !== undefined
+    ? event.event_seq !== context.focused_event
+    : context.dim_history !== false && isHistoricalChatEvent(event, context);
   const text = formatCurrentChatEvent(event, historical ? { ...context, color: false } : context);
   return text === null || !historical ? text : text.split("\n").map((line) => paint(context, `2;${themeStyle("muted", context.color_mode)}`, line)).join("\n");
 }
