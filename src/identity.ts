@@ -137,10 +137,13 @@ export function deriveHarnessCliIdentity(
     parentInspection,
     inspector
   );
+  const harnessRoot = findSignalHarnessRoot(signal, processRef,
+    { pid: parentPid, inspection: parentInspection }, inspector);
   const username = options.username ?? safeUsername();
   const sessionId = resolveHarnessSessionId(
     signal,
     env,
+    harnessRoot,
     processRef.pid,
     processRef.inspection,
     username,
@@ -155,7 +158,10 @@ export function deriveHarnessCliIdentity(
 
   const agentId =
     options.agentId ?? harnessAgentId(signal.harness, sessionId, hostId, username);
-  const harnessProcess = resolveHarnessProcessRef(signal, processRef, inspector);
+  const harnessProcess = harnessRoot ?? {
+    pid: processRef.pid,
+    startTime: processRef.inspection?.startTime ?? null
+  };
 
   return {
     agent_id: agentId,
@@ -191,6 +197,7 @@ function harnessAgentId(
 function resolveHarnessSessionId(
   signal: HarnessSignal,
   env: NodeJS.ProcessEnv,
+  harnessRoot: { pid: number; startTime: string } | null,
   parentPid: number,
   parentInspection: ProcessInspection | null | undefined,
   username: string,
@@ -204,12 +211,6 @@ function resolveHarnessSessionId(
 ): string {
   if (signal.sessionId) return `harness:${signal.sessionId}`;
 
-  const harnessRoot = findHarnessRootInAncestry(
-    signal.harness,
-    parentPid,
-    parentInspection,
-    inspector
-  );
   if (signal.harness === "grok") {
     const grokSessionId = resolveGrokHookSessionId(
       env,
@@ -234,33 +235,36 @@ function resolveHarnessSessionId(
   return `userhost:${sanitizeIdentityComponent(username)}@${hostId}`;
 }
 
-function resolveHarnessProcessRef(
+function findSignalHarnessRoot(
   signal: HarnessSignal,
   processRef: {
     pid: number;
     inspection: ProcessInspection | null | undefined;
   },
+  callerRef: {
+    pid: number;
+    inspection: ProcessInspection | null | undefined;
+  },
   inspector: ProcessInspector
-): { pid: number; startTime: string | null } {
-  const harnessRoot = findHarnessRootInAncestry(
+): { pid: number; startTime: string } | null {
+  // An inherited CMUX_CLAUDE_PID names the outer session's process, so a
+  // Claude anchor is taken from the caller's own ancestry first.
+  return (signal.harness === "claude" && processRef.pid !== callerRef.pid
+    ? findHarnessRootInAncestry(signal.harness, callerRef.pid, callerRef.inspection, inspector)
+    : null) ?? findHarnessRootInAncestry(
     signal.harness,
     processRef.pid,
     processRef.inspection,
     inspector
   );
-  if (harnessRoot) {
-    return harnessRoot;
-  }
-
-  return {
-    pid: processRef.pid,
-    startTime: processRef.inspection?.startTime ?? null
-  };
 }
 
-// Walks the process ancestry (inclusive of startPid) looking for the deepest
+// Walks the process ancestry (inclusive of startPid) looking for the outermost
 // process whose command matches the named harness. Anchoring session id to
 // that root keeps repeated CLI invocations stable through intermediate shells.
+// Claude is anchored to the nearest match instead: a Claude started by another
+// Claude session is its own session, and its shells and hooks are direct
+// children of its own process.
 export function findHarnessRootInAncestry(
   harness: HarnessCliHarness,
   startPid: number,
@@ -268,6 +272,7 @@ export function findHarnessRootInAncestry(
   inspector: ProcessInspector,
   maxDepth = 10
 ): { pid: number; startTime: string } | null {
+  const nearest = harness === "claude";
   let result: { pid: number; startTime: string } | null = null;
   let currentPid: number | null | undefined = startPid;
   let currentInspection = startInspection;
@@ -290,6 +295,7 @@ export function findHarnessRootInAncestry(
       currentInspection.startTime
     ) {
       result = { pid: currentPid, startTime: currentInspection.startTime };
+      if (nearest) break;
     }
     currentPid = currentInspection.ppid ?? null;
     childStartedAt = startedAt;

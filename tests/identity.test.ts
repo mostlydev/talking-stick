@@ -193,6 +193,47 @@ describe("deriveHarnessCliIdentity", () => {
     expect(identity).toBeNull();
   });
 
+  test("anchors a Claude started by another Claude session to its own process", () => {
+    const nested = fakeInspector({
+      9100: { startTime: "Thu Apr 23 14:10:00 2026", command: "bash", ppid: 9050 },
+      9050: { startTime: "Thu Apr 23 14:05:00 2026", command: "claude", ppid: 9020 },
+      9020: { startTime: "Thu Apr 23 14:00:00 2026", command: "bash", ppid: 8000 },
+      8000: { startTime: "Thu Apr 23 13:50:00 2026", command: "claude", ppid: 1 }
+    });
+
+    for (const env of [
+      { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "inner" },
+      // cmux exports the outer session's pid, and a nested Claude inherits it.
+      { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "inner", CMUX_CLAUDE_PID: "8000" },
+      // Without a session id the fallback session is the inner process too.
+      { CLAUDECODE: "1", CMUX_CLAUDE_PID: "8000" }
+    ]) {
+      const identity = deriveHarnessCliIdentity({
+        env, username: "alice", parentPid: 9100, hostId: "test-host", inspector: nested
+      });
+      expect(identity!.process_metadata).toMatchObject({
+        harness_session_id: env.CLAUDE_CODE_SESSION_ID
+          ? "harness:inner" : "pid:9050@Thu Apr 23 14:05:00 2026",
+        harness_pid: 9050,
+        harness_process_started_at: "Thu Apr 23 14:05:00 2026"
+      });
+    }
+  });
+
+  test("keeps the outermost matching ancestor for a nested Codex", () => {
+    const nested = fakeInspector({
+      9100: { startTime: "Thu Apr 23 14:10:00 2026", command: "bash", ppid: 9050 },
+      9050: { startTime: "Thu Apr 23 14:05:00 2026", command: "codex", ppid: 8000 },
+      8000: { startTime: "Thu Apr 23 13:50:00 2026", command: "codex", ppid: 1 }
+    });
+
+    const identity = deriveHarnessCliIdentity({
+      env: { CODEX_THREAD_ID: "thread" }, username: "alice", parentPid: 9100,
+      hostId: "test-host", inspector: nested
+    });
+    expect(identity!.process_metadata.harness_pid).toBe(8000);
+  });
+
   test("detects Codex and prefers CODEX_THREAD_ID for stable identity across invocations", () => {
     const first = deriveHarnessCliIdentity({
       env: {

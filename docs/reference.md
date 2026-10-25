@@ -215,7 +215,10 @@ any chat console, and later joins resolve to the parent room.
 
 On the local host, members whose harness process has definitely ended and whose last `tt`
 activity was over an hour ago are removed automatically, except the stick holder and reserved
-recipient. Unknown or remote process liveness is preserved. For a stuck holder, follow the
+recipient. The hour also runs from the first reading that found the process gone: one such
+reading after a long silence only starts it, and a reading that finds the same process
+running, or that member's own later `tt` use, cancels it. An idle room is kept while a member is
+inside that hour. Unknown or remote process liveness is preserved. For a stuck holder, follow the
 takeover eligibility reported by `tt wait`; a single process-gone observation does not
 immediately revoke a live lease.
 
@@ -611,7 +614,7 @@ footer below the lower input rule shows each agent's most useful state, without 
 (reserved for the next turn), `standby`, `away` (inactive with no confirmation that its process is
 still running), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its
 last `tt` command). Agents whose process has ended are left out of the footer; `/who` lists them as
-ended, and after an hour the room removes them. The stick holder is listed first. The line refreshes
+ended, and once it has read them as ended for an hour the room removes them. The stick holder is listed first. The line refreshes
 on room events and every 10 seconds, and is trimmed to the terminal width with a `+N` count for
 agents that don't fit.
 

@@ -226,6 +226,12 @@ interface NoteRow {
 
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
 const ENDED_MEMBER_GRACE_MS = 60 * 60 * 1000;
+
+/** The process fields a liveness reading of a member depends on. */
+function livenessIdentity(member: RoomMemberRow): string {
+  return JSON.stringify([member.host_id, member.pid, member.process_started_at?.trim() ?? null,
+    member.harness_host_id, member.harness_pid, member.harness_process_started_at?.trim() ?? null]);
+}
 const MAX_MESSAGE_BODY_BYTES = 4096;
 // Wake failure detail is a phase and a known system code, never transport
 // output: anything outside these lists is dropped rather than shown.
@@ -5763,17 +5769,29 @@ export class TalkingStickService {
     // Process inspection can fork ps and stall under system pressure. Do it
     // without a writer lock, then validate the snapshot before any deletion.
     const rooms = this.db.prepare<[], PathRoomRow>("SELECT * FROM path_rooms").all();
+    const graceCutoff = now.getTime() - ENDED_MEMBER_GRACE_MS;
     for (const room of rooms) {
       const members = this.getMembers(room.room_id);
-      const ended = members.filter(member =>
-        member.agent_id !== room.owner && member.agent_id !== room.reserved_for &&
-        parseTimestampMs(member.last_seen_at) < now.getTime() - ENDED_MEMBER_GRACE_MS &&
-        this.getMemberProcessLiveness(member) === "gone"
-      );
+      // One gone reading proves nothing after a long silence: removal needs
+      // the same exact process to read gone across the whole grace.
+      const readings = new Map<string, ProcessLiveness>();
+      for (const member of members) {
+        if (member.agent_id === room.owner || member.agent_id === room.reserved_for ||
+            parseTimestampMs(member.last_seen_at) >= graceCutoff) continue;
+        readings.set(member.agent_id, this.getMemberProcessLiveness(member));
+      }
+      const observations = this.recordGoneObservations(room.room_id, members, readings, now);
+      const ended = members.filter(member => {
+        const firstGoneAt = observations.get(member.agent_id);
+        return readings.get(member.agent_id) === "gone" && firstGoneAt !== undefined &&
+          parseTimestampMs(firstGoneAt) < graceCutoff;
+      });
       const endedIds = new Set(ended.map(member => member.agent_id));
       const remaining = members.filter(member => !endedIds.has(member.agent_id));
+      // A member still inside its gone grace keeps the room as well.
       const expire = expireRooms && this.latestRoomActivityMs(room, remaining) <= cutoffMs &&
-        !remaining.some(member => this.shouldRetainIdleRoom(member, now));
+        !remaining.some(member => this.shouldRetainIdleRoom(member, now) ||
+          (!isObserverMember(member) && readings.get(member.agent_id) === "gone"));
       if (!ended.length && !expire) continue;
 
       this.writeTransaction(() => {
@@ -5784,6 +5802,15 @@ export class TalkingStickService {
         // the probe. Leave that room for a later cleanup pass.
         if (!current || JSON.stringify(current) !== JSON.stringify(room) ||
             JSON.stringify(this.getMembers(room.room_id)) !== JSON.stringify(members)) return;
+        // An alive reading by another pass clears an observation without
+        // touching the member row, so the observation is part of the check.
+        if (ended.some(member => {
+          const stored = this.db.prepare<[string, string], { identity: string; first_gone_at: string }>(
+            "SELECT identity, first_gone_at FROM member_gone_observations WHERE room_id = ? AND agent_id = ?"
+          ).get(room.room_id, member.agent_id);
+          return !stored || stored.identity !== livenessIdentity(member) ||
+            stored.first_gone_at !== observations.get(member.agent_id);
+        })) return;
         if (expire) { this.deleteRoom(room.room_id); return; }
         for (const member of ended) {
           this.db.prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
@@ -5796,6 +5823,58 @@ export class TalkingStickService {
         }
       });
     }
+  }
+
+  /**
+   * Keeps each member's first gone reading for its exact process. Only an
+   * alive reading of that process, or the session's own later tt use, clears
+   * it; an unknown reading leaves it as it was. Returns the valid first gone
+   * time per member.
+   */
+  private recordGoneObservations(
+    roomId: string,
+    members: RoomMemberRow[],
+    readings: Map<string, ProcessLiveness>,
+    now: Date
+  ): Map<string, string> {
+    const valid = new Map<string, string>();
+    if (!readings.size) return valid;
+    const stored = new Map(this.db.prepare<[string], { agent_id: string; identity: string; first_gone_at: string }>(
+      "SELECT agent_id, identity, first_gone_at FROM member_gone_observations WHERE room_id = ?"
+    ).all(roomId).map(row => [row.agent_id, row]));
+    const writes: Array<{ member: RoomMemberRow; identity: string; firstGoneAt: string | null }> = [];
+    for (const member of members) {
+      const reading = readings.get(member.agent_id);
+      if (!reading || reading === "unknown") continue;
+      const identity = livenessIdentity(member);
+      const previous = stored.get(member.agent_id);
+      const current = previous && previous.identity === identity &&
+        parseTimestampMs(previous.first_gone_at) >= parseTimestampMs(member.last_seen_at)
+        ? previous.first_gone_at : null;
+      if (reading === "gone") {
+        if (current) valid.set(member.agent_id, current);
+        else writes.push({ member, identity, firstGoneAt: now.toISOString() });
+      } else if (previous) {
+        writes.push({ member, identity, firstGoneAt: null });
+      }
+    }
+    if (!writes.length) return valid;
+    this.writeTransaction(() => {
+      for (const { member, identity, firstGoneAt } of writes) {
+        // A concurrent identity refresh or tt use supersedes this inspection.
+        const fresh = this.getMember(roomId, member.agent_id);
+        if (!fresh || livenessIdentity(fresh) !== identity || fresh.last_seen_at !== member.last_seen_at) continue;
+        if (firstGoneAt) {
+          this.db.prepare(`INSERT OR REPLACE INTO member_gone_observations
+            (room_id, agent_id, identity, first_gone_at) VALUES (?, ?, ?, ?)`)
+            .run(roomId, member.agent_id, identity, firstGoneAt);
+        } else {
+          this.db.prepare("DELETE FROM member_gone_observations WHERE room_id = ? AND agent_id = ?")
+            .run(roomId, member.agent_id);
+        }
+      }
+    });
+    return valid;
   }
 
   private latestRoomActivityMs(
