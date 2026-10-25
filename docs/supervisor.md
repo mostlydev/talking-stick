@@ -13,9 +13,12 @@ control only. They are not a security sandbox.
 
 An adapter speaks one harness's headless protocol. The interface is `src/supervisor/adapter.ts`.
 
-- `start(spec, generation)` spawns and handshakes. It never takes a prompt: the supervisor records
-  the new generation's pid, process start time and process group, and subscribes to its events,
-  before any input.
+- `start(spec, generation, onSpawn)` spawns and handshakes. It never takes a prompt.
+  - The supervisor records the start intent before the spawn.
+  - The adapter calls `onSpawn` with the child's pid, process start time and process group the
+    moment the child exists, before the handshake, so the child is owned even if the supervisor
+    crashes mid-handshake.
+  - A child whose handshake fails is stopped before `start` rejects.
 - `capabilities()` reports what the adapter has proven: `prompt`, `resume`, `interrupt`,
   `approvals`. False means unavailable, never assumed.
 - `submit({ input_id, text, mode })` writes one journalled input. The mode is `start_turn` for an
@@ -77,8 +80,12 @@ reached only through its own `tt` calls.
   - When a generation ends, anything dispatched is uncertain; only input never dispatched is
     rejected.
   - Input text is not stored.
-- `approvals`, keyed by worker, generation and native request id. Codex's id `0` is valid and
-  repeats across processes.
+- `approvals`: each request occurrence has its own `approval_id`.
+  - A native id may repeat across processes, like Codex's `0`, or within one generation once its
+    earlier request settled. Each repeat is a new request.
+  - A second request under an id that's still pending is a protocol error, and holds the worker.
+  - The decision and the delivery of its answer are recorded separately, so a failed pipe write
+    leaves the decision made and `answer_status` failed.
 - `crashes`, and an `audit` log of every control action.
 
 ## The reconcile loop
@@ -88,16 +95,23 @@ reached only through its own `tt` calls.
 - **One owner** per data directory: a lock file names the owner's exact process, and is taken
   over only once that process is gone. Reapers are serialized by a guard directory, so two
   contenders never both take a dead owner's lock.
-- **Startup reconciliation** runs before anything is started. A recorded generation whose exact
-  process is alive, or can't be read, holds its worker (`prior_generation_alive`,
-  `prior_generation_unknown`), and the operator decides. A gone one is ended. The supervisor never
-  runs a second copy of a worker, or adopts a process it didn't record.
-- **The tick** (every 30 s) compares desired and observed state. It starts, stops and probes. It
-  never prompts a worker, and never writes room presence.
+- **Startup reconciliation** is mandatory: the first tick refuses to run before it.
+  - A recorded generation whose exact process is alive, or can't be read, holds its worker
+    (`prior_generation_alive`, `prior_generation_unknown`), and the operator decides. So does a
+    start intent with no recorded child.
+  - A gone one is ended.
+  - The supervisor never runs a second copy of a worker, or adopts a process it didn't record.
+- **The tick** (every 30 s) compares desired and observed state. It starts, stops and probes.
+  - Workers are reconciled independently, and each may hold up a tick for at most 15 s, so a hung
+    handshake freezes no other worker.
+  - An unknown probe is recorded as `unknown`, and the worker's reported state comes back once it
+    reads alive.
+  - It never prompts a worker, and never writes room presence.
 - **Restarts** back off from 5 s to 5 min. Five crashes in 15 minutes hold the worker
   (`crash_loop`). A restart resumes the recorded native session. If the adapter can't resume, or
   the resume fails, the worker is held (`resume_failed`) instead of starting a new conversation.
-  Only an operator's fresh restart does that.
+  An operator's restart stops the running generation and resumes its session. Only a fresh
+  restart begins a new conversation.
 - **When a generation ends**, its written inputs become `uncertain`, its pending approvals expire,
   and nothing carries over to the next generation. A new generation never inherits a writer
   lease: tt's own lease and guardian rules apply to each worker like any member.

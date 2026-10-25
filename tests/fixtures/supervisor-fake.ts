@@ -1,5 +1,5 @@
 import type {
-  Capabilities, Harness, HarnessAdapter, InputMode, InputOutcome, WorkerEvent, WorkerHandle, WorkerSpec
+  Capabilities, Harness, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec
 } from "../../src/supervisor/adapter.js";
 
 // A scriptable adapter: tests drive its processes' events, liveness and input
@@ -63,10 +63,13 @@ export class FakeAdapter implements HarnessAdapter {
 
   capabilities(): Capabilities { return this.caps; }
 
-  async start(spec: WorkerSpec, generation: number): Promise<WorkerHandle> {
+  async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void): Promise<WorkerHandle> {
+    const pid = this.nextPid++;
+    onSpawn({ pid, processStartedAt: `start-${pid}`, pgid: pid });
+    // The handshake.
     if (this.holdStart) await this.holdStart;
     if (this.failStart?.(spec)) throw new Error("fake start failure");
-    const handle = new FakeHandle(spec, generation, this.nextPid++);
+    const handle = new FakeHandle(spec, generation, pid);
     this.handles.push(handle);
     return handle;
   }

@@ -15,7 +15,7 @@ export type GenerationState =
 
 export type HoldReason =
   | "crash_loop" | "prior_generation_alive" | "prior_generation_unknown"
-  | "resume_failed" | "overflow" | "start_failed";
+  | "resume_failed" | "overflow" | "start_failed" | "protocol_error";
 
 export interface WorkerRow {
   worker_id: string;
@@ -28,14 +28,17 @@ export interface WorkerRow {
   next_start_at: string | null;
   /** Set by an operator's fresh restart: the next start begins a new conversation. */
   fresh_next: number;
+  /** Set by an operator's restart: the running generation is stopped and started again. */
+  restart_next: number;
 }
 
 export interface GenerationRow {
   worker_id: string;
   generation: number;
-  pid: number;
-  process_started_at: string;
-  pgid: number;
+  /** Null until the adapter reports the spawned child: a start intent. */
+  pid: number | null;
+  process_started_at: string | null;
+  pgid: number | null;
   session_id: string | null;
   state: GenerationState;
   started_at: string;
@@ -74,6 +77,8 @@ export function inputAdvances(current: InputState, next: InputState): boolean {
 }
 
 export interface ApprovalRow {
+  /** Unique per request: a native id reused in one generation is a new request. */
+  approval_id: string;
   worker_id: string;
   generation: number;
   native_request_id: string;
@@ -83,6 +88,8 @@ export interface ApprovalRow {
   requested_at: string;
   decided_by: string | null;
   decided_at: string | null;
+  /** Whether the decided answer reached the worker; separate from the decision. */
+  answer_status: "pending" | "delivered" | "failed" | null;
 }
 
 const MIGRATIONS: Array<{ id: number; up: string }> = [{
@@ -96,14 +103,15 @@ const MIGRATIONS: Array<{ id: number; up: string }> = [{
     created_at TEXT NOT NULL,
     hold_reason TEXT,
     next_start_at TEXT,
-    fresh_next INTEGER NOT NULL DEFAULT 0
+    fresh_next INTEGER NOT NULL DEFAULT 0,
+    restart_next INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE generations (
     worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
     generation INTEGER NOT NULL,
-    pid INTEGER NOT NULL,
-    process_started_at TEXT NOT NULL,
-    pgid INTEGER NOT NULL,
+    pid INTEGER,
+    process_started_at TEXT,
+    pgid INTEGER,
     session_id TEXT,
     state TEXT NOT NULL,
     started_at TEXT NOT NULL,
@@ -126,6 +134,7 @@ const MIGRATIONS: Array<{ id: number; up: string }> = [{
     updated_at TEXT NOT NULL
   );
   CREATE TABLE approvals (
+    approval_id TEXT PRIMARY KEY,
     worker_id TEXT NOT NULL,
     generation INTEGER NOT NULL,
     native_request_id TEXT NOT NULL,
@@ -135,8 +144,10 @@ const MIGRATIONS: Array<{ id: number; up: string }> = [{
     requested_at TEXT NOT NULL,
     decided_by TEXT,
     decided_at TEXT,
-    PRIMARY KEY (worker_id, generation, native_request_id)
+    answer_status TEXT
   );
+  CREATE UNIQUE INDEX approvals_one_pending ON approvals (worker_id, generation, native_request_id)
+    WHERE status = 'pending';
   CREATE TABLE audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
@@ -246,12 +257,12 @@ export class SupervisorStore {
   }
 
   updateGeneration(workerId: string, generation: number, fields: Partial<Pick<GenerationRow,
-    "session_id" | "state" | "last_model_activity_at">>): void {
+    "session_id" | "state" | "last_model_activity_at" | "pid" | "process_started_at" | "pgid">>): void {
     const entries = Object.entries(fields);
     if (!entries.length) return;
     this.db.prepare(`UPDATE generations SET ${entries.map(([key]) => `${key} = ?`).join(", ")}
       WHERE worker_id = ? AND generation = ? AND ended_at IS NULL`)
-      .run(...entries.map(([, value]) => value as string | null), workerId, generation);
+      .run(...entries.map(([, value]) => value as string | number | null), workerId, generation);
   }
 
   /**
@@ -268,7 +279,7 @@ export class SupervisorStore {
         WHERE worker_id = ? AND generation = ? AND state IN ('dispatching', 'written', 'queued', 'accepted')`).run(at, workerId, generation).changes;
       this.db.prepare(`UPDATE inputs SET state = 'rejected', updated_at = ?
         WHERE worker_id = ? AND generation = ? AND state = 'journalled'`).run(at, workerId, generation);
-      this.db.prepare(`UPDATE approvals SET status = 'expired', decided_by = 'supervisor', decided_at = ?
+      this.db.prepare(`UPDATE approvals SET status = 'expired', decided_by = 'supervisor', decided_at = ?, answer_status = 'failed'
         WHERE worker_id = ? AND generation = ? AND status = 'pending'`).run(at, workerId, generation);
       return { uncertain };
     });
@@ -312,15 +323,22 @@ export class SupervisorStore {
       .run(outcome, at, workerId, generation, nativeTurnId);
   }
 
-  /** An operator's restart that starts a new conversation instead of resuming. */
-  restartFresh(workerId: string, actor: string, at: string): WorkerRow {
+  /**
+   * An operator's restart: the running generation stops and the next one
+   * resumes its session, or with fresh, begins a new conversation.
+   */
+  requestRestart(workerId: string, fresh: boolean, actor: string, at: string): WorkerRow {
     return this.transaction(() => {
       const changed = this.db.prepare(`UPDATE workers SET desired = 'running', desired_version = desired_version + 1,
-        hold_reason = NULL, next_start_at = NULL, fresh_next = 1 WHERE worker_id = ?`).run(workerId);
+        hold_reason = NULL, next_start_at = NULL, restart_next = 1, fresh_next = ? WHERE worker_id = ?`).run(fresh ? 1 : 0, workerId);
       if (changed.changes !== 1) throw new Error(`No worker named ${workerId}.`);
-      this.audit(at, actor, "restart_fresh", workerId);
+      this.audit(at, actor, fresh ? "restart_fresh" : "restart", workerId);
       return this.worker(workerId)!;
     });
+  }
+
+  clearRestart(workerId: string): void {
+    this.db.prepare("UPDATE workers SET restart_next = 0 WHERE worker_id = ?").run(workerId);
   }
 
   clearFresh(workerId: string): void {
@@ -331,19 +349,26 @@ export class SupervisorStore {
     return this.db.prepare<[string], InputRow>("SELECT * FROM inputs WHERE input_id = ?").get(inputId) ?? null;
   }
 
-  recordApproval(row: Omit<ApprovalRow, "status" | "decided_by" | "decided_at">): void {
-    // A native id can repeat once its earlier request is settled.
-    this.db.prepare(`INSERT INTO approvals (worker_id, generation, native_request_id, tool, summary, status, requested_at)
-      VALUES (?, ?, ?, ?, ?, 'pending', ?)
-      ON CONFLICT (worker_id, generation, native_request_id) DO UPDATE SET tool = excluded.tool,
-        summary = excluded.summary, status = 'pending', requested_at = excluded.requested_at,
-        decided_by = NULL, decided_at = NULL WHERE approvals.status != 'pending'`)
-      .run(row.worker_id, row.generation, row.native_request_id, row.tool, row.summary, row.requested_at);
+  /**
+   * Records a request. A native id still pending in the same generation is a
+   * protocol error, so the worker is held; a reused id after it settled is a
+   * new request with its own approval id.
+   */
+  recordApproval(row: Omit<ApprovalRow, "status" | "decided_by" | "decided_at" | "answer_status">): boolean {
+    if (this.pendingApproval(row.worker_id, row.generation, row.native_request_id)) return false;
+    this.db.prepare(`INSERT INTO approvals (approval_id, worker_id, generation, native_request_id, tool, summary, status, requested_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`).run(row.approval_id, row.worker_id, row.generation,
+        row.native_request_id, row.tool, row.summary, row.requested_at);
+    return true;
   }
 
-  approval(workerId: string, generation: number, nativeRequestId: string): ApprovalRow | null {
-    return this.db.prepare<[string, number, string], ApprovalRow>(
-      "SELECT * FROM approvals WHERE worker_id = ? AND generation = ? AND native_request_id = ?")
+  approval(approvalId: string): ApprovalRow | null {
+    return this.db.prepare<[string], ApprovalRow>("SELECT * FROM approvals WHERE approval_id = ?").get(approvalId) ?? null;
+  }
+
+  pendingApproval(workerId: string, generation: number, nativeRequestId: string): ApprovalRow | null {
+    return this.db.prepare<[string, number, string], ApprovalRow>(`SELECT * FROM approvals
+      WHERE worker_id = ? AND generation = ? AND native_request_id = ? AND status = 'pending'`)
       .get(workerId, generation, nativeRequestId) ?? null;
   }
 
@@ -351,12 +376,14 @@ export class SupervisorStore {
     return this.db.prepare<[], ApprovalRow>("SELECT * FROM approvals WHERE status = 'pending' ORDER BY requested_at").all();
   }
 
-  /** Settles a pending request; false when it was not pending. */
-  settleApproval(workerId: string, generation: number, nativeRequestId: string,
-    status: "allowed" | "denied" | "expired", actor: string, at: string): boolean {
-    return this.db.prepare(`UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?
-      WHERE worker_id = ? AND generation = ? AND native_request_id = ? AND status = 'pending'`)
-      .run(status, actor, at, workerId, generation, nativeRequestId).changes === 1;
+  /** Settles one pending request; false when it was not pending. */
+  settleApproval(approvalId: string, status: "allowed" | "denied" | "expired", actor: string, at: string): boolean {
+    return this.db.prepare(`UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, answer_status = 'pending'
+      WHERE approval_id = ? AND status = 'pending'`).run(status, actor, at, approvalId).changes === 1;
+  }
+
+  recordAnswer(approvalId: string, answer: "delivered" | "failed"): void {
+    this.db.prepare("UPDATE approvals SET answer_status = ? WHERE approval_id = ?").run(answer, approvalId);
   }
 
   auditRows(workerId?: string): Array<{ at: string; actor: string; action: string; worker_id: string | null; detail: string | null }> {

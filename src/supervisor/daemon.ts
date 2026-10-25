@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { Harness, HarnessAdapter, InputMode, InputOutcome, WorkerEvent, WorkerHandle, WorkerSpec } from "./adapter.js";
-import type { SupervisorStore, WorkerRow } from "./state.js";
+import type { GenerationState, SupervisorStore, WorkerRow } from "./state.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
 // running and acts. Its tick reads process liveness only; it never prompts a
@@ -13,6 +13,9 @@ export const CRASH_WINDOW_MS = 15 * 60_000;
 export const CRASH_LIMIT = 5;
 export const APPROVAL_EXPIRY_MS = 24 * 60 * 60_000;
 export const STOP_GRACE_MS = 10_000;
+/** No one worker's start, probe or stop may hold up a tick longer than this. */
+export const TICK_WAIT_MS = 15_000;
+export const PROBE_TIMEOUT_MS = 5_000;
 
 export type ProcessLivenessReader = (pid: number, processStartedAt: string) => "alive" | "gone" | "unknown";
 
@@ -22,12 +25,25 @@ export interface SupervisorOptions {
   processLiveness: ProcessLivenessReader;
   now?: () => Date;
   newId?: () => string;
+  /** How long one worker may hold up a tick; TICK_WAIT_MS by default. */
+  tickWaitMs?: number;
 }
 
+/** A decision names the exact request occurrence, not just its native id. */
 export interface ApprovalKey {
+  approval_id: string;
   worker_id: string;
   generation: number;
-  native_request_id: string;
+}
+
+/** Waits for a promise for at most ms; the promise keeps running. */
+async function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([promise, new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), ms); })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export class SupervisorError extends Error {}
@@ -41,6 +57,10 @@ export class Supervisor {
   private readonly handles = new Map<string, WorkerHandle>();
   private readonly starting = new Set<string>();
   private readonly stopping = new Set<string>();
+  /** The last state a generation's own events reported, restored after an unknown probe. */
+  private readonly reportedState = new Map<string, GenerationState>();
+  private reconciled = false;
+  private readonly tickWaitMs: number;
 
   constructor(options: SupervisorOptions) {
     this.store = options.store;
@@ -48,6 +68,7 @@ export class Supervisor {
     this.processLiveness = options.processLiveness;
     this.now = options.now ?? (() => new Date());
     this.newId = options.newId ?? randomUUID;
+    this.tickWaitMs = options.tickWaitMs ?? TICK_WAIT_MS;
   }
 
   private at(): string {
@@ -61,21 +82,27 @@ export class Supervisor {
   /**
    * Runs once before any start. A generation recorded as running whose exact
    * process may still be alive holds its worker: the daemon never starts a
-   * second copy or adopts a process it cannot prove it owns.
+   * second copy or adopts a process it cannot prove it owns. A start intent
+   * with no recorded child may have spawned one, so it holds too. It must run
+   * before the first tick.
    */
   reconcileStartup(): void {
     for (const row of this.store.liveGenerations()) {
-      const liveness = this.processLiveness(row.pid, row.process_started_at);
+      const liveness = row.pid === null || row.process_started_at === null
+        ? "unknown" : this.processLiveness(row.pid, row.process_started_at);
       if (liveness === "gone") {
         this.store.endGeneration(row.worker_id, row.generation, this.at(), { reason: "gone_at_startup" });
       } else {
         this.store.hold(row.worker_id, liveness === "alive" ? "prior_generation_alive" : "prior_generation_unknown", this.at());
       }
     }
+    this.reconciled = true;
   }
 
+  /** Each worker is reconciled independently and boundedly: one hung handshake freezes no other. */
   async tick(): Promise<void> {
-    for (const worker of this.store.workers()) await this.reconcileWorker(worker);
+    if (!this.reconciled) throw new SupervisorError("Reconcile recorded generations before the first tick.");
+    await Promise.allSettled(this.store.workers().map((worker) => bounded(this.reconcileWorker(worker), this.tickWaitMs)));
   }
 
   private async reconcileWorker(worker: WorkerRow): Promise<void> {
@@ -85,11 +112,23 @@ export class Supervisor {
       return;
     }
     if (handle) {
-      if (await handle.probe() === "gone") this.ended(worker.worker_id, handle, { reason: "probe_gone" });
-      else this.expireApprovals(worker.worker_id, handle);
+      // A requested restart stops this generation; the next tick starts the next one.
+      if (worker.restart_next) {
+        if (!this.stopping.has(worker.worker_id)) await this.stopHandle(worker.worker_id, handle);
+        return;
+      }
+      const liveness = await bounded(handle.probe(), PROBE_TIMEOUT_MS).catch(() => "unknown" as const) ?? "unknown";
+      if (liveness === "gone") {
+        this.ended(worker.worker_id, handle, { reason: "probe_gone" });
+        return;
+      }
+      const reported = this.reportedState.get(worker.worker_id) ?? "idle";
+      this.store.updateGeneration(worker.worker_id, handle.generation, { state: liveness === "unknown" ? "unknown" : reported });
+      this.expireApprovals(worker.worker_id, handle);
       return;
     }
     if (worker.hold_reason || this.starting.has(worker.worker_id)) return;
+    if (worker.restart_next) this.store.clearRestart(worker.worker_id);
     if (worker.next_start_at && Date.parse(worker.next_start_at) > this.now().getTime()) return;
     await this.start(worker);
   }
@@ -108,26 +147,33 @@ export class Supervisor {
       this.store.hold(worker.worker_id, "resume_failed", this.at());
       return;
     }
+    // The intent is durable before the spawn, and the child the moment it
+    // exists, so a crash at any point leaves evidence and never a duplicate.
     const generation = this.store.nextGenerationNumber(worker.worker_id);
+    this.store.recordGeneration({ worker_id: worker.worker_id, generation, pid: null, process_started_at: null,
+      pgid: null, session_id: null, state: "starting", started_at: this.at() });
     this.starting.add(worker.worker_id);
     let handle: WorkerHandle;
     try {
-      handle = await adapter.start({ ...spec, ...(resume ? { resume_session_id: resume } : { resume_session_id: undefined }) }, generation);
+      handle = await adapter.start({ ...spec, ...(resume ? { resume_session_id: resume } : { resume_session_id: undefined }) },
+        generation, (child) => this.store.updateGeneration(worker.worker_id, generation,
+          { pid: child.pid, process_started_at: child.processStartedAt, pgid: child.pgid }));
     } catch (error) {
       this.starting.delete(worker.worker_id);
+      this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "start_failed", error: String(error) });
       if (resume) this.store.hold(worker.worker_id, "resume_failed", this.at());
       else this.crashed(worker.worker_id, { reason: "start_failed", error: String(error) });
       return;
     }
     this.starting.delete(worker.worker_id);
     this.store.transaction(() => {
-      this.store.recordGeneration({ worker_id: worker.worker_id, generation, pid: handle.pid,
-        process_started_at: handle.processStartedAt, pgid: handle.pgid, session_id: handle.sessionId(),
-        state: "idle", started_at: this.at() });
+      this.store.updateGeneration(worker.worker_id, generation, { pid: handle.pid, process_started_at: handle.processStartedAt,
+        pgid: handle.pgid, session_id: handle.sessionId(), state: "idle" });
       if (worker.fresh_next) this.store.clearFresh(worker.worker_id);
       this.store.audit(this.at(), "supervisor", "start", worker.worker_id, { generation, pid: handle.pid, resumed: Boolean(resume) });
     });
     this.handles.set(worker.worker_id, handle);
+    this.reportedState.set(worker.worker_id, "idle");
     handle.onEvent((event) => this.onEvent(worker.worker_id, generation, event));
     // A control change while it started wins: the start was for an older version.
     const current = this.store.worker(worker.worker_id);
@@ -155,6 +201,10 @@ export class Supervisor {
     // Events from an older generation never touch the current one.
     if (!handle || handle.generation !== generation) return;
     const at = this.at();
+    const report = (state: GenerationState, fields: { last_model_activity_at?: string } = {}) => {
+      this.reportedState.set(workerId, state);
+      this.store.updateGeneration(workerId, generation, { state, ...fields });
+    };
     switch (event.type) {
       case "session":
         this.store.updateGeneration(workerId, generation, { session_id: event.session_id });
@@ -164,19 +214,24 @@ export class Supervisor {
         break;
       case "turn_started":
         if (event.input_id) this.store.updateInput(event.input_id, workerId, generation, "accepted", at, event.native_turn_id);
-        this.store.updateGeneration(workerId, generation, { state: "busy", last_model_activity_at: at });
+        report("busy", { last_model_activity_at: at });
         break;
       case "turn_completed":
         this.store.completeTurn(workerId, generation, event.native_turn_id, event.outcome, at);
-        this.store.updateGeneration(workerId, generation, { state: "idle", last_model_activity_at: at });
+        report("idle", { last_model_activity_at: at });
         break;
       case "approval_requested":
-        this.store.recordApproval({ worker_id: workerId, generation, native_request_id: event.native_request_id,
-          tool: event.tool, summary: event.summary.slice(0, 500), requested_at: at });
-        this.store.updateGeneration(workerId, generation, { state: "awaiting_approval" });
+        if (!this.store.recordApproval({ approval_id: this.newId(), worker_id: workerId, generation,
+          native_request_id: event.native_request_id, tool: event.tool, summary: event.summary.slice(0, 500), requested_at: at })) {
+          // A second request under a still-pending id is ambiguous: no decision could name it safely.
+          this.store.hold(workerId, "protocol_error", at);
+          this.stopHandle(workerId, handle).catch(() => {});
+          break;
+        }
+        report("awaiting_approval");
         break;
       case "state":
-        this.store.updateGeneration(workerId, generation, { state: event.state });
+        report(event.state);
         break;
       case "overflow":
         this.store.hold(workerId, "overflow", at);
@@ -217,9 +272,8 @@ export class Supervisor {
     for (const approval of this.store.pendingApprovals()) {
       if (approval.worker_id !== workerId || approval.generation !== handle.generation ||
           Date.parse(approval.requested_at) > cutoff) continue;
-      if (this.store.settleApproval(workerId, handle.generation, approval.native_request_id, "expired", "supervisor", this.at())) {
-        handle.answerApproval(approval.native_request_id, "deny", "Expired without a decision.").catch((error: unknown) =>
-          this.store.audit(this.at(), "supervisor", "approval_answer_failed", workerId, { error: String(error) }));
+      if (this.store.settleApproval(approval.approval_id, "expired", "supervisor", this.at())) {
+        this.deliverAnswer(handle, approval.approval_id, approval.native_request_id, "deny", "Expired without a decision.");
       }
     }
   }
@@ -251,18 +305,36 @@ export class Supervisor {
     return { input_id: inputId, outcome };
   }
 
-  /** Answers one request of one live generation; anything else is refused. */
-  async decideApproval(key: ApprovalKey, decision: "allow" | "deny", actor: string, note?: string): Promise<void> {
+  /**
+   * Decides one request occurrence of one live generation; anything else is
+   * refused. The decision is durable even if delivering the answer fails,
+   * and the delivery outcome is recorded separately.
+   */
+  async decideApproval(key: ApprovalKey, decision: "allow" | "deny", actor: string, note?: string): Promise<"delivered" | "failed"> {
     const handle = this.handles.get(key.worker_id);
-    if (!handle || handle.generation !== key.generation) {
-      throw new SupervisorError(`Generation ${key.generation} of ${key.worker_id} is not running.`);
+    const approval = this.store.approval(key.approval_id);
+    if (!handle || handle.generation !== key.generation || !approval ||
+        approval.worker_id !== key.worker_id || approval.generation !== key.generation) {
+      throw new SupervisorError(`Generation ${key.generation} of ${key.worker_id} is not running that request.`);
     }
-    if (!this.store.settleApproval(key.worker_id, key.generation, key.native_request_id,
-      decision === "allow" ? "allowed" : "denied", actor, this.at())) {
-      throw new SupervisorError(`Request ${key.native_request_id} is not pending.`);
+    if (!this.store.settleApproval(key.approval_id, decision === "allow" ? "allowed" : "denied", actor, this.at())) {
+      throw new SupervisorError(`Request ${key.approval_id} is not pending.`);
     }
     this.store.audit(this.at(), actor, `approval_${decision}`, key.worker_id, key);
-    await handle.answerApproval(key.native_request_id, decision, note);
+    return this.deliverAnswer(handle, approval.approval_id, approval.native_request_id, decision, note);
+  }
+
+  private async deliverAnswer(handle: WorkerHandle, approvalId: string, nativeRequestId: string,
+    decision: "allow" | "deny", note?: string): Promise<"delivered" | "failed"> {
+    try {
+      await handle.answerApproval(nativeRequestId, decision, note);
+      this.store.recordAnswer(approvalId, "delivered");
+      return "delivered";
+    } catch (error) {
+      this.store.recordAnswer(approvalId, "failed");
+      this.store.audit(this.at(), "supervisor", "approval_answer_failed", null, { approval_id: approvalId, error: String(error) });
+      return "failed";
+    }
   }
 
   async interrupt(workerId: string, actor: string): Promise<"interrupted" | "not_busy" | "unsupported"> {

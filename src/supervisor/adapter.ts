@@ -78,9 +78,21 @@ export interface WorkerHandle {
   stop(graceMs: number): Promise<void>;
 }
 
+/** The child's exact identity, reported the moment it exists. */
+export interface SpawnedProcess {
+  pid: number;
+  processStartedAt: string;
+  pgid: number;
+}
+
 export interface HarnessAdapter {
   readonly harness: Harness;
   capabilities(): Capabilities;
-  /** Spawns and handshakes only; it never takes a prompt. */
-  start(spec: WorkerSpec, generation: number): Promise<WorkerHandle>;
+  /**
+   * Spawns and handshakes only; it never takes a prompt. It must call onSpawn
+   * synchronously right after spawning, before the handshake, so the
+   * supervisor owns the child even if it crashes mid-handshake. A child whose
+   * handshake fails is stopped before start rejects.
+   */
+  start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void): Promise<WorkerHandle>;
 }
