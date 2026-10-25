@@ -135,17 +135,17 @@ function parseMessage(text: string, interrupt: boolean, requireRecipient = false
 
 // Resolves every selector before anything is sent, so one typo can't deliver a
 // message to only some of the intended recipients.
-/** A held recipient, as chat tells the sender. */
+/** A held recipient, as chat tells the sender; it never claims the notice reached the model. */
 export function describeHeldRecipient(name: string, held: HeldRecipient): string {
+  if (held.notice === "recovered") return `${name} has rejoined; it reads the message from the room.`;
   const notice = {
     injected: "it was told to run tt join",
     queued: "a notice to run tt join is queued for it",
     ambiguous: "a notice may have reached it",
-    already_sent: "it was already told to run tt join",
+    already_sent: "a recovery notice is already pending",
     process_not_running: "its process is not running",
     process_unknown: "its process can't be checked",
-    unreachable: "it can't be notified",
-    recovered: "it has rejoined"
+    unreachable: "it can't be notified"
   } as const;
   return `${name} lost its membership; the message waits for it to rejoin` +
     (held.notice ? ` (${notice[held.notice]}).` : ".");

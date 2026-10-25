@@ -434,3 +434,12 @@ test("tt msg send resolves a lost member's exact id, and nothing looser", async 
   expect(resolveAgentSelector(runtime, identity, "room", "claude:aa")).toBe("claude:aa");
   expect(() => resolveAgentSelector(runtime, identity, "room", "claude")).toThrow("No active room member matches");
 });
+
+test("chat's held line never claims a pending notice reached the model", async () => {
+  const { describeHeldRecipient } = await import("../src/cli/chat-format.js");
+  const held = { agent_id: "claude:aa", reason: "member_lost" as const, lost_at: "t" };
+  expect(describeHeldRecipient("claude", { ...held, notice: "already_sent" }))
+    .toBe("claude lost its membership; the message waits for it to rejoin (a recovery notice is already pending).");
+  expect(describeHeldRecipient("claude", { ...held, notice: "recovered" }))
+    .toBe("claude has rejoined; it reads the message from the room.");
+});
