@@ -202,6 +202,8 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     const supervisor = new Supervisor({ store, adapters: { codex: f.adapter }, processLiveness: () => "alive" });
     cleanup.push(() => supervisor.shutdown()); supervisor.reconcileStartup(); await supervisor.tick();
     await until(() => !!store.db.prepare("SELECT 1 FROM audit WHERE action = 'native_request_refused'").get());
+    // The refusal is written just after the event that audits it.
+    await until(() => f.messages().some(m => m.id === 9));
     expect(store.latestGeneration("w1")?.state).toBe("idle");
     expect(f.messages().find(m => m.id === 9)).toMatchObject({ error: { code: -32601 } });
     expect((await supervisor.submit("w1", "fast", "start_turn", "test")).outcome).toBe("accepted");
