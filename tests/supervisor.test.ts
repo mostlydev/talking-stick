@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
 import { Supervisor, acquireOwnerLock, CRASH_LIMIT } from "../src/supervisor/daemon.js";
 import type { WorkerSpec } from "../src/supervisor/adapter.js";
@@ -184,12 +184,13 @@ describe("inputs", () => {
       return "written";
     };
     const sent = await supervisor.submit("w1", "hello", "start_turn", "test");
-    expect(journalled).toBe("journalled");
+    // Journalled, then marked dispatching, before the adapter writes anything.
+    expect(journalled).toBe("dispatching");
     expect(sent).toEqual({ input_id: "input-1", outcome: "written" });
     adapter.last.emit({ type: "exited", code: null, signal: "SIGKILL" });
     expect(store.input("input-1")!.state).toBe("uncertain");
     // An uncertain input never moves again, and is never resubmitted.
-    store.updateInput("input-1", "accepted", "t9");
+    store.updateInput("input-1", "w1", 1, "accepted", "t9");
     expect(store.input("input-1")!.state).toBe("uncertain");
   });
 
@@ -202,7 +203,7 @@ describe("inputs", () => {
     adapter.last.emit({ type: "turn_started", native_turn_id: "turn-1", input_id: "input-1" });
     expect(store.latestGeneration("w1")).toMatchObject({ state: "busy" });
     adapter.last.emit({ type: "turn_completed", native_turn_id: "turn-1", outcome: "success" });
-    expect(store.input("input-1")).toMatchObject({ state: "completed", native_turn_id: "turn-1" });
+    expect(store.input("input-1")).toMatchObject({ state: "completed", native_turn_id: "turn-1", turn_outcome: "success" });
     adapter.last.submitOutcome = async () => { throw new Error("pipe broke"); };
     expect((await supervisor.submit("w1", "again", "start_turn", "test")).outcome).toBe("uncertain");
   });
@@ -263,4 +264,93 @@ test("an overflow holds the worker and stops it", async () => {
   await new Promise((resolve) => setTimeout(resolve, 5));
   expect(store.worker("w1")!.hold_reason).toBe("overflow");
   expect(adapter.last.stopped).toBe(true);
+});
+
+// Codex's adversarial review of #203 (#32324).
+describe("review regressions", () => {
+  test("a pause fences input before the next tick stops the handle", async () => {
+    const { store, supervisor, spec, adapter } = setup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    store.setDesired("w1", "paused", "human:op", "t1");
+    await expect(supervisor.submit("w1", "must not run", "start_turn", "review")).rejects.toThrow("is not running");
+    expect(adapter.last.submitted).toEqual([]);
+  });
+
+  test("a turn that completes before submit resolves stays completed, with its outcome", async () => {
+    const { store, supervisor, spec, adapter } = setup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    const handle = adapter.last;
+    handle.submit = async (input) => {
+      handle.emit({ type: "turn_started", native_turn_id: "turn-probe", input_id: input.input_id });
+      handle.emit({ type: "input", input_id: input.input_id, outcome: "written" });
+      handle.emit({ type: "turn_completed", native_turn_id: "turn-probe", outcome: "interrupted" });
+      return "accepted";
+    };
+    const sent = await supervisor.submit("w1", "tiny answer", "start_turn", "review");
+    expect(store.input(sent.input_id)).toMatchObject({ state: "completed", turn_outcome: "interrupted" });
+  });
+
+  test("an exit during the write, before any written event, is uncertain, not rejected", async () => {
+    const { store, supervisor, spec, adapter } = setup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    const handle = adapter.last;
+    handle.submit = async () => {
+      handle.emit({ type: "exited", code: 1, signal: null });
+      return "uncertain";
+    };
+    const sent = await supervisor.submit("w1", "may have run", "start_turn", "review");
+    expect(store.input(sent.input_id)!.state).toBe("uncertain");
+  });
+
+  test("an input event from another generation never moves this one's input", async () => {
+    const { store, supervisor, spec, adapter } = setup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    adapter.last.submitOutcome = "written";
+    await supervisor.submit("w1", "x", "start_turn", "review");
+    store.updateInput("input-1", "w1", 2, "accepted", "t");
+    expect(store.input("input-1")!.state).toBe("written");
+  });
+
+  test.each([1, 2])("concurrent stale-lock reapers never both take ownership (contender at read %i)", (at) => {
+    const { dataDir } = setup();
+    const lock = path.join(dataDir, "owner.lock");
+    fs.writeFileSync(lock, JSON.stringify({ pid: 100, process_started_at: "dead" }));
+    const read = fs.readFileSync.bind(fs);
+    let reads = 0;
+    let nested = false;
+    let releaseA: (() => void) | undefined;
+    let releaseB: (() => void) | undefined;
+    const live = (pid: number) => pid === 100 ? "gone" as const : "alive" as const;
+    const spy = vi.spyOn(fs, "readFileSync").mockImplementation(((file: unknown, ...args: unknown[]) => {
+      const value = (read as (...a: unknown[]) => unknown)(file, ...args);
+      if (file === lock && !nested && ++reads === at) {
+        nested = true;
+        try { releaseB = acquireOwnerLock(lock, { pid: 200, process_started_at: "b" }, live); } catch { /* loses */ }
+      }
+      return value;
+    }) as typeof fs.readFileSync);
+    try {
+      try { releaseA = acquireOwnerLock(lock, { pid: 300, process_started_at: "a" }, live); } catch { /* loses */ }
+      expect(Boolean(releaseA) && Boolean(releaseB)).toBe(false);
+    } finally {
+      spy.mockRestore();
+      releaseA?.();
+      releaseB?.();
+    }
+  });
+
+  test("a stop that throws is audited and never crashes the loop", async () => {
+    const { store, supervisor, spec, adapter } = setup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    adapter.last.stop = async () => { throw new Error("EPIPE"); };
+    store.setDesired("w1", "stopped", "human:op", "t1");
+    await supervisor.tick();
+    expect(store.auditRows("w1").map((row) => row.action)).toContain("stop_failed");
+    expect(supervisor.handle("w1")).toBeDefined();
+  });
 });

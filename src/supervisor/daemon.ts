@@ -136,10 +136,14 @@ export class Supervisor {
     }
   }
 
+  /** Stops a generation; a failed stop is audited and the handle kept, never a daemon crash. */
   private async stopHandle(workerId: string, handle: WorkerHandle): Promise<void> {
     this.stopping.add(workerId);
     try {
       await handle.stop(STOP_GRACE_MS);
+    } catch (error) {
+      this.store.audit(this.at(), "supervisor", "stop_failed", workerId, { generation: handle.generation, error: String(error) });
+      return;
     } finally {
       this.stopping.delete(workerId);
     }
@@ -156,14 +160,14 @@ export class Supervisor {
         this.store.updateGeneration(workerId, generation, { session_id: event.session_id });
         break;
       case "input":
-        this.store.updateInput(event.input_id, event.outcome, at, event.native_turn_id);
+        this.store.updateInput(event.input_id, workerId, generation, event.outcome, at, event.native_turn_id);
         break;
       case "turn_started":
-        if (event.input_id) this.store.updateInput(event.input_id, "accepted", at, event.native_turn_id);
+        if (event.input_id) this.store.updateInput(event.input_id, workerId, generation, "accepted", at, event.native_turn_id);
         this.store.updateGeneration(workerId, generation, { state: "busy", last_model_activity_at: at });
         break;
       case "turn_completed":
-        this.store.completeTurn(workerId, generation, event.native_turn_id, at);
+        this.store.completeTurn(workerId, generation, event.native_turn_id, event.outcome, at);
         this.store.updateGeneration(workerId, generation, { state: "idle", last_model_activity_at: at });
         break;
       case "approval_requested":
@@ -176,7 +180,7 @@ export class Supervisor {
         break;
       case "overflow":
         this.store.hold(workerId, "overflow", at);
-        void this.stopHandle(workerId, handle);
+        this.stopHandle(workerId, handle).catch(() => {});
         break;
       case "exited":
         this.ended(workerId, handle, { code: event.code, signal: event.signal });
@@ -214,7 +218,8 @@ export class Supervisor {
       if (approval.worker_id !== workerId || approval.generation !== handle.generation ||
           Date.parse(approval.requested_at) > cutoff) continue;
       if (this.store.settleApproval(workerId, handle.generation, approval.native_request_id, "expired", "supervisor", this.at())) {
-        void handle.answerApproval(approval.native_request_id, "deny", "Expired without a decision.");
+        handle.answerApproval(approval.native_request_id, "deny", "Expired without a decision.").catch((error: unknown) =>
+          this.store.audit(this.at(), "supervisor", "approval_answer_failed", workerId, { error: String(error) }));
       }
     }
   }
@@ -223,20 +228,26 @@ export class Supervisor {
   async submit(workerId: string, text: string, mode: InputMode, source: string): Promise<{ input_id: string; outcome: InputOutcome }> {
     const handle = this.handles.get(workerId);
     const worker = this.store.worker(workerId);
-    if (!handle || !worker) throw new SupervisorError(`Worker ${workerId} is not running.`);
+    // A pause, stop or hold takes effect for input at once, before the next tick.
+    if (!handle || !worker || worker.desired !== "running" || worker.hold_reason || this.stopping.has(workerId)) {
+      throw new SupervisorError(`Worker ${workerId} is not running.`);
+    }
     const spec = JSON.parse(worker.spec_json) as WorkerSpec;
     if (!this.adapters[spec.harness]?.capabilities().prompt) {
       throw new SupervisorError(`The ${spec.harness} adapter cannot take a prompt.`);
     }
     const inputId = this.newId();
-    this.store.journalInput({ input_id: inputId, worker_id: workerId, generation: handle.generation, mode, source, created_at: this.at() });
+    const generation = handle.generation;
+    this.store.journalInput({ input_id: inputId, worker_id: workerId, generation, mode, source, created_at: this.at() });
+    // Recorded before the write, so a crash while writing leaves it uncertain.
+    this.store.updateInput(inputId, workerId, generation, "dispatching", this.at());
     let outcome: InputOutcome;
     try {
       outcome = await handle.submit({ input_id: inputId, text, mode });
     } catch {
       outcome = "uncertain";
     }
-    this.store.updateInput(inputId, outcome, this.at());
+    this.store.updateInput(inputId, workerId, generation, outcome, this.at());
     return { input_id: inputId, outcome };
   }
 
@@ -264,7 +275,8 @@ export class Supervisor {
 
 /**
  * One supervisor per data directory. The lock file names the owner's exact
- * process; a lock whose owner is gone is taken over, never one that may live.
+ * process. A lock whose owner is gone is taken over, never one that may live,
+ * and reapers are serialized so two of them never both take it.
  */
 export function acquireOwnerLock(
   lockPath: string,
@@ -283,16 +295,27 @@ export function acquireOwnerLock(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    let owner: { pid: number; process_started_at: string } | null = null;
-    let raw = "";
+    const reaper = `${lockPath}.reap`;
     try {
-      raw = fs.readFileSync(lockPath, "utf8");
-      owner = JSON.parse(raw) as { pid: number; process_started_at: string };
-    } catch { /* unreadable: treated as a possibly live owner */ }
-    if (!owner || liveness(owner.pid, owner.process_started_at) !== "gone") {
-      throw new SupervisorError(`Another supervisor owns ${lockPath}${owner ? ` (pid ${owner.pid})` : ""}.`);
+      fs.mkdirSync(reaper);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new SupervisorError(`Another supervisor is taking over ${lockPath}; recovery guard ${reaper}.`);
+      }
+      throw error;
     }
-    try { if (fs.readFileSync(lockPath, "utf8") === raw) fs.unlinkSync(lockPath); } catch { /* raced */ }
+    try {
+      let owner: { pid: number; process_started_at: string } | null = null;
+      try { owner = JSON.parse(fs.readFileSync(lockPath, "utf8")) as { pid: number; process_started_at: string }; }
+      catch { /* Unreadable owner evidence is uncertain; never break the lock. */ }
+      if (!owner || liveness(owner.pid, owner.process_started_at) !== "gone") {
+        throw new SupervisorError(`Another supervisor owns ${lockPath}${owner ? ` (pid ${owner.pid})` : ""}.`);
+      }
+      // Only a reaper removes a lock, and only one reaper runs, so this is the dead owner's.
+      fs.unlinkSync(lockPath);
+    } finally {
+      fs.rmSync(reaper, { recursive: true, force: true });
+    }
   }
   throw new SupervisorError(`Could not take ${lockPath}.`);
 }

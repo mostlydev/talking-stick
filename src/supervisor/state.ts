@@ -50,10 +50,27 @@ export interface InputRow {
   generation: number;
   mode: InputMode;
   source: string;
-  state: "journalled" | InputOutcome | "completed";
+  state: InputState;
   native_turn_id: string | null;
+  turn_outcome: "success" | "error" | "interrupted" | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * An input's life. Dispatching is recorded before the write is attempted, so a
+ * crash during it is uncertain, never rejected. States only move forward, and
+ * completed, rejected and uncertain are final.
+ */
+export type InputState = "journalled" | "dispatching" | InputOutcome | "completed";
+
+const INPUT_RANK: Record<string, number> = { journalled: 0, dispatching: 1, written: 2, queued: 3, accepted: 4, completed: 5 };
+
+export function inputAdvances(current: InputState, next: InputState): boolean {
+  if (current === "completed" || current === "rejected" || current === "uncertain") return false;
+  // A turn that started is certain, so a late uncertain or rejected result cannot undo it.
+  if (next === "uncertain" || next === "rejected") return INPUT_RANK[current] < INPUT_RANK.accepted;
+  return INPUT_RANK[next] > INPUT_RANK[current];
 }
 
 export interface ApprovalRow {
@@ -104,6 +121,7 @@ const MIGRATIONS: Array<{ id: number; up: string }> = [{
     source TEXT NOT NULL,
     state TEXT NOT NULL,
     native_turn_id TEXT,
+    turn_outcome TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -244,8 +262,10 @@ export class SupervisorStore {
     return this.transaction(() => {
       this.db.prepare(`UPDATE generations SET ended_at = ?, state = 'dead', exit_json = ?
         WHERE worker_id = ? AND generation = ? AND ended_at IS NULL`).run(at, JSON.stringify(exit), workerId, generation);
+      // Anything that may have reached the process is uncertain; only input
+      // never dispatched is rejected.
       const uncertain = this.db.prepare(`UPDATE inputs SET state = 'uncertain', updated_at = ?
-        WHERE worker_id = ? AND generation = ? AND state IN ('written', 'accepted', 'queued')`).run(at, workerId, generation).changes;
+        WHERE worker_id = ? AND generation = ? AND state IN ('dispatching', 'written', 'queued', 'accepted')`).run(at, workerId, generation).changes;
       this.db.prepare(`UPDATE inputs SET state = 'rejected', updated_at = ?
         WHERE worker_id = ? AND generation = ? AND state = 'journalled'`).run(at, workerId, generation);
       this.db.prepare(`UPDATE approvals SET status = 'expired', decided_by = 'supervisor', decided_at = ?
@@ -263,23 +283,33 @@ export class SupervisorStore {
       "SELECT COUNT(*) AS count FROM crashes WHERE worker_id = ? AND at >= ?").get(workerId, since)?.count ?? 0;
   }
 
-  journalInput(row: Omit<InputRow, "state" | "native_turn_id" | "updated_at">): void {
+  journalInput(row: Omit<InputRow, "state" | "native_turn_id" | "turn_outcome" | "updated_at">): void {
     this.db.prepare(`INSERT INTO inputs (input_id, worker_id, generation, mode, source, state, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 'journalled', ?, ?)`).run(row.input_id, row.worker_id, row.generation, row.mode,
         row.source, row.created_at, row.created_at);
   }
 
-  /** Moves an input forward; an uncertain or rejected input never changes again. */
-  updateInput(inputId: string, state: InputOutcome, at: string, nativeTurnId?: string): void {
-    this.db.prepare(`UPDATE inputs SET state = ?, native_turn_id = COALESCE(?, native_turn_id), updated_at = ?
-      WHERE input_id = ? AND state NOT IN ('uncertain', 'rejected')`).run(state, nativeTurnId ?? null, at, inputId);
+  /** Moves one generation's input forward only; final states never change. */
+  updateInput(inputId: string, workerId: string, generation: number, state: InputState, at: string, nativeTurnId?: string): void {
+    this.transaction(() => {
+      const current = this.db.prepare<[string, string, number], InputRow>(
+        "SELECT * FROM inputs WHERE input_id = ? AND worker_id = ? AND generation = ?").get(inputId, workerId, generation);
+      if (!current) return;
+      if (nativeTurnId && !current.native_turn_id) {
+        this.db.prepare("UPDATE inputs SET native_turn_id = ? WHERE input_id = ?").run(nativeTurnId, inputId);
+      }
+      if (!inputAdvances(current.state, state)) return;
+      this.db.prepare("UPDATE inputs SET state = ?, updated_at = ? WHERE input_id = ?").run(state, at, inputId);
+    });
   }
 
-  /** The inputs that started or joined a turn are done when it completes. */
-  completeTurn(workerId: string, generation: number, nativeTurnId: string, at: string): void {
-    this.db.prepare(`UPDATE inputs SET state = 'completed', updated_at = ?
-      WHERE worker_id = ? AND generation = ? AND native_turn_id = ? AND state = 'accepted'`)
-      .run(at, workerId, generation, nativeTurnId);
+  /** The inputs that started or joined a turn are done when it completes, with its outcome. */
+  completeTurn(workerId: string, generation: number, nativeTurnId: string,
+    outcome: "success" | "error" | "interrupted", at: string): void {
+    this.db.prepare(`UPDATE inputs SET state = 'completed', turn_outcome = ?, updated_at = ?
+      WHERE worker_id = ? AND generation = ? AND native_turn_id = ?
+      AND state IN ('dispatching', 'written', 'queued', 'accepted')`)
+      .run(outcome, at, workerId, generation, nativeTurnId);
   }
 
   /** An operator's restart that starts a new conversation instead of resuming. */

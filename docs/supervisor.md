@@ -69,9 +69,14 @@ reached only through its own `tt` calls.
   - `dead`.
 
   Model activity is kept here as `last_model_activity_at`, and never written to the room.
-- `inputs`: every input, journalled before it is written. Inputs move through `journalled`,
-  `written`, `accepted` and `completed`, or stop at `queued`, `rejected` or `uncertain`. Input
-  text is not stored.
+- `inputs`: every input, journalled before it is written and marked `dispatching` before the
+  write is attempted. Inputs only move forward, through `written`, `queued`, `accepted` and
+  `completed`, the last with the turn's outcome (`success`, `error` or `interrupted`).
+  - `completed`, `rejected` and `uncertain` are final, and a turn that started can't be made
+    uncertain afterwards.
+  - When a generation ends, anything dispatched is uncertain; only input never dispatched is
+    rejected.
+  - Input text is not stored.
 - `approvals`, keyed by worker, generation and native request id. Codex's id `0` is valid and
   repeats across processes.
 - `crashes`, and an `audit` log of every control action.
@@ -81,7 +86,8 @@ reached only through its own `tt` calls.
 `src/supervisor/daemon.ts`:
 
 - **One owner** per data directory: a lock file names the owner's exact process, and is taken
-  over only once that process is gone.
+  over only once that process is gone. Reapers are serialized by a guard directory, so two
+  contenders never both take a dead owner's lock.
 - **Startup reconciliation** runs before anything is started. A recorded generation whose exact
   process is alive, or can't be read, holds its worker (`prior_generation_alive`,
   `prior_generation_unknown`), and the operator decides. A gone one is ended. The supervisor never
@@ -97,7 +103,9 @@ reached only through its own `tt` calls.
   lease: tt's own lease and guardian rules apply to each worker like any member.
 - **Fencing:** every control change increments `desired_version`. A start that completes after a
   newer pause or stop stops the process it spawned.
-- **Human override** always wins: `pause` and `stop` tear down the process group.
+- **Human override** always wins: `pause` and `stop` tear down the process group. They also
+  refuse new input at once, before the next tick. A stop that fails is audited and retried, and
+  never crashes the loop.
 
 ## Approvals and control
 
