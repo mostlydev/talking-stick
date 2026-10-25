@@ -211,3 +211,38 @@ describe("hook and interrupt paths", () => {
       .toEqual({ status: "failed", error: "interrupt_managed_fenced" });
   });
 });
+
+// Codex's second review of #204 (#32419, #32420, #32424).
+describe("overlapping envelopes", () => {
+  test("two batches holding one event cannot both be fenced for writing", async () => {
+    const { service, roomId, requests, register, send, fence, offered } = setup();
+    register(1);
+    const firstSeq = await send("one event");
+    const first = requests[0].delivery_token!;
+    service.registerStandby({ agent_id: "claude:w", room_id: roomId, transport: "manual" });
+    const secondSeq = await send("another event");
+    expect(requests).toHaveLength(2);
+    const second = requests[1].delivery_token!;
+    expect(second).not.toBe(first);
+    fence(1, first, "writing");
+    expect(() => fence(1, second, "writing")).toThrow(expect.objectContaining({ code: "stale_batch" }));
+    // The stale batch was released unwritten; tt offers only what is still free.
+    await service.flushWakes();
+    expect(offered().at(-1)).toEqual([secondSeq]);
+    expect(offered().at(-1)).not.toContain(firstSeq);
+  });
+
+  test("a partly consumed queued envelope is refused before it is written", async () => {
+    const { service, roomId, requests, register, send, fence } = setup();
+    register(1);
+    await send("one event");
+    const first = requests[0].delivery_token!;
+    service.registerStandby({ agent_id: "claude:w", room_id: roomId, transport: "manual" });
+    await send("another event");
+    const second = requests[1].delivery_token!;
+    fence(1, first, "writing");
+    service.acknowledgeNativeDelivery({ agent_id: "claude:w", token: first, harness_session_id: "harness:w", host_id: HOST });
+    expect(() => fence(1, second, "writing")).toThrow(expect.objectContaining({ code: "stale_batch" }));
+    expect(service.db.prepare("SELECT 1 FROM native_delivery_batches WHERE token = ?").get(second)).toBeUndefined();
+  });
+});

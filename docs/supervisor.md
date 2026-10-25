@@ -179,7 +179,10 @@ change never re-offers that batch as fresh text. The fence is released only when
 3. a human runs `tt supervisor reconcile <worker> <batch> --resend|--drop`, which is audited.
    Resending something whose effects are unknown needs explicit, scoped human authority.
 
-A crash between fence and write is held for that decision. Intake that was journalled but never
+Fencing for writing also refuses a batch any of whose events is gone, already read, or held by
+another managed batch, since its text would repeat that event. The batch is released unwritten,
+and tt builds a new envelope from what remains unread. A crash between fence and write is held for
+that decision. Intake that was journalled but never
 fenced may be re-offered by tt.
 
 Events in a fenced batch are left out of every later envelope, from a wake, a Codex or Grok

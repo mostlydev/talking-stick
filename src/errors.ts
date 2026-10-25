@@ -9,6 +9,7 @@ export type ProtocolErrorCode =
   | "session_ended"
   | "member_lost"
   | "member_revoked"
+  | "stale_batch"
   | "operator_only"
   | "observer_cannot_hold_turn"
   | "unknown_target"

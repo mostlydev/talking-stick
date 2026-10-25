@@ -1056,14 +1056,14 @@ export class TalkingStickService {
     room_id: string; agent_id: AgentId; endpoint_address: string; delivery_secret: string;
     batch_token: string; transition: "writing" | "written" | "unsent";
   }): { status: "managed_writing" | "managed_written" | "unsent" } {
-    return this.writeTransaction(() => {
+    const result = this.writeTransaction((): { status: "managed_writing" | "managed_written" | "unsent" } | { stale: string } => {
       const endpoint = this.getNativeWakeEndpoint(input.room_id, input.agent_id, "supervisor");
       if (!endpoint || endpoint.address !== input.endpoint_address || endpoint.secret !== input.delivery_secret) {
         throw new ProtocolError("invalid_input", "This is not the current supervisor endpoint for that member.");
       }
       const batch = this.db.prepare<[string], { room_id: string; agent_id: string; harness_session_id: string;
-        delivery_mode: string | null; acknowledged_at: string | null }>(
-        "SELECT room_id, agent_id, harness_session_id, delivery_mode, acknowledged_at FROM native_delivery_batches WHERE token = ?"
+        delivery_mode: string | null; acknowledged_at: string | null; event_seqs_json: string }>(
+        "SELECT room_id, agent_id, harness_session_id, delivery_mode, acknowledged_at, event_seqs_json FROM native_delivery_batches WHERE token = ?"
       ).get(input.batch_token);
       if (!batch || batch.room_id !== input.room_id || batch.agent_id !== input.agent_id ||
           batch.harness_session_id !== endpoint.harness_session_id || batch.acknowledged_at) {
@@ -1072,6 +1072,26 @@ export class TalkingStickService {
       const from = input.transition === "writing" ? null : "managed_writing";
       if (batch.delivery_mode !== from) {
         throw new ProtocolError("invalid_input", `That batch is ${batch.delivery_mode ?? "unfenced"}, not ${from ?? "unfenced"}.`);
+      }
+      // The envelope's text holds every event it was built with. If any is gone,
+      // already read, or held by another managed batch, writing it would repeat
+      // that event: the batch is released unwritten, so tt builds a new
+      // envelope from what remains unread.
+      if (input.transition === "writing") {
+        const stale = (JSON.parse(batch.event_seqs_json) as number[]).some((seq) => !this.db.prepare(`SELECT 1
+          FROM native_event_receipts n JOIN room_events e ON e.room_id = n.room_id AND e.event_seq = n.event_seq
+          WHERE n.room_id = ? AND n.agent_id = ? AND n.event_seq = ? AND n.consumed_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM native_delivery_batches mb, json_each(mb.event_seqs_json) mj
+              WHERE mb.room_id = n.room_id AND mb.agent_id = n.agent_id AND mj.value = n.event_seq AND mb.token != ?
+                AND mb.acknowledged_at IS NULL AND mb.delivery_mode IN ('managed_writing', 'managed_written'))`)
+          .get(input.room_id, input.agent_id, seq, input.batch_token));
+        if (stale) {
+          this.db.prepare("DELETE FROM native_delivery_batches WHERE token = ?").run(input.batch_token);
+          this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, wake_pending = 1, batch_id = NULL
+            WHERE room_id = ? AND agent_id = ? AND batch_id = ?`).run(input.room_id, input.agent_id, input.batch_token);
+          this.wakeRooms.add(input.room_id);
+          return { stale: "That batch repeats an event that was read or is already being delivered; it was released unwritten." };
+        }
       }
       if (input.transition === "unsent") {
         this.db.prepare("DELETE FROM native_delivery_batches WHERE token = ?").run(input.batch_token);
@@ -1084,6 +1104,8 @@ export class TalkingStickService {
       this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ? WHERE token = ?").run(mode, input.batch_token);
       return { status: mode };
     });
+    if ("stale" in result) throw new ProtocolError("stale_batch", result.stale);
+    return result;
   }
 
   /**
