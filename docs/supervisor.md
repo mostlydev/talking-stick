@@ -32,9 +32,9 @@ An adapter speaks one harness's headless protocol. The interface is `src/supervi
   A pipe error or EPIPE alone is not proof that nothing was written.
 - `answerApproval(native_request_id, …)` answers on that handle's own generation only.
   - It refuses an id the harness no longer has pending.
-  - A native cancellation, such as Codex's `serverRequest/resolved` after an interrupt, will be
-    reported as a generation-scoped resolution event that settles that exact occurrence. This is
-    required before adapter acceptance, and the event is added with the adapters.
+  - A native cancellation, such as Codex's `serverRequest/resolved` after an interrupt, is
+    reported as `approval_resolved`. The supervisor then expires that exact pending occurrence,
+    and a decision made afterwards is refused.
 - `probe()` checks liveness without the model: the process, and a protocol ping where one exists.
 - `stop(grace)`: stdin EOF, then the process group, then SIGKILL.
 - Adapters drain the child's output continuously and bound their queues. An overflow of protocol
@@ -52,7 +52,13 @@ Each worker states its permissions, and nothing is inherited:
 
 A worker spec stores environment references only: names passed through from the supervisor's
 own environment, names resolved from the macOS Keychain at spawn, and approved non-secret
-literals. Credential values are never stored. Hooks stay under the harness's own trust, and
+literals. At each start the supervisor adds the runtime `supervisor_env`:
+- the supervisor's own `TALKING_STICK_DATA_DIR`, for every worker, so its tt calls land in this
+  room database;
+- the endpoint and delivery token, for workers that can take a prompt.
+
+Adapters build the child's environment from those alone, never the daemon's whole environment,
+so no inherited `TT_ROOM` or harness identity marker reaches the worker. Credential values are never stored. Hooks stay under the harness's own trust, and
 nothing bypasses it.
 
 ### Grok
@@ -97,7 +103,8 @@ reached only through its own `tt` calls.
 `src/supervisor/daemon.ts`:
 
 - **One owner** per data directory: a lock file names the owner's exact process, and is taken
-  over only once that process is gone. Reapers are serialized by a guard directory, so two
+  over only once that process is gone. A daemon that can't read its own start time won't take
+  ownership, and a recorded owner with no start time is never read as gone. Reapers are serialized by a guard directory, so two
   contenders never both take a dead owner's lock.
 - **Startup reconciliation** is mandatory: the first tick refuses to run before it.
   - A recorded generation whose exact process is alive, or can't be read, holds its worker
@@ -229,6 +236,53 @@ The daemon writes nothing while a worker waits for an approval or input, reads u
 disconnected or unauthenticated, or has a turn it didn't see start. A Codex turn is steered only
 while the supervisor knows it's running.
 
+## Commands
+
+`tt supervisor` (usage in `tt help`) works on the data directory's supervisor.
+
+`run` starts the daemon in the foreground:
+- It takes the owner lock and reconciles, then ticks every 30 s.
+- It opens two sockets in `<data>/supervisor/`:
+  - `intake.sock` takes tt deliveries only, and is the one workers are given.
+  - `control.sock` takes control requests only, each with the daemon's control token. The token
+    is new for each daemon, kept in the owner-only file `control.token`, and never put in a
+    worker's environment.
+- It writes its own log, `logs/daemon.log`, appending by path so rotation at 5 MB (three older
+  files kept) takes effect at once.
+- On SIGTERM it stops its workers' process groups; that's a stop, not a crash. Starts still in
+  their handshake are cancelled. A failure at any point after taking ownership closes what was
+  opened and releases the lock.
+
+`install` and `uninstall` add and remove a macOS user agent that keeps `run` going, with a 077
+umask. Only crash output that escapes the daemon goes to `logs/launchd.log`, rotated at each
+start. The agent runs `node <package>/dist/cli.js supervisor run` under Node, or an installed
+release's `<install-dir>/current/tt supervisor run`, which follows self-update.
+
+`add <worker> --harness … --cwd …`:
+- Codex needs an explicit `--sandbox` and `--approval`. Claude takes `--permission-mode
+  default|plan`, and nothing that bypasses approvals.
+- `--env NAME` passes the daemon's value through; `NAME=keychain:SERVICE` and
+  `NAME=literal:VALUE` (for non-secret values) are explicit.
+- There's no `--resume`: nothing here can prove an existing session isn't running elsewhere, so a
+  worker resumes only sessions it started itself.
+
+`status`, `approvals` and `logs` are readable by anyone. Every other command is for a human until
+a scoped operator policy exists:
+- `run`, `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped),
+  `interrupt`, `approve`, `deny`, `reconcile <batch> --resend|--drop`, `install` and `uninstall`.
+  launchd starts `run` with no harness around it.
+- They refuse `--agent`, and refuse to run inside a harness session, detected from the environment
+  and from process ancestry. Each is audited with its actor.
+- The daemon checks the control token and refuses a non-human approval actor.
+
+These guards keep an agent from acting as the operator through what it's given: its environment,
+its endpoint, and its delivery token. They aren't a boundary against a same-user process that
+deliberately reads the owner-only token file or hides its origin. A sandbox that denies reading
+`<data>/supervisor/` makes them one.
+
+No harness adapter ships yet, so a worker added now is held with `start_failed` until its adapter
+lands (S2b to S2d). Plugin install requests aren't implemented yet.
+
 ## What the supervisor does not prove
 
 A managed worker's wake and recovery are proven for processes the supervisor owns. They don't
@@ -242,8 +296,8 @@ incident nor existing sessions are claimed solved by headless-worker tests.
 | --- | --- | --- | --- |
 | S2a1 | Claude | adapter types, state, reconcile loop, owner lock, FakeAdapter tests | merged (#203) |
 | S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | #204 |
-| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | this change |
-| S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | after S2a2 |
+| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | #206 |
+| S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | this change |
 | S2b | Claude | Claude stream-json adapter | after S2a |
 | S2c | Codex | Codex app-server adapter | after S2a |
 | S2d | Grok | Grok stdio adapter (the proven subset only) | after S2a |

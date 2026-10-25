@@ -63,11 +63,20 @@ export class FakeAdapter implements HarnessAdapter {
 
   capabilities(): Capabilities { return this.caps; }
 
-  async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void): Promise<WorkerHandle> {
+  async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void, signal?: AbortSignal): Promise<WorkerHandle> {
     const pid = this.nextPid++;
     onSpawn({ pid, processStartedAt: `start-${pid}`, pgid: pid });
-    // The handshake.
-    if (this.holdStart) await this.holdStart;
+    // The handshake; an abort stops the child and rejects, as real adapters must.
+    if (this.holdStart) {
+      await Promise.race([this.holdStart, new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }))]);
+    }
+    if (signal?.aborted) {
+      const child = new FakeHandle(spec, generation, pid);
+      child.stopped = true;
+      child.liveness = "gone";
+      this.handles.push(child);
+      throw new Error("start aborted");
+    }
     if (this.failStart?.(spec)) throw new Error("fake start failure");
     const handle = new FakeHandle(spec, generation, pid);
     this.handles.push(handle);

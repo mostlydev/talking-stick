@@ -20,6 +20,11 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
+- `tt supervisor` (preview): an optional daemon that will start and keep headless harness workers
+  running, with per-worker permissions, human-only audited controls and approvals behind a control
+  token, and a macOS user agent (`install`/`uninstall`). Room messages reach supervised workers through a fenced, journalled
+  delivery, and a restarted worker rejoins with its own credential. No harness adapter ships yet, so
+  workers are held until theirs lands. See `docs/supervisor.md`.
 - A Claude or Codex member whose harness reports its session ended is now lost, not removed,
   since an idle conversation can be unloaded while its window stays open. Messages to it are
   kept and reported to senders as held. Its still-running process gets one body-free notice to

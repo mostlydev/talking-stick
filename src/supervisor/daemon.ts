@@ -32,6 +32,8 @@ export interface SupervisorOptions {
   /** The room side and the intake socket; without them workers get no supervisor endpoint. */
   bridge?: RoomBridge;
   socketPath?: string;
+  /** The supervisor's tt data directory, given to every worker so its tt calls land in this room database. */
+  dataDir?: string;
 }
 
 function hashToken(token: string): string {
@@ -72,6 +74,7 @@ export class Supervisor {
   private readonly tickWaitMs: number;
   private readonly bridge: RoomBridge | null;
   private readonly socketPath: string | null;
+  private readonly dataDir: string | null;
   /** This daemon's delivery tokens; only hashes are stored. */
   private readonly deliveryTokens = new Map<string, { generation: number; token: string; address: string }>();
   /** Envelope text is kept in memory only, never in the journal. */
@@ -84,6 +87,8 @@ export class Supervisor {
   private readonly activeTurn = new Map<string, string>();
   /** Workers whose last probe could not be read get no input until it reads alive. */
   private readonly probeUnknown = new Set<string>();
+  private shuttingDown = false;
+  private readonly pendingStarts = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
   constructor(options: SupervisorOptions) {
     this.store = options.store;
@@ -94,6 +99,7 @@ export class Supervisor {
     this.tickWaitMs = options.tickWaitMs ?? TICK_WAIT_MS;
     this.bridge = options.bridge ?? null;
     this.socketPath = options.socketPath ?? null;
+    this.dataDir = options.dataDir ?? null;
   }
 
   private at(): string {
@@ -159,10 +165,14 @@ export class Supervisor {
     if (worker.hold_reason || this.starting.has(worker.worker_id)) return;
     if (worker.restart_next) this.store.clearRestart(worker.worker_id);
     if (worker.next_start_at && Date.parse(worker.next_start_at) > this.now().getTime()) return;
-    await this.start(worker);
+    if (this.shuttingDown) return;
+    const controller = new AbortController();
+    const done = this.start(worker, controller.signal).finally(() => this.pendingStarts.delete(worker.worker_id));
+    this.pendingStarts.set(worker.worker_id, { controller, done });
+    await done;
   }
 
-  private async start(worker: WorkerRow): Promise<void> {
+  private async start(worker: WorkerRow, signal: AbortSignal): Promise<void> {
     const spec = JSON.parse(worker.spec_json) as WorkerSpec;
     const adapter = this.adapters[spec.harness];
     if (!adapter) {
@@ -195,11 +205,17 @@ export class Supervisor {
     let handle: WorkerHandle;
     try {
       handle = await adapter.start({ ...spec, ...(resume ? { resume_session_id: resume } : { resume_session_id: undefined }),
-        ...(supervised ? { supervisor_env: { TT_SUPERVISOR_ENDPOINT: supervised.address, TT_SUPERVISOR_TOKEN: supervised.token } } : {}) },
+        ...(supervised || this.dataDir ? { supervisor_env: {
+          ...(this.dataDir ? { TALKING_STICK_DATA_DIR: this.dataDir } : {}),
+          ...(supervised ? { TT_SUPERVISOR_ENDPOINT: supervised.address, TT_SUPERVISOR_TOKEN: supervised.token } : {}) } } : {}) },
         generation, (child) => this.store.updateGeneration(worker.worker_id, generation,
-          { pid: child.pid, process_started_at: child.processStartedAt, pgid: child.pgid }));
+          { pid: child.pid, process_started_at: child.processStartedAt, pgid: child.pgid }), signal);
     } catch (error) {
       this.starting.delete(worker.worker_id);
+      if (this.shuttingDown || signal.aborted) {
+        this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "stopped", during: "start" });
+        return;
+      }
       this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "start_failed", error: String(error) });
       if (resume) this.store.hold(worker.worker_id, "resume_failed", this.at());
       else this.crashed(worker.worker_id, { reason: "start_failed", error: String(error) });
@@ -213,6 +229,11 @@ export class Supervisor {
       this.store.audit(this.at(), "supervisor", "start", worker.worker_id, { generation, pid: handle.pid, resumed: Boolean(resume) });
     });
     this.handles.set(worker.worker_id, handle);
+    // A start that finished as the daemon stopped is stopped straight away.
+    if (this.shuttingDown || signal.aborted) {
+      await this.stopHandle(worker.worker_id, handle);
+      return;
+    }
     this.reportedState.set(worker.worker_id, "idle");
     this.activeTurn.delete(worker.worker_id);
     this.probeUnknown.delete(worker.worker_id);
@@ -277,6 +298,15 @@ export class Supervisor {
         }
         report("awaiting_approval");
         break;
+      case "approval_resolved": {
+        // Settled natively: a decision made afterwards can no longer reach it.
+        const pending = this.store.pendingApproval(workerId, generation, event.native_request_id);
+        if (pending && this.store.settleApproval(pending.approval_id, "expired", "harness", at)) {
+          this.store.recordAnswer(pending.approval_id, "failed");
+          if (this.reportedState.get(workerId) === "awaiting_approval") report(this.activeTurn.has(workerId) ? "busy" : "idle");
+        }
+        break;
+      }
       case "state":
         report(event.state);
         break;
@@ -442,6 +472,18 @@ export class Supervisor {
       this.recoveryRefused.add(key);
       this.store.audit(this.at(), "supervisor", "recovery_refused", worker.worker_id, refused);
     }
+  }
+
+  /**
+   * The daemon is stopping: each worker's process group is stopped. Their
+   * generations end as stopped, not crashed, and nothing is restarted.
+   */
+  async shutdown(waitMs = STOP_GRACE_MS): Promise<void> {
+    this.shuttingDown = true;
+    // Pending starts are cancelled and waited for, so no child outlives the daemon.
+    for (const pending of this.pendingStarts.values()) pending.controller.abort();
+    await bounded(Promise.allSettled([...this.pendingStarts.values()].map((pending) => pending.done)), waitMs);
+    await Promise.allSettled([...this.handles.entries()].map(([workerId, handle]) => this.stopHandle(workerId, handle)));
   }
 
   /** Journals the input before writing it, so a crash never loses track of what was sent. */

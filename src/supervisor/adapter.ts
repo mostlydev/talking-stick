@@ -38,9 +38,11 @@ export interface WorkerSpec {
   resume_session_id?: string;
   env: EnvReference[];
   /**
-   * Set by the supervisor for one start and never stored: the worker's
-   * supervisor endpoint and delivery token, given only to workers that can
-   * take a prompt. Adapters pass these to the child as environment variables.
+   * Set by the supervisor for one start and never stored: the supervisor's
+   * TALKING_STICK_DATA_DIR, and for workers that can take a prompt their
+   * supervisor endpoint and delivery token. Adapters build the child's
+   * environment from env references and these alone: never the daemon's whole
+   * environment, so no inherited TT_ROOM or harness identity marker leaks in.
    */
   supervisor_env?: Record<string, string>;
 }
@@ -60,6 +62,8 @@ export type WorkerEvent =
   | { type: "turn_started"; native_turn_id: string; input_id?: string }
   | { type: "turn_completed"; native_turn_id: string; outcome: "success" | "error" | "interrupted" }
   | { type: "approval_requested"; native_request_id: string; tool: string; summary: string }
+  /** The harness settled a pending request itself, such as Codex's serverRequest/resolved after an interrupt. */
+  | { type: "approval_resolved"; native_request_id: string }
   | { type: "state"; state: "awaiting_input" | "auth_required" | "disconnected" }
   /** A protocol queue overflowed: the supervisor holds the worker. */
   | { type: "overflow" }
@@ -76,7 +80,10 @@ export interface WorkerHandle {
   /** Writes one journalled input; a timeout after writing resolves uncertain. */
   submit(input: { input_id: string; text: string; mode: InputMode }): Promise<InputOutcome>;
   interrupt(): Promise<"interrupted" | "not_busy" | "unsupported">;
-  /** Answers the request with this native id on this handle's generation only. */
+  /**
+   * Answers the request with this native id on this handle's generation only.
+   * It rejects when the harness no longer has that request pending.
+   */
   answerApproval(nativeRequestId: string, decision: "allow" | "deny", note?: string): Promise<void>;
   /** A non-model liveness check: the process, and a protocol ping where one exists. */
   probe(): Promise<"alive" | "gone" | "unknown">;
@@ -98,7 +105,8 @@ export interface HarnessAdapter {
    * Spawns and handshakes only; it never takes a prompt. It must call onSpawn
    * synchronously right after spawning, before the handshake, so the
    * supervisor owns the child even if it crashes mid-handshake. A child whose
-   * handshake fails is stopped before start rejects.
+   * handshake fails is stopped before start rejects. When signal aborts, the
+   * supervisor is stopping: stop the child and reject promptly.
    */
-  start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void): Promise<WorkerHandle>;
+  start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void, signal?: AbortSignal): Promise<WorkerHandle>;
 }

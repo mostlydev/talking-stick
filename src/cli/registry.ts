@@ -33,6 +33,7 @@ import {
 } from "./room-commands.js";
 import type { Runtime } from "./runtime.js";
 import { handleUpCommand, UP_USAGE } from "./up.js";
+import { handleSupervisorCommand, SUPERVISOR_USAGE } from "./supervisor-commands.js";
 import {
   handleAssignCommand,
   handlePassCommand,
@@ -209,6 +210,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt room create [path] [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> [--stdin] [--request-key KEY] | replies <request-id> [--after SEQ] [--limit N] [--timeout S] | adopt [path] [--name NAME] | remove [path]",
     description: "Declare, list, adopt, or remove rooms inside a repository (remove deletes an agent-free room and its history). list --all shows every room on this host with live members; brief shows what one room is doing, without joining it; ask puts a question to its agents and replies reads their answers.",
     handler: ({ runtime, parsed }) => handleRoomCommand(requireRuntime(runtime), parsed)
+  },
+  {
+    name: "supervisor",
+    needsRuntime: false,
+    startupMaintenance: false,
+    internal: false,
+    usage: SUPERVISOR_USAGE,
+    description: "Run and control the optional headless supervisor, which starts and keeps harness workers running (docs/supervisor.md). Approvals and reconciling deliveries are for a human.",
+    handler: ({ parsed }) => handleSupervisorCommand(parsed)
   },
   {
     name: "join",
