@@ -3307,6 +3307,12 @@ export class TalkingStickService {
       const text = formatNativeWakeText({ reason: "interrupt",
         sender: event?.from_agent_id ? this.describeWakeSender(row.room_id, event.from_agent_id) : null,
         path: this.requireRoom(row.room_id).canonical_path });
+      // An interrupt never re-sends an event a supervisor fenced for writing.
+      if (this.db.prepare(`SELECT 1 FROM native_event_receipts n WHERE n.room_id = ? AND n.agent_id = ?
+        AND n.event_seq = ? AND NOT ${UNFENCED_MANAGED_RECEIPT}`).get(...key)) {
+        finish({ outcome: "failed", error: "interrupt_managed_fenced" });
+        return null;
+      }
       const token = this.newDeliveryToken();
       const nativeText = this.prepareNativeEnvelope(row.room_id, row.agent_id, [row.event_seq], token);
       this.db.prepare("UPDATE interrupt_deliveries SET delivery_token = ? WHERE room_id = ? AND agent_id = ? AND event_seq = ?")
@@ -3749,7 +3755,7 @@ export class TalkingStickService {
                   OR EXISTS (SELECT 1 FROM interrupt_deliveries i WHERE i.room_id = n.room_id
                     AND i.agent_id = n.agent_id AND i.event_seq = n.event_seq
                     AND i.status IN ('dispatching', 'queued', 'woken', 'steered', 'ambiguous')))))
-            ) ORDER BY e.event_seq LIMIT 32`)
+            ) AND ${UNFENCED_MANAGED_RECEIPT} ORDER BY e.event_seq LIMIT 32`)
           .all(member.room_id, member.agent_id, activity.last_hook_event_seq,
             new Date(this.now().getTime() - 5 * 60_000).toISOString()) as RoomEventRow[];
         pending.push(...events.map(event => ({ member, event })));
@@ -3798,9 +3804,14 @@ export class TalkingStickService {
   private prepareNativeEnvelope(roomId: string, agentId: string, exactSeqs?: number[], token = this.newDeliveryToken()): string | null {
     const member = this.getMember(roomId, agentId);
     if (!member) return null;
+    // Every path, hooks and interrupts included, leaves out events a
+    // supervisor fenced for writing.
+    const fenced = this.db.prepare(`SELECT 1 FROM native_event_receipts n WHERE n.room_id = ? AND n.agent_id = ?
+      AND n.event_seq = ? AND NOT ${UNFENCED_MANAGED_RECEIPT}`);
     const rows = exactSeqs
       ? exactSeqs.map(seq => this.db.prepare<[number, string], RoomEventRow>(
-          "SELECT * FROM room_events WHERE event_seq = ? AND room_id = ?").get(seq, roomId)).filter((row): row is RoomEventRow => !!row)
+          "SELECT * FROM room_events WHERE event_seq = ? AND room_id = ?").get(seq, roomId))
+          .filter((row): row is RoomEventRow => !!row && !fenced.get(roomId, agentId, row.event_seq))
       : this.db.prepare<[string, string, string], RoomEventRow>(`SELECT e.* FROM room_events e
           JOIN native_event_receipts n ON n.event_seq = e.event_seq AND n.room_id = e.room_id
           WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL
@@ -3809,6 +3820,7 @@ export class TalkingStickService {
                 AND b.source = 'codex_hook' AND b.acknowledged_at IS NULL AND b.created_at > ?)
             AND ${UNFENCED_MANAGED_RECEIPT}
           ORDER BY e.event_seq LIMIT 33`).all(roomId, agentId, new Date(this.now().getTime() - 5 * 60_000).toISOString());
+    if (exactSeqs && !rows.length) return null;
     const text = formatNativeEventText({ token, room_id: roomId, path: this.requireRoom(roomId).canonical_path,
       recipient: agentId, events: rows.map(row => this.mapEvent(row)) });
     for (const row of rows) this.db.prepare(`INSERT OR IGNORE INTO native_event_receipts
@@ -3858,7 +3870,8 @@ export class TalkingStickService {
       if (outstanding) return null;
       const pending = this.db.prepare<[string, string], RoomEventRow>(`SELECT e.* FROM room_events e
         JOIN native_event_receipts n ON n.room_id = e.room_id AND n.event_seq = e.event_seq
-        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL ORDER BY e.event_seq LIMIT 32`)
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL AND ${UNFENCED_MANAGED_RECEIPT}
+        ORDER BY e.event_seq LIMIT 32`)
         .all(room.room_id, member.agent_id);
       if (pending.length === 0) return null;
       const token = this.newDeliveryToken();

@@ -63,7 +63,7 @@ describe("the supervisor endpoint", () => {
   });
 });
 
-function setup() {
+function setup(harness: "claude" | "codex" | "grok" = "claude") {
   const root = tempDir();
   const project = path.join(root, "project");
   fs.mkdirSync(project);
@@ -77,23 +77,24 @@ function setup() {
   const roomId = service.joinPath({ agent_id: OP, context_path: project,
     process_metadata: { host_id: HOST, pid: 10, process_started_at: "t", session_kind: "human_chat", display_name: "op" } }).room_id;
   const meta: ProcessMetadata = { host_id: HOST, pid: 700, process_started_at: "p", session_kind: "harness_cli",
-    display_name: "claude", harness_name: "claude", harness_session_id: "harness:w", harness_host_id: HOST,
+    display_name: harness, harness_name: harness, harness_session_id: "harness:w", harness_host_id: HOST,
     harness_pid: 600, harness_process_started_at: "s" };
-  service.joinPath({ agent_id: "claude:w", context_path: project, process_metadata: meta });
+  const agent = `${harness}:w`;
+  service.joinPath({ agent_id: agent, context_path: project, process_metadata: meta });
   const register = (generation: number, transport: "supervisor" | "claude_inbox" = "supervisor") =>
-    service.registerNativeWakeEndpoint({ agent_id: "claude:w", room_id: roomId, transport,
+    service.registerNativeWakeEndpoint({ agent_id: agent, room_id: roomId, transport,
       address: transport === "supervisor" ? `/tmp/sv.sock#w1@${generation}` : "/tmp/inbox.sock",
       secret: `token-${generation}`, harness_session_id: "harness:w", host_id: HOST });
   const send = async (body: string) => {
-    const sent = await service.sendMessageAndWake({ agent_id: OP, room_id: roomId, to_agent_id: "claude:w", body });
+    const sent = await service.sendMessageAndWake({ agent_id: OP, room_id: roomId, to_agent_id: agent, body });
     await service.flushWakes();
     return sent.event_seq;
   };
   const fence = (generation: number, batch: string, transition: "writing" | "written" | "unsent", secret = `token-${generation}`) =>
-    service.fenceManagedDelivery({ room_id: roomId, agent_id: "claude:w", endpoint_address: `/tmp/sv.sock#w1@${generation}`,
+    service.fenceManagedDelivery({ room_id: roomId, agent_id: agent, endpoint_address: `/tmp/sv.sock#w1@${generation}`,
       delivery_secret: secret, batch_token: batch, transition });
   const offered = () => requests.map((request) => [...request.text.matchAll(/#(\d+) /g)].map((match) => Number(match[1])));
-  return { service, roomId, requests, register, send, fence, offered };
+  return { service, roomId, project, requests, register, send, fence, offered };
 }
 
 describe("a supervised member", () => {
@@ -174,5 +175,39 @@ describe("a supervised member", () => {
     drop.register(2);
     await drop.service.flushWakes();
     expect(drop.requests).toHaveLength(1);
+  });
+});
+
+// Codex's review of #204 (#32403): every envelope path honours the fence.
+describe("hook and interrupt paths", () => {
+  test("a Codex Stop hook cannot replay a fenced event after a generation change", async () => {
+    const { service, requests, register, send, fence } = setup("codex");
+    register(1);
+    await send("already possibly written");
+    fence(1, requests[0].delivery_token!, "writing");
+    register(2);
+    service.handleCodexTurnHook({ sessionId: "w", pid: 600, processStartedAt: "s", turnId: "turn-x", event: "UserPromptSubmit" });
+    expect(service.handleCodexTurnHook({ sessionId: "w", pid: 600, processStartedAt: "s", turnId: "turn-x", event: "Stop" })).toBeNull();
+  });
+
+  test("a Grok hook cannot deliver a fenced event", async () => {
+    const { service, project, requests, register, send, fence } = setup("grok");
+    register(1);
+    await send("fenced");
+    fence(1, requests[0].delivery_token!, "writing");
+    expect(service.prepareGrokHookDelivery({ context_path: project, harness_session_id: "harness:w" })).toBeNull();
+  });
+
+  test("an interrupt never re-sends a fenced event", async () => {
+    const { service, roomId, requests, register, send, fence } = setup();
+    register(1);
+    const seq = await send("fenced");
+    fence(1, requests[0].delivery_token!, "writing");
+    service.db.prepare(`INSERT INTO interrupt_deliveries (room_id, agent_id, event_seq, harness_session_id, host_id)
+      VALUES (?, 'claude:w', ?, 'harness:w', ?)`).run(roomId, seq, HOST);
+    await service.flushWakes();
+    expect(requests).toHaveLength(1);
+    expect(service.db.prepare("SELECT status, error FROM interrupt_deliveries").get())
+      .toEqual({ status: "failed", error: "interrupt_managed_fenced" });
   });
 });

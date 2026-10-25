@@ -182,8 +182,8 @@ change never re-offers that batch as fresh text. The fence is released only when
 A crash between fence and write is held for that decision. Intake that was journalled but never
 fenced may be re-offered by tt.
 
-Events in a fenced batch are left out of every later envelope, and a member whose only pending
-work is fenced isn't woken at all. A member with a supervisor endpoint has no other native
+Events in a fenced batch are left out of every later envelope, from a wake, a Codex or Grok
+hook, or an interrupt, and a member whose only pending work is fenced isn't woken at all. A member with a supervisor endpoint has no other native
 endpoint: registering the supervisor removes them, and registering another is refused.
 
 The delivery token only fences and clears its own generation's batches. Control authority is
