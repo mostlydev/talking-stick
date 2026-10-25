@@ -9,6 +9,9 @@ import { mergeSessionHooks } from "../src/install.js";
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
+const setupMetadata = () => ({ harness_name: "claude", harness_session_id: "harness:old",
+  harness_host_id: "local", harness_pid: 123, harness_process_started_at: "start" });
+
 function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-lifecycle-"));
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -42,7 +45,7 @@ test("end removes only the exact session and revokes its lease without collapsin
   expect(service.db.prepare("SELECT owner, lease_id FROM path_rooms").get()).toEqual({ owner: null, lease_id: null });
   expect(service.db.prepare("SELECT * FROM member_wake_endpoints").all()).toEqual([]);
   expect(hook("SessionEnd")).toBe(0);
-  expect(service.db.prepare("SELECT * FROM room_events WHERE reason = 'session_ended'").all()).toHaveLength(1);
+  expect(service.db.prepare("SELECT * FROM room_events WHERE reason = 'member_lost'").all()).toHaveLength(1);
 });
 
 test("old wait cannot resurrect a retired member, even without metadata; exact resume allows rejoin", () => {
@@ -56,7 +59,10 @@ test("old wait cannot resurrect a retired member, even without metadata; exact r
   hook("SessionStart", { sessionId: "other" });
   expect(() => join()).toThrow("session ended");
   hook("SessionStart");
-  expect(join().room_id).toBe(room.room_id);
+  // Resuming is not enough: only the session's own explicit join recovers it.
+  expect(() => join()).toThrow(expect.objectContaining({ code: "member_lost" }));
+  expect(service.joinPath({ agent_id: "claude:old", context_path: root, process_metadata: setupMetadata(),
+    recover: true, recovery_credentials: { [room.room_id]: room.recovery_credential! } }).recovered?.evidence).toBe("credential");
 });
 
 test("retirement revokes an unclaimed reservation while preserving other members", () => {
@@ -88,11 +94,14 @@ test("new verified identities never retire existing sessions merely by sharing a
 });
 
 test("resume in a new process permits that session but keeps the old process tombstoned", () => {
-  const { join, metadata, hook } = setup();
+  const { service, root, join, metadata, hook, room } = setup();
   hook("SessionEnd");
   hook("SessionStart", { pid: 456, processStartedAt: "later" });
-  expect(() => join("claude:old", { ...metadata, harness_pid: 456, harness_process_started_at: "later" })).not.toThrow();
-  expect(() => join()).toThrow("session ended");
+  const resumed = { ...metadata, harness_pid: 456, harness_process_started_at: "later" };
+  expect(() => join("claude:old", resumed)).toThrow(expect.objectContaining({ code: "member_lost" }));
+  expect(service.joinPath({ agent_id: "claude:old", context_path: root, process_metadata: resumed, recover: true,
+    recovery_credentials: { [room.room_id]: room.recovery_credential! } }).recovered?.evidence).toBe("credential");
+  expect(() => service.joinPath({ agent_id: "claude:old", context_path: root, process_metadata: metadata })).toThrow("session ended");
 });
 
 test("hook requires exact ancestry and rejects malformed and child payloads, failing open", async () => {

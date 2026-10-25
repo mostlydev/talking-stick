@@ -4,9 +4,12 @@ import {
   resolveCliSessionPath,
   removeCliSession,
   insertCliSessionIfAbsent,
+  readCliSessions,
+  recordRecoveredCliSession,
   upsertJoinedCliSession,
   type CliSession,
   type DerivedIdentity,
+  type JoinRecovery,
   type PathRoom
 } from "../index.js";
 import { resolveContextPath } from "../path-resolution.js";
@@ -148,6 +151,8 @@ export function upsertSessionFromJoin(identity: DerivedIdentity, joined: {
   canonical_path: string;
   workspace_root: string;
   cursor_event_seq: number;
+  recovered?: JoinRecovery;
+  recovery_credential?: string;
 }): void {
   const sessionPath = resolveCliSessionPath();
   const existing = findCliSessionByRoom(
@@ -161,8 +166,23 @@ export function upsertSessionFromJoin(identity: DerivedIdentity, joined: {
     canonical_path: joined.canonical_path,
     workspace_root: joined.workspace_root,
     event_cursor_seq: existing?.event_cursor_seq ?? joined.cursor_event_seq,
+    ...(joined.recovery_credential ? { recovery_credential: joined.recovery_credential } : {}),
     updated_at: new Date().toISOString()
   });
+  // A surviving cache already knows what this session read. Without one,
+  // reading resumes where the loss left it. Native deliveries it never
+  // consumed come back with their batches either way.
+  if (joined.recovered) {
+    recordRecoveredCliSession(sessionPath, identity.agent_id, joined.room_id,
+      existing?.event_cursor_seq ?? joined.recovered.replay_from_event_seq);
+  }
+}
+
+/** This agent's recovery credentials from earlier joins, by room. */
+export function cachedRecoveryCredentials(identity: DerivedIdentity): Record<string, string> {
+  return Object.fromEntries(readCliSessions(resolveCliSessionPath())
+    .filter((session) => session.agent_id === identity.agent_id && session.recovery_credential)
+    .map((session) => [session.room_id, session.recovery_credential!]));
 }
 
 // listRooms for a context path returns rooms in resolution order, most

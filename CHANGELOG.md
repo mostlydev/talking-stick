@@ -18,6 +18,16 @@ changes will be called out under **Breaking changes**.
   typing returns to the composer with those keys in the draft, and Escape still returns live. The bar ends with `Ctrl-G`, kept even on narrow terminals, and the room strip and `/rooms` count only messages for you across
   your consoles, until acknowledged. Fullscreen's backlog indicator now reads `↓ N more`.
 
+### Added
+
+- A Claude or Codex member whose harness reports its session ended is now lost, not removed,
+  since an idle conversation can be unloaded while its window stays open. Messages to it are
+  kept and reported to senders as held. Its still-running process gets one body-free notice to
+  run `tt join`, and only that explicit join recovers it. Recovery has no lease, and the member
+  gets back its delivery batches and its place in the room's events. A new session in the same
+  single-session process, or the process ending for an hour, ends the loss for good. `tt leave` or
+  `tt kick` of a lost member also keeps that session out of the room. Lifecycle hook events are logged for diagnosis, without command lines.
+
 ### Fixed
 
 - A member silent for a day was removed on the first reading that found its process gone. The

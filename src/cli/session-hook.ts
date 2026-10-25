@@ -1,4 +1,4 @@
-import { TalkingStickService } from "../service.js";
+import { classifyHarnessProcess, TalkingStickService } from "../service.js";
 import { findHarnessRootInAncestry } from "../identity.js";
 import { createSystemProcessInspector, type ProcessInspector } from "../process-utils.js";
 
@@ -29,8 +29,11 @@ export async function runSessionHookCommand(harness: string | undefined, options
     const root = findHarnessRootInAncestry(harness, parentPid, inspector.inspect(parentPid), inspector, 20);
     if (!root) return;
     service = options.service ?? new TalkingStickService({});
+    const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : null;
     service.recordSessionLifecycle({ harness, sessionId: sessionId.trim(), event,
-      pid: root.pid, processStartedAt: root.startTime });
+      pid: root.pid, processStartedAt: root.startTime,
+      hookReason: text(input.reason), hookSource: text(input.source),
+      processKind: classifyHarnessProcess(harness, inspector.inspect(root.pid)?.command) });
   } catch {
     // A lifecycle hook must never prevent a clear, resume, or exit.
   } finally {

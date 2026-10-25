@@ -14,6 +14,8 @@ export interface CliSession {
   guardian_pid?: number | null;
   guardian_process_started_at?: string | null;
   event_cursor_seq?: number;
+  /** Proves this session to the room after a lost membership; keep private. */
+  recovery_credential?: string;
   updated_at: string;
 }
 
@@ -54,7 +56,7 @@ function writeCliSessionsUnlocked(
   sessionPath: string,
   sessions: CliSession[]
 ): void {
-  writeFileAtomic(sessionPath, `${JSON.stringify(sessions, null, 2)}\n`);
+  writeFileAtomic(sessionPath, `${JSON.stringify(sessions, null, 2)}\n`, 0o600);
 }
 
 export function upsertCliSession(
@@ -125,10 +127,29 @@ export function upsertJoinedCliSession(
     | "canonical_path"
     | "workspace_root"
     | "event_cursor_seq"
+    | "recovery_credential"
     | "updated_at"
   >
 ): void {
   upsertCliSession(sessionPath, session);
+}
+
+/**
+ * A recovered membership reads on from the given cursor and holds no lease:
+ * the room does not restore one.
+ */
+export function recordRecoveredCliSession(sessionPath: string, agentId: string, roomId: string, eventCursorSeq: number): void {
+  withSessionLock(sessionPath, () => {
+    const sessions = readCliSessions(sessionPath);
+    const session = sessions.find((candidate) => candidate.agent_id === agentId && candidate.room_id === roomId);
+    if (!session) return;
+    session.event_cursor_seq = eventCursorSeq;
+    delete session.lease_id;
+    delete session.turn_id;
+    delete session.guardian_pid;
+    delete session.guardian_process_started_at;
+    writeCliSessionsUnlocked(sessionPath, sessions);
+  });
 }
 
 export function findCliSessionByRoom(

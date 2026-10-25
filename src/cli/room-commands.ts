@@ -29,6 +29,7 @@ import {
   runEventStream
 } from "./event-stream.js";
 import {
+  cachedRecoveryCredentials,
   resolveSessionForReads,
   upsertSessionFromJoin
 } from "./session.js";
@@ -64,16 +65,22 @@ export function handleJoinCommand(
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const identity = deriveCliIdentity(parsed);
   const explicit = selectedRoom(runtime, parsed);
+  // Only this explicit join may restore a membership the harness lost.
   const joined = runtime.commands.joinPath(identity, {
     context_path: contextPath,
     room_id: explicit?.room_id,
-    force_new: parsed.options.has("force-new")
+    force_new: parsed.options.has("force-new"),
+    recover: true,
+    recovery_credentials: cachedRecoveryCredentials(identity)
   });
   upsertSessionFromJoin(identity, joined);
   registerNativeWake(runtime, identity, joined.room_id);
 
-  printResult(parsed, joined, () => {
+  printResult(parsed, { ...joined, recovery_credential: joined.recovery_credential ? "(saved)" : undefined }, () => {
     const lines = [`Joined ${joined.canonical_path} as ${joined.agent_id}`];
+    if (joined.recovered) {
+      lines.push(`Recovered the membership lost at ${joined.recovered.lost_at}; tt wait replays events after #${joined.recovered.replay_from_event_seq}.`);
+    }
     if (joined.warning) {
       lines.push(`Warning: ${joined.warning}`);
     }

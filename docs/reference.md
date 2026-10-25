@@ -965,11 +965,42 @@ reload hooks or restart other harnesses if their settings are cached.
 Existing hooks and settings are preserved.
 
 An end event removes only the matching session on the same host and exact
-harness process instance, releasing its turn and wake registrations. A saved
-retirement marker prevents an old background listener from rejoining; a later
-session-start event permits an explicit resume. Concurrent sessions remain
-separate even when they share a process. Crashes without hooks still use process
-liveness cleanup.
+harness process instance, releasing its turn. A saved retirement marker prevents
+an old background listener from rejoining. Concurrent sessions remain separate
+even when they share a process. Crashes without hooks still use process liveness
+cleanup.
+
+A harness also reports an end when it unloads a conversation whose window is
+still open, so for Claude and Codex the end makes the member **lost**, not gone.
+The room keeps what it needs to restore it: its delivery batches, receipts and
+wake registrations, and where its reading stopped. A lost member:
+
+- Appears in `tt state` under `lost_members`, and chat shows it lost its membership.
+- Still has messages sent to it. Senders see it under `held`, not as delivered. For a
+  direct message, a visitor's question, or an operator's room message, its still-running
+  process gets one notice, at most every 30 minutes, through its own Claude inbox or
+  Codex queue. The notice carries no message text. A Codex notice that only queued
+  is reported `queued`.
+- Gets `member_lost` from any other `tt` command, with the way back: `tt join`.
+
+Only that session's explicit `tt join` recovers it, never a listener. The same
+process recovers with the credential `tt join` saved in `cli-sessions.json`
+(mode 0600; the room stores only its hash), or on its identity alone if it was
+never issued one. A resumed process needs the credential and its own session-start
+event; a session never issued a credential needs that event alone, as before.
+Recovery restores no turn or lease. `tt wait` keeps the cached cursor; without
+one it resumes where the loss left off, and undelivered native batches come back
+with their original tokens. Receipts for events the room no longer has are
+dropped and counted in `recovered.dropped_receipts`.
+
+An explicit `tt leave` or `tt kick` of a lost member also keeps that harness session
+out of the room: later joins fail with `member_revoked`, even after a session-start
+event. A new harness session can join. A loss also ends for good when another session
+starts in the same single-session process (not a Codex app-server or `claude -p`
+host), or when the exact process has read gone for an hour. Grok members are
+removed on the end event as before. Each lifecycle event is logged in the room
+database's `harness_lifecycle_log` for 30 days. The log keeps the hook's reason and
+source and whether the process is single-session, never its command line.
 
 Claude reports the old session ending during `/clear` and `/resume`. Codex
 does **not** report an immediate end on `/clear`; cleanup waits for its actual

@@ -173,6 +173,7 @@ export {
   findCliSessionByRoom,
   findCliSessionForContextPath,
   readCliSessions,
+  recordRecoveredCliSession,
   removeCliSession,
   removeCliSessionsForRoom,
   resolveCliSessionPath,

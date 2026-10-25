@@ -186,6 +186,44 @@ export interface JoinPathInput {
   room_id?: string;
   force_new?: boolean;
   process_metadata?: ProcessMetadata;
+  /** An explicit join may restore this session's lost membership. */
+  recover?: boolean;
+  /** Credentials from earlier joins, by room id. */
+  recovery_credentials?: Record<string, string>;
+}
+
+/** How a lost membership was restored by its own session's join. */
+export interface JoinRecovery {
+  lost_at: string;
+  hook_reason: string | null;
+  evidence: "credential" | "process_identity" | "session_start";
+  /** Read the room's events after this one: they were not received before the loss. */
+  replay_from_event_seq: number;
+  gap?: { from_event_seq: number; to_event_seq: number };
+  /** Receipts for events the room no longer has; those deliveries are gone. */
+  dropped_receipts?: number;
+}
+
+/** What a lost member's recovery notice did; queued is not delivered. */
+export type RecoveryNoticeStatus =
+  | "injected" | "queued" | "ambiguous" | "unreachable" | "process_not_running" | "already_sent" | "recovered";
+
+/** A member whose harness reported its session ended, still recoverable. */
+export interface LostMember {
+  agent_id: AgentId;
+  harness_name: string;
+  lost_at: string;
+  hook_reason: string | null;
+  notice_status: string | null;
+  notice_at: string | null;
+}
+
+/** A recipient that was not woken: the message waits for it to recover. */
+export interface HeldRecipient {
+  agent_id: AgentId;
+  reason: "member_lost";
+  lost_at: string;
+  notice?: RecoveryNoticeStatus;
 }
 
 export interface JoinPathResult {
@@ -201,6 +239,9 @@ export interface JoinPathResult {
   policy: Policy;
   room_state: PathRoom;
   handoff_template: Handoff;
+  recovered?: JoinRecovery;
+  /** Issued once per session; keep it private to recover after a loss. */
+  recovery_credential?: string;
 }
 
 export interface LeaveRoomInput {
@@ -474,6 +515,7 @@ export interface GetRoomStateInput {
 export interface GetRoomStateResult {
   room: PathRoom;
   members: RoomMember[];
+  lost_members?: LostMember[];
   cursor_event_seq: number;
   hidden?: {
     members: HiddenRowsSummary;
@@ -649,6 +691,7 @@ export interface SendMessageResult {
   // Every agent this message was routed to, in send order. A single directed
   // message also fills the delivery_* fields above for existing callers.
   deliveries?: MessageDelivery[];
+  held?: HeldRecipient[];
 }
 
 export interface RegisterNativeWakeEndpointInput {

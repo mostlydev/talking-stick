@@ -55,6 +55,8 @@ export interface JoinPathCommandInput {
   context_path: string;
   room_id?: string;
   force_new?: boolean;
+  recover?: boolean;
+  recovery_credentials?: Record<string, string>;
 }
 
 export interface LeaveRoomCommandInput {
@@ -229,7 +231,8 @@ export class TalkingStickCommands {
       context_path: input.context_path,
       room_id: input.room_id,
       force_new: input.force_new,
-      process_metadata: identity.process_metadata
+      process_metadata: identity.process_metadata,
+      ...(input.recover ? { recover: true, recovery_credentials: input.recovery_credentials } : {})
     });
   }
 
