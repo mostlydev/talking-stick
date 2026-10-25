@@ -3016,6 +3016,16 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [false
   const flush = () => new Promise<void>(resolve => vt.write("\u001b[0m", resolve));
   const screen = () => Array.from({ length: output.rows }, (_, i) => vt.buffer.active.getLine(vt.buffer.active.baseY + i)?.translateToString(true) ?? "");
   const pending = () => service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).total;
+  // Waits for the screen to settle on the expected layout instead of a fixed
+  // sleep, which slow CI runners outlast; the assertion after it still decides.
+  const settle = async (done: (lines: string[]) => boolean) => {
+    const deadline = Date.now() + 3_000;
+    for (;;) {
+      await flush();
+      if (done(screen()) || Date.now() > deadline) return;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  };
   const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
     identity: observerIdentity(), context_path: root, input, output, terminal: true, inline,
     mouse: true, color: true, history: 0, show_turn_events: false, poll_ms: 5 });
@@ -3032,13 +3042,18 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [false
       await new Promise(resolve => setTimeout(resolve, 30)); await flush();
     }
     const target = reflow ? "界" : "click either copy";
+    await settle(lines => lines.filter(line => line.includes(target)).length === 1);
     expect(screen().filter(line => line.includes(target))).toHaveLength(1);
     for (let i = 0; i < 25; i++) service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: `promotion-${i}` });
     await until(() => bytes.includes("promotion-24"));
-    await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+    await settle(lines => lines.filter(line => line.includes("click either copy") && !line.includes("for you")).length === 0);
     expect(screen().filter(line => line.includes("click either copy") && !line.includes("for you"))).toHaveLength(0);
+    const beforeResize = bytes.length;
     vt.resize(100, 100); output.columns = 100; output.rows = 100; output.emit("resize");
-    await new Promise(resolve => setTimeout(resolve, 30)); await flush();
+    // The click must land on the redrawn layout, not the one before the resize.
+    await until(() => bytes.length > beforeResize);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await settle(lines => lines.filter(line => line.includes(target)).length === 1);
     const copies = screen().map((line, index) => line.includes(target) ? index : -1).filter(index => index >= 0);
     expect(copies).toHaveLength(1);
     const y = copies[0];
