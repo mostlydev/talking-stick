@@ -32,9 +32,9 @@ An adapter speaks one harness's headless protocol. The interface is `src/supervi
   A pipe error or EPIPE alone is not proof that nothing was written.
 - `answerApproval(native_request_id, …)` answers on that handle's own generation only.
   - It refuses an id the harness no longer has pending.
-  - A native cancellation, such as Codex's `serverRequest/resolved` after an interrupt, will be
-    reported as a generation-scoped resolution event that settles that exact occurrence. This is
-    required before adapter acceptance, and the event is added with the adapters.
+  - A native cancellation, such as Codex's `serverRequest/resolved` after an interrupt, is
+    reported as `approval_resolved`. The supervisor then expires that exact pending occurrence,
+    and a decision made afterwards is refused.
 - `probe()` checks liveness without the model: the process, and a protocol ping where one exists.
 - `stop(grace)`: stdin EOF, then the process group, then SIGKILL.
 - Adapters drain the child's output continuously and bound their queues. An overflow of protocol

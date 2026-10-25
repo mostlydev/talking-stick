@@ -277,6 +277,15 @@ export class Supervisor {
         }
         report("awaiting_approval");
         break;
+      case "approval_resolved": {
+        // Settled natively: a decision made afterwards can no longer reach it.
+        const pending = this.store.pendingApproval(workerId, generation, event.native_request_id);
+        if (pending && this.store.settleApproval(pending.approval_id, "expired", "harness", at)) {
+          this.store.recordAnswer(pending.approval_id, "failed");
+          if (this.reportedState.get(workerId) === "awaiting_approval") report(this.activeTurn.has(workerId) ? "busy" : "idle");
+        }
+        break;
+      }
       case "state":
         report(event.state);
         break;

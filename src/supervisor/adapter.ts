@@ -60,6 +60,8 @@ export type WorkerEvent =
   | { type: "turn_started"; native_turn_id: string; input_id?: string }
   | { type: "turn_completed"; native_turn_id: string; outcome: "success" | "error" | "interrupted" }
   | { type: "approval_requested"; native_request_id: string; tool: string; summary: string }
+  /** The harness settled a pending request itself, such as Codex's serverRequest/resolved after an interrupt. */
+  | { type: "approval_resolved"; native_request_id: string }
   | { type: "state"; state: "awaiting_input" | "auth_required" | "disconnected" }
   /** A protocol queue overflowed: the supervisor holds the worker. */
   | { type: "overflow" }
@@ -76,7 +78,10 @@ export interface WorkerHandle {
   /** Writes one journalled input; a timeout after writing resolves uncertain. */
   submit(input: { input_id: string; text: string; mode: InputMode }): Promise<InputOutcome>;
   interrupt(): Promise<"interrupted" | "not_busy" | "unsupported">;
-  /** Answers the request with this native id on this handle's generation only. */
+  /**
+   * Answers the request with this native id on this handle's generation only.
+   * It rejects when the harness no longer has that request pending.
+   */
   answerApproval(nativeRequestId: string, decision: "allow" | "deny", note?: string): Promise<void>;
   /** A non-model liveness check: the process, and a protocol ping where one exists. */
   probe(): Promise<"alive" | "gone" | "unknown">;

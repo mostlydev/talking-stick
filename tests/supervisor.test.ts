@@ -300,6 +300,21 @@ describe("approvals", () => {
   });
 });
 
+test("a request the harness settles itself expires, and a later decision is refused", async () => {
+  const { store, adapter, supervisor, spec } = setup();
+  store.addWorker(spec, "human:op", "t");
+  await supervisor.tick();
+  adapter.last.emit({ type: "turn_started", native_turn_id: "t1" });
+  adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "x" });
+  const request = store.pendingApproval("w1", 1, "0")!;
+  adapter.last.emit({ type: "approval_resolved", native_request_id: "0" });
+  expect(store.approval(request.approval_id)).toMatchObject({ status: "expired", decided_by: "harness" });
+  expect(store.latestGeneration("w1")!.state).toBe("busy");
+  await expect(supervisor.decideApproval({ approval_id: request.approval_id, worker_id: "w1", generation: 1 }, "allow", "human:op"))
+    .rejects.toThrow("not pending");
+  expect(adapter.last.answers).toEqual([]);
+});
+
 describe("ownership through a crash", () => {
   test("a supervisor crash during the handshake leaves an owned child that holds, not a duplicate", async () => {
     const { store, adapter, supervisor, spec, make } = setup({ liveness: () => "alive" });
