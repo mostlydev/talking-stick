@@ -1017,7 +1017,7 @@ export class TalkingStickService {
       process_started_at: lost.process_started_at, harness_name: lost.harness_name,
       harness_session_id: lost.session_id, harness_host_id: lost.host_id, harness_pid: lost.pid,
       harness_process_started_at: lost.process_started_at });
-    if (liveness !== "alive") return record("process_not_running");
+    if (liveness !== "alive") return record(liveness === "gone" ? "process_not_running" : "process_unknown");
     const endpoints = ((JSON.parse(lost.state_json) as LostMemberState).member_wake_endpoints ?? [])
       .map((row) => row as { transport: string; address: string; secret: string | null })
       .filter(endpoint => endpoint.transport === "claude_inbox" || endpoint.transport === "codex_queue");

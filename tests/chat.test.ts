@@ -697,6 +697,35 @@ describe("tt chat session", () => {
     ).toEqual(["codex:aa"]);
   });
 
+  test("a mention of a lost member is held for it and says so", async () => {
+    const { root, service } = setupService({ observerLiveness: "alive" });
+    const joined = service.joinPath({ agent_id: "codex:aa", context_path: root, process_metadata: {
+      host_id: "h", pid: 700, process_started_at: "t", session_kind: "harness_cli", harness_name: "codex",
+      harness_session_id: "harness:lost-1", harness_host_id: os.hostname(), harness_pid: 600, harness_process_started_at: "start"
+    } });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let transcript = "";
+    output.on("data", (chunk) => { transcript += chunk.toString(); });
+    const session = runChatSession({
+      runtime: { commands: new TalkingStickCommands(service), close: () => {} },
+      identity: createChatIdentity(), context_path: root, input, output,
+      terminal: false, color: false, history: 10, show_turn_events: false, poll_ms: 5
+    });
+    await until(() => transcript.includes("In the room: codex"));
+    service.recordSessionLifecycle({ harness: "codex", sessionId: "lost-1", pid: 600, processStartedAt: "start", event: "SessionEnd" });
+    await until(() => transcript.includes("codex lost its membership: its harness reported the session ended"));
+
+    input.write("@codex are you there?\n");
+    await until(() => transcript.includes(
+      "· codex lost its membership; the message waits for it to rejoin (its process can't be checked)."));
+    const sent = service.getRoomEvents({ room_id: joined.room_id, include_all: true })
+      .filter((event) => event.event_type === "message_sent");
+    expect(sent.at(-1)).toMatchObject({ to_agent_id: "codex:aa", payload: { body: "are you there?" } });
+    input.write("/quit\n");
+    await session;
+  });
+
   test("a running console delivers a wake its sender could not", async () => {
     const delivered: string[] = [];
     const { root, service } = setupService({ hostId: "host-a", processLivenessChecker: () => "alive",

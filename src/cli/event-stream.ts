@@ -93,14 +93,20 @@ export function resolveAgentSelector(
   roomId: string,
   raw: string
 ): AgentId {
-  const members = runtime.commands.getRoomState({
+  const state = runtime.commands.getRoomState({
     room_id: roomId,
     agent_id: identity.agent_id,
     process_metadata: identity.process_metadata
-  }).members;
+  });
+  const members = state.members;
   const exact = members.find((member) => member.agent_id === raw);
   if (exact) {
     return exact.agent_id;
+  }
+  // A lost member is still addressable by its exact id; the room holds the
+  // message until it recovers.
+  if (state.lost_members?.some((lost) => lost.agent_id === raw)) {
+    return raw;
   }
 
   const candidates = members.filter(
