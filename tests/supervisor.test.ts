@@ -59,6 +59,8 @@ describe("one-time room enrolment", () => {
     expect(adapter.last.submitted[0].text).toContain("tt join --json");
     expect(store.db.prepare("SELECT source FROM inputs").all()).toEqual([{ source: "bootstrap" }]);
     await supervisor.tick(); expect(adapter.last.submitted).toHaveLength(1);
+    adapter.last.emit({ type: "turn_started", native_turn_id: "bootstrap-turn", input_id: adapter.last.submitted[0].input_id });
+    adapter.last.emit({ type: "turn_completed", native_turn_id: "bootstrap-turn", outcome: "success" });
     adapter.last.emit({ type: "exited", code: 1, signal: null });
     // Restart after the backoff (the supervisor's clock is real in this test).
     store.setNextStart("w1", null);
@@ -99,6 +101,25 @@ describe("one-time room enrolment", () => {
     adapter.last.emit({ type: "state", state: "idle" });
     await supervisor.tick();
     expect(adapter.last.submitted).toHaveLength(1);
+  });
+  test.each(["error", "interrupted", "process_exit"] as const)("holds an enrolment that ends with %s instead of replaying it", async outcome => {
+    const { store, adapter, spec } = setup();
+    store.addWorker({ ...spec, resume_session_id: "native-first" }, "human:op", "t");
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone",
+      bridge: bootstrapBridge, socketPath: "/tmp/bootstrap.sock", bootstrap: true });
+    supervisor.reconcileStartup(); await supervisor.tick();
+    const input = adapter.last.submitted[0];
+    adapter.last.emit({ type: "turn_started", native_turn_id: "enrol", input_id: input.input_id });
+    if (outcome === "process_exit") adapter.last.emit({ type: "exited", code: 1, signal: null });
+    else adapter.last.emit({ type: "turn_completed", native_turn_id: "enrol", outcome });
+    expect(store.worker("w1")?.hold_reason).toBe("bootstrap_failed");
+    await supervisor.tick();
+    expect(adapter.handles).toHaveLength(1);
+    expect(adapter.last.submitted).toHaveLength(1);
+    if (outcome !== "process_exit") adapter.last.emit({ type: "exited", code: 0, signal: null });
+    const restored = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone" });
+    restored.reconcileStartup();
+    expect(store.worker("w1")?.hold_reason).toBe("bootstrap_failed");
   });
 });
 

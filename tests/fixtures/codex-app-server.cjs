@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const mode = process.env.FIXTURE_MODE;
 let thread = process.env.FIXTURE_UNICODE ? "owned-界" : "owned-thread";
-let turn = null, counter = 0, approval = false;
+let turn = null, counter = 0, approval = false, unloaded = false;
 const output = value => process.stdout.write(JSON.stringify(value) + "\n");
 const reply = (id, result) => output({ id, result });
 const notify = (method, params) => output({ method, params: { threadId: thread, ...params } });
@@ -26,14 +26,19 @@ input.on("line", line => {
   }
   if (m.method === "initialized") return;
   if (m.method === "thread/start" || m.method === "thread/resume") {
+    if (m.method === "thread/resume" && mode === "unload-fail") return output({ id: m.id, error: { code: -32600, message: "no rollout found" } });
     if (m.params.threadId === "missing") return output({ id: m.id, error: { code: -32600, message: "no rollout found" } });
     thread = m.params.threadId || thread;
-    return reply(m.id, { thread: { id: thread, status: { type: "idle" } }, approvalPolicy: mode === "unsafe" ? "never" : m.params.approvalPolicy,
+    unloaded = false;
+    reply(m.id, { thread: { id: thread, status: { type: m.method === "thread/resume" && mode === "unload-stays-unloaded" ? "notLoaded" : "idle" } }, approvalPolicy: mode === "unsafe" ? "never" : m.params.approvalPolicy,
       sandbox: { type: m.params.sandbox === "read-only" ? "readOnly" : "workspaceWrite", networkAccess: false,
         writableRoots: m.params.config["sandbox_workspace_write.writable_roots"] || [] } });
+    if (m.method === "thread/start" && mode === "unsupported") setTimeout(() => output({ id: 9,
+      method: "item/tool/requestUserInput", params: { threadId: thread } }), 5);
+    return;
   }
   if (m.method === "account/read") return reply(m.id, { account: mode === "no-auth" ? null : { type: "apiKey" }, requiresOpenaiAuth: true });
-  if (m.method === "thread/read") return reply(m.id, { thread: { id: thread, status: { type: mode === "unloaded" ? "notLoaded" : turn ? "active" : "idle" } } });
+  if (m.method === "thread/read") return reply(m.id, { thread: { id: thread, status: { type: unloaded ? "notLoaded" : turn ? "active" : "idle" } } });
   if (m.method === "turn/start") {
     if (mode === "no-reply") return;
     turn = `turn-${++counter}`;
@@ -44,7 +49,11 @@ input.on("line", line => {
     if (text === "approval") {
       approval = true;
       output({ id: 0, method: "item/commandExecution/requestApproval", params: { threadId: thread,
-        turnId: turn, command: "synthetic harmless command", availableDecisions: ["accept", "cancel"] } });
+        turnId: turn, command: "synthetic harmless command", availableDecisions: ["accept", "decline", "cancel"] } });
+    } else if (text === "unload" || text === "busy-unload") {
+      if (text === "unload") complete("completed");
+      unloaded = true;
+      notify(mode === "closed" ? "thread/closed" : "thread/status/changed", { status: { type: "notLoaded" } });
     } else if (text !== "busy" && text !== "fast") setTimeout(() => complete("completed"), 5);
     return;
   }

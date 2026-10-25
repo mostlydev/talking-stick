@@ -8,6 +8,8 @@ import { workerEnvironment } from "../src/supervisor/adapters/process.js";
 import type { WorkerEvent, WorkerHandle, WorkerSpec } from "../src/supervisor/adapter.js";
 import { createSystemProcessInspector } from "../src/process-utils.js";
 import { createProcessEvidence, readProcessStartEvidence } from "../src/supervisor-process-evidence.js";
+import { Supervisor } from "../src/supervisor/daemon.js";
+import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -117,7 +119,7 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     expect(request.native_request_id).toBe("n:0");
     await h.answerApproval(request.native_request_id, "deny");
     await until(() => f.events.some(e => e.type === "approval_resolved"));
-    expect(f.messages().find(m => m.id === 0)).toEqual({ id: 0, result: { decision: "cancel" } });
+    expect(f.messages().find(m => m.id === 0)).toEqual({ id: 0, result: { decision: "decline" } });
     await expect(h.answerApproval(request.native_request_id, "allow")).rejects.toThrow("no longer pending");
   });
   test("a completed steer links its journal input before reasserting the already known completion", async () => {
@@ -156,6 +158,54 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     const f = fixture("no-auth"); await f.start();
     expect(f.events).toContainEqual({ type: "state", state: "auth_required" });
     expect(f.messages().some(m => m.method === "turn/start")).toBe(false);
+  });
+  test.each(["", "closed"])("reloads the same idle native session after unload without a new process or prompt (%s)", async mode => {
+    const f = fixture(mode); const h = await f.start();
+    await h.submit({ input_id: "a", text: "unload", mode: "start_turn" });
+    await until(() => f.events.some(e => e.type === "state" && e.state === "disconnected"));
+    expect(await h.submit({ input_id: "blocked", text: "blocked", mode: "start_turn" })).toBe("rejected");
+    expect(await Promise.all([h.probe(), h.probe()])).toEqual(["alive", "alive"]);
+    expect(f.messages().filter(m => m.method === "thread/resume")).toHaveLength(1);
+    expect(f.messages().find(m => m.method === "thread/resume").params.threadId).toBe("owned-thread");
+    expect(f.messages().filter(m => m.method === "thread/start")).toHaveLength(1);
+    expect(f.messages().filter(m => m.method === "turn/start")).toHaveLength(1);
+    expect(f.events.at(-1)).toEqual({ type: "state", state: "idle" });
+    expect(await h.submit({ input_id: "b", text: "next", mode: "start_turn" })).toBe("accepted");
+  });
+  test.each(["unload-fail", "unload-stays-unloaded"])("a failed idle reload holds the supervisor visibly and never retries or starts fresh (%s)", async mode => {
+    const f = fixture(mode);
+    const store = new SupervisorStore(supervisorDatabasePath(f.root)); cleanup.push(() => store.close());
+    store.addWorker(f.spec, "human:test", "t");
+    const supervisor = new Supervisor({ store, adapters: { codex: f.adapter }, processLiveness: () => "alive" });
+    cleanup.push(() => supervisor.shutdown()); supervisor.reconcileStartup(); await supervisor.tick();
+    await supervisor.submit("w1", "unload", "start_turn", "test");
+    await until(() => store.latestGeneration("w1")?.state === "disconnected");
+    await supervisor.tick();
+    expect(store.worker("w1")?.hold_reason).toBe("resume_failed");
+    await supervisor.tick();
+    expect(f.messages().filter(m => m.method === "thread/resume")).toHaveLength(1);
+    expect(f.messages().filter(m => m.method === "thread/start")).toHaveLength(1);
+    await expect(supervisor.submit("w1", "no replay", "start_turn", "test")).rejects.toThrow("not running");
+  });
+  test("unload with an unconfirmed active turn is held without resuming or replaying its input", async () => {
+    const f = fixture(); const h = await f.start();
+    await h.submit({ input_id: "a", text: "busy-unload", mode: "start_turn" });
+    expect(await h.probe()).toBe("unknown");
+    expect(f.events).toContainEqual({ type: "resume_failed" });
+    expect(f.messages().some(m => m.method === "thread/resume")).toBe(false);
+    expect(f.messages().filter(m => m.method === "turn/start")).toHaveLength(1);
+  });
+  test("a refused unsupported request is audited without leaving a synthetic awaiting_input state", async () => {
+    const f = fixture("unsupported");
+    const store = new SupervisorStore(supervisorDatabasePath(f.root)); cleanup.push(() => store.close());
+    store.addWorker(f.spec, "human:test", "t");
+    const supervisor = new Supervisor({ store, adapters: { codex: f.adapter }, processLiveness: () => "alive" });
+    cleanup.push(() => supervisor.shutdown()); supervisor.reconcileStartup(); await supervisor.tick();
+    await until(() => !!store.db.prepare("SELECT 1 FROM audit WHERE action = 'native_request_refused'").get());
+    expect(store.latestGeneration("w1")?.state).toBe("idle");
+    expect(f.messages().find(m => m.id === 9)).toMatchObject({ error: { code: -32601 } });
+    expect((await supervisor.submit("w1", "fast", "start_turn", "test")).outcome).toBe("accepted");
+    expect(store.db.prepare("SELECT state FROM inputs").get()).toEqual({ state: "completed" });
   });
   test("stops the owned process group even when a child outlives its leader", async () => {
     const f = fixture("grandchild"); const h = await f.start();

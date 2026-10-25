@@ -138,7 +138,7 @@ export class Supervisor {
       FROM bootstrap_sessions b JOIN inputs i ON i.input_id = b.input_id
       JOIN generations g ON g.worker_id = b.worker_id AND g.session_id = b.session_id
       JOIN workers w ON w.worker_id = b.worker_id
-      WHERE i.state != 'completed' AND w.fresh_next = 0
+      WHERE (i.state != 'completed' OR i.turn_outcome != 'success') AND w.fresh_next = 0
         AND g.generation = (SELECT MAX(generation) FROM generations WHERE worker_id = b.worker_id)`).all()) {
       this.store.hold(row.worker_id, "bootstrap_failed", this.at());
     }
@@ -324,6 +324,11 @@ export class Supervisor {
         this.store.completeTurn(workerId, generation, event.native_turn_id, event.outcome, at);
         if (this.activeTurn.get(workerId) === event.native_turn_id) this.activeTurn.delete(workerId);
         report("idle", { last_model_activity_at: at });
+        if (event.outcome !== "success" && this.store.db.prepare(`SELECT 1 FROM inputs
+          WHERE worker_id = ? AND generation = ? AND native_turn_id = ? AND source = 'bootstrap'`)
+          .get(workerId, generation, event.native_turn_id)) {
+          this.store.hold(workerId, "bootstrap_failed", at);
+        }
         this.drain(workerId);
         break;
       case "approval_requested":
@@ -348,6 +353,14 @@ export class Supervisor {
       case "state":
         report(event.state);
         break;
+      case "resume_failed":
+        report("disconnected");
+        this.store.hold(workerId, "resume_failed", at);
+        break;
+      case "request_refused":
+        this.store.audit(at, "supervisor", "native_request_refused", workerId, { generation,
+          method: event.method.replace(/[^A-Za-z0-9/_-]/g, "?").slice(0, 160) });
+        break;
       case "overflow":
         this.store.hold(workerId, "overflow", at);
         this.stopHandle(workerId, handle).catch(() => {});
@@ -366,6 +379,9 @@ export class Supervisor {
     const { uncertain } = this.store.endGeneration(workerId, handle.generation, this.at(), exit);
     this.store.audit(this.at(), "supervisor", "exit", workerId, { generation: handle.generation, ...exit, uncertain });
     const worker = this.store.worker(workerId);
+    if (!worker?.fresh_next && this.store.db.prepare(`SELECT 1 FROM inputs WHERE worker_id = ? AND generation = ?
+      AND source = 'bootstrap' AND (state != 'completed' OR turn_outcome != 'success')`)
+      .get(workerId, handle.generation)) this.store.hold(workerId, "bootstrap_failed", this.at());
     const requested = exit.reason === "stopped" || this.stopping.has(workerId);
     if (worker?.desired === "running" && !requested) this.crashed(workerId, exit);
   }

@@ -90,15 +90,21 @@ reservation and input journal commit atomically, including before any possible p
 
 Input uses turn/start while idle and exact-turn turn/steer while busy. Interrupt success requires
 a native interrupted completion, not merely an RPC acknowledgement. Command and file-change
-approvals allow one request only; native resolution expires the pending occurrence (including
-request ID 0). Unsupported tool-input, permission and plugin requests remain blocked and visible.
+approvals allow one request only; deny sends `decline`, which refuses that action and lets the
+turn continue (`cancel` would also interrupt). Native resolution expires the pending occurrence,
+including request ID 0. Unsupported tool-input, permission and plugin requests are refused and
+audited, without leaving a synthetic input wait after the refusal.
 Output is drained with bounded frames and queues; raw provider diagnostics are not logged.
 When sandboxed `ps` cannot read a process start time, the supervisor writes private process
 evidence before the handshake. The CLI fills only the missing start time of its already selected
 PID, with matching endpoint and delivery-token hash. A stale or mismatched file leaves it unknown;
 the file is removed on exit when possible, and a stale file cannot match a later generation's credential. This does not select a new PID or renew a room lease.
 Native history remains in CODEX_HOME. Missing resume history holds the worker; no replacement
-conversation is started implicitly. Managed process groups on Windows are not implemented yet.
+conversation is started implicitly. An idle thread that reports `notLoaded` or `thread/closed`
+is resumed by exact ID in the same owned process during a non-model probe, with the same verified
+permissions and no new prompt. A failed reload holds `resume_failed`; an unconfirmed active turn
+or pending approval is held rather than resumed or replayed. Managed process groups on Windows
+are not implemented yet.
 
 Example setup from your own terminal (replace the paths):
 
@@ -152,7 +158,14 @@ reached only through its own `tt` calls.
   - A second request under an id that's still pending is a protocol error, and holds the worker.
   - The decision and the delivery of its answer are recorded separately, so a failed pipe write
     leaves the decision made and `answer_status` failed.
+- `bootstrap_sessions`: the one enrolment input reserved per worker/native session, linked atomically
+  to its journal row. Error, interruption or process death before successful completion holds
+  `bootstrap_failed`, including after a daemon restart; it never causes automatic replay.
 - `crashes`, and an `audit` log of every control action.
+
+Supervisor migration 3 only adds the enrolment table; it does not change the room schema.
+For rollback, stop the preview daemon first. Older builds leave the extra table and native
+histories intact but cannot run this new adapter. Preserve CODEX_HOME when retaining a session.
 
 ## The reconcile loop
 

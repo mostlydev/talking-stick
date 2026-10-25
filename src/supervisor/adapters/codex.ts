@@ -174,6 +174,9 @@ class CodexHandle implements WorkerHandle {
   private closed = false;
   private overflowed = false;
   private authRequired = false;
+  private disconnected = false;
+  private resumeFailed = false;
+  private reloading: Promise<boolean> | null = null;
   readonly generation: number;
   constructor(private readonly spec: WorkerSpec, generation: number, private readonly options: CodexAdapterOptions,
     private readonly nativeHome: string) {
@@ -208,13 +211,19 @@ class CodexHandle implements WorkerHandle {
     await this.rpc.request("initialize", { clientInfo: { name: "talking_stick_supervisor", version: "1" },
       capabilities: { experimentalApi: true } }, timeout);
     await this.rpc.send({ method: "initialized", params: {} });
+    await this.openThread(this.spec.resume_session_id);
+    await this.checkAuthentication();
+  }
+
+  private async openThread(resume?: string): Promise<void> {
+    const timeout = this.options.startTimeoutMs ?? 15_000;
     const permissions = this.spec.permissions;
     if (permissions.harness !== "codex") throw new Error("Invalid Codex permission settings.");
     const dataDir = this.spec.supervisor_env?.TALKING_STICK_DATA_DIR;
     const config: Json = { "sandbox_workspace_write.network_access": false };
     if (permissions.sandbox === "workspace-write" && dataDir) config["sandbox_workspace_write.writable_roots"] = [path.resolve(dataDir)];
-    const result = await this.rpc.request(this.spec.resume_session_id ? "thread/resume" : "thread/start", {
-      ...(this.spec.resume_session_id ? { threadId: this.spec.resume_session_id, excludeTurns: true } : {}),
+    const result = await this.rpc.request(resume ? "thread/resume" : "thread/start", {
+      ...(resume ? { threadId: resume, excludeTurns: true } : {}),
       cwd: this.spec.cwd, sandbox: permissions.sandbox, approvalPolicy: permissions.approval, config,
       ...(this.spec.model ? { model: this.spec.model } : {}),
       developerInstructions: "You are a managed Talking Stick worker. Use the talking-stick skill for coordination. " +
@@ -222,7 +231,7 @@ class CodexHandle implements WorkerHandle {
     const thread = object(result.thread);
     const sandbox = object(result.sandbox);
     const expected = permissions.sandbox === "read-only" ? "readOnly" : "workspaceWrite";
-    if (typeof thread.id !== "string" || (this.spec.resume_session_id && thread.id !== this.spec.resume_session_id) ||
+    if (typeof thread.id !== "string" || (resume && thread.id !== resume) ||
         result.approvalPolicy !== permissions.approval || sandbox.type !== expected || sandbox.networkAccess === true) {
       throw new Error("Codex did not establish the requested session and permissions.");
     }
@@ -230,9 +239,9 @@ class CodexHandle implements WorkerHandle {
         !(Array.isArray(sandbox.writableRoots) && sandbox.writableRoots.includes(path.resolve(dataDir)))) {
       throw new Error("Codex did not establish the explicit Talking Stick metadata writable root.");
     }
+    if (object(thread.status).type !== "idle") throw new Error("Codex did not establish an idle owned session.");
     this.thread = thread.id;
     this.emit({ type: "session", session_id: this.thread });
-    await this.checkAuthentication();
   }
 
   private async checkAuthentication(): Promise<boolean> {
@@ -243,7 +252,7 @@ class CodexHandle implements WorkerHandle {
       this.emit({ type: "state", state: "auth_required" });
     } else if (this.authRequired) {
       this.authRequired = false;
-      if (!this.turn) this.emit({ type: "state", state: "idle" });
+      if (!this.turn && !this.disconnected) this.emit({ type: "state", state: "idle" });
     }
     return !missing;
   }
@@ -279,6 +288,7 @@ class CodexHandle implements WorkerHandle {
       this.pendingApprovals.delete(key);
       this.emit({ type: "approval_resolved", native_request_id: key });
     } else if (method === "thread/closed" || (method === "thread/status/changed" && object(params.status).type === "notLoaded")) {
+      this.disconnected = true;
       this.emit({ type: "state", state: "disconnected" });
     } else if (method === "error") {
       if (authenticationError(params.error)) { this.authRequired = true; this.emit({ type: "state", state: "auth_required" }); }
@@ -288,8 +298,12 @@ class CodexHandle implements WorkerHandle {
   private approval(id: string | number, method: string, params: Json): void {
     if (params.threadId !== this.thread ||
         (method !== "item/commandExecution/requestApproval" && method !== "item/fileChange/requestApproval")) {
-      this.emit({ type: "state", state: "awaiting_input" });
-      void this.rpc.send({ id, error: { code: -32601, message: "This managed adapter does not support that request." } }).catch(() => {});
+      // This request is refused immediately: no pending question remains.
+      this.emit({ type: "request_refused", method });
+      void this.rpc.send({ id, error: { code: -32601, message: "This managed adapter does not support that request." } }).catch(() => {
+        this.disconnected = true;
+        this.emit({ type: "state", state: "disconnected" });
+      });
       return;
     }
     if (this.pendingApprovals.size >= 32) { this.overflow(); return; }
@@ -311,7 +325,8 @@ class CodexHandle implements WorkerHandle {
   }
 
   async submit(input: { input_id: string; text: string; mode: InputMode }): Promise<InputOutcome> {
-    if (!this.thread || this.closed || (input.mode === "steer" && !this.turn) || (input.mode === "start_turn" && this.turn)) return "rejected";
+    if (!this.thread || this.closed || this.disconnected || this.resumeFailed || this.reloading ||
+        (input.mode === "steer" && !this.turn) || (input.mode === "start_turn" && this.turn)) return "rejected";
     if (this.inputStarting) return "rejected";
     const target = this.turn;
     this.inputStarting = input.input_id;
@@ -328,7 +343,13 @@ class CodexHandle implements WorkerHandle {
       // turn. Reassert the known completion after that link, so its journal
       // cannot remain accepted forever. Completing a turn is idempotent.
       const completed = this.completed.get(id);
-      if (completed) this.emit({ type: "turn_completed", native_turn_id: id, outcome: completed });
+      if (completed) {
+        this.emit({ type: "turn_completed", native_turn_id: id, outcome: completed });
+        // A newer native unload/auth notification still wins over this
+        // journal-link repair; it must not make a blocked worker idle.
+        if (this.authRequired) this.emit({ type: "state", state: "auth_required" });
+        else if (this.disconnected) this.emit({ type: "state", state: "disconnected" });
+      }
       return "accepted";
     } catch (error) {
       if (error instanceof RpcError && error.auth) { this.authRequired = true; this.emit({ type: "state", state: "auth_required" }); }
@@ -359,7 +380,8 @@ class CodexHandle implements WorkerHandle {
   async answerApproval(key: string, decision: "allow" | "deny"): Promise<void> {
     const pending = this.pendingApprovals.get(key);
     if (!pending || this.closed) throw new Error("That native approval is no longer pending.");
-    const choice = decision === "allow" ? "accept" : "cancel";
+    // decline refuses this action and continues; cancel would interrupt the turn.
+    const choice = decision === "allow" ? "accept" : "decline";
     if (pending.choices && !pending.choices.includes(choice)) throw new Error("The native request does not permit that decision.");
     await this.rpc.send({ id: pending.id, result: { decision: choice } });
   }
@@ -369,13 +391,46 @@ class CodexHandle implements WorkerHandle {
     if (!inspection) return inspection === null ? "gone" : "unknown";
     if (inspection.startTime?.trim() !== this.processStartedAt) return inspection.startTime ? "gone" : "unknown";
     if (!this.thread) return "unknown";
+    if (this.resumeFailed) return "unknown";
     try {
       if (this.authRequired && !await this.checkAuthentication()) return "alive";
       const result = await this.rpc.request("thread/read", { threadId: this.thread, includeTurns: false }, 2_000);
       const thread = object(result.thread);
       const state = object(thread.status).type;
+      if (thread.id === this.thread && (state === "notLoaded" || this.disconnected)) {
+        return await this.reloadIdleThread() ? "alive" : "unknown";
+      }
       return thread.id === this.thread && (state === "active" || state === "idle") ? "alive" : "unknown";
-    } catch { return "unknown"; }
+    } catch {
+      // A closed-thread notification is sufficient evidence to try its exact
+      // persisted session even if thread/read can no longer find it loaded.
+      return this.disconnected && !this.resumeFailed && await this.reloadIdleThread() ? "alive" : "unknown";
+    }
+  }
+  private reloadIdleThread(): Promise<boolean> {
+    if (this.reloading) return this.reloading;
+    if (this.resumeFailed || !this.thread) return Promise.resolve(false);
+    this.disconnected = true;
+    this.emit({ type: "state", state: "disconnected" });
+    // Lost completion of a potentially running turn is not permission to
+    // reload or replay side effects. Keep its inputs uncertain and hold.
+    if (this.turn || this.inputStarting || this.pendingApprovals.size) {
+      this.resumeFailed = true; this.emit({ type: "resume_failed" }); return Promise.resolve(false);
+    }
+    const session = this.thread;
+    this.reloading = (async () => {
+      try {
+        await this.openThread(session);
+        this.disconnected = false;
+        this.emit({ type: "state", state: "idle" });
+        return true;
+      } catch {
+        this.resumeFailed = true;
+        this.emit({ type: "resume_failed" });
+        return false;
+      } finally { this.reloading = null; }
+    })();
+    return this.reloading;
   }
   exited(code: number | null, signal: string | null): void {
     if (this.closed) return;
