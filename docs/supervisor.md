@@ -207,7 +207,23 @@ histories intact but cannot run this new adapter. Preserve CODEX_HOME when retai
 
 ## Approvals and control
 
-Approvals stay pending and visible until a human decides. Unanswered ones expire after 24 hours,
+**Control is locked for now.** Every process of this user, supervised workers included, can read
+the control token, so the token can't prove that a human sent a request. Until a verified
+human-control boundary exists, the control socket refuses every change: `approve`, `deny` and
+`interrupt`. So do `tt supervisor approve`, `deny`, `interrupt` and `reconcile`. Each refused
+request is audited.
+
+That means:
+- A supervised worker that reads the token and uses it on its own pending request gets nothing.
+- Pending approvals stay visible in `tt supervisor approvals`, and expire after 24 hours as a deny.
+- A possibly delivered message stays fenced, never resent.
+
+The candidate boundary is a login-Keychain control item with an empty trusted-app list, so reading
+it takes the macOS authorization dialog, a human's click. It would be recreated at each daemon
+start and rotated after every approval, with no token file. It needs an attended acceptance; the
+alternative is running workers as a separate macOS user.
+
+Once control is unlocked: approvals stay pending and visible until a human decides. Unanswered ones expire after 24 hours,
 as a deny. A decision names the full key (worker, generation, native id), and is refused unless
 that exact generation is running and the request is still pending.
 
@@ -343,12 +359,13 @@ a scoped operator policy exists:
   launchd starts `run` with no harness around it.
 - They refuse `--agent`, and refuse to run inside a harness session, detected from the environment
   and from process ancestry. Each is audited with its actor.
-- The daemon checks the control token and refuses a non-human approval actor.
+- The daemon checks the control token, and while control is locked refuses every change anyway
+  (see "Approvals and control").
 
 These guards keep an agent from acting as the operator through what it's given: its environment,
 its endpoint, and its delivery token. They aren't a boundary against a same-user process that
-deliberately reads the owner-only token file or hides its origin. A sandbox that denies reading
-`<data>/supervisor/` makes them one.
+deliberately reads the owner-only token file or hides its origin; supervised workers can do both.
+That's why control stays locked until a verified boundary exists.
 
 Codex is available on macOS and Linux. Claude and Grok workers are held with `start_failed`
 until their adapters land. Plugin install requests are not implemented.
