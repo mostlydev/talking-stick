@@ -52,7 +52,13 @@ Each worker states its permissions, and nothing is inherited:
 
 A worker spec stores environment references only: names passed through from the supervisor's
 own environment, names resolved from the macOS Keychain at spawn, and approved non-secret
-literals. Credential values are never stored. Hooks stay under the harness's own trust, and
+literals. At each start the supervisor adds the runtime `supervisor_env`:
+- the supervisor's own `TALKING_STICK_DATA_DIR`, for every worker, so its tt calls land in this
+  room database;
+- the endpoint and delivery token, for workers that can take a prompt.
+
+Adapters build the child's environment from those alone, never the daemon's whole environment,
+so no inherited `TT_ROOM` or harness identity marker reaches the worker. Credential values are never stored. Hooks stay under the harness's own trust, and
 nothing bypasses it.
 
 ### Grok
@@ -242,7 +248,9 @@ while the supervisor knows it's running.
     worker's environment.
 - It writes its own log, `logs/daemon.log`, appending by path so rotation at 5 MB (three older
   files kept) takes effect at once.
-- On SIGTERM it stops its workers' process groups; that's a stop, not a crash.
+- On SIGTERM it stops its workers' process groups; that's a stop, not a crash. Starts still in
+  their handshake are cancelled. A failure at any point after taking ownership closes what was
+  opened and releases the lock.
 
 `install` and `uninstall` add and remove a macOS user agent that keeps `run` going, with a 077
 umask. Only crash output that escapes the daemon goes to `logs/launchd.log`, rotated at each

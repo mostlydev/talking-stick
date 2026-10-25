@@ -38,9 +38,11 @@ export interface WorkerSpec {
   resume_session_id?: string;
   env: EnvReference[];
   /**
-   * Set by the supervisor for one start and never stored: the worker's
-   * supervisor endpoint and delivery token, given only to workers that can
-   * take a prompt. Adapters pass these to the child as environment variables.
+   * Set by the supervisor for one start and never stored: the supervisor's
+   * TALKING_STICK_DATA_DIR, and for workers that can take a prompt their
+   * supervisor endpoint and delivery token. Adapters build the child's
+   * environment from env references and these alone: never the daemon's whole
+   * environment, so no inherited TT_ROOM or harness identity marker leaks in.
    */
   supervisor_env?: Record<string, string>;
 }

@@ -32,6 +32,8 @@ export interface SupervisorOptions {
   /** The room side and the intake socket; without them workers get no supervisor endpoint. */
   bridge?: RoomBridge;
   socketPath?: string;
+  /** The supervisor's tt data directory, given to every worker so its tt calls land in this room database. */
+  dataDir?: string;
 }
 
 function hashToken(token: string): string {
@@ -72,6 +74,7 @@ export class Supervisor {
   private readonly tickWaitMs: number;
   private readonly bridge: RoomBridge | null;
   private readonly socketPath: string | null;
+  private readonly dataDir: string | null;
   /** This daemon's delivery tokens; only hashes are stored. */
   private readonly deliveryTokens = new Map<string, { generation: number; token: string; address: string }>();
   /** Envelope text is kept in memory only, never in the journal. */
@@ -96,6 +99,7 @@ export class Supervisor {
     this.tickWaitMs = options.tickWaitMs ?? TICK_WAIT_MS;
     this.bridge = options.bridge ?? null;
     this.socketPath = options.socketPath ?? null;
+    this.dataDir = options.dataDir ?? null;
   }
 
   private at(): string {
@@ -201,7 +205,9 @@ export class Supervisor {
     let handle: WorkerHandle;
     try {
       handle = await adapter.start({ ...spec, ...(resume ? { resume_session_id: resume } : { resume_session_id: undefined }),
-        ...(supervised ? { supervisor_env: { TT_SUPERVISOR_ENDPOINT: supervised.address, TT_SUPERVISOR_TOKEN: supervised.token } } : {}) },
+        ...(supervised || this.dataDir ? { supervisor_env: {
+          ...(this.dataDir ? { TALKING_STICK_DATA_DIR: this.dataDir } : {}),
+          ...(supervised ? { TT_SUPERVISOR_ENDPOINT: supervised.address, TT_SUPERVISOR_TOKEN: supervised.token } : {}) } } : {}) },
         generation, (child) => this.store.updateGeneration(worker.worker_id, generation,
           { pid: child.pid, process_started_at: child.processStartedAt, pgid: child.pgid }), signal);
     } catch (error) {

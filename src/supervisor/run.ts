@@ -87,50 +87,60 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
   const log = options.log ?? ((line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const liveness = options.processLiveness ?? systemProcessLiveness();
   const release = acquireOwnerLock(paths.lock, { pid: process.pid, process_started_at: getCurrentProcessStartedAt() ?? "" }, liveness);
-  const store = new SupervisorStore(paths.database);
-  const service = options.service ?? new TalkingStickService({ dataDir: options.dataDir,
-    wakeTransport: createSystemWakeTransport(), nativeWakeTransport: createSystemNativeWakeTransport() });
-  const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
-    bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket });
-  // A fresh control token per daemon, owner-only, never put in a worker's environment.
-  const controlToken = randomBytes(32).toString("base64url");
-  fs.writeFileSync(paths.controlToken, controlToken, { mode: 0o600 });
-  fs.chmodSync(paths.controlToken, 0o600);
-  const control = async (message: ControlMessage): Promise<ControlAnswer> => {
-    const presented = Buffer.from(message.token);
-    const expected = Buffer.from(controlToken);
-    if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
-      return { ok: false, error: "This control request is not authorized." };
-    }
-    if (message.action === "interrupt") {
-      if (!message.worker_id) return { ok: false, error: "Name the worker." };
-      return { ok: true, result: await supervisor.interrupt(message.worker_id, message.actor) };
-    }
-    // Approvals are a human's decision.
-    if (!message.actor.startsWith("human:")) return { ok: false, error: "Only a human can decide an approval." };
-    const approval = message.approval_id ? store.approval(message.approval_id) : null;
-    if (!approval) return { ok: false, error: "No such approval request." };
-    const delivered = await supervisor.decideApproval({ approval_id: approval.approval_id, worker_id: approval.worker_id,
-      generation: approval.generation }, message.action === "approve" ? "allow" : "deny", message.actor, message.note);
-    return { ok: true, result: { status: message.action === "approve" ? "allowed" : "denied", answer: delivered } };
-  };
-  // Signals are watched before anything starts, and everything opened is
-  // closed on every path out.
-  let stopRequested: () => void = () => {};
-  const stopped = new Promise<void>((resolve) => { stopRequested = resolve; });
-  const onSignal = () => stopRequested();
-  process.once("SIGTERM", onSignal);
-  process.once("SIGINT", onSignal);
-  if (options.signal?.aborted) stopRequested();
-  options.signal?.addEventListener("abort", onSignal, { once: true });
-  let server: { close(): Promise<void> } | null = null;
-  let controlServer: { close(): Promise<void> } | null = null;
-  let timer: NodeJS.Timeout | null = null;
+  // Everything opened after the lock registers its cleanup, so any failure,
+  // at startup or later, closes it all and releases ownership, newest first.
+  const cleanups: Array<() => unknown> = [release];
   let stopping = false;
+  let timer: NodeJS.Timeout | null = null;
   try {
-    server = await startIntakeServer(paths.socket, (message) => supervisor.acceptIntake(message));
-    controlServer = await startIntakeServer(paths.control,
+    const store = new SupervisorStore(paths.database);
+    cleanups.push(() => store.close());
+    const service = options.service ?? new TalkingStickService({ dataDir: options.dataDir,
+      wakeTransport: createSystemWakeTransport(), nativeWakeTransport: createSystemNativeWakeTransport() });
+    if (!options.service) cleanups.push(() => service.close());
+    // A fresh control token per daemon, owner-only, never put in a worker's environment.
+    const controlToken = randomBytes(32).toString("base64url");
+    fs.writeFileSync(paths.controlToken, controlToken, { mode: 0o600 });
+    fs.chmodSync(paths.controlToken, 0o600);
+    cleanups.push(() => fs.rmSync(paths.controlToken, { force: true }));
+    let stopRequested: () => void = () => {};
+    const stopped = new Promise<void>((resolve) => { stopRequested = resolve; });
+    const onSignal = () => stopRequested();
+    process.once("SIGTERM", onSignal);
+    process.once("SIGINT", onSignal);
+    options.signal?.addEventListener("abort", onSignal, { once: true });
+    cleanups.push(() => {
+      process.removeListener("SIGTERM", onSignal);
+      process.removeListener("SIGINT", onSignal);
+      options.signal?.removeEventListener("abort", onSignal);
+    });
+    if (options.signal?.aborted) stopRequested();
+    const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
+      bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir });
+    cleanups.push(() => supervisor.shutdown());
+    const control = async (message: ControlMessage): Promise<ControlAnswer> => {
+      const presented = Buffer.from(message.token);
+      const expected = Buffer.from(controlToken);
+      if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+        return { ok: false, error: "This control request is not authorized." };
+      }
+      if (message.action === "interrupt") {
+        if (!message.worker_id) return { ok: false, error: "Name the worker." };
+        return { ok: true, result: await supervisor.interrupt(message.worker_id, message.actor) };
+      }
+      // Approvals are a human's decision.
+      if (!message.actor.startsWith("human:")) return { ok: false, error: "Only a human can decide an approval." };
+      const approval = message.approval_id ? store.approval(message.approval_id) : null;
+      if (!approval) return { ok: false, error: "No such approval request." };
+      const delivered = await supervisor.decideApproval({ approval_id: approval.approval_id, worker_id: approval.worker_id,
+        generation: approval.generation }, message.action === "approve" ? "allow" : "deny", message.actor, message.note);
+      return { ok: true, result: { status: message.action === "approve" ? "allowed" : "denied", answer: delivered } };
+    };
+    const server = await startIntakeServer(paths.socket, (message) => supervisor.acceptIntake(message));
+    cleanups.push(() => server.close());
+    const controlServer = await startIntakeServer(paths.control,
       () => ({ outcome: "failed", error: "This socket takes no deliveries." }), control);
+    cleanups.push(() => controlServer.close());
     supervisor.reconcileStartup();
     log(`supervisor running (pid ${process.pid}, ${paths.socket})`);
     // launchd reopens its file at each spawn, so rotating it here applies from the next one.
@@ -149,15 +159,9 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
   } finally {
     stopping = true;
     if (timer) clearInterval(timer);
-    process.removeListener("SIGTERM", onSignal);
-    process.removeListener("SIGINT", onSignal);
-    await supervisor.shutdown();
-    await server?.close();
-    await controlServer?.close();
-    try { fs.rmSync(paths.controlToken); } catch { /* gone */ }
-    store.close();
-    if (!options.service) service.close();
-    release();
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      try { await cleanup(); } catch (error) { log(`cleanup failed: ${error instanceof Error ? error.message : String(error)}`); }
+    }
   }
   log("supervisor stopped");
 }

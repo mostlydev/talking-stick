@@ -253,3 +253,36 @@ describe("control authority", () => {
     }
   });
 });
+
+test("a startup failure after taking ownership releases it and closes everything", async () => {
+  const { dataDir } = setup();
+  const paths = supervisorPaths(dataDir);
+  fs.mkdirSync(paths.socket, { recursive: true });
+  await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive", log: () => {} })).rejects.toThrow();
+  expect(fs.existsSync(paths.lock)).toBe(false);
+  expect(fs.existsSync(paths.controlToken)).toBe(false);
+  expect(process.listenerCount("SIGTERM")).toBe(0);
+});
+
+test("every worker gets the supervisor's data directory; only prompt-capable ones get an endpoint", async () => {
+  const { dataDir, cwd, store } = setup();
+  const opened = store();
+  const prompt = new FakeAdapter("claude");
+  const silent = new FakeAdapter("grok");
+  silent.caps = { prompt: false, resume: false, interrupt: false, approvals: false };
+  opened.addWorker({ worker_id: "w1", harness: "claude", cwd, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+  opened.addWorker({ worker_id: "g1", harness: "grok", cwd, permissions: { harness: "grok" }, env: [] }, "human:op", "t");
+  const controller = new AbortController();
+  const running = runSupervisor({ dataDir, adapters: { claude: prompt, grok: silent }, signal: controller.signal, tickIntervalMs: 20,
+    log: () => {}, processLiveness: () => "alive" });
+  try {
+    const deadline = Date.now() + 3_000;
+    while ((!prompt.handles.length || !silent.handles.length) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(prompt.last.spec.supervisor_env).toMatchObject({ TALKING_STICK_DATA_DIR: dataDir });
+    expect(prompt.last.spec.supervisor_env?.TT_SUPERVISOR_TOKEN).toBeTruthy();
+    expect(silent.last.spec.supervisor_env).toEqual({ TALKING_STICK_DATA_DIR: dataDir });
+  } finally {
+    controller.abort();
+    await running;
+  }
+});
