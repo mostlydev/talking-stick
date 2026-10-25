@@ -21,6 +21,8 @@ export interface ControlMessage {
   type: "control";
   action: "approve" | "deny" | "interrupt";
   actor: string;
+  /** The daemon's control token, read from its owner-only file; workers are never given it. */
+  token: string;
   approval_id?: string;
   worker_id?: string;
   note?: string;
@@ -64,10 +66,12 @@ export function startIntakeServer(
         return answer({ outcome: "failed", error: "bad_request" });
       }
       const request = parsed as { type?: unknown } | null;
-      if (control && request && typeof request === "object" && request.type === "control") {
+      if (request && typeof request === "object" && request.type === "control") {
+        // Control is only on the control socket, never the intake socket workers are given.
+        if (!control) return answer({ ok: false, error: "This socket takes no control requests." });
         const command = request as Partial<ControlMessage>;
         if ((command.action !== "approve" && command.action !== "deny" && command.action !== "interrupt") ||
-            typeof command.actor !== "string") return answer({ ok: false, error: "bad_request" });
+            typeof command.actor !== "string" || typeof command.token !== "string") return answer({ ok: false, error: "bad_request" });
         Promise.resolve().then(() => control(command as ControlMessage))
           .then(answer, (error: unknown) => answer({ ok: false, error: error instanceof Error ? error.message : "internal" }));
         return;

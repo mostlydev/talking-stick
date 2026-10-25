@@ -315,6 +315,23 @@ test("a request the harness settles itself expires, and a later decision is refu
   expect(adapter.last.answers).toEqual([]);
 });
 
+test("shutdown cancels a start still in its handshake, so no child outlives the daemon", async () => {
+  const { store, adapter, spec, make } = setup();
+  store.addWorker(spec, "human:op", "t");
+  const supervisor = make(store, adapter, { tickWaitMs: 1 });
+  supervisor.reconcileStartup();
+  let release!: () => void;
+  adapter.holdStart = new Promise((resolve) => { release = resolve; });
+  await supervisor.tick();
+  await supervisor.shutdown();
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(adapter.last.stopped).toBe(true);
+  expect(supervisor.handle("w1")).toBeUndefined();
+  expect(store.liveGenerations()).toEqual([]);
+  expect(store.crashesSince("w1", "2000-01-01")).toBe(0);
+});
+
 describe("ownership through a crash", () => {
   test("a supervisor crash during the handshake leaves an owned child that holds, not a duplicate", async () => {
     const { store, adapter, supervisor, spec, make } = setup({ liveness: () => "alive" });

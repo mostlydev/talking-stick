@@ -103,7 +103,8 @@ export interface HarnessAdapter {
    * Spawns and handshakes only; it never takes a prompt. It must call onSpawn
    * synchronously right after spawning, before the handshake, so the
    * supervisor owns the child even if it crashes mid-handshake. A child whose
-   * handshake fails is stopped before start rejects.
+   * handshake fails is stopped before start rejects. When signal aborts, the
+   * supervisor is stopping: stop the child and reject promptly.
    */
-  start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void): Promise<WorkerHandle>;
+  start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void, signal?: AbortSignal): Promise<WorkerHandle>;
 }

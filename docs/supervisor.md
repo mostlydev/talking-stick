@@ -231,27 +231,44 @@ while the supervisor knows it's running.
 
 ## Commands
 
-`tt supervisor` (usage in `tt help`) works on the data directory's supervisor:
+`tt supervisor` (usage in `tt help`) works on the data directory's supervisor.
 
-- `run`: the daemon, in the foreground. It takes the owner lock, opens
-  `<data>/supervisor/control.sock`, reconciles, then ticks every 30 s. On SIGTERM it stops its
-  workers' process groups; that's a stop, not a crash. `install` and `uninstall` add and remove a
-  macOS user agent that keeps `run` going, with a 077 umask, and its log at
-  `<data>/supervisor/logs/daemon.log`. The daemon rotates the log at 5 MB and keeps three older
-  files.
-- `add <worker> --harness … --cwd …`:
-  - Codex needs an explicit `--sandbox` and `--approval`. Claude takes `--permission-mode
-    default|plan`, and nothing that bypasses approvals.
-  - `--env NAME` passes the daemon's value through; `NAME=keychain:SERVICE` and
-    `NAME=literal:VALUE` (for non-secret values) are explicit.
-  - `--resume` refuses a session another worker owns, or one running outside the supervisor.
-- `status`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped), and
-  `interrupt`. Each is audited with its actor; an operator harness may use them.
-- `approvals`, `approve`, `deny` and `reconcile <batch> --resend|--drop` are for a human only.
-  - They refuse `--agent` and any harness session, detected from the environment and from process
-    ancestry. That's a guard against an agent acting as the operator, not a boundary against a
-    same-user process that deliberately hides its origin.
-  - The daemon also refuses a non-human approval actor.
+`run` starts the daemon in the foreground:
+- It takes the owner lock and reconciles, then ticks every 30 s.
+- It opens two sockets in `<data>/supervisor/`:
+  - `intake.sock` takes tt deliveries only, and is the one workers are given.
+  - `control.sock` takes control requests only, each with the daemon's control token. The token
+    is new for each daemon, kept in the owner-only file `control.token`, and never put in a
+    worker's environment.
+- It writes its own log, `logs/daemon.log`, appending by path so rotation at 5 MB (three older
+  files kept) takes effect at once.
+- On SIGTERM it stops its workers' process groups; that's a stop, not a crash.
+
+`install` and `uninstall` add and remove a macOS user agent that keeps `run` going, with a 077
+umask. Only crash output that escapes the daemon goes to `logs/launchd.log`, rotated at each
+start. The agent runs `node <package>/dist/cli.js supervisor run` under Node, or an installed
+release's `<install-dir>/current/tt supervisor run`, which follows self-update.
+
+`add <worker> --harness … --cwd …`:
+- Codex needs an explicit `--sandbox` and `--approval`. Claude takes `--permission-mode
+  default|plan`, and nothing that bypasses approvals.
+- `--env NAME` passes the daemon's value through; `NAME=keychain:SERVICE` and
+  `NAME=literal:VALUE` (for non-secret values) are explicit.
+- There's no `--resume`: nothing here can prove an existing session isn't running elsewhere, so a
+  worker resumes only sessions it started itself.
+
+`status`, `approvals` and `logs` are readable by anyone. Every other command is for a human until
+a scoped operator policy exists:
+- `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped),
+  `interrupt`, `approve`, `deny`, `reconcile <batch> --resend|--drop`, `install` and `uninstall`.
+- They refuse `--agent`, and refuse to run inside a harness session, detected from the environment
+  and from process ancestry. Each is audited with its actor.
+- The daemon checks the control token and refuses a non-human approval actor.
+
+These guards keep an agent from acting as the operator through what it's given: its environment,
+its endpoint, and its delivery token. They aren't a boundary against a same-user process that
+deliberately reads the owner-only token file or hides its origin. A sandbox that denies reading
+`<data>/supervisor/` makes them one.
 
 No harness adapter ships yet, so a worker added now is held with `start_failed` until its adapter
 lands (S2b to S2d). Plugin install requests aren't implemented yet.

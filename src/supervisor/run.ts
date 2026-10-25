@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { TalkingStickService } from "../service.js";
 import { createSystemWakeTransport } from "../wake.js";
 import { createSystemNativeWakeTransport } from "../native-wake.js";
@@ -22,9 +23,14 @@ export function supervisorPaths(dataDir: string) {
   return {
     dir,
     database: supervisorDatabasePath(dataDir),
-    socket: path.join(dir, "control.sock"),
+    /** Workers are given this one only, for tt deliveries. */
+    socket: path.join(dir, "intake.sock"),
+    control: path.join(dir, "control.sock"),
+    controlToken: path.join(dir, "control.token"),
     lock: path.join(dir, "owner.lock"),
-    log: path.join(dir, "logs", "daemon.log")
+    log: path.join(dir, "logs", "daemon.log"),
+    /** Only what escapes the daemon's own log, such as a crash; launchd holds it open. */
+    launchdLog: path.join(dir, "logs", "launchd.log")
   };
 }
 
@@ -39,10 +45,22 @@ export function systemProcessLiveness(): ProcessLivenessReader {
   };
 }
 
-/** Keeps the daemon log under LOG_ROTATE_BYTES, with LOG_KEEP older files. */
-export function rotateLog(file: string): void {
+/**
+ * The daemon's own log: each line is appended by path, never through a file
+ * descriptor held open, so rotation takes effect at once.
+ */
+export function createFileLog(file: string, maxBytes = LOG_ROTATE_BYTES): (line: string) => void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  return (line) => {
+    rotateLog(file, maxBytes);
+    fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`, { mode: 0o600 });
+  };
+}
+
+/** Keeps a log under maxBytes, with LOG_KEEP older files. */
+export function rotateLog(file: string, maxBytes = LOG_ROTATE_BYTES): void {
   try {
-    if (fs.statSync(file).size < LOG_ROTATE_BYTES) return;
+    if (fs.statSync(file).size < maxBytes) return;
   } catch {
     return;
   }
@@ -74,7 +92,16 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
     wakeTransport: createSystemWakeTransport(), nativeWakeTransport: createSystemNativeWakeTransport() });
   const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
     bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket });
+  // A fresh control token per daemon, owner-only, never put in a worker's environment.
+  const controlToken = randomBytes(32).toString("base64url");
+  fs.writeFileSync(paths.controlToken, controlToken, { mode: 0o600 });
+  fs.chmodSync(paths.controlToken, 0o600);
   const control = async (message: ControlMessage): Promise<ControlAnswer> => {
+    const presented = Buffer.from(message.token);
+    const expected = Buffer.from(controlToken);
+    if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
+      return { ok: false, error: "This control request is not authorized." };
+    }
     if (message.action === "interrupt") {
       if (!message.worker_id) return { ok: false, error: "Name the worker." };
       return { ok: true, result: await supervisor.interrupt(message.worker_id, message.actor) };
@@ -87,34 +114,50 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
       generation: approval.generation }, message.action === "approve" ? "allow" : "deny", message.actor, message.note);
     return { ok: true, result: { status: message.action === "approve" ? "allowed" : "denied", answer: delivered } };
   };
-  const server = await startIntakeServer(paths.socket, (message) => supervisor.acceptIntake(message), control);
-  supervisor.reconcileStartup();
-  log(`supervisor running (pid ${process.pid}, ${paths.socket})`);
+  // Signals are watched before anything starts, and everything opened is
+  // closed on every path out.
+  let stopRequested: () => void = () => {};
+  const stopped = new Promise<void>((resolve) => { stopRequested = resolve; });
+  const onSignal = () => stopRequested();
+  process.once("SIGTERM", onSignal);
+  process.once("SIGINT", onSignal);
+  if (options.signal?.aborted) stopRequested();
+  options.signal?.addEventListener("abort", onSignal, { once: true });
+  let server: { close(): Promise<void> } | null = null;
+  let controlServer: { close(): Promise<void> } | null = null;
+  let timer: NodeJS.Timeout | null = null;
   let stopping = false;
-  const tick = async () => {
-    if (stopping) return;
-    try {
-      rotateLog(paths.log);
-      await supervisor.tick();
-    } catch (error) {
-      log(`tick failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-  await tick();
-  const timer = setInterval(() => { void tick(); }, options.tickIntervalMs ?? TICK_INTERVAL_MS);
-  await new Promise<void>((resolve) => {
-    const stop = () => resolve();
-    if (options.signal?.aborted) return stop();
-    options.signal?.addEventListener("abort", stop, { once: true });
-    process.once("SIGTERM", stop);
-    process.once("SIGINT", stop);
-  });
-  stopping = true;
-  clearInterval(timer);
-  await supervisor.shutdown();
-  await server.close();
-  store.close();
-  if (!options.service) service.close();
-  release();
+  try {
+    server = await startIntakeServer(paths.socket, (message) => supervisor.acceptIntake(message));
+    controlServer = await startIntakeServer(paths.control,
+      () => ({ outcome: "failed", error: "This socket takes no deliveries." }), control);
+    supervisor.reconcileStartup();
+    log(`supervisor running (pid ${process.pid}, ${paths.socket})`);
+    // launchd reopens its file at each spawn, so rotating it here applies from the next one.
+    rotateLog(paths.launchdLog);
+    const tick = async () => {
+      if (stopping) return;
+      try {
+        await supervisor.tick();
+      } catch (error) {
+        log(`tick failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    void tick();
+    timer = setInterval(() => { void tick(); }, options.tickIntervalMs ?? TICK_INTERVAL_MS);
+    await stopped;
+  } finally {
+    stopping = true;
+    if (timer) clearInterval(timer);
+    process.removeListener("SIGTERM", onSignal);
+    process.removeListener("SIGINT", onSignal);
+    await supervisor.shutdown();
+    await server?.close();
+    await controlServer?.close();
+    try { fs.rmSync(paths.controlToken); } catch { /* gone */ }
+    store.close();
+    if (!options.service) service.close();
+    release();
+  }
   log("supervisor stopped");
 }

@@ -6,8 +6,9 @@ import { TalkingStickService } from "../service.js";
 import type { EnvReference, Harness, WorkerPermissions, WorkerSpec } from "../supervisor/adapter.js";
 import { builtinAdapters } from "../supervisor/adapters/index.js";
 import { sendControl } from "../supervisor/intake.js";
-import { installLaunchAgent, launchAgentPath, uninstallLaunchAgent } from "../supervisor/launchd.js";
-import { runSupervisor, supervisorPaths, systemProcessLiveness } from "../supervisor/run.js";
+import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent } from "../supervisor/launchd.js";
+import { isStandalone, isInstalledRelease, standaloneRoot } from "../standalone-mode.js";
+import { createFileLog, runSupervisor, supervisorPaths } from "../supervisor/run.js";
 import { SupervisorStore } from "../supervisor/state.js";
 import { runningInsideHarness } from "../identity.js";
 import { deriveCliIdentity } from "./identity.js";
@@ -19,7 +20,7 @@ import { getStringOption, getStringOptions, hasOption, type ParsedCommand } from
 export const SUPERVISOR_USAGE = [
   "tt supervisor status",
   "tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [--model M] [--permission-mode default|plan]",
-  "  [--sandbox read-only|workspace-write --approval on-request|untrusted] [--resume SESSION] [--env NAME[=keychain:SERVICE|=literal:VALUE]]",
+  "  [--sandbox read-only|workspace-write --approval on-request|untrusted] [--env NAME[=keychain:SERVICE|=literal:VALUE]]",
   "tt supervisor pause|resume|stop|remove <worker>",
   "tt supervisor restart <worker> [--fresh]",
   "tt supervisor interrupt <worker>",
@@ -76,24 +77,6 @@ export function parseEnvReference(raw: string): EnvReference {
   fail(`--env ${name} takes keychain:SERVICE or literal:VALUE (only for values that are not secret).`);
 }
 
-/**
- * A resumed session must be one no other worker owns and no live session
- * outside the supervisor is running: the supervisor never adopts one.
- */
-function assertResumable(store: SupervisorStore, service: TalkingStickService, harness: Harness, session: string): void {
-  for (const worker of store.workers()) {
-    const spec = JSON.parse(worker.spec_json) as WorkerSpec;
-    const owned = spec.harness === harness &&
-      (spec.resume_session_id === session || store.latestGeneration(worker.worker_id)?.session_id === session);
-    if (owned) fail(`Worker ${worker.worker_id} already owns ${harness} session ${session}.`);
-  }
-  const liveness = systemProcessLiveness();
-  const live = service.findMembersForSession({ harness_name: harness, harness_session_id: `harness:${session}` })
-    .filter((member) => member.harness_pid !== null && member.harness_process_started_at !== null &&
-      liveness(member.harness_pid, member.harness_process_started_at) !== "gone");
-  if (live.length) fail(`Session ${session} is running outside the supervisor (as ${live.map((member) => member.agent_id).join(", ")}); the supervisor never adopts a live session.`);
-}
-
 function describeStatus(store: SupervisorStore) {
   return {
     workers: store.workers().map((worker) => {
@@ -137,11 +120,16 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   const paths = supervisorPaths(dataDir);
 
   if (action === "run") {
-    await runSupervisor({ dataDir, adapters: builtinAdapters() });
+    await runSupervisor({ dataDir, adapters: builtinAdapters(), log: createFileLog(paths.log) });
     return;
   }
+  // Until a scoped operator policy exists, only a human changes the
+  // supervisor; agents may read its status, approvals and logs.
+  if (!["status", "approvals", "logs"].includes(action)) requireHuman(`Change the supervisor (${action})`);
   if (action === "install") {
-    const file = installLaunchAgent({ program: [process.execPath, cliEntry(), "supervisor", "run"], dataDir, logPath: paths.log });
+    const program = supervisorProgram({ standalone: isStandalone(), execPath: process.execPath, cliEntry: cliEntry(),
+      releaseRoot: isStandalone() && isInstalledRelease() ? standaloneRoot() : null });
+    const file = installLaunchAgent({ program, dataDir, logPath: paths.launchdLog });
     printResult(parsed, { status: "installed", plist: file, log: paths.log }, () => `Installed ${file}; the supervisor now runs as a user agent.`);
     return;
   }
@@ -158,8 +146,9 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     return;
   }
   if (action === "interrupt" || action === "approve" || action === "deny") {
-    if (action !== "interrupt") requireHuman("Decide an approval");
-    const answer = await sendControl(paths.socket, { type: "control", action, actor,
+    let token: string;
+    try { token = fs.readFileSync(paths.controlToken, "utf8").trim(); } catch { fail("No supervisor is running for this data directory."); }
+    const answer = await sendControl(paths.control, { type: "control", action, actor, token,
       ...(action === "interrupt" ? { worker_id: workerArg(parsed) } : { approval_id: workerArg(parsed) }),
       ...(getStringOption(parsed, "note") ? { note: getStringOption(parsed, "note") } : {}) });
     if (!answer.ok) fail(answer.error);
@@ -167,7 +156,6 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     return;
   }
   if (action === "reconcile") {
-    requireHuman("Reconcile a managed delivery");
     const batch = workerArg(parsed);
     const resend = hasOption(parsed, "resend");
     if (resend === hasOption(parsed, "drop")) fail("Choose --resend or --drop.");
@@ -204,14 +192,11 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
       if (harness !== "claude" && harness !== "codex" && harness !== "grok") fail("--harness must be claude, codex or grok.");
       const cwd = getStringOption(parsed, "cwd");
       if (!cwd || !path.isAbsolute(cwd) || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) fail("--cwd must be an existing absolute directory.");
-      const resume = getStringOption(parsed, "resume");
-      if (resume) {
-        const service = new TalkingStickService({ dataDir });
-        try { assertResumable(store, service, harness, resume); } finally { service.close(); }
-      }
+      // An existing native session is never imported: nothing here can prove
+      // it isn't running elsewhere. A worker resumes only sessions it started.
+      if (getStringOption(parsed, "resume")) fail("--resume is not supported: a worker resumes only sessions it started itself.");
       const spec: WorkerSpec = { worker_id: workerId, harness, cwd, permissions: parsePermissions(parsed, harness),
         ...(getStringOption(parsed, "model") ? { model: getStringOption(parsed, "model") } : {}),
-        ...(resume ? { resume_session_id: resume } : {}),
         env: getStringOptions(parsed, "env").map(parseEnvReference) };
       const row = store.addWorker(spec, actor, now());
       printResult(parsed, { status: "added", worker: row.worker_id, desired: row.desired },

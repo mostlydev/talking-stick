@@ -6,8 +6,8 @@ import { handleSupervisorCommand, parseEnvReference } from "../src/cli/superviso
 import type { ParsedCommand } from "../src/cli/parser.js";
 import { TalkingStickService } from "../src/index.js";
 import { SupervisorStore } from "../src/supervisor/state.js";
-import { launchAgentPlist, installLaunchAgent, uninstallLaunchAgent } from "../src/supervisor/launchd.js";
-import { rotateLog, runSupervisor, supervisorPaths, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
+import { launchAgentPlist, installLaunchAgent, supervisorProgram, uninstallLaunchAgent } from "../src/supervisor/launchd.js";
+import { createFileLog, rotateLog, runSupervisor, supervisorPaths, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
 import { sendControl } from "../src/supervisor/intake.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
 
@@ -26,6 +26,9 @@ function setup() {
     else process.env.TALKING_STICK_DATA_DIR = previous;
     fs.rmSync(root, { recursive: true, force: true });
   });
+  // Run as a plain shell would: no harness in the environment, so the actor is human:<user>.
+  for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "GEMINI_CLI", "OPENCODE", "TT_HARNESS_AGENT_ID"]) vi.stubEnv(key, "");
+  cleanup.push(() => { vi.unstubAllEnvs(); });
   const output: string[] = [];
   const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
     output.push(String(chunk));
@@ -34,8 +37,7 @@ function setup() {
   cleanup.push(() => write.mockRestore());
   const run = async (args: string[], options: Record<string, string | true> = {}, inside: string | null = null) => {
     const parsed: ParsedCommand = { name: "supervisor", positionals: args,
-      options: new Map<string, string | true>([["json", true], ["agent", "human:op"], ...Object.entries(options)]) };
-    if (options.agent === "none") parsed.options.delete("agent");
+      options: new Map<string, string | true>([["json", true], ...Object.entries(options)]) };
     output.length = 0;
     await handleSupervisorCommand(parsed, { insideHarness: () => inside });
     return output.length ? JSON.parse(output.join("")) : null;
@@ -73,16 +75,9 @@ describe("tt supervisor add", () => {
     await expect(run(["add", "w1"], { cwd, ...options })).rejects.toThrow(message);
   });
 
-  test("never adopts a session another worker owns or one running outside the supervisor", async () => {
-    const { dataDir, cwd, run } = setup();
-    await run(["add", "w1"], { harness: "claude", cwd, resume: "native-1" });
-    await expect(run(["add", "w2"], { harness: "claude", cwd, resume: "native-1" })).rejects.toThrow("already owns");
-    const service = new TalkingStickService({ dataDir });
-    cleanup.push(() => service.close());
-    service.joinPath({ agent_id: "claude:live", context_path: cwd, process_metadata: { host_id: os.hostname(), pid: process.pid,
-      process_started_at: "x", session_kind: "harness_cli", harness_name: "claude", harness_session_id: "harness:live-1",
-      harness_host_id: os.hostname(), harness_pid: process.pid, harness_process_started_at: (await import("../src/process-utils.js")).getCurrentProcessStartedAt() ?? "" } });
-    await expect(run(["add", "w3"], { harness: "claude", cwd, resume: "live-1" })).rejects.toThrow("never adopts a live session");
+  test("never imports an existing native session", async () => {
+    const { cwd, run } = setup();
+    await expect(run(["add", "w1"], { harness: "grok", cwd, resume: "live-grok-session" })).rejects.toThrow("--resume is not supported");
   });
 
   test("parses environment references strictly", () => {
@@ -96,13 +91,24 @@ describe("controls", () => {
     const { cwd, run, store } = setup();
     await run(["add", "w1"], { harness: "claude", cwd });
     expect(await run(["pause", "w1"])).toMatchObject({ desired: "paused" });
-    expect(await run(["resume", "w1"], { agent: "claude:operator" })).toMatchObject({ desired: "running" });
+    expect(await run(["resume", "w1"])).toMatchObject({ desired: "running" });
     expect(await run(["restart", "w1"], { fresh: true })).toMatchObject({ fresh: true });
     expect(await run(["stop", "w1"])).toMatchObject({ desired: "stopped" });
-    expect(store().auditRows("w1").map((row) => `${row.actor} ${row.action}`))
-      .toEqual(["human:op add", "human:op pause", "claude:operator resume", "human:op restart_fresh", "human:op stop"]);
+    const audit = store().auditRows("w1");
+    expect(audit.map((row) => row.action)).toEqual(["add", "pause", "resume", "restart_fresh", "stop"]);
+    expect(audit.every((row) => row.actor.startsWith("human:"))).toBe(true);
     expect(await run(["remove", "w1"])).toMatchObject({ status: "removed" });
     expect((await run(["status"])).workers).toEqual([]);
+  });
+
+  test("an agent may read the supervisor but change nothing until a scoped operator policy exists", async () => {
+    const { cwd, run } = setup();
+    await run(["add", "w1"], { harness: "claude", cwd });
+    expect((await run(["status"], {}, "codex")).workers).toHaveLength(1);
+    expect(await run(["approvals"], {}, "codex")).toEqual({ pending_approvals: [] });
+    for (const args of [["pause", "w1"], ["stop", "w1"], ["restart", "w1"], ["add", "w2"], ["install"], ["interrupt", "w1"]]) {
+      await expect(run(args, { harness: "claude", cwd }, "codex")).rejects.toThrow("not a codex session");
+    }
   });
 
   test("a running worker can't be removed", async () => {
@@ -113,13 +119,11 @@ describe("controls", () => {
 
   test("approvals and reconcile are a human's, never an --agent override or a harness session", async () => {
     const { run } = setup();
-    // The actor comes from this process's environment; run it as a plain shell would.
-    for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "GEMINI_CLI", "OPENCODE", "TT_HARNESS_AGENT_ID"]) vi.stubEnv(key, "");
-    cleanup.push(() => { vi.unstubAllEnvs(); });
-    await expect(run(["approve", "a1"])).rejects.toThrow("does not accept --agent");
-    await expect(run(["approve", "a1"], { agent: "none" }, "claude")).rejects.toThrow("not a claude session");
-    await expect(run(["reconcile", "batch"], { agent: "none", drop: true }, "codex")).rejects.toThrow("not a codex session");
-    await expect(run(["reconcile", "batch"], { agent: "none" }, null)).rejects.toThrow("Choose --resend or --drop");
+    await expect(run(["approve", "a1"], { agent: "human:op" })).rejects.toThrow("does not accept --agent");
+    await expect(run(["approve", "a1"], {}, "claude")).rejects.toThrow("not a claude session");
+    await expect(run(["reconcile", "batch"], { drop: true }, "codex")).rejects.toThrow("not a codex session");
+    await expect(run(["reconcile", "batch"], {}, null)).rejects.toThrow("Choose --resend or --drop");
+    await expect(run(["approve", "a1"], {}, null)).rejects.toThrow("No supervisor is running");
   });
 });
 
@@ -139,10 +143,21 @@ describe("the daemon", () => {
     await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive" })).rejects.toThrow("Another supervisor");
     adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x" });
     const approval = opened.pendingApproval("w1", 1, "0")!;
-    const socket = supervisorPaths(dataDir).socket;
-    expect(await sendControl(socket, { type: "control", action: "approve", actor: "claude:x", approval_id: approval.approval_id }))
+    const paths = supervisorPaths(dataDir);
+    const token = fs.readFileSync(paths.controlToken, "utf8");
+    if (process.platform !== "win32") expect(fs.statSync(paths.controlToken).mode & 0o777).toBe(0o600);
+    // The intake socket a worker is given takes no control at all.
+    expect(await sendControl(paths.socket, { type: "control", action: "approve", actor: "human:op", token, approval_id: approval.approval_id }))
+      .toEqual({ ok: false, error: "This socket takes no control requests." });
+    // A forged human, or a worker's delivery token, is not control authority.
+    const delivery = adapter.last.spec.supervisor_env?.TT_SUPERVISOR_TOKEN ?? "none";
+    for (const forged of ["", delivery, "x".repeat(token.length)]) {
+      expect(await sendControl(paths.control, { type: "control", action: "approve", actor: "human:op", token: forged, approval_id: approval.approval_id }))
+        .toEqual({ ok: false, error: "This control request is not authorized." });
+    }
+    expect(await sendControl(paths.control, { type: "control", action: "approve", actor: "claude:x", token, approval_id: approval.approval_id }))
       .toEqual({ ok: false, error: "Only a human can decide an approval." });
-    expect(await sendControl(socket, { type: "control", action: "approve", actor: "human:op", approval_id: approval.approval_id }))
+    expect(await sendControl(paths.control, { type: "control", action: "approve", actor: "human:op", token, approval_id: approval.approval_id }))
       .toEqual({ ok: true, result: { status: "allowed", answer: "delivered" } });
     expect(adapter.last.answers).toEqual([{ id: "0", decision: "allow" }]);
     controller.abort();
@@ -150,20 +165,36 @@ describe("the daemon", () => {
     expect(adapter.last.stopped).toBe(true);
     expect(opened.crashesSince("w1", "2000-01-01")).toBe(0);
     expect(fs.existsSync(supervisorPaths(dataDir).lock)).toBe(false);
+    expect(fs.existsSync(supervisorPaths(dataDir).controlToken)).toBe(false);
     expect(lines.at(-1)).toBe("supervisor stopped");
   });
 
-  test("rotates its log past the size limit", () => {
+  test("its own log rotates while it keeps writing, and stays private and bounded", () => {
     const { root } = setup();
-    const file = path.join(root, "daemon.log");
-    fs.writeFileSync(file, "x".repeat(LOG_ROTATE_BYTES));
-    rotateLog(file);
-    expect(fs.statSync(file).size).toBe(0);
-    expect(fs.statSync(`${file}.1`).size).toBe(LOG_ROTATE_BYTES);
+    const file = path.join(root, "logs", "daemon.log");
+    const log = createFileLog(file, 200);
+    for (let i = 0; i < 40; i++) log(`line ${i} ${"x".repeat(20)}`);
+    const sizes = [file, `${file}.1`, `${file}.2`, `${file}.3`].map((name) => fs.existsSync(name) ? fs.statSync(name).size : 0);
+    expect(Math.max(...sizes)).toBeLessThan(200 + 60);
+    expect(fs.existsSync(`${file}.4`)).toBe(false);
+    expect(fs.readFileSync(file, "utf8")).toContain("line 39");
+    if (process.platform !== "win32") expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    rotateLog(path.join(root, "absent.log"));
+    expect(LOG_ROTATE_BYTES).toBe(5 * 1024 * 1024);
   });
 });
 
 describe("launchd", () => {
+  test("runs node with cli.js, a compiled binary on its own, and an installed release through current", () => {
+    expect(supervisorProgram({ standalone: false, execPath: "/usr/bin/node", cliEntry: "/pkg/dist/cli.js", releaseRoot: null }))
+      .toEqual(["/usr/bin/node", "/pkg/dist/cli.js", "supervisor", "run"]);
+    expect(supervisorProgram({ standalone: true, execPath: "/tmp/x/tt", cliEntry: "/$bunfs/root/cli.js", releaseRoot: null }))
+      .toEqual(["/tmp/x/tt", "supervisor", "run"]);
+    expect(supervisorProgram({ standalone: true, execPath: "/home/u/.local/share/tt/releases/tt-0.33.0-a/tt",
+      cliEntry: "/$bunfs/root/cli.js", releaseRoot: "/home/u/.local/share/tt/releases/tt-0.33.0-a" }))
+      .toEqual(["/home/u/.local/share/tt/current/tt", "supervisor", "run"]);
+  });
+
   test("installs an owner-only user agent for one data directory, and uninstalls it", () => {
     const { root, dataDir } = setup();
     const plist = launchAgentPlist({ program: ["/usr/bin/node", "/opt/tt/cli.js", "supervisor", "run"], dataDir, logPath: "/tmp/d<1>.log" });
@@ -172,11 +203,53 @@ describe("launchd", () => {
     expect(plist).toContain("<key>Umask</key>\n  <integer>63</integer>");
     expect(plist).toContain("/tmp/d&lt;1&gt;.log");
     const calls: string[][] = [];
-    const file = installLaunchAgent({ program: ["node", "cli.js", "supervisor", "run"], dataDir, logPath: path.join(root, "log", "d.log"),
+    expect(() => installLaunchAgent({ program: [path.join(root, "missing-tt"), "supervisor", "run"], dataDir,
+      logPath: path.join(root, "log", "d.log"), homeDir: root, launchctl: () => {} })).toThrow("does not exist");
+    expect(() => installLaunchAgent({ program: [process.execPath, "/$bunfs/root/cli.js", "supervisor", "run"], dataDir,
+      logPath: path.join(root, "log", "d.log"), homeDir: root, launchctl: () => {} })).toThrow("does not exist");
+    const entry = path.join(root, "cli.js");
+    fs.writeFileSync(entry, "");
+    const file = installLaunchAgent({ program: [process.execPath, entry, "supervisor", "run"], dataDir, logPath: path.join(root, "log", "d.log"),
       homeDir: root, launchctl: (args) => { calls.push(args); } });
     expect(fs.existsSync(file)).toBe(true);
     expect(calls.map((args) => args[0])).toEqual(["bootout", "bootstrap"]);
     expect(uninstallLaunchAgent({ homeDir: root, launchctl: (args) => { calls.push(args); } })).toBe(true);
     expect(fs.existsSync(file)).toBe(false);
+  });
+});
+
+// Codex's review of #207 (#32543, #32544).
+describe("control authority", () => {
+  test("an ordinary harness cannot mutate supervisor workers", async () => {
+    const { cwd, run, store } = setup();
+    store().addWorker({ worker_id: "w1", harness: "claude", cwd, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    await expect(run(["stop", "w1"], { agent: "codex:ordinary" }, "codex")).rejects.toThrow();
+    expect(store().worker("w1")!.desired).toBe("running");
+  });
+
+  test("a forged human actor with only a delivery token cannot approve, on either socket", async () => {
+    const { dataDir, cwd, store } = setup();
+    const opened = store();
+    const adapter = new FakeAdapter("claude");
+    const controller = new AbortController();
+    opened.addWorker({ worker_id: "w1", harness: "claude", cwd, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    const running = runSupervisor({ dataDir, adapters: { claude: adapter }, signal: controller.signal, tickIntervalMs: 20,
+      log: () => {}, processLiveness: () => "alive" });
+    try {
+      const deadline = Date.now() + 3_000;
+      while (!adapter.handles.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "shell", summary: "human decision required" });
+      const approval = opened.pendingApproval("w1", 1, "0")!;
+      const paths = supervisorPaths(dataDir);
+      for (const socket of [paths.socket, paths.control]) {
+        const answer = await sendControl(socket, { type: "control", action: "approve", actor: "human:forged",
+          approval_id: approval.approval_id, token: adapter.last.spec.supervisor_env?.TT_SUPERVISOR_TOKEN ?? "" });
+        expect(answer.ok).toBe(false);
+      }
+      expect(adapter.last.answers).toHaveLength(0);
+    } finally {
+      controller.abort();
+      await running;
+    }
   });
 });

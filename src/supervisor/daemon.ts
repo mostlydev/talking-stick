@@ -84,6 +84,8 @@ export class Supervisor {
   private readonly activeTurn = new Map<string, string>();
   /** Workers whose last probe could not be read get no input until it reads alive. */
   private readonly probeUnknown = new Set<string>();
+  private shuttingDown = false;
+  private readonly pendingStarts = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
   constructor(options: SupervisorOptions) {
     this.store = options.store;
@@ -159,10 +161,14 @@ export class Supervisor {
     if (worker.hold_reason || this.starting.has(worker.worker_id)) return;
     if (worker.restart_next) this.store.clearRestart(worker.worker_id);
     if (worker.next_start_at && Date.parse(worker.next_start_at) > this.now().getTime()) return;
-    await this.start(worker);
+    if (this.shuttingDown) return;
+    const controller = new AbortController();
+    const done = this.start(worker, controller.signal).finally(() => this.pendingStarts.delete(worker.worker_id));
+    this.pendingStarts.set(worker.worker_id, { controller, done });
+    await done;
   }
 
-  private async start(worker: WorkerRow): Promise<void> {
+  private async start(worker: WorkerRow, signal: AbortSignal): Promise<void> {
     const spec = JSON.parse(worker.spec_json) as WorkerSpec;
     const adapter = this.adapters[spec.harness];
     if (!adapter) {
@@ -197,9 +203,13 @@ export class Supervisor {
       handle = await adapter.start({ ...spec, ...(resume ? { resume_session_id: resume } : { resume_session_id: undefined }),
         ...(supervised ? { supervisor_env: { TT_SUPERVISOR_ENDPOINT: supervised.address, TT_SUPERVISOR_TOKEN: supervised.token } } : {}) },
         generation, (child) => this.store.updateGeneration(worker.worker_id, generation,
-          { pid: child.pid, process_started_at: child.processStartedAt, pgid: child.pgid }));
+          { pid: child.pid, process_started_at: child.processStartedAt, pgid: child.pgid }), signal);
     } catch (error) {
       this.starting.delete(worker.worker_id);
+      if (this.shuttingDown || signal.aborted) {
+        this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "stopped", during: "start" });
+        return;
+      }
       this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "start_failed", error: String(error) });
       if (resume) this.store.hold(worker.worker_id, "resume_failed", this.at());
       else this.crashed(worker.worker_id, { reason: "start_failed", error: String(error) });
@@ -213,6 +223,11 @@ export class Supervisor {
       this.store.audit(this.at(), "supervisor", "start", worker.worker_id, { generation, pid: handle.pid, resumed: Boolean(resume) });
     });
     this.handles.set(worker.worker_id, handle);
+    // A start that finished as the daemon stopped is stopped straight away.
+    if (this.shuttingDown || signal.aborted) {
+      await this.stopHandle(worker.worker_id, handle);
+      return;
+    }
     this.reportedState.set(worker.worker_id, "idle");
     this.activeTurn.delete(worker.worker_id);
     this.probeUnknown.delete(worker.worker_id);
@@ -457,7 +472,11 @@ export class Supervisor {
    * The daemon is stopping: each worker's process group is stopped. Their
    * generations end as stopped, not crashed, and nothing is restarted.
    */
-  async shutdown(): Promise<void> {
+  async shutdown(waitMs = STOP_GRACE_MS): Promise<void> {
+    this.shuttingDown = true;
+    // Pending starts are cancelled and waited for, so no child outlives the daemon.
+    for (const pending of this.pendingStarts.values()) pending.controller.abort();
+    await bounded(Promise.allSettled([...this.pendingStarts.values()].map((pending) => pending.done)), waitMs);
     await Promise.allSettled([...this.handles.entries()].map(([workerId, handle]) => this.stopHandle(workerId, handle)));
   }
 
