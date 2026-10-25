@@ -1133,25 +1133,67 @@ export class TalkingStickService {
    */
   releasePriorProcessGrant(input: { room_id: string; agent_id: AgentId; harness_pid: number; harness_process_started_at: string }):
     { released: boolean } {
+    return this.writeTransaction(() => ({ released: this.releaseGrantLocked(input) }));
+  }
+
+  private releaseGrantLocked(input: { room_id: string; agent_id: AgentId; harness_pid: number; harness_process_started_at: string }): boolean {
+    const member = this.getMember(input.room_id, input.agent_id);
+    const room = this.requireRoom(input.room_id);
+    if (!member || member.harness_pid !== input.harness_pid ||
+        member.harness_process_started_at?.trim() !== input.harness_process_started_at.trim()) return false;
+    const owned = room.owner === input.agent_id;
+    const reserved = room.reserved_for === input.agent_id;
+    if (!owned && !reserved) return false;
+    const owner = owned ? null : room.owner;
+    const reservedFor = reserved ? null : room.reserved_for;
+    const timestamp = this.now().toISOString();
+    this.db.prepare(`UPDATE path_rooms SET owner = ?, reserved_for = ?, lease_id = ?, lease_expires_at = ?,
+      claim_expires_at = ?, pending_handoff_event_seq = ?, state = ?, updated_at = ? WHERE room_id = ?`).run(owner, reservedFor,
+        owner ? room.lease_id : null, owner ? room.lease_expires_at : null, reservedFor ? room.claim_expires_at : null,
+        owner ? room.pending_handoff_event_seq : null,
+        room.state === "closed" ? "closed" : owner ? "owned" : reservedFor ? "reserved" : "idle", timestamp, room.room_id);
+    this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "release", from_agent_id: input.agent_id,
+      to_agent_id: null, handoff: null, reason: "process_replaced", created_at: timestamp });
+    return true;
+  }
+
+  /**
+   * Re-binds a supervised worker's present membership to its current
+   * process and endpoint, in one transaction. The membership must still be
+   * exactly the one the supervisor saw (same session and prior process), and
+   * the session's credential must match; a membership removed meanwhile is
+   * never recreated. Only a replaced process's stick or reservation is
+   * released; the same process keeps its turn.
+   */
+  rebindSupervisedMember(input: {
+    room_id: string; agent_id: AgentId; harness_session_id: string; credential: string;
+    prior_pid: number; prior_process_started_at: string; process_metadata: ProcessMetadata;
+    endpoint_address: string; delivery_secret: string;
+  }): { status: "rebound" } {
     return this.writeTransaction(() => {
       const member = this.getMember(input.room_id, input.agent_id);
-      const room = this.requireRoom(input.room_id);
-      if (!member || member.harness_pid !== input.harness_pid ||
-          member.harness_process_started_at?.trim() !== input.harness_process_started_at.trim()) return { released: false };
-      const owned = room.owner === input.agent_id;
-      const reserved = room.reserved_for === input.agent_id;
-      if (!owned && !reserved) return { released: false };
-      const owner = owned ? null : room.owner;
-      const reservedFor = reserved ? null : room.reserved_for;
-      const timestamp = this.now().toISOString();
-      this.db.prepare(`UPDATE path_rooms SET owner = ?, reserved_for = ?, lease_id = ?, lease_expires_at = ?,
-        claim_expires_at = ?, pending_handoff_event_seq = ?, state = ?, updated_at = ? WHERE room_id = ?`).run(owner, reservedFor,
-          owner ? room.lease_id : null, owner ? room.lease_expires_at : null, reservedFor ? room.claim_expires_at : null,
-          owner ? room.pending_handoff_event_seq : null,
-          room.state === "closed" ? "closed" : owner ? "owned" : reservedFor ? "reserved" : "idle", timestamp, room.room_id);
-      this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "release", from_agent_id: input.agent_id,
-        to_agent_id: null, handoff: null, reason: "process_replaced", created_at: timestamp });
-      return { released: true };
+      if (!member) throw new ProtocolError("unknown_member", "That membership no longer exists.", { agent_id: input.agent_id });
+      if (member.harness_session_id !== input.harness_session_id || member.harness_pid !== input.prior_pid ||
+          member.harness_process_started_at?.trim() !== input.prior_process_started_at.trim()) {
+        throw new ProtocolError("invalid_input", "That membership changed since the supervisor read it.", { agent_id: input.agent_id });
+      }
+      if (!this.verifyRecoveryCredential({ room_id: input.room_id, agent_id: input.agent_id,
+        harness_session_id: input.harness_session_id, credential: input.credential })) {
+        throw new ProtocolError("invalid_input", "The recovery credential does not match this session.", { agent_id: input.agent_id });
+      }
+      const current = normalizeProcessMetadata(input.process_metadata);
+      const replaced = current.harness_pid !== input.prior_pid ||
+        current.harness_process_started_at?.trim() !== input.prior_process_started_at.trim();
+      if (replaced) {
+        this.releaseGrantLocked({ room_id: input.room_id, agent_id: input.agent_id, harness_pid: input.prior_pid,
+          harness_process_started_at: input.prior_process_started_at });
+        this.applyPresence(input.room_id, input.agent_id, this.now().toISOString(), {
+          processMetadata: input.process_metadata, recordWait: false, allowCreate: false, requireMember: true });
+      }
+      this.registerNativeWakeEndpoint({ agent_id: input.agent_id, room_id: input.room_id, transport: "supervisor",
+        address: input.endpoint_address, secret: input.delivery_secret, harness_session_id: input.harness_session_id,
+        host_id: current.harness_host_id ?? this.hostId });
+      return { status: "rebound" as const };
     });
   }
 

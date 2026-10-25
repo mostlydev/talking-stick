@@ -364,3 +364,98 @@ test("a resumed generation does not inherit the old process's stick or reservati
   expect(service.getRoomEvents({ room_id: roomId, include_all: true }).some((event) =>
     event.event_type === "release" && event.reason === "process_replaced")).toBe(true);
 });
+
+// Codex's review of #206 (#32481).
+describe("re-binding authority", () => {
+  test("repairing the same process's endpoint keeps its live stick", async () => {
+    const { service, supervisor, roomId, dataDir, project, workerJoins, startWorker } = await setup();
+    const handle = await startWorker();
+    const joined = workerJoins(handle);
+    writeCliSessions(resolveCliSessionPath({ dataDir }), [{ agent_id: "claude:wk", room_id: roomId, canonical_path: project,
+      workspace_root: project, recovery_credential: joined.recovery_credential, updated_at: "t" }]);
+    const turn = await service.waitForTurn({ agent_id: "claude:wk", room_id: roomId, max_wait_ms: 0, allow_solo_claim: true });
+    expect(turn.status).toBe("your_turn");
+    const lease = service.getRoomState({ room_id: roomId }).room.lease_id;
+    service.db.prepare("DELETE FROM member_wake_endpoints WHERE room_id = ? AND agent_id = 'claude:wk'").run(roomId);
+    await supervisor.tick();
+    expect(service.getRoomState({ room_id: roomId }).room).toMatchObject({ owner: "claude:wk", lease_id: lease });
+    expect(service.db.prepare("SELECT transport FROM member_wake_endpoints WHERE agent_id = 'claude:wk'").all())
+      .toEqual([{ transport: "supervisor" }]);
+  });
+
+  test("a kick after the supervisor read the membership is never undone by the re-bind", async () => {
+    const { service, supervisor, roomId, dataDir, project, workerJoins, startWorker, advance } = await setup();
+    const handle = await startWorker();
+    const joined = workerJoins(handle);
+    writeCliSessions(resolveCliSessionPath({ dataDir }), [{ agent_id: "claude:wk", room_id: roomId, canonical_path: project,
+      workspace_root: project, recovery_credential: joined.recovery_credential, updated_at: "t" }]);
+    handle.emit({ type: "exited", code: 1, signal: null });
+    advance(10_000);
+    await supervisor.tick();
+    // The kick lands between the supervisor's read and its re-bind.
+    const find = service.findMembersForSession.bind(service);
+    let kicked = false;
+    service.findMembersForSession = (input) => {
+      const result = find(input);
+      if (!kicked && result.length) {
+        kicked = true;
+        service.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
+      }
+      return result;
+    };
+    await supervisor.tick();
+    expect(kicked).toBe(true);
+    expect(service.getRoomState({ room_id: roomId }).members.map((member) => member.agent_id)).not.toContain("claude:wk");
+  });
+});
+
+test("the room's re-bind never recreates a removed membership and refuses a stale snapshot", async () => {
+  const { service, roomId, workerJoins, startWorker, identity } = await setup();
+  const handle = await startWorker();
+  const joined = workerJoins(handle);
+  const rebind = (overrides: Partial<Parameters<typeof service.rebindSupervisedMember>[0]> = {}) => service.rebindSupervisedMember({
+    room_id: roomId, agent_id: "claude:wk", harness_session_id: "harness:native-1", credential: joined.recovery_credential!,
+    prior_pid: handle.pid, prior_process_started_at: handle.processStartedAt,
+    process_metadata: { ...identity(handle).process_metadata, harness_pid: 9999, pid: 9999, harness_process_started_at: "new" },
+    endpoint_address: "/tmp/sv.sock#w1@2", delivery_secret: "token-2", ...overrides });
+  expect(() => rebind({ prior_pid: 1 })).toThrow("changed since the supervisor read it");
+  expect(() => rebind({ credential: "wrong" })).toThrow("does not match");
+  service.leaveRoom({ room_id: roomId, agent_id: "claude:wk" });
+  expect(() => rebind()).toThrow(expect.objectContaining({ code: "unknown_member" }));
+  expect(service.getRoomState({ room_id: roomId }).members.map((member) => member.agent_id)).not.toContain("claude:wk");
+});
+
+test("a kick from another connection during the re-bind is never undone", async () => {
+  const { service, supervisor, roomId, dataDir, project, workerJoins, startWorker, advance } = await setup();
+  const handle = await startWorker();
+  const joined = workerJoins(handle);
+  writeCliSessions(resolveCliSessionPath({ dataDir }), [{ agent_id: "claude:wk", room_id: roomId, canonical_path: project,
+    workspace_root: project, recovery_credential: joined.recovery_credential, updated_at: "t" }]);
+  handle.emit({ type: "exited", code: 1, signal: null });
+  advance(10_000);
+  await supervisor.tick();
+  const racer = new TalkingStickService({ dataDir, hostId: HOST, processLivenessChecker: () => "alive" });
+  cleanup.push(() => racer.close());
+  racer.db.exec("PRAGMA busy_timeout = 0");
+  const verify = service.verifyRecoveryCredential.bind(service);
+  let attempted = false;
+  let blocked = false;
+  service.verifyRecoveryCredential = (input) => {
+    const result = verify(input);
+    if (!attempted) {
+      attempted = true;
+      try {
+        racer.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
+      } catch (error) {
+        if (/locked|busy/i.test(String(error))) blocked = true;
+        else throw error;
+      }
+    }
+    return result;
+  };
+  await supervisor.tick();
+  expect(attempted).toBe(true);
+  // An atomic re-bind holds the write lock, so the kick lands once it commits.
+  if (blocked) racer.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
+  expect(service.getRoomState({ room_id: roomId }).members.map((member) => member.agent_id)).not.toContain("claude:wk");
+});

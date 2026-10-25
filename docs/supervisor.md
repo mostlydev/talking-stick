@@ -211,9 +211,11 @@ performs the explicit recovery join:
 - it then re-registers the endpoint.
 
 A resumed generation of a session also re-binds memberships still bound to an earlier generation:
-- A present membership moves to the new process only with the session's own credential. The old
-  process's stick or reservation is released (`release`, reason `process_replaced`), never moved
-  to the new one.
+- A present membership moves to the new process only with the session's own credential, in one
+  room transaction (`rebindSupervisedMember`). The membership must still be exactly the one the
+  supervisor read, and one removed meanwhile is never recreated. Only a replaced process's stick or
+  reservation is released (`release`, reason `process_replaced`), never moved. The same process
+  whose endpoint was lost keeps its turn.
 - A membership lost before the crash is recovered through the room's rules. The supervisor first
   records the session start it observed through the protocol on that exact process, since a
   headless worker loads no user hooks.
