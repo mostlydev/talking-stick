@@ -424,3 +424,22 @@ describe("the CLI's cache after a recovery", () => {
     if (process.platform !== "win32") expect(fs.statSync(sessionPath).mode & 0o777).toBe(0o600);
   });
 });
+
+test("tt msg send resolves a lost member's exact id, and nothing looser", async () => {
+  const { resolveAgentSelector } = await import("../src/cli/event-stream.js");
+  const runtime = { commands: { getRoomState: () => ({ members: [], lost_members: [
+    { agent_id: "claude:aa", harness_name: "claude", lost_at: "t", hook_reason: null, notice_status: null, notice_at: null }
+  ] }) } } as never;
+  const identity = { agent_id: "human:op", process_metadata: {} } as never;
+  expect(resolveAgentSelector(runtime, identity, "room", "claude:aa")).toBe("claude:aa");
+  expect(() => resolveAgentSelector(runtime, identity, "room", "claude")).toThrow("No active room member matches");
+});
+
+test("chat's held line never claims a pending notice reached the model", async () => {
+  const { describeHeldRecipient } = await import("../src/cli/chat-format.js");
+  const held = { agent_id: "claude:aa", reason: "member_lost" as const, lost_at: "t" };
+  expect(describeHeldRecipient("claude", { ...held, notice: "already_sent" }))
+    .toBe("claude lost its membership; the message waits for it to rejoin (a recovery notice is already pending).");
+  expect(describeHeldRecipient("claude", { ...held, notice: "recovered" }))
+    .toBe("claude has rejoined; it reads the message from the room.");
+});

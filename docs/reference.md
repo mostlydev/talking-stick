@@ -982,6 +982,8 @@ wake registrations, and where its reading stopped. A lost member:
   Codex queue. The notice carries no message text. A Codex notice that only queued
   is reported `queued`.
 - Gets `member_lost` from any other `tt` command, with the way back: `tt join`.
+- Is still addressable: `tt msg send` takes its exact id, and a chat mention matches it like
+  a member. Chat says the message waits for it to rejoin and what its notice did.
 
 Only that session's explicit `tt join` recovers it, never a listener. The same
 process recovers with the credential `tt join` saved in `cli-sessions.json`

@@ -64,7 +64,9 @@ import {
   type MessageDelivery,
   type PathRoom,
   type RoomEvent,
-  type RoomMember
+  type RoomMember,
+  type LostMember,
+  type HeldRecipient
 } from "../types.js";
 import type { ChatRoomCompletion } from "./chat-view.js";
 import {
@@ -78,6 +80,7 @@ import {
   describeMemberState,
   parseChatInput,
   resolveChatRecipients,
+  describeHeldRecipient,
   sanitizeChatText,
   EVERYONE_SELECTORS
 } from "./chat-format.js";
@@ -709,6 +712,7 @@ export async function runChatSession(
   // Agents seen leaving, so addressing one explains why it can't be reached.
   const departedAgents = new Set<string>();
   let members: RoomMember[] = [];
+  let lostMembers: LostMember[] = [];
   let owner: string | null = null;
   let ownerSince: string | null = null;
   let reservedFor: string | null = null;
@@ -1179,6 +1183,7 @@ export async function runChatSession(
       process_metadata: identity.process_metadata
     });
     members = state.members;
+    lostMembers = state.lost_members ?? [];
     if ((state.room.owner ?? null) !== owner) {
       ownerSince = null;
     }
@@ -1294,7 +1299,21 @@ export async function runChatSession(
     let route: { to_agent_id?: string; to_agent_ids?: string[] } = {};
     if (to.length > 0 && !to.some((selector) => EVERYONE_SELECTORS.includes(selector))) {
       refreshMembers();
-      const resolved = resolveChatRecipients(to, members, selfId);
+      let resolved = resolveChatRecipients(to, members, selfId);
+      if ("error" in resolved) {
+        // A lost member still receives: the room holds the message for it.
+        const unmatched = resolved.unmatched;
+        const lost = unmatched.map((selector) => lostMembers.filter((member) =>
+          member.agent_id.toLowerCase().startsWith(selector) ||
+          nameOf(member.agent_id).toLowerCase().startsWith(selector)));
+        if (lost.every((matches) => matches.length === 1)) {
+          const rest = to.filter((selector) => !unmatched.includes(selector));
+          const others = rest.length ? resolveChatRecipients(rest, members, selfId) : { agent_ids: [] };
+          if (!("error" in others)) {
+            resolved = { agent_ids: [...new Set([...others.agent_ids, ...lost.map((matches) => matches[0].agent_id)])] };
+          }
+        }
+      }
       if ("error" in resolved) {
         const departed = [...departedAgents].filter((agentId) =>
           resolved.unmatched.some(
@@ -1330,6 +1349,10 @@ export async function runChatSession(
       setDelivery(sent.event_seq, delivery.agent_id, state);
       if (!terminal) print(`${sanitizeChatText(nameOf(delivery.agent_id))}: ${state}`);
       if (!received) trackReceipt(sent.event_seq, delivery.agent_id);
+    })
+    .then((sent) => {
+      if (closed) return;
+      for (const held of sent.held ?? []) print(`· ${sanitizeChatText(describeHeldRecipient(nameOf(held.agent_id), held))}`);
     })
     .catch(() => { if (!closed) print("! Message delivery could not be confirmed."); });
   };

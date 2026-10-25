@@ -206,7 +206,8 @@ export interface JoinRecovery {
 
 /** What a lost member's recovery notice did; queued is not delivered. */
 export type RecoveryNoticeStatus =
-  | "injected" | "queued" | "ambiguous" | "unreachable" | "process_not_running" | "already_sent" | "recovered";
+  | "injected" | "queued" | "ambiguous" | "unreachable" | "process_not_running" | "process_unknown"
+  | "already_sent" | "recovered";
 
 /** A member whose harness reported its session ended, still recoverable. */
 export interface LostMember {

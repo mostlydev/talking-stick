@@ -26,7 +26,8 @@ changes will be called out under **Breaking changes**.
   run `tt join`, and only that explicit join recovers it. Recovery has no lease, and the member
   gets back its delivery batches and its place in the room's events. A new session in the same
   single-session process, or the process ending for an hour, ends the loss for good. `tt leave` or
-  `tt kick` of a lost member also keeps that session out of the room. Lifecycle hook events are logged for diagnosis, without command lines.
+  `tt kick` of a lost member also keeps that session out of the room. Lifecycle hook events are logged for diagnosis, without command lines. `tt msg send` and chat
+  mentions reach a lost member, and chat says the message is held.
 
 ### Fixed
 
