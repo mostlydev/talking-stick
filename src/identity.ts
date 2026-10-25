@@ -335,6 +335,22 @@ function deriveHarnessDisplayName(agentId: string): string {
   return prefix && prefix.length > 0 ? prefix : "harness";
 }
 
+/**
+ * The harness this command runs under, from its environment or its process
+ * ancestry, or null. Commands reserved for a human refuse to run inside one.
+ * It is a guard against an agent acting as the operator by accident, not a
+ * boundary against a same-user process that deliberately hides its origin.
+ */
+export function runningInsideHarness(
+  env: NodeJS.ProcessEnv = process.env,
+  parentPid: number = process.ppid,
+  inspector: ProcessInspector = createSystemProcessInspector()
+): string | null {
+  const signal = detectHarnessSignal(env) ?? (nonEmpty(env[HARNESS_CLI_AGENT_ID_ENV]) ? { harness: "exported" } : null);
+  if (signal) return signal.harness;
+  return detectHarnessViaAncestry(parentPid, inspector)?.harness ?? null;
+}
+
 function detectHarnessViaAncestry(
   pid: number,
   inspector: ProcessInspector,

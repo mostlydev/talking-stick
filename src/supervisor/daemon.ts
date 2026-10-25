@@ -444,6 +444,14 @@ export class Supervisor {
     }
   }
 
+  /**
+   * The daemon is stopping: each worker's process group is stopped. Their
+   * generations end as stopped, not crashed, and nothing is restarted.
+   */
+  async shutdown(): Promise<void> {
+    await Promise.allSettled([...this.handles.entries()].map(([workerId, handle]) => this.stopHandle(workerId, handle)));
+  }
+
   /** Journals the input before writing it, so a crash never loses track of what was sent. */
   async submit(workerId: string, text: string, mode: InputMode, source: string): Promise<{ input_id: string; outcome: InputOutcome }> {
     const handle = this.handles.get(workerId);
