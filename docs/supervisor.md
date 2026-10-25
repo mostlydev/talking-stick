@@ -75,10 +75,10 @@ reached only through its own `tt` calls.
 - `inputs`: every input, journalled before it is written and marked `dispatching` before the
   write is attempted. Inputs only move forward, through `written`, `queued`, `accepted` and
   `completed`, the last with the turn's outcome (`success`, `error` or `interrupted`).
-  - `completed`, `rejected` and `uncertain` are final, and a turn that started can't be made
-    uncertain afterwards.
-  - When a generation ends, anything dispatched is uncertain; only input never dispatched is
-    rejected.
+  - `completed`, `rejected` and `uncertain` are final. A late `uncertain` or `rejected` result
+    from `submit` can't undo a turn the worker reported starting.
+  - When a generation ends, anything dispatched but not completed is uncertain, including an
+    accepted turn whose completion is unknown. Only input never dispatched is rejected.
   - Input text is not stored.
 - `approvals`: each request occurrence has its own `approval_id`.
   - A native id may repeat across processes, like Codex's `0`, or within one generation once its
@@ -110,6 +110,8 @@ reached only through its own `tt` calls.
 - **Restarts** back off from 5 s to 5 min. Five crashes in 15 minutes hold the worker
   (`crash_loop`). A restart resumes the recorded native session. If the adapter can't resume, or
   the resume fails, the worker is held (`resume_failed`) instead of starting a new conversation.
+  Each start intent records the session it means to resume, so a retry after a failed attempt
+  still resumes the original conversation.
   An operator's restart stops the running generation and resumes its session. Only a fresh
   restart begins a new conversation.
 - **When a generation ends**, its written inputs become `uncertain`, its pending approvals expire,

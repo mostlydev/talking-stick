@@ -350,6 +350,46 @@ describe("ownership through a crash", () => {
   });
 });
 
+describe("resuming across failed attempts", () => {
+  test("a retry after a failed resume still resumes the original conversation", async () => {
+    const { store, adapter, supervisor, spec, advance } = setup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    adapter.last.emit({ type: "session", session_id: "native-original" });
+    adapter.last.emit({ type: "exited", code: 1, signal: null });
+    advance(10_000);
+    adapter.failStart = (started) => started.resume_session_id === "native-original";
+    await supervisor.tick();
+    expect(store.worker("w1")!.hold_reason).toBe("resume_failed");
+    adapter.failStart = null;
+    store.setDesired("w1", "running", "human:op", "t2", true);
+    await supervisor.tick();
+    expect(adapter.last.spec.resume_session_id).toBe("native-original");
+  });
+
+  test("a fresh restart stays fresh across a failed attempt, then resumes what it started", async () => {
+    const { store, adapter, supervisor, spec, advance } = setup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    adapter.last.emit({ type: "session", session_id: "native-original" });
+    store.requestRestart("w1", true, "human:op", "t1");
+    adapter.failStart = () => true;
+    await supervisor.tick();
+    await supervisor.tick();
+    expect(adapter.handles).toHaveLength(1);
+    adapter.failStart = null;
+    advance(10_000);
+    await supervisor.tick();
+    expect(adapter.handles).toHaveLength(2);
+    expect(adapter.last.spec.resume_session_id).toBeUndefined();
+    adapter.last.emit({ type: "session", session_id: "native-new" });
+    adapter.last.emit({ type: "exited", code: 1, signal: null });
+    advance(10_000);
+    await supervisor.tick();
+    expect(adapter.last.spec.resume_session_id).toBe("native-new");
+  });
+});
+
 describe("restart and status", () => {
   test("a restart stops the running generation and resumes its session; a fresh one starts anew", async () => {
     const { store, adapter, supervisor, spec } = setup();

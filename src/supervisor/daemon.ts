@@ -149,9 +149,11 @@ export class Supervisor {
     }
     // The intent is durable before the spawn, and the child the moment it
     // exists, so a crash at any point leaves evidence and never a duplicate.
+    // The intent carries the session it means to resume, so a failed attempt
+    // never loses the conversation for the next one.
     const generation = this.store.nextGenerationNumber(worker.worker_id);
     this.store.recordGeneration({ worker_id: worker.worker_id, generation, pid: null, process_started_at: null,
-      pgid: null, session_id: null, state: "starting", started_at: this.at() });
+      pgid: null, session_id: resume ?? null, state: "starting", started_at: this.at() });
     this.starting.add(worker.worker_id);
     let handle: WorkerHandle;
     try {
@@ -168,7 +170,7 @@ export class Supervisor {
     this.starting.delete(worker.worker_id);
     this.store.transaction(() => {
       this.store.updateGeneration(worker.worker_id, generation, { pid: handle.pid, process_started_at: handle.processStartedAt,
-        pgid: handle.pgid, session_id: handle.sessionId(), state: "idle" });
+        pgid: handle.pgid, session_id: handle.sessionId() ?? resume ?? null, state: "idle" });
       if (worker.fresh_next) this.store.clearFresh(worker.worker_id);
       this.store.audit(this.at(), "supervisor", "start", worker.worker_id, { generation, pid: handle.pid, resumed: Boolean(resume) });
     });
