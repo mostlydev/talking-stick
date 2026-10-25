@@ -260,6 +260,43 @@ describe("messages to a lost member", () => {
     expect(lost()[0]).toMatchObject({ notice_status: "injected", notice_at: "2026-10-25T12:31:00.000Z" });
   });
 
+  test("two connections sending at once deliver one notice; an unfinished one re-arms after the interval", async () => {
+    let release!: (result: NativeWakeResult) => void;
+    let calls = 0;
+    const { service, roomId, join, hook, setNow, lost } = setup({ native: () => {
+      calls++;
+      return new Promise<NativeWakeResult>((resolve) => { release = resolve; }) as unknown as NativeWakeResult;
+    } });
+    join("claude:aa", metadata("claude", "s1"));
+    registerInbox(service, roomId, "claude:aa", "s1");
+    hook("SessionEnd", "claude", "s1");
+    const dataDir = (service as unknown as { dataDir: string }).dataDir;
+    const second = new TalkingStickService({ dataDir, hostId: HOST, now: () => new Date("2026-10-25T12:00:05.000Z"),
+      processLivenessChecker: () => "alive", receiverLivenessChecker: () => "gone",
+      nativeWakeTransport: { deliver() { calls++; return { outcome: "woken" }; } } });
+    cleanup.push(() => second.close());
+    const first = service.sendMessageAndWake({ agent_id: OP, room_id: roomId, to_agent_id: "claude:aa", body: "one" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(calls).toBe(1);
+    const other = await second.sendMessageAndWake({ agent_id: OP, room_id: roomId, to_agent_id: "claude:aa", body: "two" });
+    expect(other.held?.[0].notice).toBe("already_sent");
+    expect(lost()[0].notice_status).toBe("sending");
+    release({ outcome: "woken" });
+    expect((await first).held?.[0].notice).toBe("injected");
+    expect(calls).toBe(1);
+
+    // A reservation whose sender died stays ambiguous until the interval passes.
+    service.db.prepare("UPDATE lost_room_members SET notice_status = 'sending'").run();
+    expect((await second.sendMessageAndWake({ agent_id: OP, room_id: roomId, to_agent_id: "claude:aa", body: "three" }))
+      .held?.[0].notice).toBe("already_sent");
+    setNow("2026-10-25T12:31:00.000Z");
+    const later = service.sendMessageAndWake({ agent_id: OP, room_id: roomId, to_agent_id: "claude:aa", body: "four" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    release({ outcome: "woken" });
+    expect((await later).held?.[0].notice).toBe("injected");
+    expect(calls).toBe(2);
+  });
+
   test("a queued Codex notice is reported queued, not delivered", async () => {
     const { service, roomId, join, hook } = setup({ native: () => ({ outcome: "queued" }) });
     join("codex:bb", metadata("codex", "s2"));

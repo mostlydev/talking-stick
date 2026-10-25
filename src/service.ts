@@ -988,17 +988,29 @@ export class TalkingStickService {
    * delivered: a queued notice waits for that harness to start a turn.
    */
   private async sendRecoveryNotice(roomId: string, agentId: AgentId): Promise<RecoveryNoticeStatus> {
-    const lost = this.getLostMember(roomId, agentId);
-    if (!lost) return "recovered";
     const now = this.now();
-    if (lost.notice_at && now.getTime() - Date.parse(lost.notice_at) < LOST_NOTICE_INTERVAL_MS &&
-        (lost.notice_status === "injected" || lost.notice_status === "queued" || lost.notice_status === "ambiguous")) {
-      return "already_sent";
-    }
-    const record = (status: RecoveryNoticeStatus): RecoveryNoticeStatus => {
-      this.writeTransaction(() => this.db.prepare(`UPDATE lost_room_members SET notice_status = ?, notice_at = ?
+    // Reserve the notice for this loss before any I/O, so concurrent senders,
+    // in this process or another, see it as sent. A reservation that never
+    // completed counts as ambiguous until the interval passes.
+    const reserved = this.writeTransaction(() => {
+      const lost = this.getLostMember(roomId, agentId);
+      if (!lost) return "recovered" as const;
+      if (lost.notice_at && now.getTime() - Date.parse(lost.notice_at) < LOST_NOTICE_INTERVAL_MS &&
+          (lost.notice_status === "sending" || lost.notice_status === "injected" ||
+           lost.notice_status === "queued" || lost.notice_status === "ambiguous")) {
+        return "already_sent" as const;
+      }
+      this.db.prepare(`UPDATE lost_room_members SET notice_status = 'sending', notice_at = ?
         WHERE room_id = ? AND agent_id = ? AND lost_event_seq = ?`)
-        .run(status, now.toISOString(), roomId, agentId, lost.lost_event_seq));
+        .run(now.toISOString(), roomId, agentId, lost.lost_event_seq);
+      return lost;
+    });
+    if (typeof reserved === "string") return reserved;
+    const lost = reserved;
+    const record = (status: RecoveryNoticeStatus): RecoveryNoticeStatus => {
+      this.writeTransaction(() => this.db.prepare(`UPDATE lost_room_members SET notice_status = ?
+        WHERE room_id = ? AND agent_id = ? AND lost_event_seq = ? AND notice_status = 'sending' AND notice_at = ?`)
+        .run(status, roomId, agentId, lost.lost_event_seq, now.toISOString()));
       return status;
     };
     const liveness = this.processLivenessChecker({ host_id: lost.host_id, pid: lost.pid,
@@ -1019,7 +1031,8 @@ export class TalkingStickService {
         result = await this.nativeWakeTransport.deliver({ transport: endpoint.transport as NativeWakeTransportName,
           address: endpoint.address, secret: endpoint.secret, text });
       } catch {
-        result = { outcome: "failed" };
+        // A throw after writing may still have landed.
+        return record("ambiguous");
       }
       if (result.outcome === "failed") continue;
       return record(result.outcome === "queued" ? "queued" : result.outcome === "ambiguous" ? "ambiguous" : "injected");
