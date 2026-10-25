@@ -64,7 +64,9 @@ export type WorkerEvent =
   | { type: "approval_requested"; native_request_id: string; tool: string; summary: string }
   /** The harness settled a pending request itself, such as Codex's serverRequest/resolved after an interrupt. */
   | { type: "approval_resolved"; native_request_id: string }
-  | { type: "state"; state: "awaiting_input" | "auth_required" | "disconnected" }
+  | { type: "state"; state: "idle" | "awaiting_input" | "auth_required" | "disconnected" }
+  | { type: "resume_failed" }
+  | { type: "request_refused"; method: string }
   /** A protocol queue overflowed: the supervisor holds the worker. */
   | { type: "overflow" }
   | { type: "exited"; code: number | null; signal: string | null };
