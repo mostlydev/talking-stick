@@ -31,6 +31,10 @@ An adapter speaks one harness's headless protocol. The interface is `src/supervi
 
   A pipe error or EPIPE alone is not proof that nothing was written.
 - `answerApproval(native_request_id, …)` answers on that handle's own generation only.
+  - It refuses an id the harness no longer has pending.
+  - A native cancellation, such as Codex's `serverRequest/resolved` after an interrupt, will be
+    reported as a generation-scoped resolution event that settles that exact occurrence. This is
+    required before adapter acceptance, and the event is added with the adapters.
 - `probe()` checks liveness without the model: the process, and a protocol ping where one exists.
 - `stop(grace)`: stdin EOF, then the process group, then SIGKILL.
 - Adapters drain the child's output continuously and bound their queues. An overflow of protocol
@@ -178,6 +182,10 @@ change never re-offers that batch as fresh text. The fence is released only when
 A crash between fence and write is held for that decision. Intake that was journalled but never
 fenced may be re-offered by tt.
 
+Events in a fenced batch are left out of every later envelope, and a member whose only pending
+work is fenced isn't woken at all. A member with a supervisor endpoint has no other native
+endpoint: registering the supervisor removes them, and registering another is refused.
+
 The delivery token only fences and clears its own generation's batches. Control authority is
 separate, and neither ever grants the other.
 
@@ -199,8 +207,9 @@ didn't start.
 
 | Slice | Owner | Contents | State |
 | --- | --- | --- | --- |
-| S2a1 | Claude | adapter types, state, reconcile loop, owner lock, FakeAdapter tests | this change |
-| S2a2 | Claude | `supervisor` transport, `fenceManagedDelivery`, recovery of owned workers, end-to-end crash tests over both databases | next |
+| S2a1 | Claude | adapter types, state, reconcile loop, owner lock, FakeAdapter tests | merged (#203) |
+| S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | this change |
+| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | next |
 | S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | after S2a2 |
 | S2b | Claude | Claude stream-json adapter | after S2a |
 | S2c | Codex | Codex app-server adapter | after S2a |

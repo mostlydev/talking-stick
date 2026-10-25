@@ -6,7 +6,7 @@ import { codexControlSocket, startQueuedCodexThread } from "./codex-queue-start.
 import { inspectCodexTurn, steerCodexThread, type CodexTurnStatus } from "./codex-steer.js";
 import type { RoomEvent } from "./types.js";
 
-export type NativeWakeTransportName = "claude_inbox" | "codex_queue" | "cmux";
+export type NativeWakeTransportName = "claude_inbox" | "codex_queue" | "supervisor" | "cmux";
 export type NativeWakeReason = "message" | "interrupt" | "turn" | "room_update";
 export type NativeWakeState = "woken" | "queued" | "steered" | "ambiguous";
 
@@ -15,10 +15,13 @@ export const CODEX_QUEUE_TIMEOUT_MS = 10_000;
 
 // Native transports in delivery preference order.
 export const NATIVE_WAKE_TRANSPORTS: readonly NativeWakeTransportName[] = [
+  "supervisor",
   "claude_inbox",
   "codex_queue",
   "cmux"
 ];
+
+export const SUPERVISOR_TIMEOUT_MS = 5_000;
 
 export interface NativeWakeRegistration {
   transport: NativeWakeTransportName;
@@ -28,6 +31,8 @@ export interface NativeWakeRegistration {
 
 export interface NativeWakeRequest extends NativeWakeRegistration {
   text: string;
+  /** The tt batch token, for the supervisor transport, which journals intake by it. */
+  delivery_token?: string;
   interrupt?: boolean;
   steer?: boolean;
   start_queued?: boolean;
@@ -60,6 +65,11 @@ export function detectNativeWakeEndpoints(
   identity: { agent_id: string; harness_session_id?: string | null }
 ): NativeWakeRegistration[] {
   const harness = identity.agent_id.split(":", 1)[0];
+  // A worker the supervisor owns is reached only through the supervisor, never
+  // through the harness's own inbox or queue.
+  const supervised = env.TT_SUPERVISOR_ENDPOINT?.trim();
+  const supervisorToken = env.TT_SUPERVISOR_TOKEN?.trim();
+  if (supervised && supervisorToken) return [{ transport: "supervisor", address: supervised, secret: supervisorToken }];
   const endpoints: NativeWakeRegistration[] = [];
   const socket = env.CLAUDE_CODE_MESSAGING_SOCKET?.trim();
   const token = env.CLAUDE_CODE_MESSAGING_TOKEN?.trim();
@@ -181,9 +191,70 @@ export function createSystemNativeWakeTransport(options: NativeWakeOptions = {})
     deliver(request) {
       if (request.transport === "claude_inbox") return deliverClaudeInbox(request, options);
       if (request.transport === "codex_queue") return deliverCodexQueue(request, options);
+      if (request.transport === "supervisor") return deliverSupervisor(request, options);
       return { outcome: "failed", error: "unsupported_native_transport" };
     }
   };
+}
+
+/** A supervisor endpoint address: its control socket, the worker, and the generation. */
+export function parseSupervisorAddress(address: string): { socket: string; worker_id: string; generation: number } | null {
+  const match = /^(.+)#([^#@]+)@(\d+)$/.exec(address);
+  return match ? { socket: match[1], worker_id: match[2], generation: Number(match[3]) } : null;
+}
+
+/**
+ * Hands an envelope to the supervisor that owns the worker. Queued means the
+ * supervisor journalled the intake, not that a turn started. Before the write
+ * nothing can have arrived; after it, a missing answer is ambiguous.
+ */
+export function deliverSupervisor(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
+  const target = parseSupervisorAddress(request.address);
+  if (!target || !request.secret || !request.delivery_token) {
+    return Promise.resolve({ outcome: "failed", error: "supervisor_endpoint_invalid" });
+  }
+  return new Promise((resolve) => {
+    let written = false;
+    let settled = false;
+    let reply = "";
+    const socket = net.createConnection(target.socket);
+    const finish = (result: NativeWakeResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(written
+      ? { outcome: "ambiguous", error: "supervisor_timeout", detail: "write:timeout" }
+      : { outcome: "failed", error: "supervisor_unreachable", detail: "connect:timeout" }), options.timeout_ms ?? SUPERVISOR_TIMEOUT_MS);
+    socket.on("error", (error: NodeJS.ErrnoException) => {
+      const code = error.code ?? "unknown";
+      finish(written ? { outcome: "ambiguous", error: "supervisor_write_failed", detail: `write:${code}` }
+        : { outcome: "failed", error: "supervisor_unreachable", detail: `connect:${code}` });
+    });
+    socket.on("connect", () => {
+      written = true;
+      socket.write(`${JSON.stringify({ type: "deliver", worker_id: target.worker_id, generation: target.generation,
+        token: request.secret, batch_token: request.delivery_token, text: request.text })}\n`);
+    });
+    socket.on("data", (chunk) => {
+      reply += chunk.toString("utf8");
+      const end = reply.indexOf("\n");
+      if (end === -1) return;
+      try {
+        const answer = JSON.parse(reply.slice(0, end)) as { outcome?: string; error?: string };
+        finish(answer.outcome === "queued" ? { outcome: "queued" }
+          : answer.outcome === "failed" ? { outcome: "failed", error: `supervisor_${answer.error ?? "refused"}`.slice(0, 64) }
+          : { outcome: "ambiguous", error: "supervisor_bad_reply" });
+      } catch {
+        finish({ outcome: "ambiguous", error: "supervisor_bad_reply" });
+      }
+    });
+    socket.on("close", () => finish(written
+      ? { outcome: "ambiguous", error: "supervisor_closed", detail: "write:closed" }
+      : { outcome: "failed", error: "supervisor_unreachable", detail: "connect:closed" }));
+  });
 }
 
 export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
