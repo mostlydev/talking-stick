@@ -4,10 +4,11 @@ import type { Harness, HarnessAdapter, InputMode, InputOutcome, WorkerEvent, Wor
 import type { GenerationState, SupervisorStore, WorkerRow } from "./state.js";
 import type { IntakeAnswer, IntakeMessage } from "./intake.js";
 import type { RoomBridge } from "./room-bridge.js";
+import { resolveBundledSkillPath } from "../skill-install.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
-// running and acts. Its tick reads process liveness only; it never prompts a
-// worker or touches room presence. See docs/supervisor.md.
+// running and acts. Its probes never prompt a worker or touch room presence. The
+// sole initial enrolment prompt is journalled once per native session. See docs/supervisor.md.
 
 export const BACKOFF_BASE_MS = 5_000;
 export const BACKOFF_MAX_MS = 5 * 60_000;
@@ -32,6 +33,8 @@ export interface SupervisorOptions {
   /** The room side and the intake socket; without them workers get no supervisor endpoint. */
   bridge?: RoomBridge;
   socketPath?: string;
+  /** Explicit opt-in for the production daemon; one enrolment turn per native session. */
+  bootstrap?: boolean;
   /** The supervisor's tt data directory, given to every worker so its tt calls land in this room database. */
   dataDir?: string;
 }
@@ -74,6 +77,7 @@ export class Supervisor {
   private readonly tickWaitMs: number;
   private readonly bridge: RoomBridge | null;
   private readonly socketPath: string | null;
+  private readonly bootstrap: boolean;
   private readonly dataDir: string | null;
   /** This daemon's delivery tokens; only hashes are stored. */
   private readonly deliveryTokens = new Map<string, { generation: number; token: string; address: string }>();
@@ -99,6 +103,7 @@ export class Supervisor {
     this.tickWaitMs = options.tickWaitMs ?? TICK_WAIT_MS;
     this.bridge = options.bridge ?? null;
     this.socketPath = options.socketPath ?? null;
+    this.bootstrap = options.bootstrap ?? false;
     this.dataDir = options.dataDir ?? null;
   }
 
@@ -126,6 +131,16 @@ export class Supervisor {
       } else {
         this.store.hold(row.worker_id, liveness === "alive" ? "prior_generation_alive" : "prior_generation_unknown", this.at());
       }
+    }
+    // A daemon crash must not silently lose enrolment between reserving it
+    // and writing it, or replay a possibly accepted bootstrap prompt.
+    for (const row of this.store.db.prepare<[], { worker_id: string }>(`SELECT DISTINCT b.worker_id
+      FROM bootstrap_sessions b JOIN inputs i ON i.input_id = b.input_id
+      JOIN generations g ON g.worker_id = b.worker_id AND g.session_id = b.session_id
+      JOIN workers w ON w.worker_id = b.worker_id
+      WHERE i.state != 'completed' AND w.fresh_next = 0
+        AND g.generation = (SELECT MAX(generation) FROM generations WHERE worker_id = b.worker_id)`).all()) {
+      this.store.hold(row.worker_id, "bootstrap_failed", this.at());
     }
     this.reconciled = true;
   }
@@ -159,6 +174,7 @@ export class Supervisor {
       else this.probeUnknown.delete(worker.worker_id);
       this.expireApprovals(worker.worker_id, handle);
       if (liveness === "alive") this.recoverMembership(worker, handle);
+      this.bootstrapWorker(handle, worker.worker_id);
       this.drain(worker.worker_id);
       return;
     }
@@ -243,7 +259,29 @@ export class Supervisor {
     const current = this.store.worker(worker.worker_id);
     if (!current || current.desired !== "running" || current.desired_version !== worker.desired_version) {
       await this.stopHandle(worker.worker_id, handle);
+      return;
     }
+    this.bootstrapWorker(handle, worker.worker_id);
+  }
+
+  private bootstrapWorker(handle: WorkerHandle, workerId: string): void {
+    const session = handle.sessionId();
+    const worker = this.store.worker(workerId);
+    if (!this.bootstrap || !this.bridge || !this.deliveryTokens.has(workerId) || !session || !worker ||
+        this.shuttingDown || this.stopping.has(workerId) || this.probeUnknown.has(workerId) ||
+        worker.desired !== "running" || worker.hold_reason || this.reportedState.get(workerId) !== "idle") return;
+    const inputId = this.newId();
+    if (!this.store.claimBootstrap(workerId, session, inputId, handle.generation, this.at())) return;
+    const text = `Use the talking-stick skill (${resolveBundledSkillPath()}/SKILL.md). ` +
+      "Join the room for your current working directory with `tt join --json` and read `tt instructions show --json`. " +
+      "You have no task yet: use `tt standby --json`, or one `tt wait --park --json` if it cannot self-wake. " +
+      "Do not claim the stick or start work; wait for the operator in tt chat.";
+    void this.dispatchInput(handle, workerId, inputId, text, "start_turn").then((result) => {
+      if (result.outcome === "uncertain" || result.outcome === "rejected") this.store.hold(workerId, "bootstrap_failed", this.at());
+    }).catch(() => {
+      // Never turn a failed bootstrap into an unjournalled retry.
+      if (this.store.db.open) this.store.hold(workerId, "bootstrap_failed", this.at());
+    });
   }
 
   /** Stops a generation; a failed stop is audited and the handle kept, never a daemon crash. */
@@ -501,6 +539,11 @@ export class Supervisor {
     const inputId = this.newId();
     const generation = handle.generation;
     this.store.journalInput({ input_id: inputId, worker_id: workerId, generation, mode, source, created_at: this.at() });
+    return this.dispatchInput(handle, workerId, inputId, text, mode);
+  }
+
+  private async dispatchInput(handle: WorkerHandle, workerId: string, inputId: string, text: string, mode: InputMode): Promise<{ input_id: string; outcome: InputOutcome }> {
+    const generation = handle.generation;
     // Recorded before the write, so a crash while writing leaves it uncertain.
     this.store.updateInput(inputId, workerId, generation, "dispatching", this.at());
     let outcome: InputOutcome;

@@ -120,7 +120,7 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
     });
     if (options.signal?.aborted) stopRequested();
     const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
-      bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir });
+      bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir, bootstrap: true });
     cleanups.push(() => supervisor.shutdown());
     const control = async (message: ControlMessage): Promise<ControlAnswer> => {
       const presented = Buffer.from(message.token);

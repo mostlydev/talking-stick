@@ -1,8 +1,7 @@
 # Managed headless supervisor
 
-Status: design agreed (room notes 2824973c, 01cd46da and 4ffa33a6, consolidated here). The core
-(types, state, reconcile loop) is in `src/supervisor/`. The room bridge, CLI, launchd and the
-harness adapters follow in later slices, and the "Slices" table says what exists.
+Status: design agreed (room notes 2824973c, 01cd46da and 4ffa33a6, consolidated here). The core, room bridge, CLI, launchd integration and Codex adapter are in `src/supervisor/`.
+Claude and Grok adapters follow in later slices; the "Slices" table records their state.
 
 The supervisor is optional. It starts Claude, Codex and Grok in their headless modes as
 processes it owns, and keeps them running. It changes nothing for Herdr, tmux or terminal sessions,
@@ -13,7 +12,7 @@ control only. They are not a security sandbox.
 
 An adapter speaks one harness's headless protocol. The interface is `src/supervisor/adapter.ts`.
 
-- `start(spec, generation, onSpawn)` spawns and handshakes. It never takes a prompt.
+- `start(spec, generation, onSpawn, signal)` spawns and handshakes. It never takes a prompt.
   - The supervisor records the start intent before the spawn.
   - The adapter calls `onSpawn` with the child's pid, process start time and process group the
     moment the child exists, before the handshake, so the child is owned even if the supervisor
@@ -57,9 +56,66 @@ literals. At each start the supervisor adds the runtime `supervisor_env`:
   room database;
 - the endpoint and delivery token, for workers that can take a prompt.
 
-Adapters build the child's environment from those alone, never the daemon's whole environment,
+Adapters start with only HOME and PATH (needed by native executables), then those references,
+with protected supervisor values applied last. They never copy the daemon's whole environment,
 so no inherited `TT_ROOM` or harness identity marker reaches the worker. Credential values are never stored. Hooks stay under the harness's own trust, and
 nothing bypasses it.
+
+The daemon and workers currently share an OS user. The human-only CLI checks and separate
+control token prevent accidental cross-control; they do not prevent a worker deliberately
+reading `<data>/supervisor/control.token` and using it. The native workspace-write sandbox does
+not isolate that readable directory. Strong approval isolation needs a separate OS authority or
+an authenticated human channel; do not treat this preview as that security boundary.
+
+### Codex
+
+The POSIX adapter owns a native `codex app-server --listen stdio://` process group. It resolves
+an official npm wrapper to its native binary rather than recording the wrapper's PID. For a
+version-manager or launchd environment with a minimal PATH, use explicit non-secret `PATH` and
+`CODEX_EXECUTABLE` environment references; the latter names the absolute native executable.
+
+By default it creates a private CODEX_HOME under `<data>/supervisor/workers/<worker>/codex`.
+It never copies credentials, user configuration, hooks or plugins there. Authenticate that home
+separately, or explicitly reference a prepared CODEX_HOME. Missing authentication is visible as
+`auth_required`, and the non-model probe detects a later login. Never put credentials in literals.
+Workspace-write adds only the configured Talking Stick data directory to the native writable
+roots and keeps network access disabled. Read-only workers may need human approval for their
+room metadata writes. Returned sandbox and approval settings are checked before any prompt.
+
+After registration the supervisor journals one enrolment prompt per native session: read the
+skill, join the room, and wait without claiming work. It is not a keepalive. Resuming the same
+session never repeats it. A failed or interrupted enrolment is held as `bootstrap_failed`;
+a fresh restart creates a new conversation rather than replaying uncertain input. The enrolment
+reservation and input journal commit atomically, including before any possible pipe write.
+
+Input uses turn/start while idle and exact-turn turn/steer while busy. Interrupt success requires
+a native interrupted completion, not merely an RPC acknowledgement. Command and file-change
+approvals allow one request only; native resolution expires the pending occurrence (including
+request ID 0). Unsupported tool-input, permission and plugin requests remain blocked and visible.
+Output is drained with bounded frames and queues; raw provider diagnostics are not logged.
+When sandboxed `ps` cannot read a process start time, the supervisor writes private process
+evidence before the handshake. The CLI fills only the missing start time of its already selected
+PID, with matching endpoint and delivery-token hash. A stale or mismatched file leaves it unknown;
+the file is removed on exit when possible, and a stale file cannot match a later generation's credential. This does not select a new PID or renew a room lease.
+Native history remains in CODEX_HOME. Missing resume history holds the worker; no replacement
+conversation is started implicitly. Managed process groups on Windows are not implemented yet.
+
+Example setup from your own terminal (replace the paths):
+
+```sh
+# Authenticate an isolated prepared home; no credentials are copied by tt.
+CODEX_HOME=/absolute/private/codex-home codex login
+tt supervisor add coder --harness codex --cwd /absolute/repository \
+  --sandbox workspace-write --approval on-request \
+  --env CODEX_HOME=literal:/absolute/private/codex-home \
+  --env CODEX_EXECUTABLE=literal:/absolute/native/codex \
+  --env PATH=literal:/absolute/tt-bin:/usr/bin:/bin:/usr/sbin:/sbin
+tt supervisor run
+# Or install the macOS user service explicitly: tt supervisor install
+```
+
+The PATH must include `tt` and any tools the worker needs. A Node-linked development install
+also needs Node; a standalone tt binary does not. No shell profile is sourced by launchd.
 
 ### Grok
 
@@ -117,7 +173,8 @@ reached only through its own `tt` calls.
     handshake freezes no other worker.
   - An unknown probe is recorded as `unknown`, and the worker's reported state comes back once it
     reads alive.
-  - It never prompts a worker, and never writes room presence.
+  - Probes never prompt or write room presence. One initial, journalled enrolment prompt is the
+    explicit exception when a new native session is ready; no model prompt is used as a heartbeat.
 - **Restarts** back off from 5 s to 5 min. Five crashes in 15 minutes hold the worker
   (`crash_loop`). A restart resumes the recorded native session. If the adapter can't resume, or
   the resume fails, the worker is held (`resume_failed`) instead of starting a new conversation.
@@ -280,8 +337,8 @@ its endpoint, and its delivery token. They aren't a boundary against a same-user
 deliberately reads the owner-only token file or hides its origin. A sandbox that denies reading
 `<data>/supervisor/` makes them one.
 
-No harness adapter ships yet, so a worker added now is held with `start_failed` until its adapter
-lands (S2b to S2d). Plugin install requests aren't implemented yet.
+Codex is available on macOS and Linux. Claude and Grok workers are held with `start_failed`
+until their adapters land. Plugin install requests are not implemented.
 
 ## What the supervisor does not prove
 
@@ -295,9 +352,9 @@ incident nor existing sessions are claimed solved by headless-worker tests.
 | Slice | Owner | Contents | State |
 | --- | --- | --- | --- |
 | S2a1 | Claude | adapter types, state, reconcile loop, owner lock, FakeAdapter tests | merged (#203) |
-| S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | #204 |
-| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | #206 |
-| S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | this change |
+| S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | merged (#204) |
+| S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | merged (#206) |
+| S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | merged (#207) |
 | S2b | Claude | Claude stream-json adapter | after S2a |
-| S2c | Codex | Codex app-server adapter | after S2a |
+| S2c | Codex | Codex app-server adapter and shared process helpers | implemented; independent review pending |
 | S2d | Grok | Grok stdio adapter (the proven subset only) | after S2a |

@@ -15,7 +15,7 @@ export type GenerationState =
 
 export type HoldReason =
   | "crash_loop" | "prior_generation_alive" | "prior_generation_unknown"
-  | "resume_failed" | "overflow" | "start_failed" | "protocol_error";
+  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed";
 
 export interface WorkerRow {
   worker_id: string;
@@ -165,6 +165,17 @@ const MIGRATIONS: Array<{ id: number; up: string }> = [{
   up: `ALTER TABLE generations ADD COLUMN delivery_token_hash TEXT;
   ALTER TABLE inputs ADD COLUMN batch_token TEXT;
   CREATE UNIQUE INDEX inputs_batch ON inputs (batch_token) WHERE batch_token IS NOT NULL;`
+}, {
+  id: 3,
+  // An attempted bootstrap is not proof of receipt. It is never replayed on
+  // a resumed session; uncertain outcomes require an explicit fresh restart.
+  up: `CREATE TABLE bootstrap_sessions (
+    worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    input_id TEXT NOT NULL REFERENCES inputs(input_id),
+    attempted_at TEXT NOT NULL,
+    PRIMARY KEY (worker_id, session_id)
+  );`
 }];
 
 export function supervisorDatabasePath(dataDir: string): string {
@@ -219,6 +230,16 @@ export class SupervisorStore {
 
   workers(): WorkerRow[] {
     return this.db.prepare<[], WorkerRow>("SELECT * FROM workers ORDER BY worker_id").all();
+  }
+
+  claimBootstrap(workerId: string, sessionId: string, inputId: string, generation: number, at: string): boolean {
+    return this.transaction(() => {
+      if (this.db.prepare("SELECT 1 FROM bootstrap_sessions WHERE worker_id = ? AND session_id = ?").get(workerId, sessionId)) return false;
+      this.journalInput({ input_id: inputId, worker_id: workerId, generation, mode: "start_turn", source: "bootstrap", created_at: at });
+      this.db.prepare("INSERT INTO bootstrap_sessions (worker_id, session_id, input_id, attempted_at) VALUES (?, ?, ?, ?)")
+        .run(workerId, sessionId, inputId, at);
+      return true;
+    });
   }
 
   /** A control change: bumps the version so any in-flight action on the old one loses. */

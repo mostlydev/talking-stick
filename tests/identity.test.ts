@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   appendGrokSessionRecord,
@@ -232,6 +233,39 @@ describe("deriveHarnessCliIdentity", () => {
       hostId: "test-host", inspector: nested
     });
     expect(identity!.process_metadata.harness_pid).toBe(8000);
+  });
+
+  test("anchors an owned headless Codex to the nearest process, not the operator's Codex", () => {
+    const nested = fakeInspector({
+      9100: { startTime: "inner-tool", command: "bash", ppid: 9050 },
+      9050: { startTime: "inner-server", command: "codex app-server --listen stdio://", ppid: 8000 },
+      8000: { startTime: "outer-server", command: "codex", ppid: 1 }
+    });
+    const identity = deriveHarnessCliIdentity({
+      env: { CODEX_THREAD_ID: "owned-thread", TT_SUPERVISOR_ENDPOINT: "/tmp/owned.sock#w1@1", TT_SUPERVISOR_TOKEN: "generation-token" },
+      username: "alice", parentPid: 9100, hostId: "test-host", inspector: nested
+    });
+    expect(identity!.process_metadata).toMatchObject({ harness_pid: 9050,
+      harness_process_started_at: "inner-server", harness_session_id: "harness:owned-thread" });
+  });
+
+  test("uses supervisor evidence only for the selected PID and matching endpoint and token when ps is denied", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-process-evidence-")); tempDirs.push(dir);
+    const file = path.join(dir, "process.json");
+    const env = { CODEX_THREAD_ID: "owned-thread", TT_SUPERVISOR_ENDPOINT: "/tmp/owned.sock#w1@1",
+      TT_SUPERVISOR_TOKEN: "generation-token", TT_SUPERVISOR_PROCESS_FILE: file };
+    const evidence = { harness: "codex", pid: 9050, process_started_at: "native-start", endpoint: env.TT_SUPERVISOR_ENDPOINT,
+      token_hash: createHash("sha256").update(env.TT_SUPERVISOR_TOKEN).digest("hex") };
+    const derive = () => deriveHarnessCliIdentity({ env, username: "alice", parentPid: 9050,
+      hostId: "test-host", inspector: { inspect: () => undefined } })!.process_metadata;
+    fs.writeFileSync(file, JSON.stringify(evidence));
+    expect(derive()).toMatchObject({ harness_pid: 9050, harness_process_started_at: "native-start" });
+    for (const mismatch of [{ pid: 999 }, { harness: "claude" }, { endpoint: "other" }, { token_hash: "other" }]) {
+      fs.writeFileSync(file, JSON.stringify({ ...evidence, ...mismatch }));
+      expect(derive().harness_process_started_at).toBeNull();
+    }
+    fs.rmSync(file);
+    expect(derive().harness_process_started_at).toBeNull();
   });
 
   test("detects Codex and prefers CODEX_THREAD_ID for stable identity across invocations", () => {

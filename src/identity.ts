@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { readProcessStartEvidence } from "./supervisor-process-evidence.js";
 import { commandExecutable, executableName } from "./executable-name.js";
 import os from "node:os";
 import path from "node:path";
@@ -138,7 +139,8 @@ export function deriveHarnessCliIdentity(
     inspector
   );
   const harnessRoot = findSignalHarnessRoot(signal, processRef,
-    { pid: parentPid, inspection: parentInspection }, inspector);
+    { pid: parentPid, inspection: parentInspection }, inspector,
+    Boolean(env.TT_SUPERVISOR_ENDPOINT && env.TT_SUPERVISOR_TOKEN));
   const username = options.username ?? safeUsername();
   const sessionId = resolveHarnessSessionId(
     signal,
@@ -162,6 +164,10 @@ export function deriveHarnessCliIdentity(
     pid: processRef.pid,
     startTime: processRef.inspection?.startTime ?? null
   };
+  // The native sandbox may deny ps start-time inspection. An owned worker's
+  // supervisor recorded it before the handshake. Use that evidence only for
+  // this already selected native PID, endpoint and delivery credential.
+  if (!harnessProcess.startTime) harnessProcess.startTime = readProcessStartEvidence(env, signal.harness, harnessProcess.pid);
 
   return {
     agent_id: agentId,
@@ -245,7 +251,8 @@ function findSignalHarnessRoot(
     pid: number;
     inspection: ProcessInspection | null | undefined;
   },
-  inspector: ProcessInspector
+  inspector: ProcessInspector,
+  managed = false
 ): { pid: number; startTime: string } | null {
   // An inherited CMUX_CLAUDE_PID names the outer session's process, so a
   // Claude anchor is taken from the caller's own ancestry first.
@@ -255,7 +262,9 @@ function findSignalHarnessRoot(
     signal.harness,
     processRef.pid,
     processRef.inspection,
-    inspector
+    inspector,
+    10,
+    managed
   );
 }
 
@@ -270,9 +279,10 @@ export function findHarnessRootInAncestry(
   startPid: number,
   startInspection: ProcessInspection | null | undefined,
   inspector: ProcessInspector,
-  maxDepth = 10
+  maxDepth = 10,
+  preferNearest = false
 ): { pid: number; startTime: string } | null {
-  const nearest = harness === "claude";
+  const nearest = harness === "claude" || preferNearest;
   let result: { pid: number; startTime: string } | null = null;
   let currentPid: number | null | undefined = startPid;
   let currentInspection = startInspection;

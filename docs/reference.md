@@ -1074,3 +1074,14 @@ folders are included; hidden or Git-ignored folders are omitted unless they cont
 room or have a room declaration. Nested repositories are navigable. Counts refresh while
 the panel stays open. Outside an interactive terminal, `/rooms` lists active host rooms;
 `/rooms <room-id>` opens one explicitly.
+
+## Managed headless workers (preview)
+
+`tt supervisor status`, `approvals` and `logs` inspect managed workers. A human controls
+`add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove`, `interrupt`, `approve` and `deny`;
+`run` starts the daemon, and `install`/`uninstall` manage its macOS user agent.
+
+Codex is available on macOS/Linux. It uses its own native app-server, a private CODEX_HOME and
+explicit sandbox/approval settings; credentials are not imported. Claude/Grok adapters are pending.
+For authentication, launchd executable paths, recovery fences and known limits, see
+[the supervisor guide](supervisor.md).

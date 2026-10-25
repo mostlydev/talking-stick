@@ -95,6 +95,13 @@ a delivery receipt, not proof the model acted on it.
 - **Finish.** Every participant reviews the result and explicitly agrees. With a console open,
   agents stay in standby rather than leaving, so a message brings them back.
 
+## Managed headless workers (preview)
+
+The optional `tt supervisor` keeps its own headless workers without terminal panes. The Codex
+adapter is implemented for macOS/Linux; Claude and Grok adapters are still pending. Workers have
+explicit permissions, private native sessions and visible approval waits. Existing terminal
+sessions are never adopted. See [setup, authentication and controls](docs/supervisor.md).
+
 ## Checking on rooms from anywhere
 
 The `talking-stick-rooms` skill (installed by `tt install`) turns any local agent session into a
