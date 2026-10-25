@@ -169,8 +169,11 @@ export class Supervisor {
       this.store.hold(worker.worker_id, "start_failed", this.at());
       return;
     }
-    const previous = this.store.latestGeneration(worker.worker_id)?.session_id ?? null;
-    const resume = worker.fresh_next ? undefined : spec.resume_session_id ?? previous ?? undefined;
+    // The configured session seeds only the first start. After that the latest
+    // generation decides, including a fresh start that recorded no session.
+    const latest = this.store.latestGeneration(worker.worker_id);
+    const resume = worker.fresh_next ? undefined
+      : latest ? latest.session_id ?? undefined : spec.resume_session_id;
     // Continuing a conversation the adapter cannot resume would quietly start a new one.
     if (resume && !adapter.capabilities().resume) {
       this.store.hold(worker.worker_id, "resume_failed", this.at());

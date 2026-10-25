@@ -115,7 +115,8 @@ reached only through its own `tt` calls.
   (`crash_loop`). A restart resumes the recorded native session. If the adapter can't resume, or
   the resume fails, the worker is held (`resume_failed`) instead of starting a new conversation.
   Each start intent records the session it means to resume, so a retry after a failed attempt
-  still resumes the original conversation.
+  still resumes the original conversation. A configured `resume_session_id` seeds only the first
+  start; after that the latest generation decides.
   An operator's restart stops the running generation and resumes its session. Only a fresh
   restart begins a new conversation.
 - **When a generation ends**, its written inputs become `uncertain`, its pending approvals expire,

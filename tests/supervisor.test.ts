@@ -390,6 +390,22 @@ describe("resuming across failed attempts", () => {
   });
 });
 
+test("a configured seed session never overrides a later fresh conversation", async () => {
+  const { store, adapter, supervisor, spec, advance } = setup();
+  store.addWorker({ ...spec, resume_session_id: "native-seed" }, "human:op", "t");
+  await supervisor.tick();
+  expect(adapter.last.spec.resume_session_id).toBe("native-seed");
+  store.requestRestart("w1", true, "human:op", "t2");
+  await supervisor.tick();
+  await supervisor.tick();
+  expect(adapter.last.spec.resume_session_id).toBeUndefined();
+  adapter.last.emit({ type: "session", session_id: "native-fresh" });
+  adapter.last.emit({ type: "exited", code: 1, signal: null });
+  advance(10_000);
+  await supervisor.tick();
+  expect(adapter.last.spec.resume_session_id).toBe("native-fresh");
+});
+
 describe("restart and status", () => {
   test("a restart stops the running generation and resumes its session; a fresh one starts anew", async () => {
     const { store, adapter, supervisor, spec } = setup();
