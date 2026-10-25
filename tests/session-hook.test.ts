@@ -109,6 +109,21 @@ test("hook requires exact ancestry and rejects malformed and child payloads, fai
   expect(service.db.prepare("SELECT * FROM room_members").all()).toHaveLength(0);
 });
 
+test("a nested Claude's hook ends its own session, not the outer one", async () => {
+  const { service, join, metadata } = setup();
+  join("claude:inner", { ...metadata, harness_session_id: "harness:inner",
+    harness_pid: 200, harness_process_started_at: "inner-start" });
+  const inspector = { inspect: (pid: number) => ({
+    300: { pid, ppid: 200, command: "sh", startTime: "hook-start" },
+    200: { pid, ppid: 150, command: "claude", startTime: "inner-start" },
+    150: { pid, ppid: 123, command: "zsh", startTime: "shell-start" },
+    123: { pid, ppid: 1, command: "claude", startTime: "start" }
+  } as Record<number, { pid: number; ppid: number; command: string; startTime: string }>)[pid] ?? null };
+  await runSessionHookCommand("claude", { service, inspector, parentPid: 300,
+    stdin: JSON.stringify({ hook_event_name: "SessionEnd", session_id: "inner" }) });
+  expect(service.db.prepare("SELECT agent_id FROM room_members").all()).toEqual([{ agent_id: "claude:old" }]);
+});
+
 test("installer preserves foreign hooks even in a shared entry and is idempotent", () => {
   const foreign = { type: "command", command: "my-hook" };
   const original = JSON.stringify({ other: 42, hooks: { SessionEnd: [{ matcher: "clear", hooks: [foreign] }] } });

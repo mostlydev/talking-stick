@@ -475,6 +475,19 @@ const migrations: Migration[] = [
           JOIN native_event_receipts n ON n.room_id = b.room_id AND n.agent_id = b.agent_id AND n.event_seq = j.value
           WHERE b.token = OLD.batch_id AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain') AND n.consumed_at IS NULL)
       BEGIN SELECT RAISE(IGNORE); END;`
+  },
+  {
+    id: 29,
+    name: "member_gone_observations",
+    up: `CREATE TABLE member_gone_observations (
+      room_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      identity TEXT NOT NULL,
+      first_gone_at TEXT NOT NULL,
+      PRIMARY KEY (room_id, agent_id),
+      FOREIGN KEY (room_id, agent_id)
+        REFERENCES room_members(room_id, agent_id) ON DELETE CASCADE
+    );`
   }
 ];
 

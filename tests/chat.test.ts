@@ -1524,6 +1524,11 @@ describe("ended member pruning", () => {
 
     clock = new Date("2026-09-15T11:30:00.000Z");
     service.joinPath({ agent_id: "codex:recent", context_path: root, process_metadata: meta("gone-recent") });
+    // The first gone reading after a long silence only starts the grace.
+    expect(service.getRoomState({ room_id: owner.room_id, include_all: true }).members
+      .map((member) => member.agent_id)).toContain("codex:old");
+    clock = new Date("2026-09-15T12:31:00.000Z");
+    service.joinPath({ agent_id: "codex:recent", context_path: root, process_metadata: meta("gone-recent") });
     const state = service.getRoomState({ room_id: owner.room_id, include_all: true });
     expect(state.members.map((member) => member.agent_id).sort()).toEqual([
       "codex:alive", "codex:owner", "codex:recent", "codex:unknown"
@@ -1532,6 +1537,121 @@ describe("ended member pruning", () => {
     const leave = service.getRoomEvents({ room_id: owner.room_id, include_all: true })
       .find((event) => event.event_type === "leave");
     expect(leave).toMatchObject({ from_agent_id: "codex:old", reason: "process_ended" });
+  });
+});
+
+describe("first gone reading", () => {
+  const setup = () => {
+    let clock = new Date("2026-09-15T10:00:00.000Z");
+    let reading: ProcessLiveness = "alive";
+    let onInspect = () => {};
+    const { root, service } = setupService({
+      now: () => clock,
+      policy: { waitForEventsPollMs: 1, idleRoomTtlMs: 0 },
+      processLivenessChecker: (metadata: ProcessMetadata) => {
+        if (metadata.harness_session_id !== "silent") return "alive";
+        onInspect();
+        // The refreshed process in the identity test cannot be read.
+        return metadata.harness_process_started_at === "later" ? "unknown" : reading;
+      }
+    });
+    const metadata: ProcessMetadata = {
+      host_id: "h", pid: 1, process_started_at: "t", session_kind: "harness_cli",
+      harness_name: "codex", harness_session_id: "silent", harness_host_id: "h",
+      harness_pid: 2, harness_process_started_at: "t"
+    };
+    const room = service.joinPath({ agent_id: "codex:silent", context_path: root, process_metadata: metadata });
+    // Any later RPC runs the cleanup pass.
+    const at = (iso: string, liveness: ProcessLiveness) => {
+      clock = new Date(iso);
+      reading = liveness;
+      service.joinPath({ agent_id: "human:probe", context_path: root });
+      return service.getRoomState({ room_id: room.room_id, include_all: true }).members
+        .some((member) => member.agent_id === "codex:silent");
+    };
+    const observations = () => service.db.prepare("SELECT * FROM member_gone_observations").all();
+    return { service, root, metadata, at, observations, setInspect: (fn: () => void) => { onInspect = fn; } };
+  };
+
+  test("a 24h-silent member survives one gone reading and is removed only after a full grace", () => {
+    const { at, observations } = setup();
+    expect(at("2026-09-16T10:00:00.000Z", "gone")).toBe(true);
+    expect(observations()).toHaveLength(1);
+    expect(at("2026-09-16T10:59:00.000Z", "gone")).toBe(true);
+    expect(at("2026-09-16T11:01:00.000Z", "gone")).toBe(false);
+  });
+
+  test("an alive reading clears the observation and an unknown reading keeps it", () => {
+    const { at, observations } = setup();
+    at("2026-09-16T10:00:00.000Z", "gone");
+    expect(at("2026-09-16T10:30:00.000Z", "unknown")).toBe(true);
+    expect(observations()).toHaveLength(1);
+    expect(at("2026-09-16T11:01:00.000Z", "gone")).toBe(false);
+
+    const second = setup();
+    second.at("2026-09-16T10:00:00.000Z", "gone");
+    second.at("2026-09-16T10:30:00.000Z", "alive");
+    expect(second.observations()).toHaveLength(0);
+    expect(second.at("2026-09-16T11:01:00.000Z", "gone")).toBe(true);
+    expect(second.at("2026-09-16T12:02:00.000Z", "gone")).toBe(false);
+  });
+
+  test("the session's own later tt use voids an earlier gone reading", () => {
+    const { service, root, metadata, at } = setup();
+    at("2026-09-16T10:00:00.000Z", "gone");
+    at("2026-09-16T10:30:00.000Z", "unknown");
+    service.joinPath({ agent_id: "codex:silent", context_path: root, process_metadata: metadata });
+    expect(at("2026-09-16T11:31:00.000Z", "gone")).toBe(true);
+    expect(at("2026-09-16T12:32:00.000Z", "gone")).toBe(false);
+  });
+
+  test("an idle room is kept while a member is inside its gone grace", () => {
+    let clock = new Date("2026-09-15T10:00:00.000Z");
+    let otherReads = 0;
+    let clearDuringRetainCheck = false;
+    const { root, service } = setupService({
+      now: () => clock,
+      policy: { waitForEventsPollMs: 1, idleRoomTtlMs: 7 * 24 * 60 * 60_000 },
+      processLivenessChecker: (metadata: ProcessMetadata) => {
+        if (metadata.harness_session_id !== "other") return "gone";
+        // The second read of "other" in a pass is the idle-room retention check,
+        // after this pass has validated the observation of "silent".
+        if (++otherReads % 2 === 0 && clearDuringRetainCheck) {
+          service.db.prepare("DELETE FROM member_gone_observations WHERE agent_id = 'codex:silent'").run();
+        }
+        return "unknown";
+      }
+    });
+    const metadata = (session: string): ProcessMetadata => ({
+      host_id: "h", pid: 1, process_started_at: "t", session_kind: "harness_cli",
+      harness_name: "codex", harness_session_id: session, harness_host_id: "h",
+      harness_pid: 2, harness_process_started_at: "t"
+    });
+    const room = service.joinPath({ agent_id: "codex:silent", context_path: root, process_metadata: metadata("silent") });
+    service.joinPath({ agent_id: "codex:other", context_path: root, process_metadata: metadata("other") });
+    const pass = (iso: string) => {
+      clock = new Date(iso);
+      try { service.getRoomEventsView({ room_id: room.room_id, include_all: false }); } catch { /* expired */ }
+      return service.db.prepare("SELECT agent_id FROM room_members").all().map((row) => (row as { agent_id: string }).agent_id).sort();
+    };
+    expect(pass("2026-09-23T10:00:00.000Z")).toEqual(["codex:other", "codex:silent"]);
+    // Another pass's alive reading clears the observation mid-pass; this pass must not delete.
+    clearDuringRetainCheck = true;
+    expect(pass("2026-09-23T11:01:00.000Z")).toEqual(["codex:other", "codex:silent"]);
+    clearDuringRetainCheck = false;
+    pass("2026-09-23T12:02:00.000Z");
+    expect(pass("2026-09-23T13:03:00.000Z")).toEqual([]);
+  });
+
+  test("an identity refresh during the inspection does not start the new process's timer", () => {
+    const { service, at, observations, setInspect } = setup();
+    setInspect(() => {
+      setInspect(() => {});
+      service.db.prepare(
+        "UPDATE room_members SET harness_process_started_at = 'later' WHERE agent_id = 'codex:silent'").run();
+    });
+    expect(at("2026-09-16T10:00:00.000Z", "gone")).toBe(true);
+    expect(observations()).toHaveLength(0);
   });
 });
 

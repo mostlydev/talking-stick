@@ -38,6 +38,14 @@ Full notes: [`docs/releases/0.32.0.md`](docs/releases/0.32.0.md).
 
 ### Fixed
 
+- A member silent for a day was removed on the first reading that found its process gone. The
+  hour's grace now runs from that first reading of the same exact process, so a single bad
+  reading after a long silence can't remove a member or expire its room. A running reading or
+  the member's own `tt` use cancels it.
+- A Claude started from another Claude session was anchored to the outer session's process, so
+  the outer session's exit or hooks could end the inner one. Claude sessions now anchor to the
+  nearest Claude process, including with an inherited `CMUX_CLAUDE_PID`. Codex and Grok anchoring
+  is unchanged.
 - While waiting for joins, `tt up` says when a member matches its pane's session and process
   but recorded no process start time, which it needs to prove the join, and names a Windows
   account that cannot inspect processes as one possible cause (#189). The wait, the proof and
