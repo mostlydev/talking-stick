@@ -282,6 +282,11 @@ export function classifyHarnessProcess(harness: string, command: string | null |
 
 export type HarnessProcessKind = "single_session" | "shared_host";
 
+// A receipt n outside every unacknowledged batch a supervisor fenced for writing.
+const UNFENCED_MANAGED_RECEIPT = `NOT EXISTS (SELECT 1 FROM native_delivery_batches mb, json_each(mb.event_seqs_json) mj
+  WHERE mb.room_id = n.room_id AND mb.agent_id = n.agent_id AND mj.value = n.event_seq
+    AND mb.acknowledged_at IS NULL AND mb.delivery_mode IN ('managed_writing', 'managed_written'))`;
+
 /** The process fields a liveness reading of a member depends on. */
 function livenessIdentity(member: RoomMemberRow): string {
   return JSON.stringify([member.host_id, member.pid, member.process_started_at?.trim() ?? null,
@@ -1038,6 +1043,105 @@ export class TalkingStickService {
       return record(result.outcome === "queued" ? "queued" : result.outcome === "ambiguous" ? "ambiguous" : "injected");
     }
     return record("unreachable");
+  }
+
+  /**
+   * The supervisor's fence on one tt batch it is writing into a worker it
+   * owns. Only that generation's supervisor endpoint, proven by its delivery
+   * token, may move it: writing before any byte is written, written after,
+   * or unsent on evidence from before the write, which lets tt offer it again.
+   * A fenced batch is never re-offered, across generations too.
+   */
+  fenceManagedDelivery(input: {
+    room_id: string; agent_id: AgentId; endpoint_address: string; delivery_secret: string;
+    batch_token: string; transition: "writing" | "written" | "unsent";
+  }): { status: "managed_writing" | "managed_written" | "unsent" } {
+    const result = this.writeTransaction((): { status: "managed_writing" | "managed_written" | "unsent" } | { stale: string } => {
+      const endpoint = this.getNativeWakeEndpoint(input.room_id, input.agent_id, "supervisor");
+      if (!endpoint || endpoint.address !== input.endpoint_address || endpoint.secret !== input.delivery_secret) {
+        throw new ProtocolError("invalid_input", "This is not the current supervisor endpoint for that member.");
+      }
+      const batch = this.db.prepare<[string], { room_id: string; agent_id: string; harness_session_id: string;
+        delivery_mode: string | null; acknowledged_at: string | null; event_seqs_json: string }>(
+        "SELECT room_id, agent_id, harness_session_id, delivery_mode, acknowledged_at, event_seqs_json FROM native_delivery_batches WHERE token = ?"
+      ).get(input.batch_token);
+      if (!batch || batch.room_id !== input.room_id || batch.agent_id !== input.agent_id ||
+          batch.harness_session_id !== endpoint.harness_session_id || batch.acknowledged_at) {
+        throw new ProtocolError("invalid_input", "That batch is not an open delivery to this member.");
+      }
+      const from = input.transition === "writing" ? null : "managed_writing";
+      if (batch.delivery_mode !== from) {
+        throw new ProtocolError("invalid_input", `That batch is ${batch.delivery_mode ?? "unfenced"}, not ${from ?? "unfenced"}.`);
+      }
+      // The envelope's text holds every event it was built with. If any is gone,
+      // already read, or held by another managed batch, writing it would repeat
+      // that event: the batch is released unwritten, so tt builds a new
+      // envelope from what remains unread.
+      if (input.transition === "writing") {
+        const stale = (JSON.parse(batch.event_seqs_json) as number[]).some((seq) => !this.db.prepare(`SELECT 1
+          FROM native_event_receipts n JOIN room_events e ON e.room_id = n.room_id AND e.event_seq = n.event_seq
+          WHERE n.room_id = ? AND n.agent_id = ? AND n.event_seq = ? AND n.consumed_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM native_delivery_batches mb, json_each(mb.event_seqs_json) mj
+              WHERE mb.room_id = n.room_id AND mb.agent_id = n.agent_id AND mj.value = n.event_seq AND mb.token != ?
+                AND mb.acknowledged_at IS NULL AND mb.delivery_mode IN ('managed_writing', 'managed_written'))`)
+          .get(input.room_id, input.agent_id, seq, input.batch_token));
+        if (stale) {
+          this.db.prepare("DELETE FROM native_delivery_batches WHERE token = ?").run(input.batch_token);
+          this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, wake_pending = 1, batch_id = NULL
+            WHERE room_id = ? AND agent_id = ? AND batch_id = ?`).run(input.room_id, input.agent_id, input.batch_token);
+          this.wakeRooms.add(input.room_id);
+          return { stale: "That batch repeats an event that was read or is already being delivered; it was released unwritten." };
+        }
+      }
+      if (input.transition === "unsent") {
+        this.db.prepare("DELETE FROM native_delivery_batches WHERE token = ?").run(input.batch_token);
+        this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, wake_pending = 1, batch_id = NULL
+          WHERE room_id = ? AND agent_id = ? AND batch_id = ?`).run(input.room_id, input.agent_id, input.batch_token);
+        this.wakeRooms.add(input.room_id);
+        return { status: "unsent" as const };
+      }
+      const mode = input.transition === "writing" ? "managed_writing" : "managed_written";
+      this.db.prepare("UPDATE native_delivery_batches SET delivery_mode = ? WHERE token = ?").run(mode, input.batch_token);
+      return { status: mode };
+    });
+    if ("stale" in result) throw new ProtocolError("stale_batch", result.stale);
+    return result;
+  }
+
+  /**
+   * An operator's decision on a fenced managed batch whose effect is unknown:
+   * resend lets tt offer it again, drop marks it read without delivering it.
+   * Only a human may decide this.
+   */
+  reconcileManagedDelivery(input: { agent_id: AgentId; batch_token: string; action: "resend" | "drop" }): { status: "resent" | "dropped" } {
+    if (!input.agent_id.startsWith("human:")) {
+      throw new ProtocolError("operator_only", "Only the operator can reconcile a managed delivery.");
+    }
+    return this.writeTransaction(() => {
+      const batch = this.db.prepare<[string], { room_id: string; agent_id: string; event_seqs_json: string;
+        delivery_mode: string | null; acknowledged_at: string | null }>(
+        "SELECT room_id, agent_id, event_seqs_json, delivery_mode, acknowledged_at FROM native_delivery_batches WHERE token = ?"
+      ).get(input.batch_token);
+      if (!batch || batch.acknowledged_at || (batch.delivery_mode !== "managed_writing" && batch.delivery_mode !== "managed_written")) {
+        throw new ProtocolError("invalid_input", "That batch is not a fenced managed delivery.");
+      }
+      if (input.action === "resend") {
+        this.db.prepare("DELETE FROM native_delivery_batches WHERE token = ?").run(input.batch_token);
+        this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, wake_pending = 1, batch_id = NULL
+          WHERE room_id = ? AND agent_id = ? AND batch_id = ?`).run(batch.room_id, batch.agent_id, input.batch_token);
+        this.wakeRooms.add(batch.room_id);
+      } else {
+        const at = this.now().toISOString();
+        for (const seq of JSON.parse(batch.event_seqs_json) as number[]) {
+          this.db.prepare(`UPDATE native_event_receipts SET consumed_at = COALESCE(consumed_at, ?)
+            WHERE room_id = ? AND agent_id = ? AND event_seq = ?`).run(at, batch.room_id, batch.agent_id, seq);
+        }
+        this.db.prepare("UPDATE native_delivery_batches SET acknowledged_at = ? WHERE token = ?").run(at, input.batch_token);
+        this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
+          WHERE room_id = ? AND agent_id = ? AND batch_id = ?`).run(batch.room_id, batch.agent_id, input.batch_token);
+      }
+      return { status: input.action === "resend" ? "resent" as const : "dropped" as const };
+    });
   }
 
   leaveRoom(input: LeaveRoomInput): LeaveRoomResult {
@@ -2701,7 +2805,7 @@ export class TalkingStickService {
     if (!NATIVE_WAKE_TRANSPORTS.includes(input.transport)) {
       throw new ProtocolError(
         "invalid_input",
-        "Native wake transport must be claude_inbox or codex_queue."
+        "Native wake transport must be claude_inbox, codex_queue or supervisor."
       );
     }
     const register = (): RegisterNativeWakeEndpointResult => {
@@ -2737,6 +2841,14 @@ export class TalkingStickService {
           transport: input.transport,
           generation: existing.generation
         };
+      }
+      // A supervised worker is reached only through its supervisor: no other
+      // native endpoint may bypass the supervisor's write fence.
+      if (input.transport === "supervisor") {
+        this.db.prepare("DELETE FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ? AND transport != 'supervisor'")
+          .run(input.room_id, input.agent_id);
+      } else if (this.getNativeWakeEndpoint(input.room_id, input.agent_id, "supervisor")) {
+        throw new ProtocolError("invalid_input", "This member is supervised; only its supervisor endpoint can wake it.");
       }
       // A different session, host, or address replaces the row wholesale, so a
       // stale secret never survives into the new generation.
@@ -2892,7 +3004,7 @@ export class TalkingStickService {
     this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
       WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1
         AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b
-          WHERE b.token = member_wake_endpoints.batch_id AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain')) AND (
+          WHERE b.token = member_wake_endpoints.batch_id AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain', 'managed_writing', 'managed_written')) AND (
         SELECT MAX(COALESCE(batch_started_at, last_attempt_at, recorded_at))
         FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ? AND awaiting_wait = 1
       ) <= ?`).run(roomId, agentId, roomId, agentId, retryBefore);
@@ -3217,6 +3329,12 @@ export class TalkingStickService {
       const text = formatNativeWakeText({ reason: "interrupt",
         sender: event?.from_agent_id ? this.describeWakeSender(row.room_id, event.from_agent_id) : null,
         path: this.requireRoom(row.room_id).canonical_path });
+      // An interrupt never re-sends an event a supervisor fenced for writing.
+      if (this.db.prepare(`SELECT 1 FROM native_event_receipts n WHERE n.room_id = ? AND n.agent_id = ?
+        AND n.event_seq = ? AND NOT ${UNFENCED_MANAGED_RECEIPT}`).get(...key)) {
+        finish({ outcome: "failed", error: "interrupt_managed_fenced" });
+        return null;
+      }
       const token = this.newDeliveryToken();
       const nativeText = this.prepareNativeEnvelope(row.room_id, row.agent_id, [row.event_seq], token);
       this.db.prepare("UPDATE interrupt_deliveries SET delivery_token = ? WHERE room_id = ? AND agent_id = ? AND event_seq = ?")
@@ -3282,6 +3400,15 @@ export class TalkingStickService {
         return null;
       }
       if (!endpoints.some((row) => row.wake_pending && !row.awaiting_wait)) return null;
+      // A message a supervisor may already have written into a worker stays
+      // fenced, in this generation or the next: no wake re-offers it.
+      const pending = (fenced: boolean) => Boolean(this.db.prepare(`SELECT 1 FROM native_event_receipts n
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL
+        AND ${fenced ? "NOT " : ""}${UNFENCED_MANAGED_RECEIPT} LIMIT 1`).get(roomId, agentId));
+      if (pending(true) && !pending(false)) {
+        this.db.prepare("UPDATE member_wake_endpoints SET wake_pending = 0 WHERE room_id = ? AND agent_id = ?").run(roomId, agentId);
+        return null;
+      }
       const failureKey = this.localWakeFailureKey(roomId, agentId, endpoints);
       if (this.localWakeFailures.has(failureKey)) return null;
       const batchId = this.newDeliveryToken();
@@ -3392,7 +3519,7 @@ export class TalkingStickService {
     this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL, wake_pending = 1
       WHERE awaiting_wait = 1 AND COALESCE(batch_started_at, last_attempt_at, recorded_at) <= ?
         AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b WHERE b.token = member_wake_endpoints.batch_id
-          AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain'))
+          AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain', 'managed_writing', 'managed_written'))
         AND NOT EXISTS (SELECT 1 FROM member_wake_endpoints o WHERE o.room_id = member_wake_endpoints.room_id
           AND o.agent_id = member_wake_endpoints.agent_id AND o.awaiting_wait = 1
           AND (o.last_status IN ('queued', 'woken', 'steered') OR COALESCE(o.batch_started_at, o.last_attempt_at, o.recorded_at) > ?))
@@ -3509,6 +3636,7 @@ export class TalkingStickService {
         result = this.nativeWakeTransport ? await this.nativeWakeTransport.deliver({
           transport: endpoint.transport, address: endpoint.address, secret: endpoint.secret, text, interrupt,
           steer,
+          ...(endpoint.transport === "supervisor" && deliveryToken ? { delivery_token: deliveryToken } : {}),
           ...(deliveryToken && endpoint.transport === "codex_queue" && (steer || interrupt) ? {
             can_queue: () => {
               const currentMember = this.getMember(roomId, agentId);
@@ -3621,6 +3749,9 @@ export class TalkingStickService {
       for (const member of members) {
         // Ambiguous local identities never receive one another's hook feedback.
         if (members.filter(candidate => candidate.room_id === member.room_id).length !== 1) continue;
+        // A supervised worker receives room work only through its supervisor's
+        // journalled intake, never as hook feedback that bypasses it.
+        if (this.getNativeWakeEndpoint(member.room_id, member.agent_id, "supervisor")) continue;
         if (!recovered.length) {
           const batch = this.db.prepare(`SELECT * FROM native_delivery_batches WHERE room_id = ? AND agent_id = ?
             AND harness_session_id = ? AND host_id = ? AND source = 'native' AND delivery_mode = 'uncertain'
@@ -3649,7 +3780,7 @@ export class TalkingStickService {
                   OR EXISTS (SELECT 1 FROM interrupt_deliveries i WHERE i.room_id = n.room_id
                     AND i.agent_id = n.agent_id AND i.event_seq = n.event_seq
                     AND i.status IN ('dispatching', 'queued', 'woken', 'steered', 'ambiguous')))))
-            ) ORDER BY e.event_seq LIMIT 32`)
+            ) AND ${UNFENCED_MANAGED_RECEIPT} ORDER BY e.event_seq LIMIT 32`)
           .all(member.room_id, member.agent_id, activity.last_hook_event_seq,
             new Date(this.now().getTime() - 5 * 60_000).toISOString()) as RoomEventRow[];
         pending.push(...events.map(event => ({ member, event })));
@@ -3698,16 +3829,23 @@ export class TalkingStickService {
   private prepareNativeEnvelope(roomId: string, agentId: string, exactSeqs?: number[], token = this.newDeliveryToken()): string | null {
     const member = this.getMember(roomId, agentId);
     if (!member) return null;
+    // Every path, hooks and interrupts included, leaves out events a
+    // supervisor fenced for writing.
+    const fenced = this.db.prepare(`SELECT 1 FROM native_event_receipts n WHERE n.room_id = ? AND n.agent_id = ?
+      AND n.event_seq = ? AND NOT ${UNFENCED_MANAGED_RECEIPT}`);
     const rows = exactSeqs
       ? exactSeqs.map(seq => this.db.prepare<[number, string], RoomEventRow>(
-          "SELECT * FROM room_events WHERE event_seq = ? AND room_id = ?").get(seq, roomId)).filter((row): row is RoomEventRow => !!row)
+          "SELECT * FROM room_events WHERE event_seq = ? AND room_id = ?").get(seq, roomId))
+          .filter((row): row is RoomEventRow => !!row && !fenced.get(roomId, agentId, row.event_seq))
       : this.db.prepare<[string, string, string], RoomEventRow>(`SELECT e.* FROM room_events e
           JOIN native_event_receipts n ON n.event_seq = e.event_seq AND n.room_id = e.room_id
           WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b, json_each(b.event_seqs_json) j
               WHERE b.room_id = n.room_id AND b.agent_id = n.agent_id AND j.value = n.event_seq
                 AND b.source = 'codex_hook' AND b.acknowledged_at IS NULL AND b.created_at > ?)
+            AND ${UNFENCED_MANAGED_RECEIPT}
           ORDER BY e.event_seq LIMIT 33`).all(roomId, agentId, new Date(this.now().getTime() - 5 * 60_000).toISOString());
+    if (exactSeqs && !rows.length) return null;
     const text = formatNativeEventText({ token, room_id: roomId, path: this.requireRoom(roomId).canonical_path,
       recipient: agentId, events: rows.map(row => this.mapEvent(row)) });
     for (const row of rows) this.db.prepare(`INSERT OR IGNORE INTO native_event_receipts
@@ -3743,6 +3881,8 @@ export class TalkingStickService {
         return null;
       }
       const member = members[0];
+      // A supervised worker receives room work only through its supervisor.
+      if (this.getNativeWakeEndpoint(room.room_id, member.agent_id, "supervisor")) return null;
       // A failed hook write must not strand events forever. Retrying can
       // create another token for the same IDs; model event-ID dedup and exact
       // acknowledgements intentionally make either token safe to accept.
@@ -3757,7 +3897,8 @@ export class TalkingStickService {
       if (outstanding) return null;
       const pending = this.db.prepare<[string, string], RoomEventRow>(`SELECT e.* FROM room_events e
         JOIN native_event_receipts n ON n.room_id = e.room_id AND n.event_seq = e.event_seq
-        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL ORDER BY e.event_seq LIMIT 32`)
+        WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL AND ${UNFENCED_MANAGED_RECEIPT}
+        ORDER BY e.event_seq LIMIT 32`)
         .all(room.room_id, member.agent_id);
       if (pending.length === 0) return null;
       const token = this.newDeliveryToken();

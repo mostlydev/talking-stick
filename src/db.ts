@@ -547,6 +547,24 @@ const migrations: Migration[] = [
       received_at TEXT NOT NULL
     );
     CREATE INDEX harness_lifecycle_log_session ON harness_lifecycle_log(harness_name, session_id, received_at);`
+  },
+  {
+    id: 31,
+    name: "managed_delivery_fence",
+    // A batch a supervisor fenced for writing is held like a possibly accepted steer.
+    up: `DROP TRIGGER IF EXISTS protect_native_steering_expiry;
+    CREATE TRIGGER protect_native_steering_expiry
+      BEFORE UPDATE OF awaiting_wait, batch_id ON member_wake_endpoints
+      WHEN OLD.awaiting_wait = 1 AND NEW.awaiting_wait = 0
+        AND OLD.batch_id IS NOT NULL AND NEW.batch_id IS NULL
+        AND NEW.generation = OLD.generation
+        AND NEW.wake_pending = OLD.wake_pending
+        AND NEW.wake_event_seq IS OLD.wake_event_seq
+        AND NEW.wake_reason IS OLD.wake_reason
+        AND EXISTS (SELECT 1 FROM native_delivery_batches b, json_each(b.event_seqs_json) j
+          JOIN native_event_receipts n ON n.room_id = b.room_id AND n.agent_id = b.agent_id AND n.event_seq = j.value
+          WHERE b.token = OLD.batch_id AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain', 'managed_writing', 'managed_written') AND n.consumed_at IS NULL)
+      BEGIN SELECT RAISE(IGNORE); END;`
   }
 ];
 
