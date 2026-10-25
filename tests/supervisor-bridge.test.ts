@@ -203,3 +203,164 @@ describe("recovery of an owned worker", () => {
     expect(service.getRoomState({ room_id: roomId }).members.map((member) => member.agent_id)).not.toContain("claude:wk");
   });
 });
+
+describe("the intake socket", () => {
+  const request = async (socketPath: string, chunks: Buffer[]) => {
+    const net = await import("node:net");
+    return new Promise<string>((resolve, reject) => {
+      const socket = net.createConnection(socketPath);
+      let reply = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (data: string) => { reply += data; });
+      socket.on("end", () => resolve(reply.trim()));
+      socket.on("error", reject);
+      socket.on("connect", async () => {
+        for (const chunk of chunks) {
+          socket.write(chunk);
+          await new Promise((done) => setTimeout(done, 5));
+        }
+      });
+    });
+  };
+  const serve = async (accept: Parameters<typeof startIntakeServer>[1]) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-intake-"));
+    const socketPath = path.join(dir, "c.sock");
+    const server = await startIntakeServer(socketPath, accept);
+    cleanup.push(async () => { await server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+    return socketPath;
+  };
+  const valid = (text: string) => ({ type: "deliver", worker_id: "w1", generation: 1, token: "t", batch_token: "b", text });
+
+  test("refuses null and malformed lines, and answers failed when accept throws synchronously", async () => {
+    const socketPath = await serve(() => { throw new Error("boom"); });
+    expect(JSON.parse(await request(socketPath, [Buffer.from("null\n")]))).toEqual({ outcome: "failed", error: "bad_request" });
+    expect(JSON.parse(await request(socketPath, [Buffer.from("{nope\n")]))).toEqual({ outcome: "failed", error: "bad_request" });
+    expect(JSON.parse(await request(socketPath, [Buffer.from(`${JSON.stringify(valid("x"))}\n`)])))
+      .toEqual({ outcome: "failed", error: "internal" });
+  });
+
+  test("accepts one request per connection and keeps UTF-8 split across chunks", async () => {
+    const seen: string[] = [];
+    const socketPath = await serve((message) => { seen.push(message.text); return { outcome: "queued" }; });
+    const line = Buffer.from(`${JSON.stringify(valid("界👩🏽‍💻 end"))}\n${JSON.stringify(valid("second"))}\n`);
+    const split = line.indexOf(Buffer.from("界")) + 1;
+    expect(JSON.parse(await request(socketPath, [line.subarray(0, split), line.subarray(split)]))).toEqual({ outcome: "queued" });
+    expect(seen).toEqual(["界👩🏽‍💻 end"]);
+  });
+});
+
+// Codex's review of #206 (#32469).
+describe("drain state and resumed generations", () => {
+  test("a turn that completes before submit resolves does not strand the next intake", async () => {
+    const { service, workerJoins, startWorker, direct } = await setup();
+    const handle = await startWorker();
+    workerJoins(handle);
+    handle.submit = async (input) => {
+      handle.submitted.push(input);
+      handle.emit({ type: "turn_started", input_id: input.input_id, native_turn_id: input.input_id });
+      handle.emit({ type: "turn_completed", native_turn_id: input.input_id, outcome: "success" });
+      return "accepted";
+    };
+    await direct("fast first");
+    await until(() => handle.submitted.length === 1);
+    const token = /tt ack (\S+)/.exec(handle.submitted[0].text)![1];
+    service.acknowledgeNativeDelivery({ agent_id: "claude:wk", token, harness_session_id: "harness:native-1", host_id: HOST });
+    await direct("fast second");
+    await until(() => handle.submitted.length === 2, 1_000);
+  });
+
+  test.each(["approval", "disconnected", "auth_required", "unknown"] as const)("a worker in a %s state gets no new turn", async (wait) => {
+    const { supervisor, workerJoins, startWorker, direct } = await setup();
+    const handle = await startWorker();
+    workerJoins(handle);
+    if (wait === "approval") {
+      handle.emit({ type: "turn_started", native_turn_id: "blocked" });
+      handle.emit({ type: "approval_requested", native_request_id: "0", tool: "shell", summary: "wait for human" });
+    } else if (wait === "unknown") {
+      handle.liveness = "unknown";
+      await supervisor.tick();
+    } else {
+      handle.emit({ type: "state", state: wait });
+    }
+    await direct("normal notification");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(handle.submitted).toHaveLength(0);
+  });
+
+  test("a resumed generation re-binds its membership and endpoint itself, with the session's credential", async () => {
+    const { service, store, supervisor, adapter, roomId, dataDir, project, workerJoins, startWorker, advance } = await setup();
+    const first = await startWorker();
+    const joined = workerJoins(first);
+    writeCliSessions(resolveCliSessionPath({ dataDir }), [{ agent_id: "claude:wk", room_id: roomId, canonical_path: project,
+      workspace_root: project, recovery_credential: joined.recovery_credential, updated_at: "t" }]);
+    first.emit({ type: "exited", code: 1, signal: null });
+    advance(10_000);
+    await supervisor.tick();
+    await supervisor.tick();
+    const second = adapter.last;
+    expect(second.generation).toBe(2);
+    const endpoint = service.db.prepare("SELECT address FROM member_wake_endpoints WHERE agent_id = 'claude:wk'").get() as { address: string };
+    expect(endpoint.address).toMatch(/@2$/);
+    expect(service.getRoomState({ room_id: roomId }).members.find((member) => member.agent_id === "claude:wk")?.harness_pid).toBe(second.pid);
+    expect(service.getRoomState({ room_id: roomId }).room.owner).toBeNull();
+    expect(store.auditRows("w1").map((row) => row.action)).toContain("recovered_membership");
+  });
+
+  test("a resumed generation recovers a membership lost before the crash, and not one the operator kicked", async () => {
+    const { service, supervisor, adapter, roomId, dataDir, project, workerJoins, startWorker, advance } = await setup();
+    const first = await startWorker();
+    const joined = workerJoins(first);
+    writeCliSessions(resolveCliSessionPath({ dataDir }), [{ agent_id: "claude:wk", room_id: roomId, canonical_path: project,
+      workspace_root: project, recovery_credential: joined.recovery_credential, updated_at: "t" }]);
+    service.recordSessionLifecycle({ harness: "claude", sessionId: "native-1", pid: first.pid,
+      processStartedAt: first.processStartedAt, event: "SessionEnd" });
+    first.emit({ type: "exited", code: 1, signal: null });
+    advance(10_000);
+    await supervisor.tick();
+    await supervisor.tick();
+    expect(service.getRoomState({ room_id: roomId }).members.map((member) => member.agent_id)).toContain("claude:wk");
+    expect((service.db.prepare("SELECT address FROM member_wake_endpoints WHERE agent_id = 'claude:wk'").get() as { address: string }).address)
+      .toMatch(/@2$/);
+
+    service.recordSessionLifecycle({ harness: "claude", sessionId: "native-1", pid: adapter.last.pid,
+      processStartedAt: adapter.last.processStartedAt, event: "SessionEnd" });
+    service.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
+    adapter.last.emit({ type: "exited", code: 1, signal: null });
+    advance(10_000);
+    await supervisor.tick();
+    await supervisor.tick();
+    expect(service.getRoomState({ room_id: roomId }).members.map((member) => member.agent_id)).not.toContain("claude:wk");
+  });
+
+  test("a present membership is not moved without the session's credential", async () => {
+    const { service, supervisor, adapter, roomId, workerJoins, startWorker, advance } = await setup();
+    const first = await startWorker();
+    workerJoins(first);
+    first.emit({ type: "exited", code: 1, signal: null });
+    advance(10_000);
+    await supervisor.tick();
+    await supervisor.tick();
+    expect(adapter.last.generation).toBe(2);
+    expect(service.getRoomState({ room_id: roomId }).members.find((member) => member.agent_id === "claude:wk")?.harness_pid).toBe(first.pid);
+  });
+});
+
+test("a resumed generation does not inherit the old process's stick or reservation", async () => {
+  const { service, supervisor, adapter, roomId, dataDir, project, workerJoins, startWorker, advance } = await setup();
+  const first = await startWorker();
+  const joined = workerJoins(first);
+  writeCliSessions(resolveCliSessionPath({ dataDir }), [{ agent_id: "claude:wk", room_id: roomId, canonical_path: project,
+    workspace_root: project, recovery_credential: joined.recovery_credential, updated_at: "t" }]);
+  service.joinPath({ agent_id: "codex:peer", context_path: project });
+  expect((await service.waitForTurn({ room_id: roomId, agent_id: "claude:wk", max_wait_ms: 0 })).status).toBe("your_turn");
+  first.emit({ type: "exited", code: null, signal: "SIGKILL" });
+  advance(10_000);
+  await supervisor.tick();
+  await supervisor.tick();
+  expect(adapter.last.generation).toBe(2);
+  const state = service.getRoomState({ room_id: roomId });
+  expect(state.members.find((member) => member.agent_id === "claude:wk")?.harness_pid).toBe(adapter.last.pid);
+  expect(state.room).toMatchObject({ owner: null, lease_id: null });
+  expect(service.getRoomEvents({ room_id: roomId, include_all: true }).some((event) =>
+    event.event_type === "release" && event.reason === "process_replaced")).toBe(true);
+});

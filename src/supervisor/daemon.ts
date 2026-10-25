@@ -78,6 +78,12 @@ export class Supervisor {
   private readonly intakeText = new Map<string, string>();
   private readonly draining = new Map<string, Promise<void>>();
   private readonly recoveryRefused = new Set<string>();
+  private readonly sessionsStarted = new Set<string>();
+  /** Bumped by every state a generation's own events report, so a late submit result never overrides it. */
+  private readonly stateVersion = new Map<string, number>();
+  private readonly activeTurn = new Map<string, string>();
+  /** Workers whose last probe could not be read get no input until it reads alive. */
+  private readonly probeUnknown = new Set<string>();
 
   constructor(options: SupervisorOptions) {
     this.store = options.store;
@@ -143,6 +149,8 @@ export class Supervisor {
       }
       const reported = this.reportedState.get(worker.worker_id) ?? "idle";
       this.store.updateGeneration(worker.worker_id, handle.generation, { state: liveness === "unknown" ? "unknown" : reported });
+      if (liveness === "unknown") this.probeUnknown.add(worker.worker_id);
+      else this.probeUnknown.delete(worker.worker_id);
       this.expireApprovals(worker.worker_id, handle);
       if (liveness === "alive") this.recoverMembership(worker, handle);
       this.drain(worker.worker_id);
@@ -203,6 +211,8 @@ export class Supervisor {
     });
     this.handles.set(worker.worker_id, handle);
     this.reportedState.set(worker.worker_id, "idle");
+    this.activeTurn.delete(worker.worker_id);
+    this.probeUnknown.delete(worker.worker_id);
     if (supervised) this.deliveryTokens.set(worker.worker_id, { generation, ...supervised });
     handle.onEvent((event) => this.onEvent(worker.worker_id, generation, event));
     // A control change while it started wins: the start was for an older version.
@@ -233,6 +243,7 @@ export class Supervisor {
     const at = this.at();
     const report = (state: GenerationState, fields: { last_model_activity_at?: string } = {}) => {
       this.reportedState.set(workerId, state);
+      this.stateVersion.set(workerId, (this.stateVersion.get(workerId) ?? 0) + 1);
       this.store.updateGeneration(workerId, generation, { state, ...fields });
     };
     switch (event.type) {
@@ -244,10 +255,12 @@ export class Supervisor {
         break;
       case "turn_started":
         if (event.input_id) this.store.updateInput(event.input_id, workerId, generation, "accepted", at, event.native_turn_id);
+        this.activeTurn.set(workerId, event.native_turn_id);
         report("busy", { last_model_activity_at: at });
         break;
       case "turn_completed":
         this.store.completeTurn(workerId, generation, event.native_turn_id, event.outcome, at);
+        if (this.activeTurn.get(workerId) === event.native_turn_id) this.activeTurn.delete(workerId);
         report("idle", { last_model_activity_at: at });
         this.drain(workerId);
         break;
@@ -350,14 +363,17 @@ export class Supervisor {
       const worker = this.store.worker(workerId);
       const token = this.deliveryTokens.get(workerId);
       if (!handle || !worker || !token || token.generation !== handle.generation || !this.bridge) return;
-      if (worker.desired !== "running" || worker.hold_reason || this.stopping.has(workerId)) return;
+      if (worker.desired !== "running" || worker.hold_reason || this.stopping.has(workerId) || this.probeUnknown.has(workerId)) return;
       const input = this.store.nextIntake(workerId, handle.generation);
       if (!input) return;
       const text = this.intakeText.get(input.input_id);
       const spec = JSON.parse(worker.spec_json) as WorkerSpec;
-      const busy = this.reportedState.get(workerId) === "busy";
-      // Only Codex can steer a running turn; anything else waits for it to end.
-      if (busy && spec.harness !== "codex") return;
+      const state = this.reportedState.get(workerId) ?? "idle";
+      // An idle worker starts a turn, and only a Codex turn known to be running
+      // is steered. An approval or input wait, or an unknown, disconnected or
+      // unauthenticated worker, gets nothing until its state changes.
+      const busy = state === "busy";
+      if (!(state === "idle" || (busy && spec.harness === "codex" && this.activeTurn.has(workerId)))) return;
       const fence = (transition: "writing" | "written" | "unsent") => this.bridge!.fence({ endpoint_address: token.address,
         delivery_secret: token.token, batch_token: input.batch_token!, transition });
       // Fenced before any byte is written; a refused fence means nothing was.
@@ -372,6 +388,7 @@ export class Supervisor {
       }
       this.store.setInputMode(input.input_id, busy ? "steer" : "start_turn");
       this.store.updateInput(input.input_id, workerId, handle.generation, "dispatching", this.at());
+      const version = this.stateVersion.get(workerId) ?? 0;
       let outcome: InputOutcome;
       try {
         outcome = await handle.submit({ input_id: input.input_id, text, mode: busy ? "steer" : "start_turn" });
@@ -387,7 +404,11 @@ export class Supervisor {
           this.store.audit(this.at(), "supervisor", "fence_written_failed", workerId, { batch_token: input.batch_token, error: String(error) });
         }
       }
-      if (outcome === "accepted" || outcome === "written") this.reportedState.set(workerId, "busy");
+      // Until the worker reports its turn, assume one started; a state it
+      // already reported while the write was in flight is newer and stands.
+      if ((outcome === "accepted" || outcome === "written") && !busy && (this.stateVersion.get(workerId) ?? 0) === version) {
+        this.reportedState.set(workerId, "busy");
+      }
     }
   }
 
@@ -402,6 +423,13 @@ export class Supervisor {
     const session = handle.sessionId();
     if (!this.bridge || !token || token.generation !== handle.generation || !session) return;
     const spec = JSON.parse(worker.spec_json) as WorkerSpec;
+    // A resumed generation of a session that has memberships to recover has
+    // started it, as observed through the protocol: record that once.
+    const startKey = `${worker.worker_id}\u0000${handle.generation}`;
+    if (!this.sessionsStarted.has(startKey) && this.bridge.lostSessions({ harness: spec.harness, session_id: session }).length) {
+      this.sessionsStarted.add(startKey);
+      this.bridge.sessionStarted({ harness: spec.harness, session_id: session, pid: handle.pid, process_started_at: handle.processStartedAt });
+    }
     const result = this.bridge.recover({ harness: spec.harness, session_id: session, pid: handle.pid,
       process_started_at: handle.processStartedAt, endpoint_address: token.address, delivery_secret: token.token });
     for (const agentId of result.recovered) this.store.audit(this.at(), "supervisor", "recovered_membership", worker.worker_id, { agent_id: agentId });

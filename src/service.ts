@@ -1117,6 +1117,61 @@ export class TalkingStickService {
     return this.fenceManagedDelivery({ ...input, room_id: batch.room_id, agent_id: batch.agent_id });
   }
 
+  /** The present memberships of one harness session, whatever process last joined. */
+  findMembersForSession(input: { harness_name: string; harness_session_id: string }):
+    Array<{ room_id: string; agent_id: AgentId; canonical_path: string; harness_pid: number | null; harness_process_started_at: string | null }> {
+    return this.db.prepare<[string, string, string], RoomMemberRow>(`SELECT * FROM room_members WHERE harness_name = ?
+      AND harness_session_id = ? AND harness_host_id = ?`).all(input.harness_name, input.harness_session_id, this.hostId)
+      .map((member) => ({ room_id: member.room_id, agent_id: member.agent_id, canonical_path: this.requireRoom(member.room_id).canonical_path,
+        harness_pid: member.harness_pid, harness_process_started_at: member.harness_process_started_at?.trim() ?? null }));
+  }
+
+  /**
+   * A supervised worker's new process never inherits its old process's turn:
+   * the stick or reservation that exact prior process held is released, not
+   * moved. Nothing is acquired on the new process's behalf.
+   */
+  releasePriorProcessGrant(input: { room_id: string; agent_id: AgentId; harness_pid: number; harness_process_started_at: string }):
+    { released: boolean } {
+    return this.writeTransaction(() => {
+      const member = this.getMember(input.room_id, input.agent_id);
+      const room = this.requireRoom(input.room_id);
+      if (!member || member.harness_pid !== input.harness_pid ||
+          member.harness_process_started_at?.trim() !== input.harness_process_started_at.trim()) return { released: false };
+      const owned = room.owner === input.agent_id;
+      const reserved = room.reserved_for === input.agent_id;
+      if (!owned && !reserved) return { released: false };
+      const owner = owned ? null : room.owner;
+      const reservedFor = reserved ? null : room.reserved_for;
+      const timestamp = this.now().toISOString();
+      this.db.prepare(`UPDATE path_rooms SET owner = ?, reserved_for = ?, lease_id = ?, lease_expires_at = ?,
+        claim_expires_at = ?, pending_handoff_event_seq = ?, state = ?, updated_at = ? WHERE room_id = ?`).run(owner, reservedFor,
+          owner ? room.lease_id : null, owner ? room.lease_expires_at : null, reservedFor ? room.claim_expires_at : null,
+          owner ? room.pending_handoff_event_seq : null,
+          room.state === "closed" ? "closed" : owner ? "owned" : reservedFor ? "reserved" : "idle", timestamp, room.room_id);
+      this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "release", from_agent_id: input.agent_id,
+        to_agent_id: null, handoff: null, reason: "process_replaced", created_at: timestamp });
+      return { released: true };
+    });
+  }
+
+  /** Whether a credential is the one issued to this member's session. */
+  verifyRecoveryCredential(input: { room_id: string; agent_id: AgentId; harness_session_id: string; credential: string }): boolean {
+    const stored = this.db.prepare<[string, string], { harness_session_id: string; secret_hash: string }>(
+      "SELECT harness_session_id, secret_hash FROM member_credentials WHERE room_id = ? AND agent_id = ?").get(input.room_id, input.agent_id);
+    return Boolean(stored && stored.harness_session_id === input.harness_session_id && stored.secret_hash === hashCredential(input.credential));
+  }
+
+  /** The lost memberships of one harness session, from any of its processes. */
+  findLostMembersForSession(input: { harness_name: string; harness_session_id: string }):
+    Array<{ room_id: string; agent_id: AgentId; canonical_path: string }> {
+    return this.db.prepare<[string, string, string], { room_id: string; agent_id: string }>(
+      "SELECT room_id, agent_id FROM lost_room_members WHERE harness_name = ? AND session_id = ? AND host_id = ?")
+      .all(input.harness_name, input.harness_session_id, this.hostId)
+      .filter((row) => this.getLostMember(row.room_id, row.agent_id))
+      .map((row) => ({ ...row, canonical_path: this.requireRoom(row.room_id).canonical_path }));
+  }
+
   /** The lost memberships of one exact harness process, for its supervisor's recovery join. */
   findLostMembersForProcess(input: { harness_name: string; harness_session_id: string; pid: number; process_started_at: string }):
     Array<{ room_id: string; agent_id: AgentId; canonical_path: string }> {

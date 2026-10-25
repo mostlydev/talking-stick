@@ -210,9 +210,28 @@ performs the explicit recovery join:
 - it proves the worker's exact process identity;
 - it then re-registers the endpoint.
 
+A resumed generation of a session also re-binds memberships still bound to an earlier generation:
+- A present membership moves to the new process only with the session's own credential. The old
+  process's stick or reservation is released (`release`, reason `process_replaced`), never moved
+  to the new one.
+- A membership lost before the crash is recovered through the room's rules. The supervisor first
+  records the session start it observed through the protocol on that exact process, since a
+  headless worker loads no user hooks.
+
 Recovery necessarily records presence through that join, but it renews no lease, sends no prompt
 and fabricates no model activity. It stops at `member_revoked`, and never acts for a session it
 didn't start.
+
+The daemon writes nothing while a worker waits for an approval or input, reads unknown,
+disconnected or unauthenticated, or has a turn it didn't see start. A Codex turn is steered only
+while the supervisor knows it's running.
+
+## What the supervisor does not prove
+
+A managed worker's wake and recovery are proven for processes the supervisor owns. They don't
+show that an existing terminal session whose native conversation was unloaded gets woken
+hands-free. That gap, from the membership recovery work, stays open, and neither the overnight
+incident nor existing sessions are claimed solved by headless-worker tests.
 
 ## Slices
 

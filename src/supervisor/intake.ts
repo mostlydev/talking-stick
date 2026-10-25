@@ -25,7 +25,10 @@ export function startIntakeServer(
   fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   try { fs.unlinkSync(socketPath); } catch { /* none */ }
   const server = net.createServer((connection) => {
+    // Decoding on the stream keeps a multibyte character split across chunks intact.
+    connection.setEncoding("utf8");
     let buffer = "";
+    let accepted = false;
     let answered = false;
     const answer = (reply: IntakeAnswer) => {
       if (answered) return;
@@ -33,22 +36,29 @@ export function startIntakeServer(
       connection.end(`${JSON.stringify(reply)}\n`);
     };
     connection.on("error", () => {});
-    connection.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
+    connection.on("data", (chunk: string) => {
+      // One request per connection; anything after it is ignored.
+      if (accepted || answered) return;
+      buffer += chunk;
       if (Buffer.byteLength(buffer) > MAX_LINE_BYTES) return answer({ outcome: "failed", error: "too_large" });
       const end = buffer.indexOf("\n");
       if (end === -1) return;
-      let message: IntakeMessage;
+      accepted = true;
+      let parsed: unknown;
       try {
-        message = JSON.parse(buffer.slice(0, end)) as IntakeMessage;
+        parsed = JSON.parse(buffer.slice(0, end));
       } catch {
         return answer({ outcome: "failed", error: "bad_request" });
       }
-      if (message.type !== "deliver" || typeof message.worker_id !== "string" || !Number.isInteger(message.generation) ||
-          typeof message.token !== "string" || typeof message.batch_token !== "string" || typeof message.text !== "string") {
+      const message = parsed as Partial<IntakeMessage> | null;
+      if (!message || typeof message !== "object" || message.type !== "deliver" || typeof message.worker_id !== "string" ||
+          !Number.isInteger(message.generation) || typeof message.token !== "string" ||
+          typeof message.batch_token !== "string" || typeof message.text !== "string") {
         return answer({ outcome: "failed", error: "bad_request" });
       }
-      Promise.resolve(accept(message)).then(answer, () => answer({ outcome: "failed", error: "internal" }));
+      // A throw from accept, synchronous or not, answers failed instead of hanging.
+      Promise.resolve().then(() => accept(message as IntakeMessage))
+        .then(answer, () => answer({ outcome: "failed", error: "internal" }));
     });
   });
   return new Promise((resolve, reject) => {
