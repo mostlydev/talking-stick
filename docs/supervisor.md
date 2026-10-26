@@ -456,11 +456,25 @@ These limits come from Apple's documentation and this codebase. No dialog was op
 - **Unproven until attended.** It hasn't been shown that a launchd user agent can present the
   LocalAuthentication dialog, or how it fails without a console session (`notInteractive` is
   mapped to unavailable).
-  - The attended acceptance builds the helper (`swiftc -O native/human-gate/main.swift`).
-  - It runs a daemon in a disposable data directory with the gate.
-  - Wojtek confirms one approval. One worker request is refused, and a confirmation for one request
-    is shown not to settle another.
-  - Until it passes, the gate stays locked and the CLI refuses control before connecting.
+  - **The kit:** `node scripts/attended-gate-acceptance.mjs`, run by the operator from a checkout
+    after `npm run build`, in a plain terminal. It refuses inside a harness session or without a
+    terminal. It enables nothing:
+    1. It builds the helper (`swiftc -O`) into a fresh 0700 state root under `/tmp`.
+    2. It runs an in-process supervisor with disposable data and state directories and the
+       LocalAuthentication gate. Its only worker is the deterministic Codex app-server fixture:
+       read-only, with no model and no credentials.
+    3. It stops unless `gateIneligibility()` is empty.
+    4. It then walks four steps, printing the text each dialog should show:
+       1. A confirmed approval is allowed and delivered.
+       2. A replay is refused without any dialog.
+       3. A cancelled dialog refuses, and the request stays pending.
+       4. A later confirmation of that same request decides only it.
+    5. It writes a result JSON without secrets to the temp directory and removes everything else.
+  - **Self-test:** `--self-test` runs the same steps with a scripted gate and no dialog. CI runs it.
+  - **What it leaves out:** whether a launchd agent can present the dialog. It runs in the
+    operator's foreground terminal, so that remains a separate attended step.
+  - **Until it passes,** the gate stays locked and the CLI refuses control before connecting.
+    Wiring a gate into `run` and unlocking the CLI is a separate, reviewed change after it.
 
 Once control is unlocked: approvals stay pending and visible until a human decides. Unanswered ones expire after 24 hours,
 as a deny. A decision names the full key (worker, generation, native id), and is refused unless
@@ -672,5 +686,6 @@ was adopted or interrupted to test this boundary.
 | S2c | Codex | Codex app-server adapter and shared process helpers | merged (#210) |
 | S2a4 | Claude | human control: the `HumanGate` the daemon must pass, the LocalAuthentication helper, attack tests; locked until attended acceptance | merged (#216) |
 | S2a5a | Claude | protected supervisor state: one resolver, a root outside the data directory, crash-safe `migrate` | merged (#218) |
-| S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | this change |
+| S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | merged (#219) |
+| S2a6 | Claude | attended gate acceptance kit, with a scripted self-test in CI; enables nothing | this change |
 | S2d | Grok | Grok stdio adapter (the proven subset only) | this change |
