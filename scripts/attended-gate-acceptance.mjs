@@ -48,6 +48,8 @@ const { CodexAdapter } = await dist("supervisor/adapters/codex.js");
 const { gateReason, localAuthenticationGate } = await dist("supervisor/human-gate.js");
 const { displayText, safeDetail } = await dist("supervisor/approval-detail.js");
 const { supervisorProtectedSet } = await dist("supervisor/run.js");
+const { createSystemProcessInspector } = await dist("process-utils.js");
+const inspector = createSystemProcessInspector();
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -96,34 +98,58 @@ const until = async (what, done, ms = 10_000) => {
 const owned = { root: null, ask: null, store: null, supervisor: null, deciding: null, labels: new Map() };
 // launchctl itself, or in the self-test a stand-in that runs the job without launchd.
 const launchctl = selfTest ? process.env.TT_GATE_ACCEPTANCE_LAUNCHCTL ?? path.join(repo, "tests", "fixtures", "fake-launchctl.cjs") : "/bin/launchctl";
-const runLaunchctl = (args) => spawnSync(launchctl, args, { encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL" });
+// The self-test's stand-in keeps its jobs in a registry private to this run, never a shared one.
+const runLaunchctl = (args) => spawnSync(launchctl, args, { encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL",
+  env: selfTest && owned.root ? { ...process.env, TT_FAKE_LAUNCHCTL_REGISTRY: path.join(owned.root, "fake-registry") } : process.env });
+// launchctl print's "could not find service": the only answer that proves a job unloaded.
+const NOT_FOUND = 113;
+// The helper's identity once seen: its pid and that process's start time, so a reused pid is not it.
+function helperIdentity(entry) {
+  if (entry.helper) return entry.helper;
+  if (!fs.existsSync(entry.pidFile)) return null;
+  const pid = Number(fs.readFileSync(entry.pidFile, "utf8").trim());
+  const seen = inspector.inspect(pid);
+  entry.helper = { pid, started: seen?.startTime?.trim() ?? null };
+  return entry.helper;
+}
+// "gone" only on proof: no such process, or that pid now belongs to a different start.
+function helperState(entry) {
+  const identity = helperIdentity(entry);
+  if (!identity) return null;
+  const now = inspector.inspect(identity.pid);
+  if (now === null) return "gone";
+  if (now === undefined || !now.startTime || !identity.started) return "unknown";
+  return now.startTime.trim() === identity.started ? "still running" : "gone";
+}
 // Unloads every agent this run loaded, then checks it is unloaded and its helper process gone.
 // Returns whether all of that was shown; otherwise the evidence stays and the labels are named.
 function bootoutAll(only = null) {
   let complete = true;
   for (const [label, entry] of owned.labels) {
     if (only && label !== only) continue;
+    // Seen before the bootout, so its identity is known even if it exits during it.
+    helperIdentity(entry);
     const run = runLaunchctl(["bootout", `${entry.domain}/${label}`]);
-    const stillLoaded = runLaunchctl(["print", `${entry.domain}/${label}`]).status === 0;
-    const pid = fs.existsSync(entry.pidFile) ? Number(fs.readFileSync(entry.pidFile, "utf8").trim()) : null;
-    let helper = "never started";
-    if (pid) {
-      // A signalled helper may take a moment to exit: give it two seconds, and it must then be gone.
-      const deadline = Date.now() + 2_000;
-      for (;;) {
-        try { process.kill(pid, 0); helper = "still running"; } catch { helper = "gone"; break; }
-        if (Date.now() > deadline) break;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
-      }
-    } else if (entry.started) helper = "unknown";
-    const ok = !stillLoaded && (helper === "gone" || helper === "never started");
+    const printed = runLaunchctl(["print", `${entry.domain}/${label}`]).status;
+    const job = printed === NOT_FOUND ? "unloaded" : printed === 0 ? "loaded" : "unknown";
+    let helper = helperState(entry);
+    // A signalled helper may take a moment to exit: give it two seconds, and it must then be proven gone.
+    const deadline = Date.now() + 2_000;
+    while (helper === "still running" && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      helper = helperState(entry);
+    }
+    // No pid recorded: only a job proven unloaded that never started is clean; anything else is unknown.
+    if (helper === null) helper = job === "unloaded" ? "never started" : "unknown";
+    const ok = job === "unloaded" && (helper === "gone" || helper === "never started");
     if (!ok) complete = false;
-    (result.bootouts ??= []).push({ label, domain: entry.domain, bootout_status: run.status, unloaded: !stillLoaded, helper_pid: pid, helper, ok });
+    (result.bootouts ??= []).push({ label, domain: entry.domain, bootout_status: run.status, print_status: printed, job,
+      helper_identity: entry.helper ?? null, helper, ok });
     if (ok) owned.labels.delete(label);
   }
   writeLedger();
-  if (!complete) result.cleanup_incomplete = [...owned.labels.keys()];
-  else if (!owned.labels.size) delete result.cleanup_incomplete;
+  if (owned.labels.size) result.cleanup_incomplete = [...owned.labels.keys()];
+  else delete result.cleanup_incomplete;
   return complete;
 }
 // The private record of what this run loaded, written before each load.
@@ -138,6 +164,10 @@ async function finish(outcome) {
   if (finished) return;
   finished = true;
   if (outcome) Object.assign(result, outcome);
+  // Self-test only: hold cleanup open, so a second signal is shown to arrive during it.
+  if (selfTest && process.env.TT_GATE_ACCEPTANCE_SLOW_FINISH_MS) {
+    await new Promise((resolve) => setTimeout(resolve, Number(process.env.TT_GATE_ACCEPTANCE_SLOW_FINISH_MS)));
+  }
   owned.ask?.close();
   let unloaded = true;
   try { unloaded = bootoutAll(); } catch (error) { unloaded = false; result.cleanup_error = String(error); }
@@ -154,6 +184,11 @@ async function finish(outcome) {
     } catch { /* already closed */ }
   }
   // A job that couldn't be shown unloaded keeps its root: the ledger, plist and logs are the evidence.
+  // And no run with cleanup outstanding is accepted, whatever its steps showed.
+  if (!unloaded) {
+    result.ok = false;
+    result.error = result.error ?? "Cleanup could not be shown complete.";
+  }
   if (owned.root && unloaded) fs.rmSync(owned.root, { recursive: true, force: true });
   else if (owned.root) result.retained_root = owned.root;
   result.finished_at = new Date().toISOString();
@@ -169,6 +204,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     if (!abortReason) return abort(`Stopped by ${signal}.`);
     // Still bounded and owned-only: unload what this run loaded, and keep the root unless that was shown.
+    process.stderr.write(`Second ${signal}: unloading this run's agents and exiting.\n`);
     let unloaded = false;
     try { unloaded = bootoutAll(); } catch { /* reported below */ }
     if (owned.root && unloaded) fs.rmSync(owned.root, { recursive: true, force: true });
@@ -470,8 +506,10 @@ async function launchdRun() {
       : background.exit === null ? "the helper never finished there" : `the helper exited ${background.exit}`;
     step(`3: background domain: ${finding}`, { ...background, finding });
     if (background.exit === 0) throw new Error(`Step 3 confirmed in the background domain: ${JSON.stringify(background)}.`);
-    // A dialog there at all, even one cancelled, means the background domain can present it: not accepted.
+    // Only an observed "unavailable" there is acceptable. A dialog at all, even one cancelled, means the
+    // background domain can present it; a load failure or timeout observed nothing.
     const backgroundDialog = background.exit === 3;
+    const backgroundUnobserved = !backgroundDialog && background.exit !== 2;
     if (background.loaded && !background.cleanup_ok) throw new Error(`Step 3's agent couldn't be shown unloaded: ${JSON.stringify(background)}.`);
 
     await pause("Step 4: one more launchd dialog will appear. Do NOT answer it. Press Ctrl-C in this terminal instead.");
@@ -482,6 +520,9 @@ async function launchdRun() {
     if (backgroundDialog) {
       process.stderr.write("\n✗ A dialog appeared in the background domain; that is a finding, not an acceptance.\n");
       await finish({ ok: false, aborted: false, error: "A dialog appeared in user/<uid>.", finding: "background_dialog" });
+    } else if (backgroundUnobserved) {
+      process.stderr.write(`\n✗ The background domain wasn't observed: ${finding}.\n`);
+      await finish({ ok: false, aborted: false, error: `The background domain wasn't observed: ${finding}.`, finding: "background_unobserved" });
     } else {
       await finish({ ok: true, aborted: false, error: undefined });
     }

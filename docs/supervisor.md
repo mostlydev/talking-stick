@@ -542,17 +542,25 @@ These limits come from Apple's documentation and this codebase. No dialog was op
     5. The steps:
        1. In `gui/<uid>`, confirm, expecting `confirmed`.
        2. In `gui/<uid>`, cancel, expecting `refused`.
-       3. In `user/<uid>`, the background domain, the raw result is recorded as a finding.
-          Unavailable is expected. A dialog appearing there, confirmed or cancelled, fails the
-          run: the result is never "Accepted" and names the finding.
+       3. In `user/<uid>`, the background domain, the raw result is recorded as a finding. Only
+          an observed "unavailable" is accepted. A dialog appearing there, confirmed or
+          cancelled, fails the run, and so does a load failure or a timeout, which observed
+          nothing. Either way the result is never "Accepted" and names the finding.
        4. In `gui/<uid>`, the operator presses Ctrl-C with the dialog up. The agent must be
           unloaded and the helper's pid gone.
     6. Every agent goes into a private ledger in the temp root (domain, uid, label and paths)
        before it loads. Cleanup unloads only those labels. It runs on success, failure, Ctrl-C or
-       a second signal, the second still bounded and owned-only. Before anything is deleted it
-       checks that `launchctl print` no longer finds the agent and that the helper's pid is
-       gone. If that can't be shown, the root (ledger, plist, logs) is kept and the run reports
-       `CLEANUP INCOMPLETE` with the exact labels.
+       a second signal, the second still bounded and owned-only. Nothing counts as gone without
+       proof:
+       - the agent is unloaded only when `launchctl print` answers "could not find service"
+         (113); any other failure is unknown
+       - the helper is gone only when its pid no longer exists, or now belongs to a process with
+         a different start time, since its identity is recorded as pid plus start time when first
+         seen; a permission error is unknown
+       - a load attempt that left no pid is clean only if the agent is proven unloaded
+       If anything is unknown or still running, the root (ledger, plist, logs) is kept, the run
+       reports `CLEANUP INCOMPLETE` with the exact labels, and it can't be Accepted, whatever
+       its steps showed.
   - **The launchd step's scope:** a wrapper shell run as a throwaway LaunchAgent starts the
     helper, in `gui/<uid>` and `user/<uid>`. It doesn't show the helper as the agent's direct
     program, or a supervisor LaunchAgent spawning it. It is separate from the foreground run
@@ -560,8 +568,10 @@ These limits come from Apple's documentation and this codebase. No dialog was op
   - **The launchd self-test:** `--launchd --self-test` drives the same controller with a
     stand-in launchctl and helper, loading nothing and running no compiler. CI runs it with
     these faults: bootstrap failure, a stale record from another label, a timeout, an unload
-    that fails (the evidence is kept and named), a dialog in the background domain (not
-    accepted), and a second signal. Each step's cleanup targets only its own label, and a
+    that fails (the evidence is kept and named), unload and inspection both denied (nothing
+    counts as gone), a dialog or a timeout in the background domain (not accepted), and a
+    second signal arriving during cleanup. The stand-in keeps its jobs in a registry private to
+    each run, and each test removes only the jobs and files that its own run created. Each step's cleanup targets only its own label, and a
     signalled helper gets up to two seconds to exit before it counts as still running.
   - **Until it passes,** the gate stays locked and the CLI refuses control before connecting.
     Wiring a gate into `run` and unlocking the CLI is a separate, reviewed change after it.

@@ -76,7 +76,6 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
 
   test("its launchd self-test runs every step through a stand-in launchctl, and leaves no job or helper behind", async () => {
     const before = leftovers();
-    const registry = path.join(os.tmpdir(), "tt-fake-launchctl");
     const child = spawn(process.execPath, [script, "--launchd", "--self-test"]);
     let stdout = "";
     let signalled = false;
@@ -95,13 +94,14 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     expect(result.steps.map((step: { kind?: string }) => step.kind)).toEqual(["confirmed", "refused", "unavailable", "aborted"]);
     expect(result.steps[3]).toMatchObject({ cleanup_ok: true, helper: "gone" });
     expect(leftovers()).toEqual(before);
-    expect(fs.existsSync(registry) ? fs.readdirSync(registry) : []).toEqual([]);
   }, 60_000);
 
   // Runs the launchd self-test with one injected fault; Ctrl-C at step 4 when it gets there.
   const launchdRun = async (env: Record<string, string>, signals = 1) => {
     const child = spawn(process.execPath, [script, "--launchd", "--self-test"], { env: { ...process.env, ...env } });
     let stdout = "";
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     let sent = 0;
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
@@ -109,14 +109,12 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
       if (stdout.includes("press Ctrl-C here") && sent === 0) {
         sent = 1;
         child.kill("SIGINT");
-        if (signals > 1) setTimeout(() => { sent = 2; child.kill("SIGINT"); }, 20);
+        if (signals > 1) setTimeout(() => { sent = 2; child.kill("SIGINT"); }, 300);
       }
     });
     const status = await new Promise<number | string | null>((resolve) => child.on("exit", (code, signal) => resolve(code ?? signal)));
-    return { status, stdout };
+    return { status, stdout, stderr };
   };
-  const registry = path.join(os.tmpdir(), "tt-fake-launchctl");
-  const registryEmpty = () => (fs.existsSync(registry) ? fs.readdirSync(registry) : []).length === 0;
 
   test("a bootstrap failure is an infrastructure error, not a helper result, and cleans up", async () => {
     const before = leftovers();
@@ -124,7 +122,6 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     expect(status).toBe(1);
     expect(resultOf(stdout).error).toContain("infrastructure_error");
     expect(leftovers()).toEqual(before);
-    expect(registryEmpty()).toBe(true);
   }, 60_000);
 
   test("a stale exit record from another label never satisfies a step", async () => {
@@ -141,9 +138,8 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     expect(status).toBe(1);
     const result = resultOf(stdout);
     expect(result.error).toContain('"kind":"timeout"');
-    expect(result.bootouts[0]).toMatchObject({ unloaded: true, helper: "gone", ok: true });
+    expect(result.bootouts[0]).toMatchObject({ job: "unloaded", helper: "gone", ok: true });
     expect(leftovers()).toEqual(before);
-    expect(registryEmpty()).toBe(true);
   }, 60_000);
 
   test("an agent that can't be shown unloaded keeps its evidence and is named", async () => {
@@ -155,10 +151,10 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
       expect(stdout).toContain("CLEANUP INCOMPLETE");
       expect(fs.existsSync(path.join(result.retained_root, "ledger.json"))).toBe(true);
     } finally {
-      // The test's own leftovers: stop the stand-in job and remove the kept root.
-      for (const entry of fs.existsSync(registry) ? fs.readdirSync(registry) : []) {
-        try { process.kill(-Number(fs.readFileSync(path.join(registry, entry), "utf8")), "SIGKILL"); } catch { /* gone */ }
-        fs.rmSync(path.join(registry, entry), { force: true });
+      // Only this run's own leftovers: its stand-in jobs, from its own private registry, and its kept root.
+      const own = result.retained_root ? path.join(result.retained_root, "fake-registry") : null;
+      for (const entry of own && fs.existsSync(own) ? fs.readdirSync(own) : []) {
+        try { process.kill(-Number(fs.readFileSync(path.join(own, entry), "utf8")), "SIGKILL"); } catch { /* gone */ }
       }
       if (result.retained_root) fs.rmSync(result.retained_root, { recursive: true, force: true });
     }
@@ -174,13 +170,45 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     expect(leftovers()).toEqual(before);
   }, 60_000);
 
-  test("a second signal still unloads what this run loaded before it exits", async () => {
+  test("an unload and inspection that both fail never count as unloaded, and keep the evidence", async () => {
+    // Every bootout and every print fails, as with a permission error: nothing is proven gone.
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "launchctl-denied" });
+    const result = resultOf(stdout);
+    try {
+      expect(status).not.toBe(0);
+      expect(stdout).not.toContain("Accepted:");
+      expect(result.ok).toBe(false);
+      expect(result.bootouts.every((row: { job: string; ok: boolean }) => row.job === "unknown" && !row.ok)).toBe(true);
+      expect(result.cleanup_incomplete.length).toBeGreaterThan(0);
+      expect(fs.existsSync(path.join(result.retained_root, "ledger.json"))).toBe(true);
+    } finally {
+      const own = result.retained_root ? path.join(result.retained_root, "fake-registry") : null;
+      for (const entry of own && fs.existsSync(own) ? fs.readdirSync(own) : []) {
+        try { process.kill(-Number(fs.readFileSync(path.join(own, entry), "utf8")), "SIGKILL"); } catch { /* gone */ }
+      }
+      if (result.retained_root) fs.rmSync(result.retained_root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("a second signal during cleanup takes the bounded path and still unloads what this run loaded", async () => {
     const before = leftovers();
-    const { status } = await launchdRun({}, 2);
-    expect([0, 130]).toContain(status);
+    // Cleanup is held open (self-test only) so the second signal provably lands during it.
+    const { status, stdout, stderr } = await launchdRun({ TT_GATE_ACCEPTANCE_SLOW_FINISH_MS: "1000" }, 2);
+    expect(status).toBe(130);
+    expect(stderr).toContain("Second SIGINT: unloading this run's agents and exiting.");
     expect(leftovers()).toEqual(before);
-    expect(registryEmpty()).toBe(true);
-    for (const file of fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("tt-gate-acceptance-"))) fs.rmSync(path.join(os.tmpdir(), file));
+    // Only a result file this run printed, if it got that far.
+    const printed = stdout.match(/Result: (\S+)/)?.[1];
+    if (printed) fs.rmSync(printed, { force: true });
+  }, 60_000);
+
+  test("a background step that can't be observed is never Accepted", async () => {
+    const before = leftovers();
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "background-timeout", TT_GATE_ACCEPTANCE_STEP_TIMEOUT_MS: "500" });
+    expect(status).toBe(1);
+    expect(stdout).not.toContain("Accepted:");
+    expect(resultOf(stdout)).toMatchObject({ ok: false, finding: "background_unobserved" });
+    expect(leftovers()).toEqual(before);
   }, 60_000);
 
   test("the attended launchd run refuses inside a harness session, before building or loading anything", () => {

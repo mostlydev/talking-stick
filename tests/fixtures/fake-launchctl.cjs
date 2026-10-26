@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // A stand-in for launchctl in the acceptance kit's self-test: it runs a job
 // the kit describes beside its plist, in its own process group, and stops
-// that group on bootout. Nothing is loaded into launchd. TT_GATE_ACCEPTANCE_FAULT
-// injects a bootstrap or bootout failure.
+// that group on bootout. Nothing is loaded into launchd. Its jobs live in a
+// registry private to one kit run (TT_FAKE_LAUNCHCTL_REGISTRY), never a shared
+// one. TT_GATE_ACCEPTANCE_FAULT injects a bootstrap or bootout failure.
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-const registry = path.join(os.tmpdir(), "tt-fake-launchctl");
+const registry = process.env.TT_FAKE_LAUNCHCTL_REGISTRY;
+if (!registry || !path.isAbsolute(registry)) { process.stderr.write("No private registry was given.\n"); process.exit(64); }
 fs.mkdirSync(registry, { recursive: true, mode: 0o700 });
 const fault = process.env.TT_GATE_ACCEPTANCE_FAULT ?? "";
 const [command, target, plist] = process.argv.slice(2);
@@ -21,6 +22,10 @@ if (command === "bootstrap") {
   process.exit(0);
 }
 const label = (target ?? "").split("/").pop();
+if (fault === "launchctl-denied" && (command === "bootout" || command === "print")) {
+  process.stderr.write("Operation not permitted\n");
+  process.exit(5);
+}
 if (command === "bootout") {
   if (fault === "bootout-fail") { process.stderr.write("Boot-out failed: 5: Input/output error\n"); process.exit(5); }
   if (!fs.existsSync(entry(label))) process.exit(3);
