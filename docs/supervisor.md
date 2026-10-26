@@ -1,7 +1,8 @@
 # Managed headless supervisor
 
 Status: design agreed (room notes 2824973c, 01cd46da and 4ffa33a6, consolidated here). The core, room bridge, CLI, launchd integration, and the Codex, Claude, and Grok adapters are in `src/supervisor/`.
-The Grok adapter only attempts a fresh session. An `XAI_API_KEY` Keychain reference can name a credential; using that variable to pass `session/new` is not yet shown. The "Slices" table records each slice.
+The Grok adapter only attempts a fresh session. An `XAI_API_KEY` Keychain reference can name a credential; using that variable to pass `session/new` is not yet shown. The "Slices" table records each slice. The
+[full headless roadmap](plans/2026-10-26-full-headless-roadmap.md) plans what comes next: room templates, tasks, lifecycles and a main manager.
 
 The supervisor is optional. It starts Claude, Codex and Grok in their headless modes as
 processes it owns, and keeps them running. It changes nothing for Herdr, tmux or terminal sessions,
@@ -793,5 +794,5 @@ was adopted or interrupted to test this boundary.
 | S2a4 | Claude | human control: the `HumanGate` the daemon must pass, the LocalAuthentication helper, attack tests; locked until attended acceptance | merged (#216) |
 | S2a5a | Claude | protected supervisor state: one resolver, a root outside the data directory, crash-safe `migrate` | merged (#218) |
 | S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | merged (#219) |
-| S2a6 | Claude | attended gate acceptance kit, with a scripted self-test in CI; enables nothing | this change |
-| S2d | Grok | Grok stdio adapter (the proven subset only) | this change |
+| S2a6 | Claude | attended gate acceptance kit, with a scripted self-test in CI, and its launchd step; enables nothing | merged (#220, #222) |
+| S2d | Grok | Grok stdio adapter (the proven subset only), Keychain env references | merged (#214, #215) |
