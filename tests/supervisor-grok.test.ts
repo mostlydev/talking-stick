@@ -28,7 +28,7 @@ function fixture(mode = "", options: GrokAdapterOptions = {}) {
   const dataDir = path.join(root, "data");
   const spec: WorkerSpec = { worker_id: "w1", harness: "grok", cwd: root, permissions: { harness: "grok" },
     env: [{ name: "FIXTURE_MODE", from: "literal", value: mode }, { name: "FIXTURE_TRACE", from: "literal", value: trace }],
-    supervisor_env: { TALKING_STICK_DATA_DIR: dataDir } };
+    supervisor_env: { TALKING_STICK_DATA_DIR: dataDir }, state_dir: path.join(dataDir, "..", "state") };
   const adapter = new GrokAdapter({ command: process.execPath,
     argsPrefix: [fileURLToPath(new URL("./fixtures/grok-stdio.cjs", import.meta.url))], startTimeoutMs: 500, ...options });
   const events: WorkerEvent[] = [];
@@ -40,7 +40,7 @@ function fixture(mode = "", options: GrokAdapterOptions = {}) {
     return handle;
   };
   const lines = () => fs.existsSync(trace) ? fs.readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, any>) : [];
-  const privateHome = path.join(dataDir, "supervisor", "workers", spec.worker_id, "grok");
+  const privateHome = path.join(spec.state_dir!, "workers", spec.worker_id, "grok");
   return { root, dataDir, trace, spec, adapter, events, spawned, start, lines, privateHome };
 }
 
@@ -92,7 +92,8 @@ describe("starting a Grok worker", () => {
     expect(fs.readdirSync(f.privateHome)).toEqual([]);
     expect(fs.readFileSync(path.join(userHome, "config.toml"), "utf8")).toContain("always-approve");
     expect(fs.statSync(f.privateHome).mode & 0o777).toBe(0o700);
-    expect(fs.existsSync(path.join(f.dataDir, "supervisor", "workers", "w1", "process-1.json"))).toBe(false);
+    expect(fs.existsSync(path.join(f.spec.state_dir!, "workers", "w1", "process-1.json"))).toBe(false);
+    expect(fs.existsSync(path.join(f.dataDir, "supervisor"))).toBe(false);
     expect(handle.sessionId()).toBe("grok-session-1");
     expect(f.events).toContainEqual({ type: "session", session_id: "grok-session-1" });
     expect(f.events.some((event) => event.type === "turn_started" || event.type === "turn_completed")).toBe(false);

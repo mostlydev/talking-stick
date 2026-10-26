@@ -45,6 +45,11 @@ export interface WorkerSpec {
    * environment, so no inherited TT_ROOM or harness identity marker leaks in.
    */
   supervisor_env?: Record<string, string>;
+  /**
+   * The supervisor's protected state root, set at spawn: this worker's native
+   * home and process evidence live under it. It never enters the environment.
+   */
+  state_dir?: string;
 }
 
 export type InputMode = "start_turn" | "steer";

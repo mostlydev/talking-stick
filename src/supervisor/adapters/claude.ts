@@ -61,8 +61,8 @@ export class ClaudeAdapter implements HarnessAdapter {
     // A fresh conversation is given its id up front, so the supervisor knows
     // the session before the first turn; a resume names the recorded one.
     const session = spec.resume_session_id ?? randomUUID();
-    const evidence = spec.supervisor_env?.TT_SUPERVISOR_TOKEN && spec.supervisor_env.TALKING_STICK_DATA_DIR
-      ? createProcessEvidence({ dataDir: spec.supervisor_env.TALKING_STICK_DATA_DIR, workerId: spec.worker_id,
+    const evidence = spec.supervisor_env?.TT_SUPERVISOR_TOKEN && spec.supervisor_env.TT_SUPERVISOR_ENDPOINT && spec.state_dir
+      ? createProcessEvidence({ stateDir: spec.state_dir, workerId: spec.worker_id,
         generation, harness: "claude", endpoint: spec.supervisor_env.TT_SUPERVISOR_ENDPOINT,
         token: spec.supervisor_env.TT_SUPERVISOR_TOKEN }) : null;
     if (evidence) env.TT_SUPERVISOR_PROCESS_FILE = evidence.file;

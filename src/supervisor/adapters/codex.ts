@@ -125,13 +125,12 @@ export class CodexAdapter implements HarnessAdapter {
     // No implicit user config, plugins, hooks or approval rules. An operator
     // may explicitly reference a prepared CODEX_HOME; auth is never copied.
     if (!env.CODEX_HOME) {
-      const dataDir = spec.supervisor_env?.TALKING_STICK_DATA_DIR;
-      if (!dataDir) throw new Error("A managed Codex worker needs its configured Talking Stick data directory.");
-      env.CODEX_HOME = path.join(dataDir, "supervisor", "workers", spec.worker_id, "codex");
+      if (!spec.state_dir) throw new Error("A managed Codex worker needs the supervisor's state directory.");
+      env.CODEX_HOME = path.join(spec.state_dir, "workers", spec.worker_id, "codex");
     }
     fs.mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
-    const evidence = spec.supervisor_env?.TT_SUPERVISOR_TOKEN && spec.supervisor_env.TALKING_STICK_DATA_DIR
-      ? createProcessEvidence({ dataDir: spec.supervisor_env.TALKING_STICK_DATA_DIR, workerId: spec.worker_id,
+    const evidence = spec.supervisor_env?.TT_SUPERVISOR_TOKEN && spec.supervisor_env.TT_SUPERVISOR_ENDPOINT && spec.state_dir
+      ? createProcessEvidence({ stateDir: spec.state_dir, workerId: spec.worker_id,
         generation, harness: "codex", endpoint: spec.supervisor_env.TT_SUPERVISOR_ENDPOINT,
         token: spec.supervisor_env.TT_SUPERVISOR_TOKEN }) : null;
     if (evidence) env.TT_SUPERVISOR_PROCESS_FILE = evidence.file;

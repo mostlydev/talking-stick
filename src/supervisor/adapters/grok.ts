@@ -107,11 +107,11 @@ export class GrokAdapter implements HarnessAdapter {
     if (spec.resume_session_id) throw new Error("Grok cannot resume a session yet.");
     const env = await workerEnvironment(spec, process.env, this.options.readKeychain);
     if (signal?.aborted) throw new Error("Grok start aborted.");
-    const dataDir = spec.supervisor_env?.TALKING_STICK_DATA_DIR;
-    if (!dataDir) throw new Error("A managed Grok worker needs its configured Talking Stick data directory.");
+    const stateDir = spec.state_dir;
+    if (!stateDir) throw new Error("A managed Grok worker needs the supervisor's state directory.");
     // Always this private directory, even when the spec names a GROK_HOME.
     // Nothing is copied into it: the user's config can set always-approve.
-    const home = path.join(dataDir, "supervisor", "workers", spec.worker_id, "grok");
+    const home = path.join(stateDir, "workers", spec.worker_id, "grok");
     fs.mkdirSync(home, { recursive: true, mode: 0o700 });
     fs.chmodSync(home, 0o700);
     env.GROK_HOME = home;
@@ -119,7 +119,7 @@ export class GrokAdapter implements HarnessAdapter {
     // Evidence is skipped unless both are present.
     const token = spec.supervisor_env?.TT_SUPERVISOR_TOKEN;
     const endpoint = spec.supervisor_env?.TT_SUPERVISOR_ENDPOINT;
-    const evidence = token && endpoint ? createProcessEvidence({ dataDir, workerId: spec.worker_id,
+    const evidence = token && endpoint ? createProcessEvidence({ stateDir, workerId: spec.worker_id,
       generation, harness: "grok", endpoint, token }) : null;
     if (evidence) env.TT_SUPERVISOR_PROCESS_FILE = evidence.file;
     const handle = new GrokHandle(this.options, generation);

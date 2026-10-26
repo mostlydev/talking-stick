@@ -40,6 +40,8 @@ export interface SupervisorOptions {
   bootstrap?: boolean;
   /** The supervisor's tt data directory, given to every worker so its tt calls land in this room database. */
   dataDir?: string;
+  /** The protected root for supervisor-owned state; each worker's native home and evidence go under it. */
+  stateDir?: string;
   /** The human-control gate every control request must pass; locked by default. */
   gate?: HumanGate;
   /** How long a human has to confirm one request; GATE_TIMEOUT_MS by default. */
@@ -104,6 +106,7 @@ export class Supervisor {
   private readonly bootstrap: boolean;
   private readonly dataDir: string | null;
   private readonly gate: HumanGate;
+  private readonly stateDir: string | null;
   private readonly gateTimeoutMs: number;
   private gateBusy = false;
   /** This daemon's delivery tokens; only hashes are stored. */
@@ -133,6 +136,7 @@ export class Supervisor {
     this.bootstrap = options.bootstrap ?? false;
     this.dataDir = options.dataDir ?? null;
     this.gate = options.gate ?? LOCKED_GATE;
+    this.stateDir = options.stateDir ?? null;
     this.gateTimeoutMs = options.gateTimeoutMs ?? GATE_TIMEOUT_MS;
   }
 
@@ -250,6 +254,7 @@ export class Supervisor {
     let handle: WorkerHandle;
     try {
       handle = await adapter.start({ ...spec, ...(resume ? { resume_session_id: resume } : { resume_session_id: undefined }),
+        ...(this.stateDir ? { state_dir: this.stateDir } : {}),
         ...(supervised || this.dataDir ? { supervisor_env: {
           ...(this.dataDir ? { TALKING_STICK_DATA_DIR: this.dataDir } : {}),
           ...(supervised ? { TT_SUPERVISOR_ENDPOINT: supervised.address, TT_SUPERVISOR_TOKEN: supervised.token } : {}) } } : {}) },
