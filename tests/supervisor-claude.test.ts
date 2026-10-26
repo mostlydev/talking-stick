@@ -127,13 +127,44 @@ describe("approvals", () => {
     const handle = await f.start();
     await handle.submit({ input_id: "i1", text: "make x", mode: "start_turn" });
     await until(() => f.events.some((event) => event.type === "approval_requested"));
-    expect(f.events).toContainEqual({ type: "approval_requested", native_request_id: "perm-1", tool: "Bash", summary: "touch x" });
+    expect(f.events).toContainEqual({ type: "approval_requested", native_request_id: "perm-1", tool: "Bash", summary: "touch x",
+      detail: JSON.stringify({ tool_name: "Bash", input: { command: "touch x", description: "Create x" } }, null, 2) });
     await handle.answerApproval("perm-1", decision);
     await until(() => f.lines().some((line) => line.type === "control_response"));
     const answer = f.lines().find((line) => line.type === "control_response");
     expect(answer.response).toMatchObject({ subtype: "success", request_id: "perm-1",
       response: decision === "allow" ? { behavior: "allow", updatedInput: { command: "touch x", description: "Create x" } } : { behavior: "deny" } });
     await expect(handle.answerApproval("perm-1", decision)).rejects.toThrow("no longer pending");
+  });
+
+  test("the approval keeps the whole request, invisible characters escaped, beyond its short summary", async () => {
+    const f = fixture("long-approval");
+    const handle = await f.start();
+    await handle.submit({ input_id: "i1", text: "make x", mode: "start_turn" });
+    await until(() => f.events.some((event) => event.type === "approval_requested"));
+    const request = f.events.find((event) => event.type === "approval_requested") as Extract<WorkerEvent, { type: "approval_requested" }>;
+    expect(request.summary.length).toBeLessThanOrEqual(350);
+    expect(request.summary).not.toContain("rm -rf");
+    expect(request.detail).toContain("\\u202e; rm -rf ./build");
+    expect(request.detail).not.toContain("\u202e");
+    const command = `echo ${"x".repeat(2000)} \u202e; rm -rf ./build`;
+    expect(JSON.parse(request.detail)).toEqual({ tool_name: "Bash", input: { command, description: "Create x" } });
+    // What a human reads is what an allow sends back.
+    await handle.answerApproval("perm-1", "allow");
+    await until(() => f.lines().some((line) => line.type === "control_response"));
+    expect(f.lines().find((line) => line.type === "control_response").response.response.updatedInput.command).toBe(command);
+  });
+
+  test("a request too large to review is denied natively and never pending", async () => {
+    const f = fixture("huge-approval");
+    const handle = await f.start();
+    await handle.submit({ input_id: "i1", text: "make x", mode: "start_turn" });
+    await until(() => f.lines().some((line) => line.type === "control_response"));
+    expect(f.lines().find((line) => line.type === "control_response").response).toMatchObject({ subtype: "success",
+      request_id: "perm-1", response: { behavior: "deny" } });
+    expect(f.events).toContainEqual({ type: "request_refused", method: "can_use_tool" });
+    expect(f.events.some((event) => event.type === "approval_requested")).toBe(false);
+    await expect(handle.answerApproval("perm-1", "allow")).rejects.toThrow("no longer pending");
   });
 
   test("a prompt the harness cancels is resolved, and can't be answered", async () => {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
+import { approvalDetail, approvalSummary } from "../approval-detail.js";
 import type { Capabilities, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
@@ -213,12 +214,20 @@ class ClaudeHandle implements WorkerHandle {
       return;
     }
     if (this.pendingApprovals.size >= 32 || this.pendingApprovals.has(id)) { this.overflow(); return; }
-    this.pendingApprovals.set(id, object(request.input));
     const tool = typeof request.tool_name === "string" ? request.tool_name : "tool";
     const input = object(request.input);
+    // The detail is the very input an allow sends back, so what a human reads is what runs.
+    const detail = approvalDetail({ tool_name: tool, input });
+    if (detail === null) {
+      // Too large to review whole, so it is never put to a human.
+      this.emit({ type: "request_refused", method: "can_use_tool" });
+      void this.child?.write(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: id,
+        response: { behavior: "deny", message: "This request is too large for the operator to review." } } })).catch(() => {});
+      return;
+    }
+    this.pendingApprovals.set(id, input);
     const text = typeof input.command === "string" ? input.command : typeof request.description === "string" ? request.description : JSON.stringify(input);
-    const summary = text.replace(/[\x00-\x1f\x7f]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).slice(0, 350);
-    this.emit({ type: "approval_requested", native_request_id: id, tool, summary });
+    this.emit({ type: "approval_requested", native_request_id: id, tool, summary: approvalSummary(text), detail });
   }
 
   /** Holds the worker and ends it, leaving any running input unconfirmed. */

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { openSqlite, type SqliteDatabase } from "../sqlite.js";
 import { withImmediateTransaction } from "../db.js";
 import type { InputMode, InputOutcome, WorkerSpec } from "./adapter.js";
@@ -86,6 +87,9 @@ export interface ApprovalRow {
   native_request_id: string;
   tool: string;
   summary: string;
+  /** The whole native request, as a human reviews it, and its SHA-256 in hex; empty for rows recorded before it was kept. */
+  detail: string;
+  detail_sha256: string;
   status: "pending" | "allowed" | "denied" | "expired";
   requested_at: string;
   decided_by: string | null;
@@ -176,6 +180,11 @@ const MIGRATIONS: Array<{ id: number; up: string }> = [{
     attempted_at TEXT NOT NULL,
     PRIMARY KEY (worker_id, session_id)
   );`
+}, {
+  id: 4,
+  // The whole request behind each approval, so a human never decides on a summary.
+  up: `ALTER TABLE approvals ADD COLUMN detail TEXT NOT NULL DEFAULT '';
+  ALTER TABLE approvals ADD COLUMN detail_sha256 TEXT NOT NULL DEFAULT '';`
 }];
 
 export function supervisorDatabasePath(dataDir: string): string {
@@ -400,11 +409,11 @@ export class SupervisorStore {
    * protocol error, so the worker is held; a reused id after it settled is a
    * new request with its own approval id.
    */
-  recordApproval(row: Omit<ApprovalRow, "status" | "decided_by" | "decided_at" | "answer_status">): boolean {
+  recordApproval(row: Omit<ApprovalRow, "status" | "decided_by" | "decided_at" | "answer_status" | "detail_sha256">): boolean {
     if (this.pendingApproval(row.worker_id, row.generation, row.native_request_id)) return false;
-    this.db.prepare(`INSERT INTO approvals (approval_id, worker_id, generation, native_request_id, tool, summary, status, requested_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`).run(row.approval_id, row.worker_id, row.generation,
-        row.native_request_id, row.tool, row.summary, row.requested_at);
+    this.db.prepare(`INSERT INTO approvals (approval_id, worker_id, generation, native_request_id, tool, summary, detail, detail_sha256,
+      status, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`).run(row.approval_id, row.worker_id, row.generation,
+        row.native_request_id, row.tool, row.summary, row.detail, createHash("sha256").update(row.detail).digest("hex"), row.requested_at);
     return true;
   }
 

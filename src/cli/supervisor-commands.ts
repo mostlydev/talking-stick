@@ -12,6 +12,7 @@ import { runningInsideHarness } from "../identity.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
 import { getStringOption, getStringOptions, hasOption, type ParsedCommand } from "./parser.js";
+import { displayText, safeDetail } from "../supervisor/approval-detail.js";
 
 // tt supervisor: the optional managed headless supervisor (docs/supervisor.md).
 
@@ -22,7 +23,7 @@ export const SUPERVISOR_USAGE = [
   "tt supervisor pause|resume|stop|remove <worker>",
   "tt supervisor restart <worker> [--fresh]",
   "tt supervisor interrupt <worker>",
-  "tt supervisor approvals | approve <approval-id> [--note TEXT] | deny <approval-id> [--note TEXT]",
+  "tt supervisor approvals [show <approval-id>] | approve <approval-id> [--note TEXT] | deny <approval-id> [--note TEXT]",
   "tt supervisor reconcile <batch-token> --resend|--drop",
   "tt supervisor run | install | uninstall | logs [--lines N]"
 ].join("\n");
@@ -90,7 +91,8 @@ function describeStatus(store: SupervisorStore) {
       };
     }),
     pending_approvals: store.pendingApprovals().map((approval) => ({ approval_id: approval.approval_id, worker_id: approval.worker_id,
-      generation: approval.generation, tool: approval.tool, summary: approval.summary, requested_at: approval.requested_at }))
+      generation: approval.generation, tool: approval.tool, summary: approval.summary, detail_sha256: approval.detail_sha256,
+      requested_at: approval.requested_at }))
   };
 }
 
@@ -148,11 +150,23 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   if (action === "interrupt" || action === "approve" || action === "deny" || action === "reconcile") fail(CONTROL_LOCKED);
   const store = openStore(dataDir);
   try {
+    if (action === "approvals" && parsed.positionals[1] === "show") {
+      // The whole request, read-only: what a human would be deciding.
+      const approval = store.approval(parsed.positionals[2] ?? "");
+      if (!approval) fail("No such approval request. Run `tt supervisor approvals` for the pending ones.");
+      printResult(parsed, { approval_id: approval.approval_id, worker_id: approval.worker_id, generation: approval.generation,
+        tool: approval.tool, summary: approval.summary, status: approval.status, requested_at: approval.requested_at,
+        detail_sha256: approval.detail_sha256, detail: approval.detail },
+      () => [`${approval.approval_id}  ${approval.worker_id}#${approval.generation}  ${displayText(approval.tool, 80)}  ${approval.status}`,
+        `sha256 ${approval.detail_sha256}`, safeDetail(approval.detail) || "(recorded before full detail was kept)"].join("\n"));
+      return;
+    }
     if (action === "status" || action === "approvals") {
       const status = describeStatus(store);
       const result = action === "approvals" ? { pending_approvals: status.pending_approvals } : status;
       printResult(parsed, result, () => action === "approvals"
-        ? (status.pending_approvals.map((a) => `${a.approval_id}  ${a.worker_id}#${a.generation}  ${a.tool}: ${a.summary}`).join("\n") || "No pending approvals.")
+        ? (status.pending_approvals.map((a) => `${a.approval_id}  ${a.worker_id}#${a.generation}  ${displayText(a.tool, 80)}: ${displayText(a.summary, 500)}`)
+          .join("\n") || "No pending approvals.")
         : (status.workers.map((w) => `${w.worker_id}  ${w.harness}  ${w.desired}${w.hold_reason ? ` (held: ${w.hold_reason})` : ""}  ` +
             `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}` +
             `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}`).join("\n") || "No workers.") +
