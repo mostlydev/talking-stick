@@ -517,6 +517,68 @@ These limits come from Apple's documentation and this codebase. No dialog was op
   - **Self-test:** `--self-test` runs the same steps with a scripted gate and no dialog. CI runs
     it, along with a real SIGTERM at a prompt, a real SIGTERM while the gate is asking (nothing
     settles), and the harness refusal.
+  - **The launchd step:** `node scripts/attended-gate-acceptance.mjs --launchd` is the separate,
+    attended launchd check. It starts no supervisor, uses no live data, and decides no request.
+    1. It refuses inside a harness, off macOS or without a terminal, before it builds or loads
+       anything.
+    2. It builds the helper into a 0700 temp root. Each step then loads a throwaway LaunchAgent
+       whose only job is the helper:
+       - its own label, `com.talking-stick.gate-acceptance.<random>`, never the supervisor's
+       - its plist, reason and logs in the temp root, never `~/Library/LaunchAgents`
+       - `RunAtLoad` set, `KeepAlive` off, and `LimitLoadToSessionType` unset, so the domain is
+         the only difference between steps
+    3. Each agent's program is a wrapper shell. It records its own pid first, then starts a
+       shell that records its pid and `exec`s into the helper, so that pid is the helper's and is
+       written before the helper runs. The helper gets the step's validated reason (non-empty, at
+       most 4096 bytes) on stdin. Only after the helper exits does the wrapper write
+       `<label> <raw status>`. Every file is named by the agent's own
+       label, and a record carrying any other label is ignored, so a stale file can't satisfy a
+       step.
+    4. Each step's outcome is one of these kinds:
+       - `confirmed` (0) and `refused` (3)
+       - `unavailable` (any other status)
+       - `timeout` (no record by the deadline)
+       - `aborted` (Ctrl-C)
+       - `infrastructure_error` (launchctl failed to load it), which is never read as a helper
+         result
+    5. The steps:
+       1. In `gui/<uid>`, confirm, expecting `confirmed`.
+       2. In `gui/<uid>`, cancel, expecting `refused`.
+       3. In `user/<uid>`, the background domain, the raw result is recorded as a finding. Only
+          an observed "unavailable" is accepted. A dialog appearing there, confirmed or
+          cancelled, fails the run, and so does a load failure or a timeout, which observed
+          nothing. Either way the result is never "Accepted" and names the finding.
+       4. In `gui/<uid>`, the operator presses Ctrl-C with the dialog up. The agent must be
+          unloaded and the helper's pid gone.
+    6. Every agent goes into a private ledger in the temp root (domain, uid, label and paths)
+       before it loads. Cleanup unloads only those labels. It runs on success, failure, Ctrl-C or
+       a second signal, the second still bounded and owned-only. Nothing counts as gone without
+       proof:
+       - the agent is unloaded only when `launchctl print` answers "could not find service"
+         (113); any other failure is unknown
+       - the wrapper and the helper are each gone only when `kill(pid, 0)` answers ESRCH, or when
+         that pid now belongs to a process whose known start time differs from the one recorded
+         when the process was first seen. A permission error, or an inspection that answers
+         nothing, empty or malformed `ps` output included, is unknown. A live pid is never gone.
+       - no pid record proves a process never ran only for an agent that never loaded (a failed
+         bootstrap) and is proven unloaded. A loaded agent without a record is unknown, and a
+         step waits, bounded, for the helper's record before it says a dialog is up.
+       If anything is unknown or still running, the root (ledger, plist, logs) is kept, the run
+       reports `CLEANUP INCOMPLETE` with the exact labels, and it can't be Accepted, whatever
+       its steps showed.
+  - **The launchd step's scope:** a wrapper shell run as a throwaway LaunchAgent starts the
+    helper, in `gui/<uid>` and `user/<uid>`. It doesn't show the helper as the agent's direct
+    program, or a supervisor LaunchAgent spawning it. It is separate from the foreground run
+    (request binding) and the command/exec evidence (worker confinement).
+  - **The launchd self-test:** `--launchd --self-test` drives the same controller with a
+    stand-in launchctl and helper, loading nothing and running no compiler. CI runs it with
+    these faults: bootstrap failure, a stale record from another label, a timeout, an unload
+    that fails (the evidence is kept and named), unload and inspection both denied (nothing
+    counts as gone), an inspector that answers nothing while the helper still lives (unknown,
+    not gone), a dialog or a timeout in the background domain (not accepted), and a
+    second signal arriving during cleanup. The stand-in keeps its jobs in a registry private to
+    each run, and each test removes only the jobs and files that its own run created. Each step's cleanup targets only its own label, and a
+    signalled helper gets up to two seconds to exit before it counts as still running.
   - **Until it passes,** the gate stays locked and the CLI refuses control before connecting.
     Wiring a gate into `run` and unlocking the CLI is a separate, reviewed change after it.
 
