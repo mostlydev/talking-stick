@@ -3,7 +3,7 @@ import path from "node:path";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import type { Capabilities, HarnessAdapter, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
-import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
+import { spawnManagedProcess, UnsentInputError, workerEnvironment, type KeychainReader, type ManagedProcess } from "./process.js";
 
 // Grok headless: `grok agent --no-leader stdio`. Prompt, resume, interrupt and
 // approvals are unproven, so all four stay false on every platform. The child
@@ -72,6 +72,8 @@ export interface GrokAdapterOptions {
   command?: string;
   argsPrefix?: string[];
   startTimeoutMs?: number;
+  /** Test double for a Keychain env ref. Production reads the macOS item. */
+  readKeychain?: KeychainReader;
 }
 
 /** The native `grok` executable: an explicit absolute path, or the first on PATH, resolved. */
@@ -103,7 +105,7 @@ export class GrokAdapter implements HarnessAdapter {
     // Resuming would quietly open some other conversation. The daemon also
     // holds resume_failed before it calls start; this rejects a direct call.
     if (spec.resume_session_id) throw new Error("Grok cannot resume a session yet.");
-    const env = await workerEnvironment(spec);
+    const env = await workerEnvironment(spec, process.env, this.options.readKeychain);
     if (signal?.aborted) throw new Error("Grok start aborted.");
     const dataDir = spec.supervisor_env?.TALKING_STICK_DATA_DIR;
     if (!dataDir) throw new Error("A managed Grok worker needs its configured Talking Stick data directory.");
