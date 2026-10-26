@@ -221,11 +221,16 @@ describe("older state in the data directory", () => {
     const good = { version: 1, id: root.id, from: root.dataDir, committed: false,
       retired: path.join(root.dataDir, "supervisor-legacy-2026-10-26T01-00-00-000Z"), started_at: "t" };
     for (const journal of [{ ...good, id: "0".repeat(16) }, { ...good, from: "/elsewhere" }, { ...good, retired: "/etc/supervisor-legacy-x" },
-      { ...good, retired: path.join(root.dataDir, "anything") }, { ...good, committed: true }]) {
+      { ...good, retired: path.join(root.dataDir, "anything") }]) {
       fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify(journal));
       expect(() => migrateSupervisorState(dataDir, noLock, env)).toThrow();
       expect(fs.existsSync(legacyPaths(root.dataDir).database)).toBe(true);
     }
+    // Nor beside a root.json that no migration wrote.
+    fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify(good));
+    fs.writeFileSync(path.join(root.dir, "root.json"), JSON.stringify({ version: 1, id: root.id, data_dir: root.dataDir, created_at: "t" }));
+    expect(() => migrateSupervisorState(dataDir, noLock, env)).toThrow("no migration wrote");
+    expect(fs.existsSync(legacyPaths(root.dataDir).database)).toBe(true);
   });
 
   test("a recorded generation that may still run, or a populated native home, stops the migration", () => {
@@ -302,6 +307,30 @@ describe("older state in the data directory", () => {
     expect(plist).toContain(`<key>TT_SUPERVISOR_STATE_DIR</key>\n    <string>${path.dirname(root.dir)}</string>`);
     expect(supervisorRootFor(dataDir, { HOME: "/nowhere", TT_SUPERVISOR_STATE_DIR: path.dirname(root.dir) }).dir).toBe(root.dir);
   });
+
+  test.each(["journaled", "copied", "committed", "marked", "database_retired", "files_retired", "done"] as const)(
+    "a crash after %s never starts a second supervisor, and a rerun finishes with every row", (crashAt) => {
+      const { dataDir, env } = dirs();
+      legacyState(dataDir, { keepWriterOpen: true });
+      expect(() => migrateSupervisorState(dataDir, { ...noLock, step: (name) => { if (name === crashAt) throw new Error(`crash at ${name}`); } }, env))
+        .toThrow(`crash at ${crashAt}`);
+      // Another base never sees an empty data directory: the old state or the owner marker is always there.
+      const elsewhere = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "tt-rs3-"));
+      cleanup.push(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+      expect(() => prepareSupervisorRoot(dataDir, { ...env, TT_SUPERVISOR_STATE_DIR: elsewhere })).toThrow();
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+      // The rerun completes; nothing is lost or copied twice.
+      expect(["migrated", "nothing_to_migrate"]).toContain(migrateSupervisorState(dataDir, noLock, env).status);
+      const root = supervisorRootFor(dataDir, env);
+      expect(inspectSupervisorState(dataDir, env).kind).toBe("ready");
+      const moved = new SupervisorStore(path.join(root.dir, "supervisor.sqlite"));
+      cleanup.push(() => moved.close());
+      expect(moved.workers().map((worker) => worker.worker_id).sort()).toEqual(["w1", "w2"]);
+      const legacy = legacyPaths(root.dataDir);
+      expect(fs.existsSync(legacy.database)).toBe(false);
+      expect(fs.existsSync(legacy.dir)).toBe(false);
+      expect(JSON.parse(fs.readFileSync(legacy.marker, "utf8"))).toMatchObject({ root: root.dir, migrated: { retired: expect.any(String) } });
+    });
 
   test("state in both places is never merged or overwritten", () => {
     const { dataDir, env } = dirs();

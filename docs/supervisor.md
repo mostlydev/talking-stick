@@ -225,12 +225,16 @@ Then it:
    directory keeps only its held owner lock until then, so no older supervisor can start while
    its files move.
 
-A journal in the root records the phase. It is trusted only if it names this root's id, this
-data directory and a `supervisor-legacy-<time>` path inside it, and if its phase agrees with
-`root.json`.
+A journal in the root says a migration is in progress. It is trusted only if it names this root's
+id, this data directory and a `supervisor-legacy-<time>` path inside it, and if any `root.json`
+beside it was written by a migration. Whether the migration committed is `root.json`'s alone to
+say: it is the single commit point, so no second write can disagree with it. Right after the
+commit, and before any old file moves, the owner marker names the new root, so at every step
+another base finds either the old state or the marker, never an empty data directory.
 - **Interrupted before the commit:** a rerun discards that journal's own partial copy and starts
   over from the untouched old state.
-- **Interrupted after the commit:** a rerun only finishes the moves.
+- **Interrupted after the commit:** a rerun only finishes the moves. Tests crash it after each
+  durable step and rerun it.
 - **Never deleted or merged:** a root holding anything without a `root.json` or a valid journal
   is someone's state. Every command refuses it, and nothing is deleted. The same goes for state in
   both places. Either way, a human moves one aside. There is no reverse migration.
