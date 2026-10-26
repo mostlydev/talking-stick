@@ -55,6 +55,9 @@ changes will be called out under **Breaking changes**.
 
 ### Fixed
 
+- Codex queue delivery and its immediate start attempt now use the same configured daemon
+  socket, including `CODEX_HOME` and an explicit library socket override. Unloaded threads
+  keep their queued envelope; delivery does not resume or adopt an interactive session.
 - A member silent for a day was removed on the first reading that found its process gone. The
   hour's grace now runs from that first reading of the same exact process, so a single bad
   reading after a long silence can't remove a member or expire its room. A running reading or

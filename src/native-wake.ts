@@ -318,14 +318,15 @@ export async function deliverCodexQueue(request: NativeWakeRequest, options: Nat
   }
   if (request.can_queue && !request.can_queue()) return { outcome: "failed", error: "native_wake_unavailable", local: true };
   return new Promise((resolve) => {
-    const child = execFile("codex", ["queue", "--thread", request.address, "--message", request.text], {
+    // Keep queue insertion and the loaded-thread start on the same daemon.
+    const child = execFile("codex", ["queue", ...(options.codex_socket ? ["--remote", `unix://${options.codex_socket}`] : []), "--thread", request.address, "--message", request.text], {
       encoding: "utf8", timeout: options.timeout_ms ?? CODEX_QUEUE_TIMEOUT_MS,
       killSignal: "SIGKILL", maxBuffer: 64 * 1024, windowsHide: true,
       env: withoutClaudeInboxCredentials(options.env ?? process.env)
     }, (error, _stdout, stderr) => {
       if (!error) {
         if (!request.start_queued) { resolve({ outcome: "queued" }); return; }
-        void startQueuedCodexThread(request.address, undefined, options.timeout_ms ?? 3_000)
+        void startQueuedCodexThread(request.address, options.codex_socket ?? codexControlSocket(options.env), options.timeout_ms ?? 3_000)
           .then((started) => resolve({ outcome: started ? "woken" : "queued" }))
           .catch(() => resolve({ outcome: "queued" }));
         return;
