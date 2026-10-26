@@ -457,27 +457,37 @@ These limits come from Apple's documentation and this codebase. No dialog was op
   LocalAuthentication dialog, or how it fails without a console session (`notInteractive` is
   mapped to unavailable).
   - **The kit:** `node scripts/attended-gate-acceptance.mjs`, run by the operator from a checkout
-    after `npm run build`, in a plain terminal. It refuses inside a harness session or without a
-    terminal. It enables nothing:
-    1. It builds the helper (`swiftc -O`) into a fresh 0700 state root under `/tmp`.
-    2. It runs an in-process supervisor with disposable data and state directories and the
-       LocalAuthentication gate. Its only worker is the deterministic Codex app-server fixture:
-       read-only, with no model and no credentials.
+    after `npm run build`, in a plain terminal. It refuses inside a harness session (environment
+    and ancestry), off macOS or without a terminal, before it builds anything. It enables
+    nothing:
+    1. It creates one 0700 temp root under `/tmp`, and from then on a single cleanup owns
+       everything: the compile (bounded at 5 minutes), the helper, the prompt, the store and the
+       supervisor. That cleanup runs on success, failure, or SIGINT or SIGTERM, including Ctrl-C
+       at a prompt. A signal aborts at the next wait or decision. It is recorded as aborted, and
+       a dialog cut short counts as no one's decision.
+    2. It builds the helper into that root and runs an in-process supervisor there with the
+       LocalAuthentication gate. Its only worker is the deterministic Codex app-server fixture,
+       with no model and no credentials.
     3. It stops unless `gateIneligibility()` is empty.
-    4. It then walks the steps, printing each request's stored detail, its full digest and the
-       text its dialog should show:
+    4. Before each dialog it prints the request's stored detail, its full digest and the text the
+       dialog should show, then walks the steps:
        1. A confirmed approval is allowed and delivered.
        2. A replay is refused without any dialog.
-       3. Two requests with distinct native ids are pending at once. This uses the fixture's
+       3. Two requests with distinct native ids are pending at once, from the fixture's
           `two-approvals` mode.
-       4. A cancelled dialog on the first refuses, both stay pending, and no answer is sent.
-       5. Confirming the second decides only it, while the first stays pending.
-       In `--self-test` a sixth step shows that an unavailable gate, the helper's exit 2, settles
-       nothing either.
-    5. It writes a result JSON without secrets to the temp directory and removes everything else.
-  - **Self-test:** `--self-test` runs the same steps with a scripted gate and no dialog. CI runs it.
-  - **What it leaves out:** whether a launchd agent can present the dialog. It runs in the
-    operator's foreground terminal, so that remains a separate attended step.
+       4. Cancelling the first must come back as the gate's own `refused`. Unavailable,
+          ineligible or a transport failure doesn't count. Both requests stay pending, and
+          nothing reaches the worker.
+       5. Confirming the second decides and delivers only it.
+       In `--self-test` a sixth step requires `unavailable`, the helper's exit 2, and that it
+       settles nothing.
+    5. It writes a result JSON without secrets to the temp directory.
+  - **Its scope, as stated in its output and result:** the foreground dialog and its binding to
+    exact requests, nothing more. The fixture only reports a read-only sandbox, so an empty
+    `gateIneligibility()` exercises the algorithm, not OS-enforced worker confinement. Whether
+    launchd can present the dialog is also unproven here.
+  - **Self-test:** `--self-test` runs the same steps with a scripted gate and no dialog. CI runs
+    it, along with a real SIGTERM at a prompt and the harness refusal.
   - **Until it passes,** the gate stays locked and the CLI refuses control before connecting.
     Wiring a gate into `run` and unlocking the CLI is a separate, reviewed change after it.
 
