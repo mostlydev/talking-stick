@@ -34,6 +34,8 @@ export const SUPERVISOR_USAGE = [
 export class SupervisorCommandError extends Error {}
 
 const WORKER_ID = /^[a-z0-9][a-z0-9._-]{0,47}$/;
+const KNOWN_ACTIONS = new Set(["status", "approvals", "logs", "add", "pause", "resume", "stop", "restart", "remove", "interrupt",
+  "approve", "deny", "reconcile", "run", "install", "uninstall", "migrate"]);
 
 function fail(message: string): never {
   throw new SupervisorCommandError(message);
@@ -120,6 +122,11 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     if (harness || !actor.startsWith("human:")) fail(`Only a human can ${what.toLowerCase()}${harness ? `, not a ${harness} session` : ""}.`);
   };
   const now = () => new Date().toISOString();
+  // Unknown and locked actions refuse before anything is resolved or created.
+  if (!KNOWN_ACTIONS.has(action)) fail(`Unknown supervisor action ${action}.\n${SUPERVISOR_USAGE}`);
+  if (!["status", "approvals", "logs"].includes(action)) requireHuman(`Change the supervisor (${action})`);
+  // Fail closed until a verified human-control boundary exists (docs/supervisor.md).
+  if (action === "interrupt" || action === "approve" || action === "deny" || action === "reconcile") fail(CONTROL_LOCKED);
   // Reading never creates state; writing prepares the protected root, and both
   // refuse while older state in the data directory still waits to move.
   const readOnly = ["status", "approvals", "logs"].includes(action);
@@ -133,7 +140,6 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   // Until a scoped operator policy exists, only a human changes the
   // supervisor, including starting its daemon by hand; agents may read its
   // status, approvals and logs. launchd runs it with no harness around it.
-  if (!["status", "approvals", "logs"].includes(action)) requireHuman(`Change the supervisor (${action})`);
   if (action === "run") {
     await runSupervisor({ dataDir, adapters: builtinAdapters(), log: createFileLog(paths.log) });
     return;
@@ -169,8 +175,6 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     printResult(parsed, { log: paths.log, lines: text ? text.split("\n") : [] }, () => text || `No log yet at ${paths.log}.`);
     return;
   }
-  // Fail closed until a verified human-control boundary exists (docs/supervisor.md).
-  if (action === "interrupt" || action === "approve" || action === "deny" || action === "reconcile") fail(CONTROL_LOCKED);
   if (state.kind === "none" && readOnly) {
     // No supervisor state yet: an empty answer, without creating any.
     if (action === "approvals" && parsed.positionals[1] === "show") fail("No such approval request.");

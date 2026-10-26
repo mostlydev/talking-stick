@@ -216,10 +216,13 @@ describe("tt supervisor migrate", () => {
     expect(fs.existsSync(legacyPaths(dataDir).database)).toBe(true);
   });
 
-  test("status with no state at all answers empty and creates nothing", async () => {
+  test("status, a locked control or an unknown action with no state at all creates nothing", async () => {
     const { dataDir, env } = dirs();
     const run = cli(dataDir, env);
     expect(await run(["status"])).toEqual({ workers: [], pending_approvals: [] });
+    for (const args of [["approve", "a1"], ["deny", "a1"], ["interrupt", "w1"], ["reconcile", "b1"], ["frobnicate"]]) {
+      await expect(run(args)).rejects.toThrow();
+    }
     expect(fs.existsSync(supervisorRootFor(dataDir, env).dir)).toBe(false);
   });
 });

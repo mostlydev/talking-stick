@@ -175,8 +175,8 @@ endpoint. It is reached only through its own `tt` calls.
 
 Supervisor-owned state lives in a protected root, `<state>`, outside the tt data directory, since
 workers must be able to write the data directory for their own `tt` calls. That root holds the
-database, control token, sockets, owner lock, logs, worker native homes, process evidence and the
-gate helper.
+database, control token, sockets, owner lock, logs, worker native homes and process evidence. A
+gate helper, once one is installed, belongs there too.
 - **Location:** `~/Library/Application Support/talking-stick/supervisor/<id>` on macOS, and
   `$XDG_STATE_HOME/talking-stick/supervisor/<id>` elsewhere, falling back to `~/.local/state`. An
   absolute `TT_SUPERVISOR_STATE_DIR` overrides the base, which tests use.
