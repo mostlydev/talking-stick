@@ -245,9 +245,10 @@ export function migrateSupervisorState(dataDir: string, guards: MigrationGuards,
     releases.push(acquireLock(path.join(root.dir, "owner.lock")));
     // Re-read under the locks: what was seen before them may have changed.
     let journal = readJournal(root);
+    // Every attempt, a rerun included, checks that nothing may still be running before anything moves.
+    requireQuiescent(legacy, path.join(root.dir, "supervisor.sqlite"), guards.liveness);
     if (!journal) {
       if (inspectSupervisorState(dataDir, env).kind !== "legacy") throw new SupervisorStateError(`${root.dir} changed; nothing was migrated.`);
-      requireQuiescent(legacy, guards.liveness);
       journal = { version: 1, id: root.id, from: root.dataDir, committed: false, started_at: new Date().toISOString(),
         retired: path.join(root.dataDir, `supervisor-legacy-${new Date().toISOString().replace(/[:.]/g, "-")}`) };
       writeJournal(journalFile, journal);
@@ -292,9 +293,11 @@ export function migrateSupervisorState(dataDir: string, guards: MigrationGuards,
  * writes would lose what it writes after. Native homes stay put for now: a
  * native session index may record absolute paths that a move would break.
  */
-function requireQuiescent(legacy: ReturnType<typeof legacyPaths>, liveness: MigrationGuards["liveness"]): void {
-  if (fs.existsSync(legacy.database)) {
-    const db = openSqlite(legacy.database, { timeout: 5000 });
+function requireQuiescent(legacy: ReturnType<typeof legacyPaths>, copied: string, liveness: MigrationGuards["liveness"]): void {
+  // The old database while it is there; after a commit has moved it aside, the copy holds the same generations.
+  const database = fs.existsSync(legacy.database) ? legacy.database : fs.existsSync(copied) ? copied : null;
+  if (database) {
+    const db = openSqlite(database, { timeout: 5000 });
     try {
       const open = db.prepare("SELECT worker_id, generation, pid, process_started_at FROM generations WHERE ended_at IS NULL")
         .all() as Array<{ worker_id: string; generation: number; pid: number | null; process_started_at: string | null }>;

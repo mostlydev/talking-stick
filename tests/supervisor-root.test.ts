@@ -246,6 +246,30 @@ describe("older state in the data directory", () => {
     expect(inspectSupervisorState(dataDir, env).kind).toBe("legacy");
   });
 
+  test.each([false, true])("a rerun checks again for a generation that may run (journal committed: %s)", (committed) => {
+    const { dataDir, env } = dirs();
+    const legacy = legacyState(dataDir);
+    const store = new SupervisorStore(legacy.database);
+    store.recordGeneration({ worker_id: "w1", generation: 1, pid: 42, process_started_at: "t", pgid: null, session_id: null,
+      state: "busy", started_at: "t", delivery_token_hash: null });
+    store.close();
+    const root = supervisorRootFor(dataDir, env);
+    fs.mkdirSync(root.dir, { recursive: true });
+    if (committed) {
+      // After the commit the old database may already be aside; the copy still records the open generation.
+      fs.copyFileSync(legacy.database, path.join(root.dir, "supervisor.sqlite"));
+      fs.writeFileSync(path.join(root.dir, "root.json"), JSON.stringify({ version: 1, id: root.id, data_dir: root.dataDir,
+        created_at: "t", migrated_from_legacy: true }));
+      fs.mkdirSync(path.join(root.dataDir, "supervisor-legacy-2026-10-26T01-00-00-000Z"));
+      fs.renameSync(legacy.database, path.join(root.dataDir, "supervisor-legacy-2026-10-26T01-00-00-000Z", "supervisor.sqlite"));
+    }
+    fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify({ version: 1, id: root.id, from: root.dataDir, committed,
+      retired: path.join(root.dataDir, "supervisor-legacy-2026-10-26T01-00-00-000Z"), started_at: "t" }));
+    expect(() => migrateSupervisorState(dataDir, { acquireLock: () => () => {}, liveness: () => "alive" }, env)).toThrow("may still be running");
+    expect(fs.existsSync(path.join(root.dir, "migration.json"))).toBe(true);
+    expect(fs.existsSync(path.join(legacy.dir, "workers", "w1", "process-1.json"))).toBe(true);
+  });
+
   test("an ended generation, or one whose exact process is gone, doesn't stop it", () => {
     const { dataDir, env } = dirs();
     const legacy = legacyState(dataDir);

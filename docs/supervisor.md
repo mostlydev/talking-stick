@@ -205,7 +205,7 @@ includes reads, so nothing creates a new empty root that would hide the old stat
 
 `tt supervisor migrate` is human-only. It refuses while the launchd agent is installed, because
 launchd would restart a daemon on the old paths, and it takes both the old and the new owner
-locks. It also refuses, moving nothing, in two cases:
+locks. Every attempt, a rerun after a crash included, refuses and moves nothing in two cases:
 - Any recorded generation hasn't ended and its exact process is alive or unknown. A start intent
   with no pid or start time counts as unknown. A dead supervisor doesn't prove its children are
   dead, and a copy taken while one writes would lose what comes after. Stop it under the old
