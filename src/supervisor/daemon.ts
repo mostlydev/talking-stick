@@ -7,6 +7,7 @@ import type { RoomBridge } from "./room-bridge.js";
 import { resolveBundledSkillPath } from "../skill-install.js";
 import { displayText, safeDetail } from "./approval-detail.js";
 import { CONTROL_LOCKED_MESSAGE as CONTROL_LOCKED_ERROR } from "../service.js";
+import { workerIneligibility, type ProtectedSet } from "./eligibility.js";
 import { LOCKED_GATE, type GateRequest, type GateResult, type HumanGate } from "./human-gate.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
@@ -44,6 +45,11 @@ export interface SupervisorOptions {
   stateDir?: string;
   /** The human-control gate every control request must pass; locked by default. */
   gate?: HumanGate;
+  /**
+   * What no worker may be able to write while a gate is in use: the state
+   * root, the supervisor's program, its launch agent. Without it no gate acts.
+   */
+  protectedSet?: ProtectedSet;
   /** How long a human has to confirm one request; GATE_TIMEOUT_MS by default. */
   gateTimeoutMs?: number;
 }
@@ -63,7 +69,7 @@ export interface ControlRequest {
 
 export type ControlOutcome =
   | { ok: true; result: unknown }
-  | { ok: false; error: string; gate?: GateResult | "busy" | "changed" };
+  | { ok: false; error: string; gate?: GateResult | "busy" | "changed" | "ineligible" };
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -107,6 +113,7 @@ export class Supervisor {
   private readonly dataDir: string | null;
   private readonly gate: HumanGate;
   private readonly stateDir: string | null;
+  private readonly protectedSet: ProtectedSet | null;
   private readonly gateTimeoutMs: number;
   private gateBusy = false;
   /** This daemon's delivery tokens; only hashes are stored. */
@@ -137,6 +144,7 @@ export class Supervisor {
     this.dataDir = options.dataDir ?? null;
     this.gate = options.gate ?? LOCKED_GATE;
     this.stateDir = options.stateDir ?? null;
+    this.protectedSet = options.protectedSet ?? null;
     this.gateTimeoutMs = options.gateTimeoutMs ?? GATE_TIMEOUT_MS;
   }
 
@@ -289,6 +297,16 @@ export class Supervisor {
     this.probeUnknown.delete(worker.worker_id);
     if (supervised) this.deliveryTokens.set(worker.worker_id, { generation, ...supervised });
     handle.onEvent((event) => this.onEvent(worker.worker_id, generation, event));
+    // With a gate in use, a worker that could reach what the gate rests on never runs.
+    if (this.gate !== LOCKED_GATE) {
+      const reasons = this.ineligibility(worker.worker_id, handle);
+      if (reasons.length) {
+        this.store.audit(this.at(), "supervisor", "gate_ineligible", worker.worker_id, { generation, reasons });
+        this.store.hold(worker.worker_id, "gate_ineligible", this.at());
+        await this.stopHandle(worker.worker_id, handle);
+        return;
+      }
+    }
     // A control change while it started wins: the start was for an older version.
     const current = this.store.worker(worker.worker_id);
     if (!current || current.desired !== "running" || current.desired_version !== worker.desired_version) {
@@ -661,6 +679,11 @@ export class Supervisor {
     }
     const target = this.controlTarget(request);
     if ("error" in target) return { ok: false, error: target.error };
+    const ineligible = this.gateIneligibility();
+    if (ineligible.length) {
+      this.store.audit(this.at(), request.actor, `control_${request.action}_ineligible`, target.gate.worker_id, { reasons: ineligible });
+      return { ok: false, error: `No human gate can act here: ${ineligible.join(" ")}`, gate: "ineligible" };
+    }
     // One question at a time: a second request can't ride on, or bury, the first.
     if (this.gateBusy) {
       this.store.audit(this.at(), request.actor, `control_${request.action}_busy`, target.gate.worker_id, { ...target.gate });
@@ -680,7 +703,8 @@ export class Supervisor {
     if (result !== "confirmed") return { ok: false, error: "The human gate did not confirm this request.", gate: result };
     // What was confirmed must still be exactly what is there.
     const again = this.controlTarget(request);
-    if ("error" in again || again.handle !== target.handle || JSON.stringify(again.gate) !== JSON.stringify(target.gate)) {
+    if ("error" in again || again.handle !== target.handle || JSON.stringify(again.gate) !== JSON.stringify(target.gate) ||
+        this.gateIneligibility().length) {
       this.store.audit(this.at(), request.actor, `control_${request.action}_changed`, target.gate.worker_id, { ...target.gate });
       return { ok: false, error: "The request changed while it waited for confirmation.", gate: "changed" };
     }
@@ -691,6 +715,19 @@ export class Supervisor {
     const answer = await this.decideApproval({ approval_id: target.gate.approval_id!, worker_id: target.gate.worker_id,
       generation: target.gate.generation }, decision, request.actor, request.note);
     return { ok: true, result: { status: decision === "allow" ? "allowed" : "denied", answer } };
+  }
+
+  /** Why one live worker makes a gate ineligible. */
+  private ineligibility(workerId: string, handle: WorkerHandle): string[] {
+    if (!this.protectedSet) return ["the supervisor has no protected set, so nothing is known to be out of a worker's reach."];
+    const guarded = { ...this.protectedSet, paths: [...this.protectedSet.paths, ...(this.stateDir ? [this.stateDir] : [])] };
+    return [...guarded.unresolved.map((what) => `${what} couldn't be resolved.`), ...workerIneligibility(workerId, handle, guarded)];
+  }
+
+  /** Every reason, over every live generation, a gate may not act; checked before asking and again after. */
+  gateIneligibility(): string[] {
+    if (!this.protectedSet) return ["the supervisor has no protected set, so nothing is known to be out of a worker's reach."];
+    return [...new Set([...this.handles].flatMap(([workerId, handle]) => this.ineligibility(workerId, handle)))];
   }
 
   /** The exact live thing a control request names, as the gate will describe it. */

@@ -1,4 +1,4 @@
-import type {
+import type { Confinement,
   Capabilities, Harness, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec
 } from "../../src/supervisor/adapter.js";
 
@@ -16,6 +16,11 @@ export class FakeHandle implements WorkerHandle {
   readonly submitted: Array<{ input_id: string; text: string; mode: InputMode }> = [];
   readonly answers: Array<{ id: string; decision: "allow" | "deny" }> = [];
   readonly interrupts: Array<string | undefined> = [];
+  /** What this fake native process reports about its write confinement. */
+  confined: Confinement = { kind: "read_only" };
+  closure: { paths: string[]; unresolved: string[] } = { paths: [], unresolved: [] };
+  confinement(): Confinement { return this.confined; }
+  executionClosure(): { paths: string[]; unresolved: string[] } { return this.closure; }
   stopped = false;
   private session: string | null;
   private listeners: Array<(event: WorkerEvent) => void> = [];
@@ -59,6 +64,8 @@ export class FakeAdapter implements HarnessAdapter {
   failStart: ((spec: WorkerSpec) => boolean) | null = null;
   /** Resolves a start only when the test releases it. */
   holdStart: Promise<void> | null = null;
+  /** The confinement the next started handle reports. */
+  nextConfinement: Confinement | null = null;
   private nextPid = 1000;
 
   constructor(harness: Harness = "claude") {
@@ -83,6 +90,7 @@ export class FakeAdapter implements HarnessAdapter {
     }
     if (this.failStart?.(spec)) throw new Error("fake start failure");
     const handle = new FakeHandle(spec, generation, pid);
+    if (this.nextConfinement) handle.confined = this.nextConfinement;
     this.handles.push(handle);
     return handle;
   }

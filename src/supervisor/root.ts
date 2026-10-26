@@ -329,7 +329,7 @@ function requireQuiescent(legacy: ReturnType<typeof legacyPaths>, copied: string
       const dir = path.join(workers, worker, home);
       if (fs.existsSync(dir) && fs.readdirSync(dir).length) {
         throw new SupervisorStateError(`${dir} holds native session state, which can't be relocated safely yet. ` +
-          "Nothing was moved; remove that worker under the old supervisor first.");
+          "Nothing was moved. Stop that worker, then archive its native home elsewhere by hand; removing the worker leaves the directory.");
       }
     }
   }

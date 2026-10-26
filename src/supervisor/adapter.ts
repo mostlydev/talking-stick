@@ -100,7 +100,17 @@ export interface WorkerHandle {
   probe(): Promise<"alive" | "gone" | "unknown">;
   /** Stdin EOF, then the process group, then SIGKILL after the grace. */
   stop(graceMs: number): Promise<void>;
+  /** Where the native process can write, as it reported; absent means unconfined. */
+  confinement?(): Confinement;
+  /** What runs this worker at its next start: its executable and anything it loads from a prepared home. */
+  executionClosure?(): { paths: string[]; unresolved: string[] };
 }
+
+/** A worker's write confinement, from the native process's own report of its policy. */
+export type Confinement =
+  | { kind: "read_only" }
+  | { kind: "workspace_write"; writable: string[] }
+  | { kind: "unconfined"; reason: string };
 
 /** The child's exact identity, reported the moment it exists. */
 export interface SpawnedProcess {

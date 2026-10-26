@@ -399,17 +399,34 @@ These limits come from Apple's documentation and this codebase. No dialog was op
   `dist/`, the helper, the launch agent plist or its data directory. A same-user process that can
   write those can replace the gate itself, and an unconfined same-user worker defeats any same-user
   gate.
-- **No current worker layout meets that.** Nothing may enable a gate on today's layout.
-  - A Codex worker is granted its tt data directory as an extra writable root, so `tt` can write
-    the room database. The supervisor's own state now sits outside it (see "Where it lives"), but
-    nothing yet checks a worker's effective writable roots, its executables, its startup files or
-    the supervisor's program against that state. That is the next slice, gate eligibility.
-  - A Claude worker runs `tt` outside any sandbox.
-  - Before any gate is enabled, the supervisor's own state and code must sit outside every worker's
-    writable roots, behind a proven boundary: a storage split with mediated access, or workers
-    running as a separate macOS user.
-  - An attended acceptance shows only that the dialog works. It doesn't show confinement, so it
-    runs against a fixture proven to be confined or read-only.
+- **Gate eligibility (`src/supervisor/eligibility.ts`).** A gate other than the locked one may
+  act only while every live worker is provably unable to write what the gate rests on.
+  - **Protected set:** the state root, the runtime the supervisor runs on (its real
+    `process.execPath`), the package it was loaded from (or the standalone root), and the launch
+    agent plist with its directory. Each worker adds its own closure: its native executable, that
+    executable's package root, and any explicitly prepared `CODEX_HOME`, whose config and hooks
+    run at the next start outside any tool sandbox. Anything unresolvable makes the gate
+    ineligible.
+  - **Confinement comes from the native process, never the spec.** Codex's `thread/start` and
+    `thread/resume` return the effective sandbox. `workspaceWrite` covers the cwd, every
+    `writableRoots` entry, `/tmp` unless `excludeSlashTmp`, and the child's `TMPDIR` unless
+    `excludeTmpdirEnvVar`. `readOnly` writes nothing. `dangerFullAccess`, `externalSandbox`, or an
+    incompletely described policy is unconfined. Claude and Grok report no confinement, so they are
+    always ineligible.
+  - **Conflict:** a writable root conflicts with a protected path when it is that path, an
+    ancestor of it (which could replace it), or inside it. Both are compared canonical.
+  - **Enforcement, only with a gate other than the locked one:** a worker found ineligible right
+    after it starts is stopped and held `gate_ineligible`. Every control request checks all live
+    workers before asking and again after the answer, so a worker that becomes ineligible while
+    the human is asked voids the confirmation. With no protected set, nothing is eligible.
+  - **What this leaves out:** an approved escalation runs outside the sandbox, and a human
+    approving one bypasses the boundary for that command. A Codex worker whose writable roots
+    include the tt data directory is eligible only while no protected path lies under it, or
+    under its cwd or `/tmp`. The state root therefore must not be under `/tmp`.
+  - **Still needed before enabling anything:** an attended acceptance of the dialog on a
+    confined, eligible fixture. Nothing in the shipped build selects a gate.
+- **An attended acceptance shows only that the dialog works.** It doesn't show confinement, so
+  it runs against a fixture that the eligibility check above passes.
 - **Unproven until attended.** It hasn't been shown that a launchd user agent can present the
   LocalAuthentication dialog, or how it fails without a console session (`notInteractive` is
   mapped to unavailable).
@@ -628,6 +645,6 @@ was adopted or interrupted to test this boundary.
 | S2b | Claude | Claude stream-json adapter | merged (#212) |
 | S2c | Codex | Codex app-server adapter and shared process helpers | merged (#210) |
 | S2a4 | Claude | human control: the `HumanGate` the daemon must pass, the LocalAuthentication helper, attack tests; locked until attended acceptance | merged (#216) |
-| S2a5a | Claude | protected supervisor state: one resolver, a root outside the data directory, crash-safe `migrate` | this change |
-| S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | next |
+| S2a5a | Claude | protected supervisor state: one resolver, a root outside the data directory, crash-safe `migrate` | merged (#218) |
+| S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | this change |
 | S2d | Grok | Grok stdio adapter (the proven subset only) | this change |
