@@ -429,7 +429,10 @@ OpenCode, and Antigravity wake only through cmux.
 - Limits: same machine and OS user only. Claude's `crossSessionInbound: refuse` setting drops the
   prompt silently. Codex needs a live local harness process for the app-server start attempt;
   unavailable or unloaded threads keep the queued message. The start call is an experimental
-  Codex 0.157.1 API, so unsupported versions retain queue-only behavior.
+  Codex API (also checked against CLI 0.163.0), so unsupported versions retain queue-only behavior.
+  Queue insertion and the start attempt use the same configured local daemon: `CODEX_HOME`
+  selects the default socket, and a library `codex_socket` override also selects the queue CLI
+  endpoint through `--remote unix://PATH`. A `queued` result does not mean a native turn started.
 - API users: service writes queue wakes, and `TalkingStickCommands.flushWakes()` or
   `sendMessageAndWake()` delivers them asynchronously.
 

@@ -453,6 +453,21 @@ show that an existing terminal session whose native conversation was unloaded ge
 hands-free. That gap, from the membership recovery work, stays open, and neither the overnight
 incident nor existing sessions are claimed solved by headless-worker tests.
 
+For unsupervised Codex, Talking Stick queues the envelope once, then starts that stored queue
+item only when a read of the exact thread says it is loaded and no turn is running. Both steps
+use the same configured daemon socket. An unavailable or `notLoaded` thread remains `queued`,
+not `woken`; neither process liveness nor queue acceptance proves model awareness.
+
+The [App Server protocol](https://learn.chatgpt.com/docs/app-server) distinguishes a read-only
+`thread/read` from `thread/resume`, which loads a saved thread and subscribes the requesting
+client. The installed 0.163.0 schema exposes no resume or frontend-ownership option on
+`thread/queue/add` or `thread/queue/start`. A local authenticated client can resume a saved
+thread, but these interfaces alone do not establish that its existing TUI has reattached or
+that the original approval and hook routes are still owned. Talking Stick therefore does not
+resume or adopt an unsupervised session during delivery. A durable, session-owned reconnect
+contract is still needed before claiming hands-free recovery of that case. No live session
+was adopted or interrupted to test this boundary.
+
 ## Slices
 
 | Slice | Owner | Contents | State |
