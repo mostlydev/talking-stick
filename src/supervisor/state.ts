@@ -16,7 +16,7 @@ export type GenerationState =
 
 export type HoldReason =
   | "crash_loop" | "prior_generation_alive" | "prior_generation_unknown"
-  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed";
+  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed" | "gate_ineligible";
 
 export interface WorkerRow {
   worker_id: string;

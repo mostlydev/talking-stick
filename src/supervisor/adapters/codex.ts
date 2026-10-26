@@ -5,7 +5,8 @@ import { createRequire } from "node:module";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import { approvalDetail, approvalSummary, displayText } from "../approval-detail.js";
-import type { Capabilities, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
+import { packageRoot } from "../eligibility.js";
+import type { Capabilities, Confinement, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
 type Json = Record<string, unknown>;
@@ -117,6 +118,28 @@ export class CodexAdapter implements HarnessAdapter {
     const supported = process.platform !== "win32";
     return { prompt: supported, resume: supported, interrupt: supported, approvals: supported };
   }
+  /**
+   * The executable a start would run and any prepared home it loads, resolved
+   * from the spec's own references without reading a secret; a Keychain-held
+   * PATH, CODEX_EXECUTABLE or CODEX_HOME can't be known this way.
+   */
+  startClosure(spec: WorkerSpec): { paths: string[]; unresolved: string[] } {
+    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin" };
+    for (const ref of spec.env) {
+      if (!["PATH", "CODEX_EXECUTABLE", "CODEX_HOME"].includes(ref.name)) continue;
+      if (ref.from === "keychain") return { paths: [], unresolved: [`${ref.name}, held in the Keychain`] };
+      env[ref.name] = ref.from === "literal" ? ref.value : process.env[ref.name];
+    }
+    let command: string;
+    try { command = this.options.command ?? resolveCodexExecutable(env); }
+    catch { return { paths: [], unresolved: ["its native executable"] }; }
+    const paths = [command];
+    const root = packageRoot(command);
+    if (root) paths.push(root);
+    if (env.CODEX_HOME) paths.push(path.resolve(env.CODEX_HOME));
+    return { paths, unresolved: [] };
+  }
+
   async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void,
     signal?: AbortSignal): Promise<WorkerHandle> {
     if (spec.harness !== "codex" || spec.permissions.harness !== "codex") throw new Error("Codex needs explicit Codex permissions.");
@@ -124,6 +147,7 @@ export class CodexAdapter implements HarnessAdapter {
     if (signal?.aborted) throw new Error("Codex start aborted.");
     // No implicit user config, plugins, hooks or approval rules. An operator
     // may explicitly reference a prepared CODEX_HOME; auth is never copied.
+    const preparedHome = env.CODEX_HOME ? path.resolve(env.CODEX_HOME) : null;
     if (!env.CODEX_HOME) {
       if (!spec.state_dir) throw new Error("A managed Codex worker needs the supervisor's state directory.");
       env.CODEX_HOME = path.join(spec.state_dir, "workers", spec.worker_id, "codex");
@@ -136,7 +160,9 @@ export class CodexAdapter implements HarnessAdapter {
     if (evidence) env.TT_SUPERVISOR_PROCESS_FILE = evidence.file;
     const handle = new CodexHandle(spec, generation, this.options, env.CODEX_HOME);
     try {
-      const child = await spawnManagedProcess({ command: this.options.command ?? resolveCodexExecutable(env),
+      const command = this.options.command ?? resolveCodexExecutable(env);
+      handle.closure = { command, preparedHome, tmpdir: env.TMPDIR ?? null };
+      const child = await spawnManagedProcess({ command,
         args: [...(this.options.argsPrefix ?? []), "app-server", "--listen", "stdio://"], cwd: spec.cwd, env, signal,
         onSpawn: (process) => {
           evidence?.record(process);
@@ -177,6 +203,10 @@ class CodexHandle implements WorkerHandle {
   private disconnected = false;
   private resumeFailed = false;
   private reloading: Promise<boolean> | null = null;
+  private effective: Confinement = { kind: "unconfined", reason: "Codex has not reported its sandbox yet" };
+  private reported = "";
+  /** What starts this worker: set before the spawn. */
+  closure: { command: string; preparedHome: string | null; tmpdir: string | null } | null = null;
   readonly generation: number;
   constructor(private readonly spec: WorkerSpec, generation: number, private readonly options: CodexAdapterOptions,
     private readonly nativeHome: string) {
@@ -187,6 +217,24 @@ class CodexHandle implements WorkerHandle {
   get processStartedAt(): string { return this.child!.processStartedAt; }
   get pgid(): number { return this.child!.pgid; }
   sessionId(): string | null { return this.thread; }
+  confinement(): Confinement { return this.effective; }
+  private setConfinement(next: Confinement): void {
+    this.effective = next;
+    // Reported when it differs from what the supervisor last heard, never for the placeholder.
+    if (JSON.stringify(next) !== this.reported) {
+      this.reported = JSON.stringify(next);
+      this.emit({ type: "confinement" });
+    }
+  }
+  executionClosure(): { paths: string[]; unresolved: string[] } {
+    if (!this.closure) return { paths: [], unresolved: ["its native executable"] };
+    const paths = [this.closure.command];
+    const root = packageRoot(this.closure.command);
+    if (root) paths.push(root);
+    // A prepared home's config and hooks run at the next start, outside any tool sandbox.
+    if (this.closure.preparedHome) paths.push(this.closure.preparedHome);
+    return { paths, unresolved: [] };
+  }
   attach(child: ManagedProcess): void { this.child = child; this.rpc.process = child; }
   receive(line: string): void { this.rpc.receive(line); }
   onEvent(listener: (event: WorkerEvent) => void): void {
@@ -216,6 +264,9 @@ class CodexHandle implements WorkerHandle {
   }
 
   private async openThread(resume?: string): Promise<void> {
+    // Until this thread reports its sandbox nothing earlier vouches for it, so a check meanwhile sees
+    // unconfined. That isn't reported: only what the open returns is, so a pending open stops no one.
+    this.effective = { kind: "unconfined", reason: "Codex has not reported the sandbox of its latest thread open" };
     const timeout = this.options.startTimeoutMs ?? 15_000;
     const permissions = this.spec.permissions;
     if (permissions.harness !== "codex") throw new Error("Invalid Codex permission settings.");
@@ -240,6 +291,7 @@ class CodexHandle implements WorkerHandle {
       throw new Error("Codex did not establish the explicit Talking Stick metadata writable root.");
     }
     if (object(thread.status).type !== "idle") throw new Error("Codex did not establish an idle owned session.");
+    this.setConfinement(effectiveConfinement(sandbox, typeof result.cwd === "string" ? result.cwd : this.spec.cwd, this.closure?.tmpdir ?? null));
     this.thread = thread.id;
     this.emit({ type: "session", session_id: this.thread });
   }
@@ -444,4 +496,21 @@ class CodexHandle implements WorkerHandle {
     this.emit({ type: "exited", code, signal });
   }
   async stop(graceMs: number): Promise<void> { await this.child?.stop(graceMs); this.rpc.close(); }
+}
+
+/**
+ * Where Codex's workspace-write sandbox lets commands write, from the policy it
+ * returned: the cwd, each writable root, and the temp directories it doesn't
+ * exclude. Any other policy, or one it didn't describe completely, is unconfined.
+ */
+export function effectiveConfinement(sandbox: Record<string, unknown>, cwd: string, tmpdir: string | null): Confinement {
+  if (sandbox.type === "readOnly") return { kind: "read_only" };
+  if (sandbox.type !== "workspaceWrite") return { kind: "unconfined", reason: `its sandbox is ${String(sandbox.type ?? "unreported")}` };
+  const roots = sandbox.writableRoots ?? [];
+  if (!Array.isArray(roots) || roots.some((root) => typeof root !== "string" || !path.isAbsolute(root)) || !path.isAbsolute(cwd)) {
+    return { kind: "unconfined", reason: "its writable roots were not reported as absolute paths" };
+  }
+  return { kind: "workspace_write", writable: [cwd, ...roots as string[],
+    ...(sandbox.excludeSlashTmp === true ? [] : ["/tmp"]),
+    ...(sandbox.excludeTmpdirEnvVar === true || !tmpdir ? [] : [tmpdir])] };
 }

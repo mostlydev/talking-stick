@@ -40,6 +40,7 @@ async function setup(gate: HumanGate, gateTimeoutMs?: number) {
   cleanup.push(() => store.close());
   const adapter = new FakeAdapter("claude");
   const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone", gate,
+    protectedSet: { paths: [path.join(dataDir, "protected")], unresolved: [] },
     ...(gateTimeoutMs ? { gateTimeoutMs } : {}) });
   supervisor.reconcileStartup();
   const spec: WorkerSpec = { worker_id: "w1", harness: "claude", cwd: dataDir, permissions: { harness: "claude", mode: "default" }, env: [] };

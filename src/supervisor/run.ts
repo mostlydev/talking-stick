@@ -12,6 +12,9 @@ import { createRoomBridge } from "./room-bridge.js";
 import { SupervisorStore, supervisorDatabasePath } from "./state.js";
 import type { HumanGate } from "./human-gate.js";
 import { prepareSupervisorRoot } from "./root.js";
+import { supervisorProgramPaths, type ProtectedSet } from "./eligibility.js";
+import { launchAgentPath } from "./launchd.js";
+import { isStandalone, standaloneRoot } from "../standalone-mode.js";
 
 // The supervisor daemon: one per data directory, in the foreground. launchd
 // keeps it running when installed; tt supervisor run starts it by hand.
@@ -43,6 +46,13 @@ export function supervisorPaths(stateDir: string) {
     /** Only what escapes the daemon's own log, such as a crash; launchd holds it open. */
     launchdLog: path.join(dir, "logs", "launchd.log")
   };
+}
+
+/** The supervisor's program and its launch agent; the daemon adds its state root. */
+export function supervisorProtectedSet(): ProtectedSet {
+  const program = supervisorProgramPaths({ standaloneRoot: isStandalone() ? standaloneRoot() : null });
+  const plist = launchAgentPath();
+  return { paths: [...program.paths, plist, path.dirname(plist)], unresolved: program.unresolved };
 }
 
 /** Exact-process liveness: the pid runs and started when recorded. */
@@ -136,7 +146,7 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
     if (options.signal?.aborted) stopRequested();
     const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
       bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir, bootstrap: true,
-      stateDir: root.dir, gate: options.gate });
+      stateDir: root.dir, gate: options.gate, protectedSet: supervisorProtectedSet() });
     cleanups.push(() => supervisor.shutdown());
     const control = async (message: ControlMessage): Promise<ControlAnswer> => {
       const presented = Buffer.from(message.token);

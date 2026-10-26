@@ -73,6 +73,8 @@ export type WorkerEvent =
   | { type: "state"; state: "idle" | "awaiting_input" | "auth_required" | "disconnected" }
   | { type: "resume_failed" }
   | { type: "request_refused"; method: string }
+  /** The native process reported a new write confinement, such as on a resume; the supervisor checks it at once. */
+  | { type: "confinement" }
   /** The harness broke its protocol, such as naming another session: the supervisor holds the worker. */
   | { type: "protocol_error" }
   /** A protocol queue overflowed: the supervisor holds the worker. */
@@ -100,7 +102,17 @@ export interface WorkerHandle {
   probe(): Promise<"alive" | "gone" | "unknown">;
   /** Stdin EOF, then the process group, then SIGKILL after the grace. */
   stop(graceMs: number): Promise<void>;
+  /** Where the native process can write, as it reported; absent means unconfined. */
+  confinement?(): Confinement;
+  /** What runs this worker at its next start: its executable and anything it loads from a prepared home. */
+  executionClosure?(): { paths: string[]; unresolved: string[] };
 }
+
+/** A worker's write confinement, from the native process's own report of its policy. */
+export type Confinement =
+  | { kind: "read_only" }
+  | { kind: "workspace_write"; writable: string[] }
+  | { kind: "unconfined"; reason: string };
 
 /** The child's exact identity, reported the moment it exists. */
 export interface SpawnedProcess {
@@ -110,6 +122,11 @@ export interface SpawnedProcess {
 }
 
 export interface HarnessAdapter {
+  /**
+   * What a start of this spec would run, resolved before any spawn: its native
+   * executable and anything it loads at start. Absent means it can't be known.
+   */
+  startClosure?(spec: WorkerSpec): { paths: string[]; unresolved: string[] };
   readonly harness: Harness;
   capabilities(): Capabilities;
   /**
