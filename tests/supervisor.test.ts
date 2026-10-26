@@ -552,13 +552,13 @@ describe("restart and status", () => {
   });
 });
 
-test("an overflow holds the worker and stops it", async () => {
+test.each(["overflow", "protocol_error"] as const)("a worker's %s holds the worker and stops it", async (type) => {
   const { store, adapter, supervisor, spec } = setup();
   store.addWorker(spec, "human:op", "t");
   await supervisor.tick();
-  adapter.last.emit({ type: "overflow" });
+  adapter.last.emit({ type });
   await new Promise((resolve) => setTimeout(resolve, 5));
-  expect(store.worker("w1")!.hold_reason).toBe("overflow");
+  expect(store.worker("w1")!.hold_reason).toBe(type);
   expect(adapter.last.stopped).toBe(true);
 });
 

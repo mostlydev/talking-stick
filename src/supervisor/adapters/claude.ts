@@ -103,10 +103,12 @@ class ClaudeHandle implements WorkerHandle {
   private controls = new Map<string, ControlWaiter>();
   private pendingApprovals = new Map<string, Json>();
   /** The input being run, and whether its turn has shown output yet. */
-  private turn: { input_id: string; started: boolean; interrupted: boolean } | null = null;
+  private turn: { input_id: string; started: boolean; interruptRequested: boolean } | null = null;
   private turnEnds: Array<(outcome: "success" | "error" | "interrupted" | "unconfirmed") => void> = [];
   private closed = false;
   private overflowed = false;
+  /** Set once Claude names a session other than this worker's: nothing it says is used after that. */
+  private faulted = false;
   readonly generation: number;
 
   constructor(private readonly spec: WorkerSpec, generation: number, private readonly session: string,
@@ -163,9 +165,16 @@ class ClaudeHandle implements WorkerHandle {
   }
 
   receive(line: string): void {
+    if (this.faulted) return;
     let message: Json;
     try { message = object(JSON.parse(line)); } catch { this.overflow(); return; }
     const type = message.type;
+    // Claude names its session at each turn's init and result; any other session is a fault.
+    const init = type === "system" && message.subtype === "init";
+    if ((init || type === "result") && (message.session_id !== undefined || init) && message.session_id !== this.session) {
+      this.fault();
+      return;
+    }
     if (type === "control_response") {
       const response = object(message.response);
       const id = typeof response.request_id === "string" ? response.request_id : null;
@@ -212,12 +221,21 @@ class ClaudeHandle implements WorkerHandle {
     this.emit({ type: "approval_requested", native_request_id: id, tool, summary });
   }
 
+  /** Holds the worker and ends it, leaving any running input unconfirmed. */
+  private fault(): void {
+    this.faulted = true;
+    this.emit({ type: "protocol_error" });
+    this.failControls();
+    void this.child?.stop(100).catch(() => {});
+  }
+
   private finish(message: Json): void {
     const turn = this.turn;
     if (!turn) return;
     this.turn = null;
+    // Claude ends an interrupted turn as an aborted stream; any other failure is an error.
     const outcome = message.subtype === "success" && message.is_error !== true ? "success"
-      : turn.interrupted ? "interrupted" : "error";
+      : turn.interruptRequested && message.terminal_reason === "aborted_streaming" ? "interrupted" : "error";
     if (!turn.started) this.emit({ type: "turn_started", native_turn_id: turn.input_id, input_id: turn.input_id });
     // An approval the turn ended with was settled by the harness.
     for (const id of this.pendingApprovals.keys()) this.emit({ type: "approval_resolved", native_request_id: id });
@@ -231,12 +249,14 @@ class ClaudeHandle implements WorkerHandle {
     // A message sent while Claude is busy would wait for its own turn, so a
     // steer is refused, and so is a second turn while one runs.
     if (this.closed || input.mode === "steer" || this.turn) return "rejected";
-    this.turn = { input_id: input.input_id, started: false, interrupted: false };
+    this.turn = { input_id: input.input_id, started: false, interruptRequested: false };
     try {
       await this.child!.write(JSON.stringify({ type: "user", message: { role: "user", content: input.text } }));
     } catch (error) {
+      if (!(error instanceof UnsentInputError)) return "uncertain";
+      // Only input proven unsent frees the turn; otherwise it is Claude's until its result or exit.
       this.turn = null;
-      return error instanceof UnsentInputError ? "rejected" : "uncertain";
+      return "rejected";
     }
     this.emit({ type: "input", input_id: input.input_id, outcome: "written" });
     return "written";
@@ -245,17 +265,25 @@ class ClaudeHandle implements WorkerHandle {
   async interrupt(): Promise<"interrupted" | "not_busy" | "unsupported"> {
     const turn = this.turn;
     if (!turn) return "not_busy";
-    turn.interrupted = true;
+    turn.interruptRequested = true;
     // Waits for the turn's end before asking, since its result can arrive before the reply.
     let timer: NodeJS.Timeout | undefined;
+    let waiter: (value: "success" | "error" | "interrupted" | "unconfirmed") => void = () => {};
+    const forget = () => {
+      clearTimeout(timer);
+      const index = this.turnEnds.indexOf(waiter);
+      if (index >= 0) this.turnEnds.splice(index, 1);
+    };
     const ended = new Promise<string>((resolve) => {
-      timer = setTimeout(() => resolve("unconfirmed"), this.options.requestTimeoutMs ?? 10_000);
-      this.turnEnds.push((value) => { clearTimeout(timer); resolve(value); });
+      waiter = (value) => { clearTimeout(timer); resolve(value); };
+      timer = setTimeout(() => { forget(); resolve("unconfirmed"); }, this.options.requestTimeoutMs ?? 10_000);
+      this.turnEnds.push(waiter);
     });
     try {
       await this.control({ subtype: "interrupt" }, this.options.requestTimeoutMs ?? 10_000);
     } catch {
-      clearTimeout(timer);
+      forget();
+      if (this.turn === turn) turn.interruptRequested = false;
       return "unsupported";
     }
     const outcome = await ended;

@@ -155,6 +155,52 @@ describe("approvals", () => {
   });
 });
 
+// Codex's review of #212 (#32748).
+describe("review regressions", () => {
+  test("an uncertain user write fences the turn instead of accepting a second input", async () => {
+    const f = fixture("slow");
+    const handle = await f.start();
+    const child = (handle as unknown as { child: { write(line: string): Promise<void> } }).child;
+    const write = child.write.bind(child);
+    child.write = async (line) => { await write(line); throw new Error("write may have reached Claude"); };
+    expect(await handle.submit({ input_id: "unknown-first", text: "first", mode: "start_turn" })).toBe("uncertain");
+    child.write = write;
+    expect(await handle.submit({ input_id: "second", text: "second", mode: "start_turn" })).toBe("rejected");
+  });
+
+  test("a refused interrupt does not relabel an unrelated failure as interrupted", async () => {
+    const f = fixture("interrupt-rejected");
+    const handle = await f.start();
+    await handle.submit({ input_id: "i1", text: "long", mode: "start_turn" });
+    await until(() => f.events.some((event) => event.type === "turn_started"));
+    expect(await handle.interrupt()).toBe("unsupported");
+    (handle as unknown as { receive(line: string): void }).receive(JSON.stringify({ type: "result", subtype: "error_during_execution",
+      is_error: true, terminal_reason: "aborted_streaming", session_id: handle.sessionId(), errors: ["provider unavailable"] }));
+    expect(f.events).toContainEqual({ type: "turn_completed", native_turn_id: "i1", outcome: "error" });
+  });
+
+  test("a failed turn is not called interrupted without Claude's aborted-stream result", async () => {
+    const f = fixture("slow");
+    const handle = await f.start();
+    await handle.submit({ input_id: "i1", text: "long", mode: "start_turn" });
+    await until(() => f.events.some((event) => event.type === "turn_started"));
+    const interrupted = handle.interrupt();
+    (handle as unknown as { receive(line: string): void }).receive(JSON.stringify({ type: "result", subtype: "error_during_execution",
+      is_error: true, session_id: handle.sessionId(), errors: ["provider unavailable"] }));
+    expect(await interrupted).toBe("unsupported");
+    expect(f.events).toContainEqual({ type: "turn_completed", native_turn_id: "i1", outcome: "error" });
+  });
+
+  test.each(["foreign-session", "foreign-result"])("a %s holds the worker and never completes its input", async (mode) => {
+    const f = fixture(mode);
+    const handle = await f.start();
+    await handle.submit({ input_id: "i1", text: "x", mode: "start_turn" });
+    await until(() => f.events.some((event) => event.type === "protocol_error"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(f.events.some((event) => event.type === "turn_completed")).toBe(false);
+  });
+});
+
 test("the supervisor enrols a fresh Claude worker with one bootstrap turn", async () => {
   const f = fixture();
   const store = new SupervisorStore(supervisorDatabasePath(f.root));
