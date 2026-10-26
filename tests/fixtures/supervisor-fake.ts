@@ -15,6 +15,7 @@ export class FakeHandle implements WorkerHandle {
   submitOutcome: InputOutcome | (() => Promise<InputOutcome>) = "accepted";
   readonly submitted: Array<{ input_id: string; text: string; mode: InputMode }> = [];
   readonly answers: Array<{ id: string; decision: "allow" | "deny" }> = [];
+  readonly interrupts: Array<string | undefined> = [];
   stopped = false;
   private session: string | null;
   private listeners: Array<(event: WorkerEvent) => void> = [];
@@ -38,7 +39,10 @@ export class FakeHandle implements WorkerHandle {
     this.submitted.push(input);
     return typeof this.submitOutcome === "function" ? this.submitOutcome() : this.submitOutcome;
   }
-  async interrupt(): Promise<"interrupted" | "not_busy" | "unsupported"> { return "interrupted"; }
+  async interrupt(expectedTurnId?: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
+    this.interrupts.push(expectedTurnId);
+    return "interrupted";
+  }
   async answerApproval(id: string, decision: "allow" | "deny"): Promise<void> { this.answers.push({ id, decision }); }
   async probe(): Promise<"alive" | "gone" | "unknown"> { return this.liveness; }
   async stop(): Promise<void> {

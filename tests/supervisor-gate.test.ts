@@ -72,6 +72,7 @@ describe("a worker holding the control token", () => {
   test("gets nothing from a human who refuses, for its own approval, deny or interrupt", async () => {
     const gate = new ScriptedGate(() => "refused");
     const { store, adapter, supervisor, request } = await setup(gate);
+    adapter.last.emit({ type: "turn_started", native_turn_id: "t1" });
     const approval = request("0");
     for (const action of ["approve", "deny", "interrupt"] as const) {
       expect(await supervisor.control({ action, actor: "claude:w1", approval_id: approval.approval_id, worker_id: "w1", detail_sha256: SHA }))
@@ -92,6 +93,25 @@ describe("a worker holding the control token", () => {
         .toMatchObject({ ok: false, gate: "refused" });
       expect(store.approval(approval.approval_id)!.status).toBe("pending");
     }
+  });
+
+  test("a timed-out question still blocks the next one until the gate has really ended", async () => {
+    // This gate ignores the abort, like a helper whose dialog is still up.
+    let finish: (result: GateResult) => void = () => {};
+    const gate: HumanGate = { kind: "stubborn", confirm: () => new Promise((resolve) => { finish = resolve; }) };
+    const { store, supervisor, request } = await setup(gate, 30);
+    const first = request("0");
+    const second = request("1");
+    expect(await supervisor.control({ action: "approve", actor: "human:op", approval_id: first.approval_id, detail_sha256: SHA }))
+      .toMatchObject({ ok: false, gate: "refused" });
+    expect(await supervisor.control({ action: "approve", actor: "claude:w1", approval_id: second.approval_id, detail_sha256: SHA }))
+      .toMatchObject({ ok: false, gate: "busy" });
+    // A late "confirmed" from the timed-out question settles nothing.
+    finish("confirmed");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(store.approval(first.approval_id)!.status).toBe("pending");
+    expect(await supervisor.control({ action: "approve", actor: "claude:w1", approval_id: second.approval_id, detail_sha256: SHA }))
+      .toMatchObject({ ok: false, gate: "refused" });
   });
 
   test("an unavailable gate is reported as locked, and changes nothing", async () => {
@@ -184,14 +204,47 @@ describe("binding a confirmation to one request", () => {
     expect(store.approval(second.approval_id)!.status).toBe("pending");
   });
 
-  test("an interrupt is confirmed for the generation it names", async () => {
+  test("an interrupt is confirmed for the turn running when asked, and needs one", async () => {
     const gate = new ScriptedGate(() => "confirmed");
-    const { supervisor } = await setup(gate);
+    const { adapter, supervisor } = await setup(gate);
+    expect(await supervisor.control({ action: "interrupt", actor: "human:op", worker_id: "w1" }))
+      .toMatchObject({ ok: false, error: "That worker has no running turn." });
+    adapter.last.emit({ type: "turn_started", native_turn_id: "t1" });
     expect(await supervisor.control({ action: "interrupt", actor: "human:op", worker_id: "w1" }))
       .toEqual({ ok: true, result: "interrupted" });
-    expect(gate.asked).toEqual([{ action: "interrupt", worker_id: "w1", generation: 1 }]);
+    expect(gate.asked).toEqual([{ action: "interrupt", worker_id: "w1", generation: 1, native_turn_id: "t1" }]);
+    // The adapter is told the turn too, so it can't end a newer one.
+    expect(adapter.last.interrupts).toEqual(["t1"]);
     expect(await supervisor.control({ action: "interrupt", actor: "human:op", worker_id: "nope" }))
       .toMatchObject({ ok: false, error: "Name a running worker." });
+  });
+
+  test.each(["replaced", "ended"] as const)("a confirmed interrupt applies to nothing once its turn has %s", async (how) => {
+    const gate = new ScriptedGate(() => "wait");
+    const { adapter, supervisor } = await setup(gate);
+    adapter.last.emit({ type: "turn_started", native_turn_id: "t1" });
+    const asking = supervisor.control({ action: "interrupt", actor: "human:op", worker_id: "w1" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    adapter.last.emit({ type: "turn_completed", native_turn_id: "t1", outcome: "success" });
+    if (how === "replaced") adapter.last.emit({ type: "turn_started", native_turn_id: "t2" });
+    gate.pending[0]("confirmed");
+    expect(await asking).toMatchObject({ ok: false, gate: "changed" });
+    expect(adapter.last.interrupts).toEqual([]);
+  });
+
+  test("a note to the worker is part of what the human confirms, and must be plain and short", async () => {
+    const gate = new ScriptedGate(() => "confirmed");
+    const { supervisor, request } = await setup(gate);
+    const approval = request("0");
+    for (const note of ["x".repeat(301), "ok\u001b[2J", "fine\u202e"]) {
+      expect(await supervisor.control({ action: "deny", actor: "human:op", approval_id: approval.approval_id, detail_sha256: SHA, note }))
+        .toMatchObject({ ok: false, error: expect.stringContaining("plain text") });
+    }
+    expect(gate.asked).toEqual([]);
+    expect(await supervisor.control({ action: "deny", actor: "human:op", approval_id: approval.approval_id, detail_sha256: SHA, note: "Use the test db." }))
+      .toMatchObject({ ok: true });
+    expect(gate.asked[0].note).toBe("Use the test db.");
+    expect(gateReason(gate.asked[0])).toContain("Note to the worker: Use the test db.");
   });
 
   test("a deny is gated too, and sends the decline only once confirmed", async () => {
@@ -211,7 +264,8 @@ describe("what the human reads", () => {
     expect(reason).toMatch(/^[\x20-\x7e\n]*$/);
     expect(reason).toContain("Allow Bash\\u001b[2J\\u202e for w1 (generation 2):");
     expect(reason).toContain(`detail sha256 ${SHA.slice(0, 16)}.`);
-    expect(gateReason({ action: "interrupt", worker_id: "w1", generation: 2 })).toBe("Interrupt the running turn of w1 (generation 2).");
+    expect(gateReason({ action: "interrupt", worker_id: "w1", generation: 2, native_turn_id: "t\u202e1" }))
+      .toBe("Interrupt turn t\\u202e1 of w1 (generation 2).");
   });
 });
 
@@ -234,9 +288,16 @@ describe("the LocalAuthentication helper gate", () => {
     }
   });
 
-  test.skipIf(process.platform === "win32")("a missing helper is unavailable, and a helper that hangs is refused at the timeout", async () => {
+  test.skipIf(process.platform === "win32")("a missing helper is unavailable, and a helper that hangs is refused at the timeout", { timeout: 15_000 }, async () => {
     expect(await localAuthenticationGate({ helper: "/nonexistent/tt-gate" }).confirm(request, new AbortController().signal)).toBe("unavailable");
     const { file } = helper("setInterval(() => {}, 1000);");
     expect(await localAuthenticationGate({ helper: file, timeoutMs: 100 }).confirm(request, new AbortController().signal)).toBe("refused");
+    // One that ignores SIGTERM is killed, and the refusal waits for it to be gone.
+    const { file: stubborn } = helper(`process.on("SIGTERM", () => {}); require("fs").writeFileSync(process.argv[1] + ".pid", String(process.pid)); setInterval(() => {}, 1000);`);
+    const started = Date.now();
+    expect(await localAuthenticationGate({ helper: stubborn, timeoutMs: 200 }).confirm(request, new AbortController().signal)).toBe("refused");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2_000);
+    const pid = Number(fs.readFileSync(`${stubborn}.pid`, "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
   });
 });

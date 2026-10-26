@@ -650,6 +650,10 @@ export class Supervisor {
         { approval_id: request.approval_id ?? null, reason: "control_locked" });
       return { ok: false, error: CONTROL_LOCKED_ERROR, gate: "unavailable" };
     }
+    // The note goes to the worker as typed, so the human must be able to read all of it.
+    if (request.note !== undefined && (request.note.length > 300 || displayText(request.note, 301) !== request.note)) {
+      return { ok: false, error: "A note is plain text of at most 300 characters." };
+    }
     const target = this.controlTarget(request);
     if ("error" in target) return { ok: false, error: target.error };
     // One question at a time: a second request can't ride on, or bury, the first.
@@ -658,17 +662,13 @@ export class Supervisor {
       return { ok: false, error: "Another control request is waiting for confirmation.", gate: "busy" };
     }
     this.gateBusy = true;
-    let result: GateResult;
-    try {
-      const signal = AbortSignal.timeout(this.gateTimeoutMs);
-      // A gate that fails or never answers is a refusal, never a pass.
-      result = await Promise.race([
-        this.gate.confirm(target.gate, signal).catch((): GateResult => "refused"),
-        new Promise<GateResult>((resolve) => signal.addEventListener("abort", () => resolve("refused"), { once: true }))
-      ]);
-    } finally {
-      this.gateBusy = false;
-    }
+    const signal = AbortSignal.timeout(this.gateTimeoutMs);
+    // A gate that fails or never answers is a refusal, never a pass. The next
+    // question waits until this one has really ended, so no dialog outlives it.
+    const confirming = Promise.resolve().then(() => this.gate.confirm(target.gate, signal)).catch((): GateResult => "refused");
+    void confirming.finally(() => { this.gateBusy = false; });
+    const result = await Promise.race([confirming,
+      new Promise<GateResult>((resolve) => signal.addEventListener("abort", () => resolve("refused"), { once: true }))]);
     this.store.audit(this.at(), request.actor, `control_${request.action}_${result}`, target.gate.worker_id,
       { ...target.gate, gate: this.gate.kind });
     if (result === "unavailable") return { ok: false, error: CONTROL_LOCKED_ERROR, gate: result };
@@ -680,7 +680,7 @@ export class Supervisor {
       return { ok: false, error: "The request changed while it waited for confirmation.", gate: "changed" };
     }
     if (request.action === "interrupt") {
-      return { ok: true, result: await this.interrupt(target.gate.worker_id, request.actor) };
+      return { ok: true, result: await this.interrupt(target.gate.worker_id, request.actor, target.gate.native_turn_id) };
     }
     const decision = request.action === "approve" ? "allow" : "deny";
     const answer = await this.decideApproval({ approval_id: target.gate.approval_id!, worker_id: target.gate.worker_id,
@@ -693,7 +693,10 @@ export class Supervisor {
     if (request.action === "interrupt") {
       const handle = request.worker_id ? this.handles.get(request.worker_id) : undefined;
       if (!request.worker_id || !handle) return { error: "Name a running worker." };
-      return { handle, gate: { action: "interrupt", worker_id: request.worker_id, generation: handle.generation } };
+      // An interrupt names the turn running now; if another turn runs by the answer, it applies to nothing.
+      const turn = this.activeTurn.get(request.worker_id);
+      if (!turn) return { error: "That worker has no running turn." };
+      return { handle, gate: { action: "interrupt", worker_id: request.worker_id, generation: handle.generation, native_turn_id: turn } };
     }
     const approval = request.approval_id ? this.store.approval(request.approval_id) : null;
     if (!approval || approval.status !== "pending") return { error: "No such pending approval request." };
@@ -706,14 +709,15 @@ export class Supervisor {
       return { error: "Name the detail digest you reviewed (tt supervisor approvals show)." };
     }
     return { handle, gate: { action: request.action, worker_id: approval.worker_id, generation: approval.generation,
-      approval_id: approval.approval_id, tool: approval.tool, summary: approval.summary, detail_sha256: approval.detail_sha256 } };
+      approval_id: approval.approval_id, tool: approval.tool, summary: approval.summary, detail_sha256: approval.detail_sha256,
+      ...(request.note ? { note: request.note } : {}) } };
   }
 
-  async interrupt(workerId: string, actor: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
+  async interrupt(workerId: string, actor: string, expectedTurnId?: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
     const handle = this.handles.get(workerId);
     if (!handle) throw new SupervisorError(`Worker ${workerId} is not running.`);
-    this.store.audit(this.at(), actor, "interrupt", workerId, { generation: handle.generation });
-    return handle.interrupt();
+    this.store.audit(this.at(), actor, "interrupt", workerId, { generation: handle.generation, native_turn_id: expectedTurnId ?? null });
+    return handle.interrupt(expectedTurnId);
   }
 }
 

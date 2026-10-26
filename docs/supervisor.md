@@ -274,14 +274,17 @@ selects another gate.
 
 What the daemon does with a gate (`Supervisor.control`):
 - **Before asking:** the request must name a pending approval of the running generation, or a
-  running worker for an interrupt. An approve or deny must also name the detail digest its requester
+  running worker with a turn in progress for an interrupt, which is bound to that native turn. An approve or deny must also name the detail digest its requester
   reviewed (`tt supervisor approvals show`), in full or as a 12+ hex prefix. A row recorded without
   full detail is refused. None of these reach the gate.
 - **The question:** the daemon builds it from its own records: action, tool, summary, worker,
-  generation, approval id and digest, all escaped (`gateReason`). The requester supplies none of
-  that text.
+  generation, approval id and digest, and the native turn for an interrupt, all escaped
+  (`gateReason`). The requester supplies none of that text, except a note to the worker. That must
+  be plain text of at most 300 characters, and it is shown in full before it is sent.
 - **One at a time:** a second request while one waits is refused, not queued, so a worker can't
-  slip its request in behind a human's.
+  slip its request in behind a human's. "Waits" lasts until the gate has really ended. A timed-out
+  helper is sent SIGTERM, then SIGKILL two seconds later, and no new question starts while its
+  dialog may still be up.
 - **Fail closed:** a gate that throws, or doesn't answer within two minutes, is a refusal. An
   unavailable gate answers as locked.
 - **After the answer:** the daemon checks the request again, the same pending approval, generation,
@@ -324,11 +327,19 @@ These limits come from Apple's documentation and this codebase. No dialog was op
   The dialog doesn't say who asked.
 - **The boundary assumes workers can't change the supervisor.** That means its program,
   `dist/`, the helper, the launch agent plist or its data directory. A same-user process that can
-  write those can replace the gate itself. So the gate holds only for confined workers: a Codex
-  worker with `--sandbox workspace-write` or `read-only` whose cwd excludes those paths, or a Claude
-  worker whose project settings grant no file writes beyond its workspace and no shell beyond `tt`.
-  An unconfined same-user worker defeats any same-user gate. Against that, the boundary is running
-  workers as a separate macOS user.
+  write those can replace the gate itself, and an unconfined same-user worker defeats any same-user
+  gate.
+- **No current worker layout meets that.** Nothing may enable a gate on today's layout.
+  - A Codex worker is granted its tt data directory as an extra writable root, so `tt` can write
+    the room database. `supervisor.sqlite`, `control.token`, worker homes and process evidence all
+    sit under that same root, so even `--sandbox workspace-write` with a separate cwd can rewrite
+    them.
+  - A Claude worker runs `tt` outside any sandbox.
+  - Before any gate is enabled, the supervisor's own state and code must sit outside every worker's
+    writable roots, behind a proven boundary: a storage split with mediated access, or workers
+    running as a separate macOS user.
+  - An attended acceptance shows only that the dialog works. It doesn't show confinement, so it
+    runs against a fixture proven to be confined or read-only.
 - **Unproven until attended.** It hasn't been shown that a launchd user agent can present the
   LocalAuthentication dialog, or how it fails without a console session (`notInteractive` is
   mapped to unavailable).

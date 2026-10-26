@@ -271,9 +271,9 @@ class ClaudeHandle implements WorkerHandle {
     return "written";
   }
 
-  async interrupt(): Promise<"interrupted" | "not_busy" | "unsupported"> {
+  async interrupt(expectedTurnId?: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
     const turn = this.turn;
-    if (!turn) return "not_busy";
+    if (!turn || (expectedTurnId !== undefined && turn.input_id !== expectedTurnId)) return "not_busy";
     turn.interruptRequested = true;
     // Waits for the turn's end before asking, since its result can arrive before the reply.
     let timer: NodeJS.Timeout | undefined;
