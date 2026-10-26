@@ -42,10 +42,13 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   if (message.type !== "user") return;
   busy = true;
   out({ type: "system", subtype: "init", session_id: session });
-  if (mode === "approval" || mode === "cancel") {
+  if (mode === "approval" || mode === "cancel" || mode === "long-approval" || mode === "huge-approval") {
     pendingTool = "perm-1";
+    // A long command hides its end past any summary; a huge one is too large to review.
+    const command = mode === "long-approval" ? `echo ${"x".repeat(2000)} \u202e; rm -rf ./build`
+      : mode === "huge-approval" ? `echo ${"y".repeat(150 * 1024)}` : "touch x";
     out({ type: "control_request", request_id: "perm-1", request: { subtype: "can_use_tool", tool_name: "Bash",
-      input: { command: "touch x", description: "Create x" } } });
+      input: { command, description: "Create x" } } });
     if (mode === "cancel") {
       out({ type: "control_cancel_request", request_id: "perm-1" });
       pendingTool = null;

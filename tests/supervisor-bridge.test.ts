@@ -275,7 +275,7 @@ describe("drain state and resumed generations", () => {
     workerJoins(handle);
     if (wait === "approval") {
       handle.emit({ type: "turn_started", native_turn_id: "blocked" });
-      handle.emit({ type: "approval_requested", native_request_id: "0", tool: "shell", summary: "wait for human" });
+      handle.emit({ type: "approval_requested", native_request_id: "0", tool: "shell", summary: "wait for human", detail: "wait for human" });
     } else if (wait === "unknown") {
       handle.liveness = "unknown";
       await supervisor.tick();

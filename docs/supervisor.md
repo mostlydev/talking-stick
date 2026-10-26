@@ -185,6 +185,12 @@ endpoint. It is reached only through its own `tt` calls.
     accepted turn whose completion is unknown. Only input never dispatched is rejected.
   - Input text is not stored.
 - `approvals`: each request occurrence has its own `approval_id`.
+  - Each keeps the whole native request as `detail`, with its SHA-256, beside a one-line summary.
+    The detail is indented JSON. Every control, format (bidi marks and overrides included),
+    separator and default-ignorable character is escaped, in the detail, the summary and the tool
+    name alike, and the daemon escapes them again when it records a request. For Claude the detail
+    is the very input an allow sends back. A request over 128 KiB is refused natively and
+    never becomes pending, since no human could review it whole.
   - A native id may repeat across processes, like Codex's `0`, or within one generation once its
     earlier request settled. Each repeat is a new request.
   - A second request under an id that's still pending is a protocol error, and holds the worker.
@@ -248,7 +254,8 @@ its caller claims.
 
 That means:
 - A supervised worker that reads the token and uses it on its own pending request gets nothing.
-- Pending approvals stay visible in `tt supervisor approvals`, and expire after 24 hours as a deny.
+- Pending approvals stay visible in `tt supervisor approvals`, each in full with `tt supervisor
+  approvals show <approval-id>`, and expire after 24 hours as a deny.
 - A possibly delivered message stays fenced, never resent.
 
 The candidate boundary is a login-Keychain control item with an empty trusted-app list, so reading
@@ -387,7 +394,8 @@ release's `<install-dir>/current/tt supervisor run`, which follows self-update.
 - There's no `--resume`: nothing here can prove an existing session isn't running elsewhere, so a
   worker resumes only sessions it started itself.
 
-`status`, `approvals` and `logs` are readable by anyone. Every other command is for a human until
+`status`, `approvals` (with `show <approval-id>` for one request's whole detail) and `logs` are
+readable by anyone. Every other command is for a human until
 a scoped operator policy exists:
 - `run`, `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped),
   `interrupt`, `approve`, `deny`, `reconcile <batch> --resend|--drop`, `install` and `uninstall`.

@@ -26,6 +26,9 @@ changes will be called out under **Breaking changes**.
   It does not prompt, resume, interrupt, or approve. Without credentials in that home, `session/new`
   answers "Authentication required" and the worker is held `crash_loop`, so none starts yet.
   A recorded session is held as `resume_failed` rather than replaced. The user's Grok config is never copied.
+- `tt supervisor approvals show <approval-id>` prints the whole native request behind an approval,
+  with its SHA-256, so a human never decides on a summary. A request too large to review (over
+  128 KiB) is refused and never pending.
 - `tt supervisor` control is locked: `approve`, `deny`, `interrupt` and `reconcile` are refused
   until a verified human-control boundary exists, since any same-user process, supervised workers
   included, can read the control token. Pending approvals expire as a deny after 24 hours.

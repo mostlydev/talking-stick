@@ -61,7 +61,8 @@ export type WorkerEvent =
   | { type: "input"; input_id: string; outcome: InputOutcome; native_turn_id?: string }
   | { type: "turn_started"; native_turn_id: string; input_id?: string }
   | { type: "turn_completed"; native_turn_id: string; outcome: "success" | "error" | "interrupted" }
-  | { type: "approval_requested"; native_request_id: string; tool: string; summary: string }
+  /** The summary is one short line; detail is the whole native request, as a human reviews it. */
+  | { type: "approval_requested"; native_request_id: string; tool: string; summary: string; detail: string }
   /** The harness settled a pending request itself, such as Codex's serverRequest/resolved after an interrupt. */
   | { type: "approval_resolved"; native_request_id: string }
   | { type: "state"; state: "idle" | "awaiting_input" | "auth_required" | "disconnected" }
