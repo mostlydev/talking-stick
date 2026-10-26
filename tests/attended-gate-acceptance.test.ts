@@ -152,7 +152,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
       expect(fs.existsSync(path.join(result.retained_root, "ledger.json"))).toBe(true);
     } finally {
       // Only this run's own leftovers: its stand-in jobs, from its own private registry, and its kept root.
-      const own = result.retained_root ? path.join(result.retained_root, "fake-registry") : null;
+      const own: string = result.retained_root ? path.join(result.retained_root, "fake-registry") : "";
       for (const entry of own && fs.existsSync(own) ? fs.readdirSync(own) : []) {
         try { process.kill(-Number(fs.readFileSync(path.join(own, entry), "utf8")), "SIGKILL"); } catch { /* gone */ }
       }
@@ -182,7 +182,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
       expect(result.cleanup_incomplete.length).toBeGreaterThan(0);
       expect(fs.existsSync(path.join(result.retained_root, "ledger.json"))).toBe(true);
     } finally {
-      const own = result.retained_root ? path.join(result.retained_root, "fake-registry") : null;
+      const own: string = result.retained_root ? path.join(result.retained_root, "fake-registry") : "";
       for (const entry of own && fs.existsSync(own) ? fs.readdirSync(own) : []) {
         try { process.kill(-Number(fs.readFileSync(path.join(own, entry), "utf8")), "SIGKILL"); } catch { /* gone */ }
       }
