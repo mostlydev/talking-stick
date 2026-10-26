@@ -249,3 +249,9 @@ describe("supervisor restarts", () => {
     expect(f.lines().some((line) => line.method === "session/resume" || line.method === "session/prompt")).toBe(false);
   });
 });
+
+test.each(["missing-session", "wrong-session"])("review: a live Grok process does not prove its recorded session is alive (%s)", async mode => {
+  const f = fixture(mode); const handle = await f.start();
+  expect(createSystemProcessInspector().inspect(handle.pid)).not.toBeNull();
+  expect(await handle.probe()).toBe("unknown");
+});

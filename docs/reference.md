@@ -1083,7 +1083,7 @@ the panel stays open. Outside an interactive terminal, `/rooms` lists active hos
 
 Codex is available on macOS/Linux. It uses its own native app-server, a private CODEX_HOME and
 explicit sandbox/approval settings; credentials are not imported. Claude is available there too.
-A Grok worker can start a fresh session only: prompt, resume, interrupt and approvals are
-unavailable, and the user's config is not copied.
+A Grok worker is attempted but can't authenticate yet: prompt, resume, interrupt and approvals
+are unavailable, and the user's config is not copied.
 For authentication, launchd executable paths, recovery fences and known limits, see
 [the supervisor guide](supervisor.md).

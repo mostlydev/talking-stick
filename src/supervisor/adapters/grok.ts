@@ -227,12 +227,17 @@ class GrokHandle implements WorkerHandle {
     if (!inspection) return inspection === null ? "gone" : "unknown";
     if (inspection.startTime?.trim() !== this.processStartedAt) return inspection.startTime ? "gone" : "unknown";
     if (!this.session || this.overflowed) return "unknown";
+    let listed: Json;
     try {
-      await this.rpc.request("session/list", {}, 2_000);
-      return this.child.alive() ? "alive" : "gone";
+      listed = await this.rpc.request("session/list", {}, 2_000);
     } catch {
       return this.child?.alive() ? "unknown" : "gone";
     }
+    if (!this.child.alive()) return "gone";
+    // A live process proves nothing about its session: only this session, listed by id, does.
+    // Natively the list is { sessions: [...] }; an empty, other or partial list is no evidence.
+    const sessions = Array.isArray(listed.sessions) ? listed.sessions : [];
+    return sessions.some((entry) => object(entry).sessionId === this.session) ? "alive" : "unknown";
   }
   exited(code: number | null, signal: string | null): void {
     if (this.closed) return;

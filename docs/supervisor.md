@@ -1,7 +1,7 @@
 # Managed headless supervisor
 
 Status: design agreed (room notes 2824973c, 01cd46da and 4ffa33a6, consolidated here). The core, room bridge, CLI, launchd integration, and the Codex, Claude, and Grok adapters are in `src/supervisor/`.
-The Grok adapter starts a fresh session only. The "Slices" table records each slice.
+The Grok adapter only attempts a fresh session, which needs credentials it doesn't have yet. The "Slices" table records each slice.
 
 The supervisor is optional. It starts Claude, Codex and Grok in their headless modes as
 processes it owns, and keeps them running. It changes nothing for Herdr, tmux or terminal sessions,
@@ -149,7 +149,18 @@ endpoint. It is reached only through its own `tt` calls.
   nothing. `answerApproval` throws. A server request is refused with a JSON-RPC error and
   `request_refused`, and does not wait for input. A malformed line is an overflow and stops the
   child.
+- **Liveness:** the process alone is not enough. `probe` is alive only when `session/list`
+  names this worker's session id; an empty, other or unreadable list is unknown.
 - **Approvals stay locked.** This adapter does not answer them.
+- **Native evidence (grok 1.0.70, macOS, a disposable probe with an empty private home):**
+  - `initialize` answers protocol version 1 with an `authMethods` list. The adapter never calls
+    `authenticate`, so nothing starts a login.
+  - `session/new` fails with -32000 "Authentication required". Grok writes its own `config.toml`,
+    logs and session store into the private home, and no credentials are there.
+  - `session/list` answers `{ sessions: [] }`, and EOF exits 0 within 3 seconds.
+- **So no Grok worker starts today.** Each attempt fails at `session/new`, backs off, and the
+  worker is held `crash_loop` after five failures in 15 minutes. Giving the private home
+  credentials, such as an `XAI_API_KEY` environment reference, is not proven or supported yet.
 
 ## State
 
@@ -391,7 +402,8 @@ its endpoint, and its delivery token. They aren't a boundary against a same-user
 deliberately reads the owner-only token file or hides its origin; supervised workers can do both.
 That's why control stays locked until a verified boundary exists.
 
-Codex and Claude are available on macOS and Linux, and a fresh Grok worker can start there too.
+Codex and Claude are available on macOS and Linux. A Grok worker is attempted there, but without
+credentials in its private home it fails at `session/new` and is held `crash_loop` (see "Grok").
 A Grok session that was already recorded is held `resume_failed` until resume is proven. Plugin install requests are not implemented.
 
 ### Claude workers

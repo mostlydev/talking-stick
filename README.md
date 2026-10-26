@@ -98,7 +98,7 @@ a delivery receipt, not proof the model acted on it.
 ## Managed headless workers (preview)
 
 The optional `tt supervisor` keeps its own headless workers without terminal panes. Codex and
-Claude run on macOS/Linux. A Grok worker can start a fresh stdio session there; prompt, resume,
+Claude run on macOS/Linux. A Grok worker is attempted there but can't authenticate yet; prompt, resume,
 interrupt and approvals stay unavailable until each is proven. Workers have
 explicit permissions, private native sessions and visible approval waits. Existing terminal
 sessions are never adopted. See [setup, authentication and controls](docs/supervisor.md).

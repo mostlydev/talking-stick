@@ -53,6 +53,6 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (message.method === "session/list") {
-    respond(message.id, { sessions: [{ sessionId: "grok-session-1" }] });
+    respond(message.id, mode === "missing-session" ? { sessions: [] } : mode === "wrong-session" ? { sessions: [{ sessionId: "some-other-session" }] } : { sessions: [{ sessionId: "grok-session-1" }] });
   }
 }).on("close", () => process.exit(0));
