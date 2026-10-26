@@ -46,8 +46,11 @@ rooms ── task lead + independent reviewer (+ optional specialist)
   dependency.
 - **Task lead.** Owns one task's execution in one room: it plans, holds the stick for writes and
   asks the reviewer. It's the same role agents play today.
-- **Reviewer.** Independent. Its veto blocks a merge exactly as today: all members' exact-head
-  AGREEs plus every CI job passing.
+- **Reviewer.** Independent. A merge needs the AGREEs of the template's required review slots
+  at the exact head (the reviewer, plus a specialist only when the task names it) and every
+  required CI job green. A member who holds no required slot, such as the operator's console or a
+  later joiner, doesn't block by staying silent. An explicit VETO from any member stops the merge
+  and goes to the lead, who answers it or escalates.
 - **Optional coordinator** (M9 only). An event-driven low-model worker that may summarize, route a
   question to the right member, and nudge a stalled one, under a written narrow policy. It escalates
   any ambiguity. It must not grant authority, infer human approval, overrule review, or hold the
@@ -96,7 +99,7 @@ effort = "high"
 
 [review]
 policy = "always"                     # "always" | "risk"
-merge = "all_agree_and_ci"
+merge = "required_slots_agree_and_ci"
 
 [budget]
 task_wall_clock = "8h"
@@ -123,7 +126,8 @@ Rules:
   silent substitution.
 - A task-capable slot needs a candidate with `prompt`. Grok's adapter reports `prompt: false`
   today (and `resume: false`, with no proven credential path), so a fresh Grok worker can't fill
-  a lead or reviewer slot even when the template allows Grok. Listing an unavailable candidate is
+  a lead or reviewer slot even when the template allows Grok. That changes only when the adapter
+  reports `prompt: true`, a proof separate from G1 and G2. Listing an unavailable candidate is
   harmless only when fully capable candidates fill every required slot.
 - Definitions are dedicated, versioned TOML files in bundled, user and project template
   directories (`.talking-stick/templates/<name>.toml` for a project), resolved by name like role
@@ -168,7 +172,7 @@ disagrees with it is reported as a conflict.
 
 | Record | Fields (outline) |
 | --- | --- |
-| task | id, room, title, intent (operator text, verbatim), state, slot assignments, template version, budget, deadline, parent task |
+| task | id, room, title, intent (as proposed), state, slot assignments, template version, budget, deadline, parent task |
 | decision | task, decided by (identity and kind), text, supersedes |
 | evidence | task, kind (test run, CI run, PR head, probe output), reference, sha256, recorded by |
 | ask | request id (immutable), payload digest, occurrence, task, from slot, to (slot, manager or operator), text, state (open, answered, withdrawn, expired) |
@@ -183,6 +187,8 @@ disagrees with it is reported as a conflict.
   occurrence with a new request id. Question text is never the identity.
 - The context packet is written by the task lead at handoff and at each milestone. A fresh-context
   worker starts from it plus the room's notes, never from a transcript replay.
+- Creating a task and answering an ask are proposals too. Whatever a task's text says, work runs
+  only inside the operator's protected scope and intent grants for that room.
 - Existing room notes stay the room's free-form memory. Tasks don't replace them.
 
 ## Lifecycles
@@ -191,8 +197,10 @@ Each machine moves only on recorded events, and each transition is audited.
 
 - **Room:** `draft` (template chosen, invalid until slots validate) → `active` → `paused` →
   `closing` (no new tasks; running tasks finish or are cancelled) → `closed`.
-- **Task:** `proposed` → `assigned` → `in_progress` ⇄ `blocked` → `in_review` → `done`, or
-  `cancelled` from any state. `blocked` names an open ask or an escalation.
+- **Task:** `proposed` → `assigned` → `in_progress` ⇄ `blocked` → `in_review` → `done`.
+  `cancel_requested` can follow any state but `done` while a turn runs, and becomes `cancelled`
+  once the worker is quiescent; a task with no running turn goes straight to `cancelled`.
+  `blocked` names an open ask or an escalation.
 - **Worker:** the existing desired/actual states, plus a slot binding. New transitions:
   - **sleep**: stopping a worker only at the safe frontier: the daemon observes it quiescent,
     with no in-flight or uncertain input, no pending approval, no active task turn and no
@@ -227,8 +235,10 @@ Each machine moves only on recorded events, and each transition is audited.
 - **Stall:** no turn activity, no stick change and no ask for `stall_after` raises a nudge to the
   lead, then an escalation to the manager, then the operator.
 - **Human override:** the operator can pause a room, cancel a task, reassign a slot or answer any
-  ask, and overrides win over manager actions. They go through the human-control path; until the
-  gate is enabled, the ones that change workers are the locked commands and wait for it.
+  ask, and overrides win over manager actions. The human-only commands (`add`, `pause`, `resume`,
+  `stop`, `restart`, `remove`, `migrate`, `install`) already work from a plain terminal today.
+  Only `approve`, `deny`, `interrupt` and `reconcile` are locked; A6 unlocks the first three, and
+  `reconcile` needs its own change.
 
 ## Manager handoff and recovery
 
@@ -246,8 +256,14 @@ Each machine moves only on recorded events, and each transition is audited.
 
 ## Operator policy
 
-A small policy file under the supervisor's protected state root (so a worker can't edit it,
-per eligibility) says what the manager may do without a human.
+A small policy file says what the manager may do without a human. It lives in the supervisor's
+state root because that is outside every project tree, but that location isn't a write boundary.
+While the gate is locked, eligibility isn't checked at all. With the gate on, an unconfined
+worker is stopped, but that doesn't take this user's write access to the state root away, and the
+Claude and Grok adapters report no write confinement. So the same is true of all the protected
+state above: it is authoritative because the daemon acts only on its own copy, and it is
+tamper-resistant only against confined workers. Against an unconfined worker, the forge-safe rule
+below is what bounds the harm.
 
 Any same-user process can forge a request, and a generation label doesn't authenticate a caller.
 So bounded and idempotent isn't enough: an unattended action must be harmless when a worker forges
@@ -274,7 +290,7 @@ orchestration. Track B doesn't wait for Track A, except where a milestone says s
 
 | Id | Milestone | Acceptance | Who |
 | --- | --- | --- | --- |
-| A1 | Migrate live state | `tt supervisor migrate` exits 0; `tt supervisor status` runs; the old `supervisor.sqlite` is retired by the journal | operator (pending) |
+| A1 | Migrate live state | `tt supervisor migrate` exits 0; `migration.json` is gone; `tt supervisor status` runs; the old `supervisor.sqlite` path is gone, and the database with its wal and shm is kept in the `<data>/supervisor-legacy-<time>/` directory the command reports | operator (pending) |
 | A2 | Foreground gate kit | `node scripts/attended-gate-acceptance.mjs` result `ok: true`, every step's expected outcome | operator (pending) |
 | A3 | launchd gate kit | `--launchd` result: in `gui/<uid>` confirm gives `confirmed` and cancel gives `refused`; in `user/<uid>` an observed `unavailable`; Ctrl-C with the dialog up leaves the agent unloaded and the helper gone; cleanup complete | operator (pending) |
 | A4 | Actual-supervisor helper launch | the real `tt supervisor install` agent, in a disposable data dir, raises the gate helper on one fake approval and records the outcome; then `uninstall` leaves nothing loaded | operator, attended |
@@ -285,8 +301,8 @@ orchestration. Track B doesn't wait for Track A, except where a milestone says s
 
 The bounded `command/exec` evidence (#221) and the wrapper LaunchAgent (#222) prove neither A4 nor
 A5. The unsupervised-TUI reconnect stays an upstream gap (see "What the supervisor does not prove")
-and blocks no milestone here. Neither does G1 or G2; a template that needs Grok is the only thing
-that waits for them.
+and blocks no milestone here. Neither does G1 or G2. A Grok slot waits for them and, separately,
+for the adapter to report `prompt: true`; nothing else does.
 
 ### Track B: templates, context and orchestration
 
@@ -345,9 +361,9 @@ Proposed by Claude and recommended by Codex in review. Each stands unless the op
    authoritative grants, bindings, bounds and fences.
 3. **Where the manager lives:** one optional manager in a dedicated control room, with an
    explicit list of the rooms it may act in.
-4. **Manager control before the gate:** only the forge-safe actions in "Operator policy", at the
-   safe frontier and within protected cumulative bounds. Other lifecycle effects stay locked
-   until A6.
+4. **Manager control before the gate:** only the forge-safe actions in "Operator policy": wake
+   and sleep within the protected quotas and at the safe frontier. An ask answer stays a room
+   claim, never a protected grant. Other lifecycle effects wait for human control.
 5. **Solo:** `standard`'s always-review is the default. Risk-based `solo` waits for the
    deterministic classification and the protected review snapshot. A model may only raise risk.
 6. **Spend:** native usage telemetry is advisory until proven per adapter. Starts, turns and wall
