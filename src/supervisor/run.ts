@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { TalkingStickService } from "../service.js";
+import { CONTROL_LOCKED_MESSAGE, TalkingStickService } from "../service.js";
 import { createSystemWakeTransport } from "../wake.js";
 import { createSystemNativeWakeTransport } from "../native-wake.js";
 import { createSystemProcessInspector, getCurrentProcessStartedAt } from "../process-utils.js";
@@ -15,6 +15,14 @@ import { SupervisorStore, supervisorDatabasePath } from "./state.js";
 // keeps it running when installed; tt supervisor run starts it by hand.
 
 export const TICK_INTERVAL_MS = 30_000;
+
+/**
+ * Any process of this user, a supervised worker included, can read the
+ * control token, so it can't prove a human. Until a verified human-control
+ * boundary exists, the control socket changes nothing: no approve, deny or
+ * interrupt. Unanswered approvals still expire as a deny.
+ */
+export const CONTROL_LOCKED = CONTROL_LOCKED_MESSAGE;
 export const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 export const LOG_KEEP = 3;
 
@@ -128,17 +136,10 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
       if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
         return { ok: false, error: "This control request is not authorized." };
       }
-      if (message.action === "interrupt") {
-        if (!message.worker_id) return { ok: false, error: "Name the worker." };
-        return { ok: true, result: await supervisor.interrupt(message.worker_id, message.actor) };
-      }
-      // Approvals are a human's decision.
-      if (!message.actor.startsWith("human:")) return { ok: false, error: "Only a human can decide an approval." };
-      const approval = message.approval_id ? store.approval(message.approval_id) : null;
-      if (!approval) return { ok: false, error: "No such approval request." };
-      const delivered = await supervisor.decideApproval({ approval_id: approval.approval_id, worker_id: approval.worker_id,
-        generation: approval.generation }, message.action === "approve" ? "allow" : "deny", message.actor, message.note);
-      return { ok: true, result: { status: message.action === "approve" ? "allowed" : "denied", answer: delivered } };
+      // Fail closed: a token anyone of this user can read proves no human.
+      store.audit(new Date().toISOString(), message.actor, `control_${message.action}_refused`, message.worker_id ?? null,
+        { approval_id: message.approval_id ?? null, reason: "control_locked" });
+      return { ok: false, error: CONTROL_LOCKED };
     };
     const server = await startIntakeServer(paths.socket, (message) => supervisor.acceptIntake(message));
     cleanups.push(() => server.close());

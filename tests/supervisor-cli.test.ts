@@ -7,7 +7,7 @@ import type { ParsedCommand } from "../src/cli/parser.js";
 import { TalkingStickService } from "../src/index.js";
 import { SupervisorStore } from "../src/supervisor/state.js";
 import { launchAgentPlist, installLaunchAgent, supervisorProgram, uninstallLaunchAgent } from "../src/supervisor/launchd.js";
-import { createFileLog, rotateLog, runSupervisor, supervisorPaths, systemProcessLiveness, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
+import { CONTROL_LOCKED, createFileLog, rotateLog, runSupervisor, supervisorPaths, systemProcessLiveness, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
 import { sendControl } from "../src/supervisor/intake.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
 
@@ -122,13 +122,15 @@ describe("controls", () => {
     await expect(run(["approve", "a1"], { agent: "human:op" })).rejects.toThrow("does not accept --agent");
     await expect(run(["approve", "a1"], {}, "claude")).rejects.toThrow("not a claude session");
     await expect(run(["reconcile", "batch"], { drop: true }, "codex")).rejects.toThrow("not a codex session");
-    await expect(run(["reconcile", "batch"], {}, null)).rejects.toThrow("Choose --resend or --drop");
-    await expect(run(["approve", "a1"], {}, null)).rejects.toThrow("No supervisor is running");
+    // Even a human gets nothing until a verified human-control boundary exists.
+    for (const args of [["approve", "a1"], ["deny", "a1"], ["interrupt", "w1"], ["reconcile", "batch"]]) {
+      await expect(run(args, { resend: true }, null)).rejects.toThrow("unavailable until a verified human-control boundary exists");
+    }
   });
 });
 
 describe("the daemon", () => {
-  test("runs one owner, answers control requests, and stops its workers when it stops", async () => {
+  test("runs one owner, refuses every control change, and stops its workers when it stops", async () => {
     const { dataDir, cwd, store } = setup();
     const adapter = new FakeAdapter("claude");
     const controller = new AbortController();
@@ -137,6 +139,8 @@ describe("the daemon", () => {
     opened.addWorker({ worker_id: "w1", harness: "claude", cwd, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
     const running = runSupervisor({ dataDir, adapters: { claude: adapter }, signal: controller.signal, tickIntervalMs: 20,
       log: (line) => lines.push(line), processLiveness: () => "alive" });
+    // A failing assertion must not leave this daemon running.
+    cleanup.push(async () => { controller.abort(); await running.catch(() => {}); });
     const deadline = Date.now() + 3_000;
     while (!adapter.handles.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(adapter.handles).toHaveLength(1);
@@ -155,11 +159,17 @@ describe("the daemon", () => {
       expect(await sendControl(paths.control, { type: "control", action: "approve", actor: "human:op", token: forged, approval_id: approval.approval_id }))
         .toEqual({ ok: false, error: "This control request is not authorized." });
     }
-    expect(await sendControl(paths.control, { type: "control", action: "approve", actor: "claude:x", token, approval_id: approval.approval_id }))
-      .toEqual({ ok: false, error: "Only a human can decide an approval." });
-    expect(await sendControl(paths.control, { type: "control", action: "approve", actor: "human:op", token, approval_id: approval.approval_id }))
-      .toEqual({ ok: true, result: { status: "allowed", answer: "delivered" } });
-    expect(adapter.last.answers).toEqual([{ id: "0", decision: "allow" }]);
+    // A supervised worker can read the owner-only token like any process of
+    // this user; using it on its own pending request changes nothing.
+    for (const actor of ["claude:x", "human:op"]) {
+      for (const action of ["approve", "deny", "interrupt"] as const) {
+        expect(await sendControl(paths.control, { type: "control", action, actor, token, approval_id: approval.approval_id, worker_id: "w1" }))
+          .toEqual({ ok: false, error: CONTROL_LOCKED });
+      }
+    }
+    expect(adapter.last.answers).toEqual([]);
+    expect(opened.approval(approval.approval_id)!.status).toBe("pending");
+    expect(opened.auditRows().filter((row) => row.action === "control_approve_refused")).toHaveLength(2);
     controller.abort();
     await running;
     expect(adapter.last.stopped).toBe(true);

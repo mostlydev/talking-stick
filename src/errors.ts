@@ -10,6 +10,7 @@ export type ProtocolErrorCode =
   | "member_lost"
   | "member_revoked"
   | "stale_batch"
+  | "control_locked"
   | "operator_only"
   | "observer_cannot_hold_turn"
   | "unknown_target"

@@ -22,6 +22,9 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
+- `tt supervisor` control is locked: `approve`, `deny`, `interrupt` and `reconcile` are refused
+  until a verified human-control boundary exists, since any same-user process, supervised workers
+  included, can read the control token. Pending approvals expire as a deny after 24 hours.
 - `tt supervisor` (preview): an optional daemon that will start and keep headless harness workers
   running, with per-worker permissions, human-only audited controls and approvals behind a control
   token, and a macOS user agent (`install`/`uninstall`). Room messages reach supervised workers through a fenced, journalled

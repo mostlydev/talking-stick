@@ -2,13 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveDataDir } from "../config.js";
-import { TalkingStickService } from "../service.js";
 import type { EnvReference, Harness, WorkerPermissions, WorkerSpec } from "../supervisor/adapter.js";
 import { builtinAdapters } from "../supervisor/adapters/index.js";
-import { sendControl } from "../supervisor/intake.js";
 import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent } from "../supervisor/launchd.js";
 import { isStandalone, isInstalledRelease, standaloneRoot } from "../standalone-mode.js";
-import { createFileLog, runSupervisor, supervisorPaths } from "../supervisor/run.js";
+import { CONTROL_LOCKED, createFileLog, runSupervisor, supervisorPaths } from "../supervisor/run.js";
 import { SupervisorStore } from "../supervisor/state.js";
 import { runningInsideHarness } from "../identity.js";
 import { deriveCliIdentity } from "./identity.js";
@@ -146,32 +144,8 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     printResult(parsed, { log: paths.log, lines: text ? text.split("\n") : [] }, () => text || `No log yet at ${paths.log}.`);
     return;
   }
-  if (action === "interrupt" || action === "approve" || action === "deny") {
-    let token: string;
-    try { token = fs.readFileSync(paths.controlToken, "utf8").trim(); } catch { fail("No supervisor is running for this data directory."); }
-    const answer = await sendControl(paths.control, { type: "control", action, actor, token,
-      ...(action === "interrupt" ? { worker_id: workerArg(parsed) } : { approval_id: workerArg(parsed) }),
-      ...(getStringOption(parsed, "note") ? { note: getStringOption(parsed, "note") } : {}) });
-    if (!answer.ok) fail(answer.error);
-    printResult(parsed, answer.result, () => JSON.stringify(answer.result));
-    return;
-  }
-  if (action === "reconcile") {
-    const batch = workerArg(parsed);
-    const resend = hasOption(parsed, "resend");
-    if (resend === hasOption(parsed, "drop")) fail("Choose --resend or --drop.");
-    const service = new TalkingStickService({ dataDir });
-    try {
-      const result = service.reconcileManagedDelivery({ agent_id: actor, batch_token: batch, action: resend ? "resend" : "drop" });
-      const store = openStore(dataDir);
-      try { store.audit(now(), actor, `reconcile_${resend ? "resend" : "drop"}`, null, { batch_token: batch }); } finally { store.close(); }
-      printResult(parsed, result, () => resend ? "The batch will be offered again." : "The batch was marked read without delivery.");
-    } finally {
-      service.close();
-    }
-    return;
-  }
-
+  // Fail closed until a verified human-control boundary exists (docs/supervisor.md).
+  if (action === "interrupt" || action === "approve" || action === "deny" || action === "reconcile") fail(CONTROL_LOCKED);
   const store = openStore(dataDir);
   try {
     if (action === "status" || action === "approvals") {
