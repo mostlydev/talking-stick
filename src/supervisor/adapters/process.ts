@@ -3,10 +3,14 @@ import os from "node:os";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import type { SpawnedProcess, WorkerSpec } from "../adapter.js";
 
+/** Resolves one macOS generic-password item. Tests supply a fake; production uses `security`. */
+export type KeychainReader = (service: string) => Promise<string>;
+
 // An empty environment, with just HOME and PATH as native runtimes require
 // them for authentication storage and executable lookup. Everything else is
 // an explicit reference; supervisor_env wins over those references.
-export async function workerEnvironment(spec: WorkerSpec, source: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
+export async function workerEnvironment(spec: WorkerSpec, source: NodeJS.ProcessEnv = process.env,
+  readKeychain?: KeychainReader): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = { HOME: source.HOME ?? os.homedir(), PATH: source.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin" };
   for (const ref of spec.env) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref.name) || isIdentityMarker(ref.name)) {
@@ -16,18 +20,27 @@ export async function workerEnvironment(spec: WorkerSpec, source: NodeJS.Process
       if (source[ref.name] !== undefined) env[ref.name] = source[ref.name];
     } else if (ref.from === "literal") env[ref.name] = ref.value;
     else {
-      if (process.platform !== "darwin") throw new Error("Keychain environment references require macOS.");
-      env[ref.name] = await new Promise<string>((resolve, reject) => {
-        execFile("/usr/bin/security", ["find-generic-password", "-s", ref.service, "-w"],
-          { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 }, (error, stdout) => {
-            // Neither the credential nor security's raw error enters logs.
-            if (error) reject(new Error(`Cannot resolve Keychain environment reference ${ref.name}.`));
-            else resolve(stdout.replace(/\r?\n$/, ""));
-          });
-      });
+      // A fake reader is how tests avoid `security`, which can raise a dialog.
+      if (readKeychain === undefined && process.platform !== "darwin") throw new Error("Keychain environment references require macOS.");
+      try {
+        env[ref.name] = await (readKeychain ?? readMacKeychain)(ref.service);
+      } catch {
+        // Neither the credential nor security's raw error enters logs.
+        throw new Error(`Cannot resolve Keychain environment reference ${ref.name}.`);
+      }
     }
   }
   return Object.assign(env, spec.supervisor_env ?? {});
+}
+
+function readMacKeychain(service: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("/usr/bin/security", ["find-generic-password", "-s", service, "-w"],
+      { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 }, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout.replace(/\r?\n$/, ""));
+      });
+  });
 }
 
 function isIdentityMarker(name: string): boolean {

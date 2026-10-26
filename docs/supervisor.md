@@ -1,7 +1,7 @@
 # Managed headless supervisor
 
 Status: design agreed (room notes 2824973c, 01cd46da and 4ffa33a6, consolidated here). The core, room bridge, CLI, launchd integration, and the Codex, Claude, and Grok adapters are in `src/supervisor/`.
-The Grok adapter only attempts a fresh session, which needs credentials it doesn't have yet. The "Slices" table records each slice.
+The Grok adapter only attempts a fresh session. An `XAI_API_KEY` Keychain reference can name a credential; using that variable to pass `session/new` is not yet shown. The "Slices" table records each slice.
 
 The supervisor is optional. It starts Claude, Codex and Grok in their headless modes as
 processes it owns, and keeps them running. It changes nothing for Herdr, tmux or terminal sessions,
@@ -47,7 +47,7 @@ Each worker states its permissions, and nothing is inherited:
 | --- | --- |
 | Claude | `--permission-mode default` or `plan`, `--permission-prompt-tool stdio`, `--setting-sources project,local`, `--strict-mcp-config`. Never `bypassPermissions` or `--dangerously-*`. |
 | Codex | An explicit sandbox (`read-only` or `workspace-write`) and approval policy (`on-request` or `untrusted`) on each thread. Never `never` or `danger-full-access`. |
-| Grok | `grok agent --no-leader stdio` with a private `GROK_HOME`. The user's config is never copied, since it may set always-approve. No leader attach, no plugin dir. |
+| Grok | `grok agent --no-leader stdio` with a private `GROK_HOME`. The user's config is never copied, since it may set always-approve. No leader attach, no plugin dir. `XAI_API_KEY` may be named with a Keychain env ref and is not copied into the home. |
 
 A worker spec stores environment references only: names passed through from the supervisor's
 own environment, names resolved from the macOS Keychain at spawn, and approved non-secret
@@ -136,8 +136,14 @@ endpoint. It is reached only through its own `tt` calls.
   `<data>/supervisor/workers/<worker>/grok`. A spec or inherited `GROK_HOME` is ignored. Nothing
   is copied into it, including `~/.grok/config.toml` and credentials, because the user config can
   set always-approve.
-- **Environment:** the data directory only. No supervisor endpoint or delivery token, and no
-  inherited `TT_ROOM`, `GROK_AGENT`, or `GROK_SESSION_ID`.
+- **Environment:** the data directory, plus any explicit env refs. No supervisor endpoint or
+  delivery token, and no inherited `TT_ROOM`, `GROK_AGENT`, or `GROK_SESSION_ID`.
+  `--env XAI_API_KEY=keychain:SERVICE` is the supported way to name a credential. At start, tt
+  reads that macOS generic-password item and places the value only in the child environment.
+  A missing or unreadable item throws before the process is spawned. The error names
+  `XAI_API_KEY` and does not include the secret or the Keychain tool's own text. tt does not
+  create the item or answer a Keychain dialog. A resolved value has not been shown to make
+  `session/new` succeed.
 - **Handshake:** `initialize` (`protocolVersion` 1 and client info only; no file or terminal
   capabilities), then `session/new` with the working directory and an empty MCP server list.
   The session id is `result.sessionId`. A missing id, an authentication error, or any other
@@ -158,9 +164,10 @@ endpoint. It is reached only through its own `tt` calls.
   - `session/new` fails with -32000 "Authentication required". Grok writes its own `config.toml`,
     logs and session store into the private home, and no credentials are there.
   - `session/list` answers `{ sessions: [] }`, and EOF exits 0 within 3 seconds.
-- **So no Grok worker starts today.** Each attempt fails at `session/new`, backs off, and the
-  worker is held `crash_loop` after five failures in 15 minutes. Giving the private home
-  credentials, such as an `XAI_API_KEY` environment reference, is not proven or supported yet.
+- **Without a resolved credential, no Grok worker stays up.** `session/new` fails as above, the
+  child is stopped, and the worker is held `crash_loop` after five failures in 15 minutes. A
+  Keychain reference that cannot be read fails earlier, before spawn, and follows the same
+  crash backoff. Neither path is a proven login.
 
 ## State
 
@@ -478,8 +485,10 @@ its endpoint, and its delivery token. They aren't a boundary against a same-user
 deliberately reads the owner-only token file or hides its origin; supervised workers can do both.
 That's why control stays locked until a verified boundary exists.
 
-Codex and Claude are available on macOS and Linux. A Grok worker is attempted there, but without
-credentials in its private home it fails at `session/new` and is held `crash_loop` (see "Grok").
+Codex and Claude are available on macOS and Linux. A Grok worker is attempted there. Without a
+resolved credential, `session/new` fails and the worker is held `crash_loop`. An operator can name
+`XAI_API_KEY` with `--env XAI_API_KEY=keychain:SERVICE`; a missing item fails before spawn, and a
+resolved value is not a proven login (see "Grok").
 A Grok session that was already recorded is held `resume_failed` until resume is proven. Plugin install requests are not implemented.
 
 ### Claude workers

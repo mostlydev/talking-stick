@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import type { WorkerEvent, WorkerHandle, WorkerSpec } from "../src/supervisor/adapter.js";
 import { builtinAdapters } from "../src/supervisor/adapters/index.js";
-import { GrokAdapter, resolveGrokExecutable } from "../src/supervisor/adapters/grok.js";
+import { GrokAdapter, resolveGrokExecutable, type GrokAdapterOptions } from "../src/supervisor/adapters/grok.js";
 import { createSystemProcessInspector } from "../src/process-utils.js";
 import { Supervisor } from "../src/supervisor/daemon.js";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
@@ -21,7 +21,7 @@ async function until(done: () => boolean): Promise<void> {
   }
 }
 
-function fixture(mode = "") {
+function fixture(mode = "", options: GrokAdapterOptions = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-adapter-"));
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const trace = path.join(root, "trace.jsonl");
@@ -30,7 +30,7 @@ function fixture(mode = "") {
     env: [{ name: "FIXTURE_MODE", from: "literal", value: mode }, { name: "FIXTURE_TRACE", from: "literal", value: trace }],
     supervisor_env: { TALKING_STICK_DATA_DIR: dataDir } };
   const adapter = new GrokAdapter({ command: process.execPath,
-    argsPrefix: [fileURLToPath(new URL("./fixtures/grok-stdio.cjs", import.meta.url))], startTimeoutMs: 500 });
+    argsPrefix: [fileURLToPath(new URL("./fixtures/grok-stdio.cjs", import.meta.url))], startTimeoutMs: 500, ...options });
   const events: WorkerEvent[] = [];
   const spawned: number[] = [];
   const start = async (signal?: AbortSignal): Promise<WorkerHandle> => {
@@ -102,6 +102,28 @@ describe("starting a Grok worker", () => {
     const created = f.lines().find((line) => line.method === "session/new");
     expect(created?.params).toEqual({ cwd: f.spec.cwd, mcpServers: [] });
     expect(f.lines().some((line) => line.method === "session/prompt" || line.method === "session/resume" || line.method === "session/load")).toBe(false);
+  });
+
+  test("a Keychain XAI_API_KEY reaches the child environment and is not stored", async () => {
+    const secret = "not-a-real-credential";
+    const services: string[] = [];
+    const f = fixture("", { readKeychain: async (service) => { services.push(service); return secret; } });
+    f.spec.env.push({ name: "XAI_API_KEY", from: "keychain", service: "tt-grok-test" });
+    await f.start();
+    expect(services).toEqual(["tt-grok-test"]);
+    expect(f.lines()[0].env.XAI_API_KEY).toBe("set");
+    expect(fs.readFileSync(f.trace, "utf8")).not.toContain(secret);
+    expect(fs.readdirSync(f.privateHome)).toEqual([]);
+    expect(fs.existsSync(path.join(f.privateHome, "auth.json"))).toBe(false);
+    expect(fs.existsSync(path.join(f.privateHome, "config.toml"))).toBe(false);
+  });
+
+  test("a missing Keychain item fails before spawn and hides the resolver error", async () => {
+    const f = fixture("", { readKeychain: async () => { throw new Error("security said hunter2"); } });
+    f.spec.env.push({ name: "XAI_API_KEY", from: "keychain", service: "missing" });
+    await expect(f.start()).rejects.toThrow("Cannot resolve Keychain environment reference XAI_API_KEY.");
+    expect(f.spawned).toEqual([]);
+    expect(fs.existsSync(f.trace)).toBe(false);
   });
 
   test("a resume id or the wrong permissions are rejected before spawn", async () => {
