@@ -25,7 +25,9 @@ changes will be called out under **Breaking changes**.
 - `tt supervisor` attempts a Grok worker (`grok agent --no-leader stdio`) in a private `GROK_HOME`.
   It does not prompt, resume, interrupt, or approve. Without credentials in that home, `session/new`
   answers "Authentication required" and the worker is held `crash_loop`, so none starts yet.
-  A recorded session is held as `resume_failed` rather than replaced. The user's Grok config is never copied.
+  `--env XAI_API_KEY=keychain:SERVICE` names a credential for the child environment only. A missing
+  item fails before spawn and the error does not include the secret. That reference is not a proven
+  login. A recorded session is held as `resume_failed` rather than replaced. The user's Grok config is never copied.
 - `tt supervisor approvals show <approval-id>` prints the whole native request behind an approval,
   with its SHA-256, so a human never decides on a summary. A request too large to review (over
   128 KiB) is refused and never pending.

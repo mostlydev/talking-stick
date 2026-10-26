@@ -19,6 +19,7 @@ trace({
     TT_SUPERVISOR_TOKEN: process.env.TT_SUPERVISOR_TOKEN ?? null,
     GROK_HOME: home || null,
     HOME: process.env.HOME ?? null,
+    XAI_API_KEY: process.env.XAI_API_KEY ? "set" : null,
   },
   homeFiles: home && fs.existsSync(home) ? fs.readdirSync(home) : [],
   configCopied: home ? fs.existsSync(path.join(home, "config.toml")) : false,
