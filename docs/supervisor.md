@@ -188,6 +188,12 @@ gate helper, once one is installed, belongs there too.
   override.
 - **Reading creates nothing:** `status`, `approvals` and `logs` answer empty when there is no
   state. Only a writing command (`add`, `run` and the like) initializes a root.
+- **One owner per data directory:** initializing or migrating writes `<data>/supervisor.root.json`,
+  naming the root. With another base or HOME, every command refuses and names the
+  `TT_SUPERVISOR_STATE_DIR` that finds it, rather than starting a second, empty supervisor. This
+  guards against a changed environment, not a worker: the data directory is worker-writable.
+- **launchd:** `install` writes the installed root's base into the agent's
+  `TT_SUPERVISOR_STATE_DIR`, so the daemon launchd starts resolves that same root.
 
 ### Migration from the old layout
 
@@ -199,7 +205,15 @@ includes reads, so nothing creates a new empty root that would hide the old stat
 
 `tt supervisor migrate` is human-only. It refuses while the launchd agent is installed, because
 launchd would restart a daemon on the old paths, and it takes both the old and the new owner
-locks. Then it:
+locks. It also refuses, moving nothing, in two cases:
+- Any recorded generation hasn't ended and its exact process is alive or unknown. A start intent
+  with no pid or start time counts as unknown. A dead supervisor doesn't prove its children are
+  dead, and a copy taken while one writes would lose what comes after. Stop it under the old
+  supervisor; migration never kills or adopts one.
+- A worker's native home (`workers/<worker>/codex` or `grok`) holds anything. A native session
+  index may record absolute paths that a move would break, and relocating one is unproven.
+
+Then it:
 1. Copies the database as one consistent snapshot with `VACUUM INTO`, which includes rows still
    in the WAL. It runs SQLite's integrity check and compares every table's row count with the old
    database.
@@ -207,7 +221,7 @@ locks. Then it:
    sockets and locks are made afresh by the next daemon.
 3. Commits by writing `root.json`.
 4. Moves the old files into `<data>/supervisor-legacy-<time>/`, keeping them rather than
-   deleting them, and leaves `<data>/supervisor.migrated.json` pointing at the new root. The old
+   deleting them, and writes the owner marker with where they went. The old
    directory keeps only its held owner lock until then, so no older supervisor can start while
    its files move.
 

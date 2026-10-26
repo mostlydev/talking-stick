@@ -147,7 +147,8 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   if (action === "install") {
     const program = supervisorProgram({ standalone: isStandalone(), execPath: process.execPath, cliEntry: cliEntry(),
       releaseRoot: isStandalone() && isInstalledRelease() ? standaloneRoot() : null });
-    const file = installLaunchAgent({ program, dataDir, logPath: paths.launchdLog });
+    // The agent resolves the very root installed here, whatever its HOME or default base would be.
+    const file = installLaunchAgent({ program, dataDir, logPath: paths.launchdLog, stateBase: path.dirname(root.dir) });
     printResult(parsed, { status: "installed", plist: file, log: paths.log }, () => `Installed ${file}; the supervisor now runs as a user agent.`);
     return;
   }
@@ -157,7 +158,8 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     const startedAt = getCurrentProcessStartedAt();
     if (!startedAt?.trim()) fail("Can't read this process's start time, so it can't hold the supervisor's locks.");
     const liveness = systemProcessLiveness();
-    const result = migrateSupervisorState(dataDir, (lock) => acquireOwnerLock(lock, { pid: process.pid, process_started_at: startedAt }, liveness));
+    const result = migrateSupervisorState(dataDir, { liveness,
+      acquireLock: (lock) => acquireOwnerLock(lock, { pid: process.pid, process_started_at: startedAt }, liveness) });
     printResult(parsed, result, () => result.status === "migrated"
       ? `Moved the supervisor's state to ${result.root}; the old files are kept in ${result.retired}.`
       : `Nothing to migrate; the supervisor's state is in ${result.root}.`);

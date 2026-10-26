@@ -13,7 +13,8 @@ import { openSqlite } from "../sqlite.js";
 const SOCKET_PATH_MAX = process.platform === "darwin" ? 103 : 107;
 const ROOT_FILE = "root.json";
 const JOURNAL_FILE = "migration.json";
-const TOMBSTONE = "supervisor.migrated.json";
+/** In the data directory: which root owns its supervisor, so another base never quietly starts a second. */
+const OWNER_MARKER = "supervisor.root.json";
 
 export interface SupervisorRoot {
   /** The protected directory holding all supervisor-owned state. */
@@ -85,7 +86,7 @@ export function legacyPaths(dataDir: string) {
     database: path.join(dataDir, "supervisor.sqlite"),
     dir: path.join(dataDir, "supervisor"),
     lock: path.join(dataDir, "supervisor", "owner.lock"),
-    tombstone: path.join(dataDir, TOMBSTONE)
+    marker: path.join(dataDir, OWNER_MARKER)
   };
 }
 
@@ -140,9 +141,32 @@ function readJournal(root: SupervisorRoot): Journal | null {
   return journal;
 }
 
+/**
+ * The data directory names the root that owns its supervisor. It is
+ * provenance against a changed base or HOME, not a security boundary: the
+ * data directory is worker-writable, and the root's own root.json decides.
+ */
+function checkOwnerMarker(root: SupervisorRoot): void {
+  const file = legacyPaths(root.dataDir).marker;
+  if (!fs.existsSync(file)) return;
+  let marker: { root?: string; id?: string };
+  try { marker = JSON.parse(fs.readFileSync(file, "utf8")); }
+  catch { throw new SupervisorStateError(`${file} is unreadable; nothing will guess which supervisor owns ${root.dataDir}.`); }
+  if (marker.root !== root.dir || marker.id !== root.id) {
+    throw new SupervisorStateError(`The supervisor for ${root.dataDir} lives in ${marker.root ?? "an unknown root"}, not ${root.dir}. ` +
+      `Set TT_SUPERVISOR_STATE_DIR to ${marker.root ? path.dirname(marker.root) : "its base"} rather than starting a second one.`);
+  }
+}
+
+function writeOwnerMarker(root: SupervisorRoot, extra: Record<string, unknown> = {}): void {
+  writeFileAtomic(legacyPaths(root.dataDir).marker,
+    `${JSON.stringify({ version: 1, root: root.dir, id: root.id, ...extra }, null, 2)}\n`, 0o600);
+}
+
 /** What state exists for this data directory. It writes nothing. */
 export function inspectSupervisorState(dataDir: string, env: NodeJS.ProcessEnv = process.env): { root: SupervisorRoot; kind: SupervisorStateKind } {
   const root = supervisorRootFor(dataDir, env);
+  checkOwnerMarker(root);
   if (readJournal(root)) return { root, kind: "migrating" };
   const record = readRootRecord(root);
   const legacy = hasLegacyState(root.dataDir);
@@ -170,7 +194,10 @@ export function prepareSupervisorRoot(dataDir: string, env: NodeJS.ProcessEnv = 
     throw new SupervisorStateError(`Supervisor state in ${root.dataDir} must move to ${root.dir} first: ` +
       "stop the supervisor, then run `tt supervisor migrate`.");
   }
-  if (kind === "none") writeRootRecord(root, false);
+  if (kind === "none") {
+    writeRootRecord(root, false);
+    writeOwnerMarker(root);
+  }
   return root;
 }
 
@@ -195,8 +222,16 @@ export interface MigrationResult { status: "migrated" | "nothing_to_migrate"; ro
  * only finishes moving the old files aside. The old owner lock stays held,
  * at its own path, until that is done.
  */
-export function migrateSupervisorState(dataDir: string, acquireLock: (lockPath: string) => () => void,
+export interface MigrationGuards {
+  /** Takes an owner lock at that path, throwing if a live supervisor holds it. */
+  acquireLock(lockPath: string): () => void;
+  /** Exact-process liveness, for the old layout's recorded generations. */
+  liveness(pid: number, processStartedAt: string): "alive" | "gone" | "unknown";
+}
+
+export function migrateSupervisorState(dataDir: string, guards: MigrationGuards,
   env: NodeJS.ProcessEnv = process.env): MigrationResult {
+  const { acquireLock } = guards;
   const { root, kind } = inspectSupervisorState(dataDir, env);
   if (kind === "ready" || kind === "none") return { status: "nothing_to_migrate", root: root.dir };
   const legacy = legacyPaths(root.dataDir);
@@ -212,6 +247,7 @@ export function migrateSupervisorState(dataDir: string, acquireLock: (lockPath: 
     let journal = readJournal(root);
     if (!journal) {
       if (inspectSupervisorState(dataDir, env).kind !== "legacy") throw new SupervisorStateError(`${root.dir} changed; nothing was migrated.`);
+      requireQuiescent(legacy, guards.liveness);
       journal = { version: 1, id: root.id, from: root.dataDir, committed: false, started_at: new Date().toISOString(),
         retired: path.join(root.dataDir, `supervisor-legacy-${new Date().toISOString().replace(/[:.]/g, "-")}`) };
       writeJournal(journalFile, journal);
@@ -240,13 +276,49 @@ export function migrateSupervisorState(dataDir: string, acquireLock: (lockPath: 
         if (entry !== "owner.lock") fs.renameSync(path.join(legacy.dir, entry), path.join(keep, entry));
       }
     }
-    writeFileAtomic(legacy.tombstone, `${JSON.stringify({ root: root.dir, retired: journal.retired, at: new Date().toISOString() }, null, 2)}\n`, 0o600);
+    writeOwnerMarker(root, { migrated: { retired: journal.retired, at: new Date().toISOString() } });
     fs.rmSync(journalFile, { force: true });
     return { status: "migrated", root: root.dir, retired: journal.retired };
   } finally {
     for (const release of releases.reverse()) { try { release(); } catch { /* already gone */ } }
     // The old directory held only its lock; remove it once that is released.
     try { fs.rmdirSync(legacy.dir); } catch { /* not empty, or already gone */ }
+  }
+}
+
+/**
+ * Nothing moves while the old layout may still have a running worker. A dead
+ * supervisor doesn't prove its children are dead, and a copy taken while one
+ * writes would lose what it writes after. Native homes stay put for now: a
+ * native session index may record absolute paths that a move would break.
+ */
+function requireQuiescent(legacy: ReturnType<typeof legacyPaths>, liveness: MigrationGuards["liveness"]): void {
+  if (fs.existsSync(legacy.database)) {
+    const db = openSqlite(legacy.database, { timeout: 5000 });
+    try {
+      const open = db.prepare("SELECT worker_id, generation, pid, process_started_at FROM generations WHERE ended_at IS NULL")
+        .all() as Array<{ worker_id: string; generation: number; pid: number | null; process_started_at: string | null }>;
+      for (const row of open) {
+        const state = row.pid === null || !row.process_started_at ? "unknown" : liveness(row.pid, row.process_started_at);
+        if (state !== "gone") {
+          throw new SupervisorStateError(`Worker ${row.worker_id} generation ${row.generation} may still be running (${state}); ` +
+            "stop it under the old supervisor before migrating. Nothing was moved.");
+        }
+      }
+    } finally {
+      db.close();
+    }
+  }
+  const workers = path.join(legacy.dir, "workers");
+  if (!fs.existsSync(workers)) return;
+  for (const worker of fs.readdirSync(workers)) {
+    for (const home of ["codex", "grok"]) {
+      const dir = path.join(workers, worker, home);
+      if (fs.existsSync(dir) && fs.readdirSync(dir).length) {
+        throw new SupervisorStateError(`${dir} holds native session state, which can't be relocated safely yet. ` +
+          "Nothing was moved; remove that worker under the old supervisor first.");
+      }
+    }
   }
 }
 
