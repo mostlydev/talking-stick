@@ -448,3 +448,21 @@ describe("loader and startup environment", () => {
   });
 });
 
+// Codex's final review of #219 (#32898), kept verbatim.
+test("review: a live worker's future configured closure is protected too", async () => {
+  const root = tmp(), shared = path.join(root, "future-startup");
+  const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+  const adapter = new FakeAdapter("claude");
+  const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "alive",
+    stateDir: path.join(root, "state"), gate: { kind: "scripted", confirm: async () => "confirmed" },
+    protectedSet: { paths: [path.join(root, "program")], unresolved: [] } });
+  supervisor.reconcileStartup();
+  for (const id of ["writer", "victim"]) store.addWorker({ worker_id: id, harness: "claude", cwd: root,
+    permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+  await supervisor.tick();
+  adapter.handles[0].confined = { kind: "workspace_write", writable: [shared] };
+  adapter.handles[1].closure = { paths: [path.join(root, "old-native")], unresolved: [] };
+  // A config/env reference now selects a different executable for the next start.
+  adapter.startClosures.victim = { paths: [path.join(shared, "new-native")], unresolved: [] };
+  expect(supervisor.gateIneligibility().length).toBeGreaterThan(0);
+});

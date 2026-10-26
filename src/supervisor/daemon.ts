@@ -754,12 +754,10 @@ export class Supervisor {
       paths.push(...closure.paths);
       unresolved.push(...closure.unresolved.map((what) => `${workerId}: ${what}`));
     }
-    // Every configured worker, stopped or paused included: any of them can be started again.
+    // Every configured worker's next start, live ones included: a live worker's configuration may
+    // already name something other than what it runs now, and that is what its restart would run.
     for (const worker of this.store.workers()) {
       const spec = JSON.parse(worker.spec_json) as WorkerSpec;
-      // A loader or startup variable could make any start, live or later, run something else.
-      unresolved.push(...startupEnvironmentRisks(spec).map((what) => `${worker.worker_id}: ${what}`));
-      if (this.handles.has(worker.worker_id)) continue;
       const closure = this.startClosure(spec);
       paths.push(...closure.paths);
       unresolved.push(...closure.unresolved.map((what) => `${worker.worker_id}: ${what}`));

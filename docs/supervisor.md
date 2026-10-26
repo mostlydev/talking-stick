@@ -411,8 +411,9 @@ These limits come from Apple's documentation and this codebase. No dialog was op
       its helper.
     - It covers the startup closure of every configured worker, live, stopped or paused: its
       native executable, that executable's package root, and any explicitly prepared
-      `CODEX_HOME`, whose config and hooks run at the next start outside any tool sandbox. One
-      worker that can rewrite another's executable is as bad as one rewriting its own.
+      `CODEX_HOME`, whose config and hooks run at the next start outside any tool sandbox. For a
+      live worker, both what it runs now and what its configuration would run at its next start
+      count. One worker that can rewrite another's executable is as bad as one rewriting its own.
     - Anything unresolvable makes the gate ineligible. That includes a Keychain-held `PATH`,
       `CODEX_EXECUTABLE` or `CODEX_HOME`, and a harness that can't say what it would run.
     - A spec naming any loader or startup variable is unresolved, whatever its value: `LD_*`,
