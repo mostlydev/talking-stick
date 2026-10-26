@@ -12,9 +12,10 @@
 // confinement of a worker is not shown here, and neither is launchd showing
 // the dialog.
 //
-// --launchd is the separate launchd step: whether the dialog appears for a
-// helper started by a throwaway launchd user agent, as the supervisor's
-// daemon would start it under launchd, and how it fails without a GUI session.
+// --launchd is the separate launchd step: whether the dialog appears when a
+// wrapper shell run as a throwaway launchd user agent starts the helper, in the
+// GUI session and in the background domain. It doesn't show a supervisor
+// LaunchAgent spawning the helper.
 //
 //   node scripts/attended-gate-acceptance.mjs                         the attended foreground run
 //   node scripts/attended-gate-acceptance.mjs --launchd               the attended launchd run
@@ -98,15 +99,23 @@ const launchctl = selfTest ? process.env.TT_GATE_ACCEPTANCE_LAUNCHCTL ?? path.jo
 const runLaunchctl = (args) => spawnSync(launchctl, args, { encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL" });
 // Unloads every agent this run loaded, then checks it is unloaded and its helper process gone.
 // Returns whether all of that was shown; otherwise the evidence stays and the labels are named.
-function bootoutAll() {
+function bootoutAll(only = null) {
   let complete = true;
   for (const [label, entry] of owned.labels) {
+    if (only && label !== only) continue;
     const run = runLaunchctl(["bootout", `${entry.domain}/${label}`]);
     const stillLoaded = runLaunchctl(["print", `${entry.domain}/${label}`]).status === 0;
     const pid = fs.existsSync(entry.pidFile) ? Number(fs.readFileSync(entry.pidFile, "utf8").trim()) : null;
     let helper = "never started";
-    if (pid) { try { process.kill(pid, 0); helper = "still running"; } catch { helper = "gone"; } }
-    else if (entry.started) helper = "unknown";
+    if (pid) {
+      // A signalled helper may take a moment to exit: give it two seconds, and it must then be gone.
+      const deadline = Date.now() + 2_000;
+      for (;;) {
+        try { process.kill(pid, 0); helper = "still running"; } catch { helper = "gone"; break; }
+        if (Date.now() > deadline) break;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      }
+    } else if (entry.started) helper = "unknown";
     const ok = !stillLoaded && (helper === "gone" || helper === "never started");
     if (!ok) complete = false;
     (result.bootouts ??= []).push({ label, domain: entry.domain, bootout_status: run.status, unloaded: !stillLoaded, helper_pid: pid, helper, ok });
@@ -114,6 +123,7 @@ function bootoutAll() {
   }
   writeLedger();
   if (!complete) result.cleanup_incomplete = [...owned.labels.keys()];
+  else if (!owned.labels.size) delete result.cleanup_incomplete;
   return complete;
 }
 // The private record of what this run loaded, written before each load.
@@ -430,12 +440,9 @@ async function launchdRun() {
           await new Promise((resolve) => setTimeout(resolve, 100));
         }
       }
-      // This step's own agent is unloaded and checked now; anything left stays in the ledger.
+      // This step's own agent is unloaded and checked now; anything else stays in the ledger, and owned.
       const before = result.bootouts?.length ?? 0;
-      const others = new Map([...owned.labels].filter(([other]) => other !== label));
-      for (const other of others.keys()) owned.labels.delete(other);
-      const unloaded = bootoutAll();
-      for (const [other, entry] of others) owned.labels.set(other, entry);
+      const unloaded = bootoutAll(label);
       const check = result.bootouts?.[before] ?? {};
       const kind = waitForAbort ? "aborted" : gateKind(exit);
       return { domain, label, loaded: true, exit, kind, unloaded: check.unloaded === true, helper: check.helper, cleanup_ok: unloaded };
@@ -463,6 +470,8 @@ async function launchdRun() {
       : background.exit === null ? "the helper never finished there" : `the helper exited ${background.exit}`;
     step(`3: background domain: ${finding}`, { ...background, finding });
     if (background.exit === 0) throw new Error(`Step 3 confirmed in the background domain: ${JSON.stringify(background)}.`);
+    // A dialog there at all, even one cancelled, means the background domain can present it: not accepted.
+    const backgroundDialog = background.exit === 3;
     if (background.loaded && !background.cleanup_ok) throw new Error(`Step 3's agent couldn't be shown unloaded: ${JSON.stringify(background)}.`);
 
     await pause("Step 4: one more launchd dialog will appear. Do NOT answer it. Press Ctrl-C in this terminal instead.");
@@ -470,7 +479,12 @@ async function launchdRun() {
     const abortedStep = await agent(gui, "do not answer this one; press Ctrl-C in the terminal", { waitForAbort: true });
     if (!abortedStep.cleanup_ok || abortedStep.helper !== "gone") throw new Error(`Step 4 expected the agent and helper gone, got ${JSON.stringify(abortedStep)}.`);
     step("4: an abort with the dialog up unloaded the agent and left no helper running", abortedStep);
-    await finish({ ok: true, aborted: false, error: undefined });
+    if (backgroundDialog) {
+      process.stderr.write("\n✗ A dialog appeared in the background domain; that is a finding, not an acceptance.\n");
+      await finish({ ok: false, aborted: false, error: "A dialog appeared in user/<uid>.", finding: "background_dialog" });
+    } else {
+      await finish({ ok: true, aborted: false, error: undefined });
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`\n✗ ${message}\n`);

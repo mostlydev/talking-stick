@@ -4,7 +4,8 @@
 // background domain it is unavailable, as LocalAuthentication would be there.
 let reason = "";
 process.stdin.on("data", (chunk) => { reason += chunk; }).on("end", () => {
-  if ((process.env.FAKE_DOMAIN ?? "").startsWith("user/")) process.exit(2);
+  // In the background domain the dialog is unavailable, unless the fault says one appeared and was cancelled.
+  if ((process.env.FAKE_DOMAIN ?? "").startsWith("user/")) process.exit(process.env.TT_GATE_ACCEPTANCE_FAULT === "background-dialog" ? 3 : 2);
   if (reason.includes("do not answer") || process.env.TT_GATE_ACCEPTANCE_FAULT === "timeout") { setInterval(() => {}, 1000); return; }
   if (reason.includes("CANCEL")) process.exit(3);
   if (reason.includes("CONFIRM")) process.exit(0);

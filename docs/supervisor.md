@@ -543,8 +543,8 @@ These limits come from Apple's documentation and this codebase. No dialog was op
        1. In `gui/<uid>`, confirm, expecting `confirmed`.
        2. In `gui/<uid>`, cancel, expecting `refused`.
        3. In `user/<uid>`, the background domain, the raw result is recorded as a finding.
-          Unavailable is expected. A dialog appearing there is reported, not counted as a pass,
-          and a confirmation there fails the run.
+          Unavailable is expected. A dialog appearing there, confirmed or cancelled, fails the
+          run: the result is never "Accepted" and names the finding.
        4. In `gui/<uid>`, the operator presses Ctrl-C with the dialog up. The agent must be
           unloaded and the helper's pid gone.
     6. Every agent goes into a private ledger in the temp root (domain, uid, label and paths)
@@ -560,7 +560,9 @@ These limits come from Apple's documentation and this codebase. No dialog was op
   - **The launchd self-test:** `--launchd --self-test` drives the same controller with a
     stand-in launchctl and helper, loading nothing and running no compiler. CI runs it with
     these faults: bootstrap failure, a stale record from another label, a timeout, an unload
-    that fails (the evidence is kept and named), and a second signal.
+    that fails (the evidence is kept and named), a dialog in the background domain (not
+    accepted), and a second signal. Each step's cleanup targets only its own label, and a
+    signalled helper gets up to two seconds to exit before it counts as still running.
   - **Until it passes,** the gate stays locked and the CLI refuses control before connecting.
     Wiring a gate into `run` and unlocking the CLI is a separate, reviewed change after it.
 

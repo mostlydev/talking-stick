@@ -105,7 +105,12 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     let sent = 0;
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
-      if (stdout.includes("press Ctrl-C here")) while (sent < signals) { sent++; child.kill("SIGINT"); }
+      // Each signal on its own, a moment apart, so two can't coalesce into one.
+      if (stdout.includes("press Ctrl-C here") && sent === 0) {
+        sent = 1;
+        child.kill("SIGINT");
+        if (signals > 1) setTimeout(() => { sent = 2; child.kill("SIGINT"); }, 20);
+      }
     });
     const status = await new Promise<number | string | null>((resolve) => child.on("exit", (code, signal) => resolve(code ?? signal)));
     return { status, stdout };
@@ -157,6 +162,16 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
       }
       if (result.retained_root) fs.rmSync(result.retained_root, { recursive: true, force: true });
     }
+  }, 60_000);
+
+  test("a dialog in the background domain, even one cancelled, is a finding and never Accepted", async () => {
+    const before = leftovers();
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "background-dialog" });
+    expect(status).toBe(1);
+    expect(stdout).toContain("FINDING: a dialog appeared in user/<uid> and was cancelled");
+    expect(stdout).not.toContain("Accepted:");
+    expect(resultOf(stdout)).toMatchObject({ ok: false, finding: "background_dialog" });
+    expect(leftovers()).toEqual(before);
   }, 60_000);
 
   test("a second signal still unloads what this run loaded before it exits", async () => {
