@@ -7,7 +7,9 @@ import type { RoomBridge } from "./room-bridge.js";
 import { resolveBundledSkillPath } from "../skill-install.js";
 import { displayText, safeDetail } from "./approval-detail.js";
 import { CONTROL_LOCKED_MESSAGE as CONTROL_LOCKED_ERROR } from "../service.js";
-import { workerIneligibility, type ProtectedSet } from "./eligibility.js";
+import { handleClosure, workerIneligibility, type ProtectedSet } from "./eligibility.js";
+
+const NO_PROTECTED_SET = "the supervisor has no protected set, so nothing is known to be out of a worker's reach.";
 import { LOCKED_GATE, type GateRequest, type GateResult, type HumanGate } from "./human-gate.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
@@ -245,6 +247,18 @@ export class Supervisor {
     if (resume && !adapter.capabilities().resume) {
       this.store.hold(worker.worker_id, "resume_failed", this.at());
       return;
+    }
+    // With a gate in use, nothing starts whose executable or startup files a live worker can rewrite.
+    if (this.gate !== LOCKED_GATE) {
+      const guarded = this.guardedSet();
+      const closure = this.startClosure(spec);
+      const reasons = !guarded ? [NO_PROTECTED_SET] : [...closure.unresolved.map((what) => `${worker.worker_id}: ${what} couldn't be resolved.`),
+        ...[...this.handles].flatMap(([id, live]) => workerIneligibility(id, live, { paths: closure.paths, unresolved: [] }))];
+      if (reasons.length) {
+        this.store.audit(this.at(), "supervisor", "gate_ineligible", worker.worker_id, { during: "start", reasons });
+        this.store.hold(worker.worker_id, "gate_ineligible", this.at());
+        return;
+      }
     }
     // The intent is durable before the spawn, and the child the moment it
     // exists, so a crash at any point leaves evidence and never a duplicate.
@@ -714,32 +728,60 @@ export class Supervisor {
   }
 
   /**
-   * With a gate in use, a worker whose reported confinement reaches what the
-   * gate rests on is stopped and held, whenever that is found, not only at start.
+   * Everything no worker may be able to write: the protected set, the state
+   * root, the gate's own files, and the startup closure of every worker, live
+   * or configured to run. One worker rewriting another's executable is as bad
+   * as rewriting its own.
    */
-  private enforceEligibility(workerId: string, handle: WorkerHandle): boolean {
-    if (this.gate === LOCKED_GATE || this.handles.get(workerId) !== handle) return true;
-    // Already being stopped, for this or any other reason: it isn't running on.
-    if (this.stopping.has(workerId)) return false;
-    const reasons = this.ineligibility(workerId, handle);
-    if (!reasons.length) return true;
-    this.store.audit(this.at(), "supervisor", "gate_ineligible", workerId, { generation: handle.generation, reasons });
-    this.store.hold(workerId, "gate_ineligible", this.at());
-    this.stopHandle(workerId, handle).catch(() => {});
-    return false;
+  private guardedSet(): ProtectedSet | null {
+    if (!this.protectedSet) return null;
+    const paths = [...this.protectedSet.paths, ...(this.stateDir ? [this.stateDir] : []), ...(this.gate.protectedPaths ?? [])];
+    const unresolved = [...this.protectedSet.unresolved];
+    for (const [workerId, handle] of this.handles) {
+      const closure = handleClosure(handle);
+      paths.push(...closure.paths);
+      unresolved.push(...closure.unresolved.map((what) => `${workerId}: ${what}`));
+    }
+    // Every configured worker, stopped or paused included: any of them can be started again.
+    for (const worker of this.store.workers()) {
+      if (this.handles.has(worker.worker_id)) continue;
+      const closure = this.startClosure(JSON.parse(worker.spec_json) as WorkerSpec);
+      paths.push(...closure.paths);
+      unresolved.push(...closure.unresolved.map((what) => `${worker.worker_id}: ${what}`));
+    }
+    return { paths, unresolved };
   }
 
-  /** Why one live worker makes a gate ineligible. */
-  private ineligibility(workerId: string, handle: WorkerHandle): string[] {
-    if (!this.protectedSet) return ["the supervisor has no protected set, so nothing is known to be out of a worker's reach."];
-    const guarded = { ...this.protectedSet, paths: [...this.protectedSet.paths, ...(this.stateDir ? [this.stateDir] : [])] };
-    return [...guarded.unresolved.map((what) => `${what} couldn't be resolved.`), ...workerIneligibility(workerId, handle, guarded)];
+  private startClosure(spec: WorkerSpec): { paths: string[]; unresolved: string[] } {
+    return this.adapters[spec.harness]?.startClosure?.(spec) ?? { paths: [], unresolved: ["what a start would run"] };
+  }
+
+  /**
+   * With a gate in use, every live worker whose own confinement reaches what
+   * the gate rests on is stopped and held, whenever that is found, not only at
+   * its start. Returns whether the named worker is still running.
+   */
+  private enforceEligibility(workerId: string, handle: WorkerHandle): boolean {
+    if (this.gate === LOCKED_GATE) return true;
+    const guarded = this.guardedSet();
+    for (const [id, live] of [...this.handles]) {
+      if (this.stopping.has(id)) continue;
+      // Its own reasons only: an unresolved closure elsewhere blocks control, but stops no one else.
+      const reasons = guarded ? workerIneligibility(id, live, guarded) : [NO_PROTECTED_SET];
+      if (!reasons.length) continue;
+      this.store.audit(this.at(), "supervisor", "gate_ineligible", id, { generation: live.generation, reasons });
+      this.store.hold(id, "gate_ineligible", this.at());
+      this.stopHandle(id, live).catch(() => {});
+    }
+    return this.handles.get(workerId) === handle && !this.stopping.has(workerId);
   }
 
   /** Every reason, over every live generation, a gate may not act; checked before asking and again after. */
   gateIneligibility(): string[] {
-    if (!this.protectedSet) return ["the supervisor has no protected set, so nothing is known to be out of a worker's reach."];
-    return [...new Set([...this.handles].flatMap(([workerId, handle]) => this.ineligibility(workerId, handle)))];
+    const guarded = this.guardedSet();
+    if (!guarded) return [NO_PROTECTED_SET];
+    return [...new Set([...guarded.unresolved.map((what) => `${what} couldn't be resolved.`),
+      ...[...this.handles].flatMap(([workerId, handle]) => workerIneligibility(workerId, handle, guarded))])];
   }
 
   /** The exact live thing a control request names, as the gate will describe it. */

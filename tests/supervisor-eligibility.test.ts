@@ -3,12 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { packageRoot, pathsConflict, supervisorProgramPaths, workerIneligibility } from "../src/supervisor/eligibility.js";
+import { packageLinkTargets, packageRoot, pathsConflict, supervisorProgramPaths, workerIneligibility } from "../src/supervisor/eligibility.js";
 import { CodexAdapter, effectiveConfinement } from "../src/supervisor/adapters/codex.js";
 import type { WorkerHandle, WorkerSpec } from "../src/supervisor/adapter.js";
 import { Supervisor } from "../src/supervisor/daemon.js";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
-import type { GateResult, HumanGate } from "../src/supervisor/human-gate.js";
+import { localAuthenticationGate, type GateResult, type HumanGate } from "../src/supervisor/human-gate.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -88,8 +88,9 @@ describe("a worker's ineligibility", () => {
     const guarded = { paths: [path.join(root, "state")], unresolved: [] };
     expect(workerIneligibility("w1", handle({ kind: "workspace_write", writable: [path.join(root, "work")] }), guarded)).toEqual([]);
     expect(workerIneligibility("w1", handle({ kind: "workspace_write", writable: [root] }), guarded)).toHaveLength(1);
-    const prepared = { paths: [path.join(root, "work", "codex-home")], unresolved: [] };
-    expect(workerIneligibility("w1", handle({ kind: "workspace_write", writable: [path.join(root, "work")] }, prepared), guarded)[0])
+    // The guarded set is the union of every worker's closure, a prepared home among them.
+    const withHome = { paths: [...guarded.paths, path.join(root, "work", "codex-home")], unresolved: [] };
+    expect(workerIneligibility("w1", handle({ kind: "workspace_write", writable: [path.join(root, "work")] }), withHome)[0])
       .toContain("codex-home");
   });
 
@@ -217,4 +218,138 @@ describe("the daemon with a gate in use", () => {
     await supervisor.tick();
     expect(store.worker("w1")!.hold_reason).toBe("gate_ineligible");
   });
+});
+
+// Codex's review of #219 (#32880), kept verbatim.
+test("review: a dot-dot-prefixed child is still inside its writable parent", () => {
+  const root = tmp();
+  expect(pathsConflict(root, path.join(root, "..supervisor", "control"))).toBe(true);
+});
+
+test("review: the worker can replace a lexical symlink even when its target is protected", () => {
+  const root = tmp(), work = path.join(root, "work"), guarded = path.join(root, "guarded");
+  fs.mkdirSync(work); fs.mkdirSync(guarded);
+  const home = path.join(work, "prepared-home"); fs.symlinkSync(guarded, home);
+  expect(pathsConflict(work, home)).toBe(true);
+});
+
+test("review: one worker must not rewrite another worker's execution closure", async () => {
+  const root = tmp(); const shared = path.join(root, "shared-startup");
+  const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+  const adapter = new FakeAdapter("claude");
+  const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone",
+    stateDir: path.join(root, "state"), gate: { kind: "scripted", confirm: async () => "confirmed" },
+    protectedSet: { paths: [path.join(root, "program")], unresolved: [] } });
+  supervisor.reconcileStartup();
+  for (const id of ["writer", "victim"]) store.addWorker({ worker_id: id, harness: "claude", cwd: root,
+    permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+  await supervisor.tick();
+  adapter.handles[0].confined = { kind: "workspace_write", writable: [shared] };
+  adapter.handles[1].closure = { paths: [path.join(shared, "native-executable")], unresolved: [] };
+  expect(supervisor.gateIneligibility().length).toBeGreaterThan(0);
+});
+
+describe("closures beyond one worker", () => {
+  test("a worker isn't started while a live worker can write what it would run; the writer is held when found", async () => {
+    const root = tmp();
+    const shared = path.join(root, "shared");
+    const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+    const adapter = new FakeAdapter("claude");
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone",
+      stateDir: path.join(root, "state"), gate: { kind: "scripted", confirm: async () => "confirmed" },
+      protectedSet: { paths: [path.join(root, "program")], unresolved: [] } });
+    supervisor.reconcileStartup();
+    adapter.nextConfinement = { kind: "workspace_write", writable: [shared] };
+    store.addWorker({ worker_id: "writer", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    await supervisor.tick();
+    expect(store.worker("writer")!.hold_reason).toBeNull();
+    // A second worker whose executable sits where the first can write: it never spawns.
+    adapter.startClosures.victim = { paths: [path.join(shared, "codex")], unresolved: [] };
+    const spawned = adapter.handles.length;
+    store.addWorker({ worker_id: "victim", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    await supervisor.tick();
+    expect(adapter.handles).toHaveLength(spawned);
+    expect(store.worker("victim")!.hold_reason).toBe("gate_ineligible");
+  });
+
+  test("the gate's own helper is protected", async () => {
+    const root = tmp();
+    const helper = path.join(root, "work", "tt-human-gate");
+    const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+    const adapter = new FakeAdapter("claude");
+    adapter.nextConfinement = { kind: "workspace_write", writable: [path.join(root, "work")] };
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone", stateDir: path.join(root, "state"),
+      gate: { kind: "helper", protectedPaths: [helper], confirm: async () => "confirmed" }, protectedSet: { paths: [], unresolved: [] } });
+    supervisor.reconcileStartup();
+    store.addWorker({ worker_id: "w1", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    await supervisor.tick();
+    expect(store.worker("w1")!.hold_reason).toBe("gate_ineligible");
+    expect(localAuthenticationGateProtects(helper)).toBe(true);
+  });
+
+  test("a dependency linked out of the package is protected where it points", () => {
+    const root = tmp();
+    const pkg = path.join(root, "pkg"), outside = path.join(root, "outside", "dep");
+    fs.mkdirSync(path.join(pkg, "node_modules"), { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    fs.writeFileSync(path.join(pkg, "package.json"), "{}");
+    fs.symlinkSync(outside, path.join(pkg, "node_modules", "dep"));
+    const links = packageLinkTargets(pkg);
+    expect(links.unresolved).toEqual([]);
+    expect(links.paths).toEqual(expect.arrayContaining([path.join(pkg, "node_modules", "dep"), outside]));
+    expect(links.paths.some((guarded) => pathsConflict(path.join(root, "outside"), guarded))).toBe(true);
+  });
+});
+
+function localAuthenticationGateProtects(helper: string): boolean {
+  return (localAuthenticationGate({ helper }).protectedPaths ?? []).includes(helper);
+}
+
+test.skipIf(process.platform === "win32")("review: a worker-writable human-gate helper is ineligible", async () => {
+  const root = tmp(), work = path.join(root, "work"); fs.mkdirSync(work);
+  const helper = path.join(work, "gate-helper");
+  // A disposable stand-in for a helper the worker could replace with exit 0.
+  fs.writeFileSync(helper, `#!${process.execPath}\nprocess.exit(0);\n`, { mode: 0o700 });
+  const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+  const adapter = new FakeAdapter("claude");
+  const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone",
+    stateDir: path.join(root, "state"), gate: localAuthenticationGate({ helper }),
+    protectedSet: { paths: [path.join(root, "program")], unresolved: [] } });
+  supervisor.reconcileStartup();
+  store.addWorker({ worker_id: "w1", harness: "claude", cwd: work,
+    permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+  await supervisor.tick();
+  adapter.last.confined = { kind: "workspace_write", writable: [work] };
+  adapter.last.emit({ type: "turn_started", native_turn_id: "t1" });
+  expect(await supervisor.control({ action: "interrupt", actor: "claude:w1", worker_id: "w1" }))
+    .toMatchObject({ ok: false, gate: "ineligible" });
+  expect(adapter.last.interrupts).toEqual([]);
+});
+
+test("an eligible Codex worker survives an idle reload with a gate in use, and the resume is sent", async () => {
+  const root = tmp();
+  const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+  const trace = path.join(root, "trace.jsonl");
+  const adapter = new CodexAdapter({ command: process.execPath,
+    argsPrefix: [fileURLToPath(new URL("./fixtures/codex-app-server.cjs", import.meta.url))], requestTimeoutMs: 200, startTimeoutMs: 1_000 });
+  const supervisor = new Supervisor({ store, adapters: { codex: adapter }, processLiveness: () => "alive", stateDir: path.join(root, "state"),
+    dataDir: path.join(root, "data"), gate: { kind: "scripted", confirm: async () => "confirmed" },
+    protectedSet: { paths: [path.join(root, "program")], unresolved: [] } });
+  cleanup.push(() => supervisor.shutdown());
+  supervisor.reconcileStartup();
+  store.addWorker({ worker_id: "w1", harness: "codex", cwd: path.join(root, "work"),
+    permissions: { harness: "codex", sandbox: "read-only", approval: "on-request" },
+    env: [{ name: "FIXTURE_TRACE", from: "literal", value: trace }] }, "human:op", "t");
+  fs.mkdirSync(path.join(root, "work"));
+  await supervisor.tick();
+  expect(store.worker("w1")!.hold_reason).toBeNull();
+  const handle = supervisor.handle("w1")!;
+  (handle as unknown as { receive(line: string): void }).receive(JSON.stringify({ method: "thread/status/changed",
+    params: { threadId: handle.sessionId(), status: { type: "notLoaded" } } }));
+  expect(await handle.probe()).toBe("alive");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const sent = fs.readFileSync(trace, "utf8").trim().split("\n").map((line) => JSON.parse(line)).map((message) => message.method);
+  expect(sent.filter((method) => method === "thread/resume")).toHaveLength(1);
+  expect(store.worker("w1")!.hold_reason).toBeNull();
+  expect(store.auditRows("w1").some((row) => row.action === "gate_ineligible")).toBe(false);
 });

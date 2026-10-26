@@ -66,6 +66,11 @@ export class FakeAdapter implements HarnessAdapter {
   holdStart: Promise<void> | null = null;
   /** The confinement the next started handle reports. */
   nextConfinement: Confinement | null = null;
+  /** What a start would run, per worker; a worker not listed has an empty closure. */
+  startClosures: Record<string, { paths: string[]; unresolved: string[] }> = {};
+  startClosure(spec: WorkerSpec): { paths: string[]; unresolved: string[] } {
+    return this.startClosures[spec.worker_id] ?? { paths: [], unresolved: [] };
+  }
   private nextPid = 1000;
 
   constructor(harness: Harness = "claude") {

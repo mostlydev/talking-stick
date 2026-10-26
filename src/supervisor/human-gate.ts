@@ -26,6 +26,8 @@ export type GateResult = "confirmed" | "refused" | "unavailable";
 
 export interface HumanGate {
   readonly kind: string;
+  /** What the gate itself runs, such as its helper; no worker may be able to write it. */
+  readonly protectedPaths?: string[];
   /**
    * Asks the human at the console to confirm this one request. A confirmation
    * never carries over: each call asks afresh, and an abort is a refusal.
@@ -61,6 +63,7 @@ export interface LocalAuthenticationGateOptions {
 export function localAuthenticationGate(options: LocalAuthenticationGateOptions): HumanGate {
   return {
     kind: "local-authentication",
+    protectedPaths: [options.helper],
     confirm: (request, signal) => new Promise<GateResult>((resolve) => {
       if (signal.aborted) return resolve("refused");
       let settled = false;

@@ -122,6 +122,11 @@ export interface SpawnedProcess {
 }
 
 export interface HarnessAdapter {
+  /**
+   * What a start of this spec would run, resolved before any spawn: its native
+   * executable and anything it loads at start. Absent means it can't be known.
+   */
+  startClosure?(spec: WorkerSpec): { paths: string[]; unresolved: string[] };
   readonly harness: Harness;
   capabilities(): Capabilities;
   /**

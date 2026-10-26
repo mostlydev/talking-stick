@@ -118,6 +118,28 @@ export class CodexAdapter implements HarnessAdapter {
     const supported = process.platform !== "win32";
     return { prompt: supported, resume: supported, interrupt: supported, approvals: supported };
   }
+  /**
+   * The executable a start would run and any prepared home it loads, resolved
+   * from the spec's own references without reading a secret; a Keychain-held
+   * PATH, CODEX_EXECUTABLE or CODEX_HOME can't be known this way.
+   */
+  startClosure(spec: WorkerSpec): { paths: string[]; unresolved: string[] } {
+    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin" };
+    for (const ref of spec.env) {
+      if (!["PATH", "CODEX_EXECUTABLE", "CODEX_HOME"].includes(ref.name)) continue;
+      if (ref.from === "keychain") return { paths: [], unresolved: [`${ref.name}, held in the Keychain`] };
+      env[ref.name] = ref.from === "literal" ? ref.value : process.env[ref.name];
+    }
+    let command: string;
+    try { command = this.options.command ?? resolveCodexExecutable(env); }
+    catch { return { paths: [], unresolved: ["its native executable"] }; }
+    const paths = [command];
+    const root = packageRoot(command);
+    if (root) paths.push(root);
+    if (env.CODEX_HOME) paths.push(path.resolve(env.CODEX_HOME));
+    return { paths, unresolved: [] };
+  }
+
   async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void,
     signal?: AbortSignal): Promise<WorkerHandle> {
     if (spec.harness !== "codex" || spec.permissions.harness !== "codex") throw new Error("Codex needs explicit Codex permissions.");
@@ -182,6 +204,7 @@ class CodexHandle implements WorkerHandle {
   private resumeFailed = false;
   private reloading: Promise<boolean> | null = null;
   private effective: Confinement = { kind: "unconfined", reason: "Codex has not reported its sandbox yet" };
+  private reported = "";
   /** What starts this worker: set before the spawn. */
   closure: { command: string; preparedHome: string | null; tmpdir: string | null } | null = null;
   readonly generation: number;
@@ -196,9 +219,12 @@ class CodexHandle implements WorkerHandle {
   sessionId(): string | null { return this.thread; }
   confinement(): Confinement { return this.effective; }
   private setConfinement(next: Confinement): void {
-    const changed = JSON.stringify(next) !== JSON.stringify(this.effective);
     this.effective = next;
-    if (changed) this.emit({ type: "confinement" });
+    // Reported when it differs from what the supervisor last heard, never for the placeholder.
+    if (JSON.stringify(next) !== this.reported) {
+      this.reported = JSON.stringify(next);
+      this.emit({ type: "confinement" });
+    }
   }
   executionClosure(): { paths: string[]; unresolved: string[] } {
     if (!this.closure) return { paths: [], unresolved: ["its native executable"] };
@@ -238,8 +264,9 @@ class CodexHandle implements WorkerHandle {
   }
 
   private async openThread(resume?: string): Promise<void> {
-    // Until this thread reports its sandbox, nothing earlier vouches for it; a failed open stays unconfined.
-    this.setConfinement({ kind: "unconfined", reason: "Codex has not reported the sandbox of its latest thread open" });
+    // Until this thread reports its sandbox nothing earlier vouches for it, so a check meanwhile sees
+    // unconfined. That isn't reported: only what the open returns is, so a pending open stops no one.
+    this.effective = { kind: "unconfined", reason: "Codex has not reported the sandbox of its latest thread open" };
     const timeout = this.options.startTimeoutMs ?? 15_000;
     const permissions = this.spec.permissions;
     if (permissions.harness !== "codex") throw new Error("Invalid Codex permission settings.");

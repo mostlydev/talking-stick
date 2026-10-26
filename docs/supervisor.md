@@ -402,11 +402,17 @@ These limits come from Apple's documentation and this codebase. No dialog was op
 - **Gate eligibility (`src/supervisor/eligibility.ts`).** A gate other than the locked one may
   act only while every live worker is provably unable to write what the gate rests on.
   - **Protected set:** the state root, the runtime the supervisor runs on (its real
-    `process.execPath`), the package it was loaded from (or the standalone root), and the launch
-    agent plist with its directory. Each worker adds its own closure: its native executable, that
-    executable's package root, and any explicitly prepared `CODEX_HOME`, whose config and hooks
-    run at the next start outside any tool sandbox. Anything unresolvable makes the gate
-    ineligible.
+    `process.execPath`), and the package it was loaded from, or the standalone root.
+    - Every symlink under that package is followed to its target, since a linked dependency can
+      live anywhere. A tree too large to walk is unresolved.
+    - It also covers the launch agent plist with its directory, and the gate's own files, such as
+      its helper.
+    - It covers the startup closure of every configured worker, live, stopped or paused: its
+      native executable, that executable's package root, and any explicitly prepared
+      `CODEX_HOME`, whose config and hooks run at the next start outside any tool sandbox. One
+      worker that can rewrite another's executable is as bad as one rewriting its own.
+    - Anything unresolvable makes the gate ineligible. That includes a Keychain-held `PATH`,
+      `CODEX_EXECUTABLE` or `CODEX_HOME`, and a harness that can't say what it would run.
   - **Confinement comes from the native process, never the spec.** Codex's `thread/start` and
     `thread/resume` return the effective sandbox. `workspaceWrite` covers the cwd, every
     `writableRoots` entry, `/tmp` unless `excludeSlashTmp`, and the child's `TMPDIR` unless
@@ -414,12 +420,18 @@ These limits come from Apple's documentation and this codebase. No dialog was op
     incompletely described policy is unconfined. Claude and Grok report no confinement, so they are
     always ineligible.
   - **Conflict:** a writable root conflicts with a protected path when it is that path, an
-    ancestor of it (which could replace it), or inside it. Both are compared canonical.
+    ancestor of it (which could replace it), or inside it. Both are compared as written and as
+    resolved. The protected side is also compared through every symlink its resolution passes, so
+    whoever can replace a link is caught. Containment is by path segment, so a child named
+    `..x` is still inside.
   - **Enforcement, only with a gate other than the locked one:** a worker found ineligible is
-    stopped and held `gate_ineligible`. That is checked right after it starts, and again whenever
-    it reports a new confinement or a failed resume. Every thread open, a resume included, first
-    resets the adapter's confinement to unconfined, so a rejected resume never keeps an earlier,
-    narrower report. Every control request checks all live
+    stopped and held `gate_ineligible`.
+    - **Before it spawns,** a worker is held if any live worker can write what it would run.
+    - **After it starts,** and whenever it reports a new confinement or a failed resume, it is
+      checked again.
+    - **During a thread open,** a resume included, the adapter counts as unconfined until Codex
+      returns the new sandbox. That placeholder is never reported, so a pending open stops no one,
+      and a control check meanwhile is refused. Every control request checks all live
     workers before asking and again after the answer, so a worker that becomes ineligible while
     the human is asked voids the confirmation. With no protected set, nothing is eligible.
   - **What this leaves out:** an approved escalation runs outside the sandbox, and a human
