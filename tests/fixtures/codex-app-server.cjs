@@ -4,6 +4,8 @@ const { spawn } = require("node:child_process");
 const mode = process.env.FIXTURE_MODE;
 let thread = process.env.FIXTURE_UNICODE ? "owned-界" : "owned-thread";
 let turn = null, counter = 0, approval = false, unloaded = false;
+// "two-approvals" raises requests 1 and 2 together; each reply resolves only its own.
+const pendingPair = new Set();
 const output = value => process.stdout.write(JSON.stringify(value) + "\n");
 const reply = (id, result) => output({ id, result });
 const notify = (method, params) => output({ method, params: { threadId: thread, ...params } });
@@ -15,6 +17,10 @@ input.on("line", line => {
   trace(m);
   if (!m.method) {
     if (m.id === 0 && approval) { approval = false; notify("serverRequest/resolved", { requestId: 0 }); complete("completed"); }
+    if (pendingPair.delete(m.id)) {
+      notify("serverRequest/resolved", { requestId: m.id });
+      if (!pendingPair.size) complete("completed");
+    }
     return;
   }
   if (m.method === "initialize") {
@@ -46,7 +52,13 @@ input.on("line", line => {
     notify("turn/started", { turn: { id, status: "inProgress" } });
     if (text === "fast") complete("completed");
     reply(m.id, { turn: { id, status: "inProgress" } });
-    if (text === "approval") {
+    if (text === "two-approvals") {
+      for (const id of [1, 2]) {
+        pendingPair.add(id);
+        output({ id, method: "item/commandExecution/requestApproval", params: { threadId: thread,
+          turnId: turn, command: `synthetic harmless command ${id}`, availableDecisions: ["accept", "decline", "cancel"] } });
+      }
+    } else if (text === "approval") {
       approval = true;
       output({ id: 0, method: "item/commandExecution/requestApproval", params: { threadId: thread,
         turnId: turn, command: "synthetic harmless command", availableDecisions: ["accept", "decline", "cancel"] } });

@@ -92,54 +92,77 @@ try {
   if (ineligible.length) throw new Error(`The gate isn't eligible here, so nothing would be asked: ${ineligible.join(" ")}`);
   step("a confined, eligible worker is running", { confinement: supervisor.handle("accept").confinement() });
 
-  const approval = async () => {
+  // Waits for the requests one input raises, and returns them in native-id order.
+  const raise = async (text, count) => {
     const before = new Set(store.pendingApprovals().map((row) => row.approval_id));
-    await supervisor.submit("accept", "approval", "start_turn", "acceptance");
-    let row;
-    await until("the fixture's approval request", () => (row = store.pendingApprovals().find((r) => !before.has(r.approval_id))) !== undefined);
-    return row;
+    await supervisor.submit("accept", text, "start_turn", "acceptance");
+    let rows = [];
+    await until("the fixture's approval requests", () =>
+      (rows = store.pendingApprovals().filter((row) => !before.has(row.approval_id))).length === count);
+    return rows.sort((a, b) => a.native_request_id.localeCompare(b.native_request_id));
   };
+  // What the person reads before the dialog: the whole stored request, its full digest, and the dialog text.
   const show = (row) => {
     const request = { action: "approve", worker_id: row.worker_id, generation: row.generation, approval_id: row.approval_id,
       tool: row.tool, summary: row.summary, detail_sha256: row.detail_sha256 };
-    process.stdout.write(`\nThe dialog should read:\n${gateReason(request).split("\n").map((line) => `    ${line}`).join("\n")}\n`);
+    process.stdout.write(`\nRequest ${row.approval_id}, sha256 ${row.detail_sha256}:\n${row.detail}\n` +
+      `The dialog should read:\n${gateReason(request).split("\n").map((line) => `    ${line}`).join("\n")}\n`);
   };
+  const decide = (row) => supervisor.control({ action: "approve", actor, approval_id: row.approval_id, detail_sha256: row.detail_sha256 });
+  const idle = () => until("the turn to finish", () => store.latestGeneration("accept")?.state === "idle");
 
   // 1. Positive: a human confirms exactly the request they were shown.
-  const first = await approval();
+  const [first] = await raise("approval", 1);
   show(first);
   gate.expect?.(["confirmed"]);
   await pause("Step 1: a dialog will ask you to allow this request. Read it, then CONFIRM with Touch ID or your password.");
-  const allowed = await supervisor.control({ action: "approve", actor, approval_id: first.approval_id, detail_sha256: first.detail_sha256 });
+  const allowed = await decide(first);
   if (!allowed.ok || allowed.result?.status !== "allowed") throw new Error(`Step 1 expected allowed, got ${JSON.stringify(allowed)}.`);
   await until("the allowed answer to reach the worker", () => store.approval(first.approval_id)?.answer_status === "delivered");
-  step("1: a confirmed approval is allowed and delivered", { approval_id: first.approval_id });
+  step("1: a confirmed approval is allowed and delivered", { approval_id: first.approval_id, control: allowed });
 
   // 2. A replay asks no one and finds nothing pending.
   gate.expect?.([]);
   const askedBefore = gate.asked;
-  const replay = await supervisor.control({ action: "approve", actor, approval_id: first.approval_id, detail_sha256: first.detail_sha256 });
+  const replay = await decide(first);
   if (replay.ok) throw new Error("Step 2 expected the replay to be refused.");
   if (selfTest && gate.asked !== askedBefore) throw new Error("Step 2 asked the gate for a replay.");
-  step("2: a replay is refused without a dialog", { error: replay.error });
+  step("2: a replay is refused without a dialog", { control: replay });
 
-  // 3. Negative: a human cancels, and nothing changes.
-  await until("the first turn to finish", () => !supervisor.handle("accept") || store.latestGeneration("accept")?.state === "idle");
-  const second = await approval();
+  // 3. Two requests pending together, with distinct native ids.
+  await idle();
+  const [second, third] = await raise("two-approvals", 2);
+  step("3: two requests are pending at once", { approvals: [second.approval_id, third.approval_id] });
+
+  // 4. Negative: a cancelled dialog settles nothing, and sends no deny.
   show(second);
   gate.expect?.(["refused"]);
-  await pause("Step 3: a dialog will ask about this second request. CANCEL it.");
-  const refused = await supervisor.control({ action: "approve", actor, approval_id: second.approval_id, detail_sha256: second.detail_sha256 });
-  if (refused.ok || store.approval(second.approval_id)?.status !== "pending") throw new Error(`Step 3 expected a refusal, got ${JSON.stringify(refused)}.`);
-  step("3: a cancelled dialog refuses, and the request stays pending", { approval_id: second.approval_id, gate: refused.gate });
+  await pause("Step 4: a dialog will ask about the first of the two. CANCEL it.");
+  const refused = await decide(second);
+  // Pending, with no answer of any kind sent to the worker.
+  if (refused.ok || store.approval(second.approval_id)?.status !== "pending" || store.approval(second.approval_id)?.answer_status !== null ||
+      store.approval(third.approval_id)?.status !== "pending") {
+    throw new Error(`Step 4 expected a refusal with both still pending, got ${JSON.stringify(refused)}.`);
+  }
+  step("4: a cancelled dialog refuses, and both stay pending", { approval_id: second.approval_id, control: refused });
 
-  // 4. The same request can still be decided by a later, separate confirmation.
-  show(second);
+  // 5. Confirming one of two settles exactly that one.
+  show(third);
   gate.expect?.(["confirmed"]);
-  await pause("Step 4: the same second request is asked again. This time CONFIRM it.");
-  const later = await supervisor.control({ action: "approve", actor, approval_id: second.approval_id, detail_sha256: second.detail_sha256 });
-  if (!later.ok) throw new Error(`Step 4 expected allowed, got ${JSON.stringify(later)}.`);
-  step("4: a later confirmation decides only that request", { approval_id: second.approval_id });
+  await pause("Step 5: a dialog will ask about the second of the two. CONFIRM it.");
+  const one = await decide(third);
+  if (!one.ok || store.approval(third.approval_id)?.status !== "allowed" || store.approval(second.approval_id)?.status !== "pending") {
+    throw new Error(`Step 5 expected only the second to be allowed, got ${JSON.stringify(one)}.`);
+  }
+  step("5: confirming one request decides only that one", { allowed: third.approval_id, still_pending: second.approval_id, control: one });
+
+  // 6. An unavailable gate settles nothing either (the helper's exit 2). Only scriptable without a dialog.
+  if (selfTest) {
+    gate.expect?.(["unavailable"]);
+    const unavailable = await decide(second);
+    if (unavailable.ok || store.approval(second.approval_id)?.status !== "pending") throw new Error("Step 6 expected unavailable to settle nothing.");
+    step("6: an unavailable gate settles nothing", { control: unavailable });
+  }
 
   result.ok = true;
 } catch (error) {

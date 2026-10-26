@@ -12,14 +12,17 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
   test("its self-test runs every step against a confined fixture worker, and cleans up", () => {
     const output = execFileSync(process.execPath, [script, "--self-test"], { encoding: "utf8", timeout: 60_000 });
     for (const step of ["a confined, eligible worker is running", "1: a confirmed approval is allowed and delivered",
-      "2: a replay is refused without a dialog", "3: a cancelled dialog refuses, and the request stays pending",
-      "4: a later confirmation decides only that request"]) expect(output).toContain(step);
+      "2: a replay is refused without a dialog", "3: two requests are pending at once",
+      "4: a cancelled dialog refuses, and both stay pending", "5: confirming one request decides only that one",
+      "6: an unavailable gate settles nothing"]) expect(output).toContain(step);
     const file = output.match(/Result: (\S+)/)![1];
     const result = JSON.parse(fs.readFileSync(file, "utf8"));
     fs.rmSync(file);
     expect(result).toMatchObject({ ok: true, self_test: true });
     expect(result.audit.map((row: { action: string }) => row.action))
-      .toEqual(["control_approve_confirmed", "control_approve_refused", "control_approve_confirmed"]);
+      .toEqual(["control_approve_confirmed", "control_approve_refused", "control_approve_confirmed", "control_approve_unavailable"]);
+    // Nothing a token could be recovered from.
+    expect(JSON.stringify(result)).not.toMatch(/token/i);
   });
 
   test("the attended run refuses inside a harness session, asking nothing", () => {

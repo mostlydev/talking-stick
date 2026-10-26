@@ -464,11 +464,16 @@ These limits come from Apple's documentation and this codebase. No dialog was op
        LocalAuthentication gate. Its only worker is the deterministic Codex app-server fixture:
        read-only, with no model and no credentials.
     3. It stops unless `gateIneligibility()` is empty.
-    4. It then walks four steps, printing the text each dialog should show:
+    4. It then walks the steps, printing each request's stored detail, its full digest and the
+       text its dialog should show:
        1. A confirmed approval is allowed and delivered.
        2. A replay is refused without any dialog.
-       3. A cancelled dialog refuses, and the request stays pending.
-       4. A later confirmation of that same request decides only it.
+       3. Two requests with distinct native ids are pending at once. This uses the fixture's
+          `two-approvals` mode.
+       4. A cancelled dialog on the first refuses, both stay pending, and no answer is sent.
+       5. Confirming the second decides only it, while the first stays pending.
+       In `--self-test` a sixth step shows that an unavailable gate, the helper's exit 2, settles
+       nothing either.
     5. It writes a result JSON without secrets to the temp directory and removes everything else.
   - **Self-test:** `--self-test` runs the same steps with a scripted gate and no dialog. CI runs it.
   - **What it leaves out:** whether a launchd agent can present the dialog. It runs in the
