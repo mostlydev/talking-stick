@@ -84,7 +84,8 @@ export interface WorkerHandle {
   onEvent(listener: (event: WorkerEvent) => void): void;
   /** Writes one journalled input; a timeout after writing resolves uncertain. */
   submit(input: { input_id: string; text: string; mode: InputMode }): Promise<InputOutcome>;
-  interrupt(): Promise<"interrupted" | "not_busy" | "unsupported">;
+  /** With a native turn id, interrupts only that turn: any other, or none, is not_busy. */
+  interrupt(expectedTurnId?: string): Promise<"interrupted" | "not_busy" | "unsupported">;
   /**
    * Answers the request with this native id on this handle's generation only.
    * It rejects when the harness no longer has that request pending.

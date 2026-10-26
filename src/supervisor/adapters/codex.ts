@@ -360,9 +360,9 @@ class CodexHandle implements WorkerHandle {
     }
     finally { this.inputStarting = null; }
   }
-  async interrupt(): Promise<"interrupted" | "not_busy" | "unsupported"> {
+  async interrupt(expectedTurnId?: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
     const turn = this.turn;
-    if (!turn || !this.thread) return "not_busy";
+    if (!turn || !this.thread || (expectedTurnId !== undefined && turn !== expectedTurnId)) return "not_busy";
     try {
       await this.rpc.request("turn/interrupt", { threadId: this.thread, turnId: turn }, this.options.requestTimeoutMs ?? 10_000);
       if (this.completed.get(turn) === "interrupted") return "interrupted";

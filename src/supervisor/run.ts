@@ -10,6 +10,7 @@ import { Supervisor, acquireOwnerLock, type ProcessLivenessReader } from "./daem
 import { startIntakeServer, type ControlAnswer, type ControlMessage } from "./intake.js";
 import { createRoomBridge } from "./room-bridge.js";
 import { SupervisorStore, supervisorDatabasePath } from "./state.js";
+import type { HumanGate } from "./human-gate.js";
 
 // The supervisor daemon: one per data directory, in the foreground. launchd
 // keeps it running when installed; tt supervisor run starts it by hand.
@@ -88,6 +89,8 @@ export interface RunSupervisorOptions {
   log?: (line: string) => void;
   processLiveness?: ProcessLivenessReader;
   service?: TalkingStickService;
+  /** The human-control gate; locked unless a verified one is given (tests inject their own). */
+  gate?: HumanGate;
 }
 
 export async function runSupervisor(options: RunSupervisorOptions): Promise<void> {
@@ -128,7 +131,8 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
     });
     if (options.signal?.aborted) stopRequested();
     const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
-      bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir, bootstrap: true });
+      bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir, bootstrap: true,
+      gate: options.gate });
     cleanups.push(() => supervisor.shutdown());
     const control = async (message: ControlMessage): Promise<ControlAnswer> => {
       const presented = Buffer.from(message.token);
@@ -136,10 +140,10 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
       if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
         return { ok: false, error: "This control request is not authorized." };
       }
-      // Fail closed: a token anyone of this user can read proves no human.
-      store.audit(new Date().toISOString(), message.actor, `control_${message.action}_refused`, message.worker_id ?? null,
-        { approval_id: message.approval_id ?? null, reason: "control_locked" });
-      return { ok: false, error: CONTROL_LOCKED };
+      // A token anyone of this user can read proves no human: the gate decides, and it is locked by default.
+      const outcome = await supervisor.control({ action: message.action, actor: message.actor, approval_id: message.approval_id,
+        worker_id: message.worker_id, detail_sha256: message.detail_sha256, note: message.note });
+      return outcome.ok ? outcome : { ok: false, error: outcome.error };
     };
     const server = await startIntakeServer(paths.socket, (message) => supervisor.acceptIntake(message));
     cleanups.push(() => server.close());

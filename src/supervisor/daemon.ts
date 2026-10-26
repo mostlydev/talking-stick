@@ -6,6 +6,8 @@ import type { IntakeAnswer, IntakeMessage } from "./intake.js";
 import type { RoomBridge } from "./room-bridge.js";
 import { resolveBundledSkillPath } from "../skill-install.js";
 import { displayText, safeDetail } from "./approval-detail.js";
+import { CONTROL_LOCKED_MESSAGE as CONTROL_LOCKED_ERROR } from "../service.js";
+import { LOCKED_GATE, type GateRequest, type GateResult, type HumanGate } from "./human-gate.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
 // running and acts. Its probes never prompt a worker or touch room presence. The
@@ -38,7 +40,28 @@ export interface SupervisorOptions {
   bootstrap?: boolean;
   /** The supervisor's tt data directory, given to every worker so its tt calls land in this room database. */
   dataDir?: string;
+  /** The human-control gate every control request must pass; locked by default. */
+  gate?: HumanGate;
+  /** How long a human has to confirm one request; GATE_TIMEOUT_MS by default. */
+  gateTimeoutMs?: number;
 }
+
+export const GATE_TIMEOUT_MS = 120_000;
+
+/** A control request as it arrives, before the gate: the caller names exactly what it means. */
+export interface ControlRequest {
+  action: "approve" | "deny" | "interrupt";
+  actor: string;
+  approval_id?: string;
+  worker_id?: string;
+  /** The detail digest the requester reviewed; an approval needs it, in full or as a 12+ hex prefix. */
+  detail_sha256?: string;
+  note?: string;
+}
+
+export type ControlOutcome =
+  | { ok: true; result: unknown }
+  | { ok: false; error: string; gate?: GateResult | "busy" | "changed" };
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -80,6 +103,9 @@ export class Supervisor {
   private readonly socketPath: string | null;
   private readonly bootstrap: boolean;
   private readonly dataDir: string | null;
+  private readonly gate: HumanGate;
+  private readonly gateTimeoutMs: number;
+  private gateBusy = false;
   /** This daemon's delivery tokens; only hashes are stored. */
   private readonly deliveryTokens = new Map<string, { generation: number; token: string; address: string }>();
   /** Envelope text is kept in memory only, never in the journal. */
@@ -106,6 +132,8 @@ export class Supervisor {
     this.socketPath = options.socketPath ?? null;
     this.bootstrap = options.bootstrap ?? false;
     this.dataDir = options.dataDir ?? null;
+    this.gate = options.gate ?? LOCKED_GATE;
+    this.gateTimeoutMs = options.gateTimeoutMs ?? GATE_TIMEOUT_MS;
   }
 
   private at(): string {
@@ -609,11 +637,87 @@ export class Supervisor {
     }
   }
 
-  async interrupt(workerId: string, actor: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
+  /**
+   * The only way a control request takes effect. The control token admitted
+   * the caller, which proves nothing about a human; the gate must confirm this
+   * exact request. The request is checked before the gate asks and again after
+   * it answers, so a confirmation never applies to anything that changed.
+   */
+  async control(request: ControlRequest): Promise<ControlOutcome> {
+    // Without a verified gate nothing is asked or checked: every request is refused.
+    if (this.gate === LOCKED_GATE) {
+      this.store.audit(this.at(), request.actor, `control_${request.action}_refused`, request.worker_id ?? null,
+        { approval_id: request.approval_id ?? null, reason: "control_locked" });
+      return { ok: false, error: CONTROL_LOCKED_ERROR, gate: "unavailable" };
+    }
+    // The note goes to the worker as typed, so the human must be able to read all of it.
+    if (request.note !== undefined && (request.note.length > 300 || displayText(request.note, 301) !== request.note)) {
+      return { ok: false, error: "A note is plain text of at most 300 characters." };
+    }
+    const target = this.controlTarget(request);
+    if ("error" in target) return { ok: false, error: target.error };
+    // One question at a time: a second request can't ride on, or bury, the first.
+    if (this.gateBusy) {
+      this.store.audit(this.at(), request.actor, `control_${request.action}_busy`, target.gate.worker_id, { ...target.gate });
+      return { ok: false, error: "Another control request is waiting for confirmation.", gate: "busy" };
+    }
+    this.gateBusy = true;
+    const signal = AbortSignal.timeout(this.gateTimeoutMs);
+    // A gate that fails or never answers is a refusal, never a pass. The next
+    // question waits until this one has really ended, so no dialog outlives it.
+    const confirming = Promise.resolve().then(() => this.gate.confirm(target.gate, signal)).catch((): GateResult => "refused");
+    void confirming.finally(() => { this.gateBusy = false; });
+    const result = await Promise.race([confirming,
+      new Promise<GateResult>((resolve) => signal.addEventListener("abort", () => resolve("refused"), { once: true }))]);
+    this.store.audit(this.at(), request.actor, `control_${request.action}_${result}`, target.gate.worker_id,
+      { ...target.gate, gate: this.gate.kind });
+    if (result === "unavailable") return { ok: false, error: CONTROL_LOCKED_ERROR, gate: result };
+    if (result !== "confirmed") return { ok: false, error: "The human gate did not confirm this request.", gate: result };
+    // What was confirmed must still be exactly what is there.
+    const again = this.controlTarget(request);
+    if ("error" in again || again.handle !== target.handle || JSON.stringify(again.gate) !== JSON.stringify(target.gate)) {
+      this.store.audit(this.at(), request.actor, `control_${request.action}_changed`, target.gate.worker_id, { ...target.gate });
+      return { ok: false, error: "The request changed while it waited for confirmation.", gate: "changed" };
+    }
+    if (request.action === "interrupt") {
+      return { ok: true, result: await this.interrupt(target.gate.worker_id, request.actor, target.gate.native_turn_id) };
+    }
+    const decision = request.action === "approve" ? "allow" : "deny";
+    const answer = await this.decideApproval({ approval_id: target.gate.approval_id!, worker_id: target.gate.worker_id,
+      generation: target.gate.generation }, decision, request.actor, request.note);
+    return { ok: true, result: { status: decision === "allow" ? "allowed" : "denied", answer } };
+  }
+
+  /** The exact live thing a control request names, as the gate will describe it. */
+  private controlTarget(request: ControlRequest): { gate: GateRequest; handle: WorkerHandle } | { error: string } {
+    if (request.action === "interrupt") {
+      const handle = request.worker_id ? this.handles.get(request.worker_id) : undefined;
+      if (!request.worker_id || !handle) return { error: "Name a running worker." };
+      // An interrupt names the turn running now; if another turn runs by the answer, it applies to nothing.
+      const turn = this.activeTurn.get(request.worker_id);
+      if (!turn) return { error: "That worker has no running turn." };
+      return { handle, gate: { action: "interrupt", worker_id: request.worker_id, generation: handle.generation, native_turn_id: turn } };
+    }
+    const approval = request.approval_id ? this.store.approval(request.approval_id) : null;
+    if (!approval || approval.status !== "pending") return { error: "No such pending approval request." };
+    const handle = this.handles.get(approval.worker_id);
+    if (!handle || handle.generation !== approval.generation) return { error: "That request's generation is no longer running." };
+    // A human decides only on a request they could read whole, and names the digest they read.
+    if (!approval.detail || !approval.detail_sha256) return { error: "That request was recorded without its full detail." };
+    const named = (request.detail_sha256 ?? "").toLowerCase();
+    if (!/^[0-9a-f]{12,64}$/.test(named) || !approval.detail_sha256.startsWith(named)) {
+      return { error: "Name the detail digest you reviewed (tt supervisor approvals show)." };
+    }
+    return { handle, gate: { action: request.action, worker_id: approval.worker_id, generation: approval.generation,
+      approval_id: approval.approval_id, tool: approval.tool, summary: approval.summary, detail_sha256: approval.detail_sha256,
+      ...(request.note ? { note: request.note } : {}) } };
+  }
+
+  async interrupt(workerId: string, actor: string, expectedTurnId?: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
     const handle = this.handles.get(workerId);
     if (!handle) throw new SupervisorError(`Worker ${workerId} is not running.`);
-    this.store.audit(this.at(), actor, "interrupt", workerId, { generation: handle.generation });
-    return handle.interrupt();
+    this.store.audit(this.at(), actor, "interrupt", workerId, { generation: handle.generation, native_turn_id: expectedTurnId ?? null });
+    return handle.interrupt(expectedTurnId);
   }
 }
 
