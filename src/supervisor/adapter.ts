@@ -73,6 +73,8 @@ export type WorkerEvent =
   | { type: "state"; state: "idle" | "awaiting_input" | "auth_required" | "disconnected" }
   | { type: "resume_failed" }
   | { type: "request_refused"; method: string }
+  /** The native process reported a new write confinement, such as on a resume; the supervisor checks it at once. */
+  | { type: "confinement" }
   /** The harness broke its protocol, such as naming another session: the supervisor holds the worker. */
   | { type: "protocol_error" }
   /** A protocol queue overflowed: the supervisor holds the worker. */

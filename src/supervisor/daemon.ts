@@ -298,15 +298,7 @@ export class Supervisor {
     if (supervised) this.deliveryTokens.set(worker.worker_id, { generation, ...supervised });
     handle.onEvent((event) => this.onEvent(worker.worker_id, generation, event));
     // With a gate in use, a worker that could reach what the gate rests on never runs.
-    if (this.gate !== LOCKED_GATE) {
-      const reasons = this.ineligibility(worker.worker_id, handle);
-      if (reasons.length) {
-        this.store.audit(this.at(), "supervisor", "gate_ineligible", worker.worker_id, { generation, reasons });
-        this.store.hold(worker.worker_id, "gate_ineligible", this.at());
-        await this.stopHandle(worker.worker_id, handle);
-        return;
-      }
-    }
+    if (!this.enforceEligibility(worker.worker_id, handle)) return;
     // A control change while it started wins: the start was for an older version.
     const current = this.store.worker(worker.worker_id);
     if (!current || current.desired !== "running" || current.desired_version !== worker.desired_version) {
@@ -408,6 +400,10 @@ export class Supervisor {
       case "resume_failed":
         report("disconnected");
         this.store.hold(workerId, "resume_failed", at);
+        this.enforceEligibility(workerId, handle);
+        break;
+      case "confinement":
+        this.enforceEligibility(workerId, handle);
         break;
       case "request_refused":
         this.store.audit(at, "supervisor", "native_request_refused", workerId, { generation,
@@ -715,6 +711,22 @@ export class Supervisor {
     const answer = await this.decideApproval({ approval_id: target.gate.approval_id!, worker_id: target.gate.worker_id,
       generation: target.gate.generation }, decision, request.actor, request.note);
     return { ok: true, result: { status: decision === "allow" ? "allowed" : "denied", answer } };
+  }
+
+  /**
+   * With a gate in use, a worker whose reported confinement reaches what the
+   * gate rests on is stopped and held, whenever that is found, not only at start.
+   */
+  private enforceEligibility(workerId: string, handle: WorkerHandle): boolean {
+    if (this.gate === LOCKED_GATE || this.handles.get(workerId) !== handle) return true;
+    // Already being stopped, for this or any other reason: it isn't running on.
+    if (this.stopping.has(workerId)) return false;
+    const reasons = this.ineligibility(workerId, handle);
+    if (!reasons.length) return true;
+    this.store.audit(this.at(), "supervisor", "gate_ineligible", workerId, { generation: handle.generation, reasons });
+    this.store.hold(workerId, "gate_ineligible", this.at());
+    this.stopHandle(workerId, handle).catch(() => {});
+    return false;
   }
 
   /** Why one live worker makes a gate ineligible. */

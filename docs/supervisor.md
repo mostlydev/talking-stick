@@ -415,8 +415,11 @@ These limits come from Apple's documentation and this codebase. No dialog was op
     always ineligible.
   - **Conflict:** a writable root conflicts with a protected path when it is that path, an
     ancestor of it (which could replace it), or inside it. Both are compared canonical.
-  - **Enforcement, only with a gate other than the locked one:** a worker found ineligible right
-    after it starts is stopped and held `gate_ineligible`. Every control request checks all live
+  - **Enforcement, only with a gate other than the locked one:** a worker found ineligible is
+    stopped and held `gate_ineligible`. That is checked right after it starts, and again whenever
+    it reports a new confinement or a failed resume. Every thread open, a resume included, first
+    resets the adapter's confinement to unconfined, so a rejected resume never keeps an earlier,
+    narrower report. Every control request checks all live
     workers before asking and again after the answer, so a worker that becomes ineligible while
     the human is asked voids the confirmation. With no protected set, nothing is eligible.
   - **What this leaves out:** an approved escalation runs outside the sandbox, and a human

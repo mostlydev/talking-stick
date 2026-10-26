@@ -162,6 +162,50 @@ describe("the daemon with a gate in use", () => {
     expect(adapter.last.interrupts).toEqual([]);
   });
 
+  test("a worker whose resume widens its confinement, or fails, is stopped and held at once", async () => {
+    const protectedPath = path.join(tmp(), "program");
+    for (const change of ["confinement", "resume_failed"] as const) {
+      const { store, adapter, supervisor } = await setup(confirm, protectedPath);
+      await supervisor.tick();
+      const handle = adapter.last;
+      expect(store.worker("w1")!.hold_reason).toBeNull();
+      if (change === "confinement") {
+        handle.confined = { kind: "workspace_write", writable: [path.dirname(protectedPath)] };
+        handle.emit({ type: "confinement" });
+      } else {
+        // A failed open leaves the adapter unconfined, never its previous report.
+        handle.confined = { kind: "unconfined", reason: "Codex has not reported the sandbox of its latest thread open" };
+        handle.emit({ type: "resume_failed" });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(handle.stopped).toBe(true);
+      expect(store.worker("w1")!.hold_reason).toBe("gate_ineligible");
+      expect(store.auditRows("w1").some((row) => row.action === "gate_ineligible")).toBe(true);
+    }
+  });
+
+  test("Codex reports a resume's sandbox, and an open that fails leaves it unconfined", async () => {
+    const root = tmp();
+    const spec: WorkerSpec = { worker_id: "w1", harness: "codex", cwd: root,
+      permissions: { harness: "codex", sandbox: "read-only", approval: "on-request" },
+      env: [{ name: "FIXTURE_MODE", from: "literal", value: "unload-fail" }],
+      supervisor_env: { TALKING_STICK_DATA_DIR: path.join(root, "data") }, state_dir: path.join(root, "state") };
+    const adapter = new CodexAdapter({ command: process.execPath,
+      argsPrefix: [fileURLToPath(new URL("./fixtures/codex-app-server.cjs", import.meta.url))], requestTimeoutMs: 100, startTimeoutMs: 500 });
+    const handle = await adapter.start(spec, 1, () => {});
+    cleanup.push(() => handle.stop(100));
+    const events: string[] = [];
+    handle.onEvent((event) => events.push(event.type));
+    expect(handle.confinement!()).toEqual({ kind: "read_only" });
+    // The fixture unloads the thread and then refuses to resume it.
+    (handle as unknown as { receive(line: string): void }).receive(JSON.stringify({ method: "thread/status/changed",
+      params: { threadId: handle.sessionId(), status: { type: "notLoaded" } } }));
+    await handle.probe();
+    expect(events).toContain("resume_failed");
+    expect(handle.confinement!().kind).toBe("unconfined");
+    expect(events).toContain("confinement");
+  });
+
   test("with no protected set, no gate acts at all", async () => {
     const dataDir = tmp();
     const store = new SupervisorStore(supervisorDatabasePath(dataDir));

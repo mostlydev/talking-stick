@@ -195,6 +195,11 @@ class CodexHandle implements WorkerHandle {
   get pgid(): number { return this.child!.pgid; }
   sessionId(): string | null { return this.thread; }
   confinement(): Confinement { return this.effective; }
+  private setConfinement(next: Confinement): void {
+    const changed = JSON.stringify(next) !== JSON.stringify(this.effective);
+    this.effective = next;
+    if (changed) this.emit({ type: "confinement" });
+  }
   executionClosure(): { paths: string[]; unresolved: string[] } {
     if (!this.closure) return { paths: [], unresolved: ["its native executable"] };
     const paths = [this.closure.command];
@@ -233,6 +238,8 @@ class CodexHandle implements WorkerHandle {
   }
 
   private async openThread(resume?: string): Promise<void> {
+    // Until this thread reports its sandbox, nothing earlier vouches for it; a failed open stays unconfined.
+    this.setConfinement({ kind: "unconfined", reason: "Codex has not reported the sandbox of its latest thread open" });
     const timeout = this.options.startTimeoutMs ?? 15_000;
     const permissions = this.spec.permissions;
     if (permissions.harness !== "codex") throw new Error("Invalid Codex permission settings.");
@@ -257,7 +264,7 @@ class CodexHandle implements WorkerHandle {
       throw new Error("Codex did not establish the explicit Talking Stick metadata writable root.");
     }
     if (object(thread.status).type !== "idle") throw new Error("Codex did not establish an idle owned session.");
-    this.effective = effectiveConfinement(sandbox, typeof result.cwd === "string" ? result.cwd : this.spec.cwd, this.closure?.tmpdir ?? null);
+    this.setConfinement(effectiveConfinement(sandbox, typeof result.cwd === "string" ? result.cwd : this.spec.cwd, this.closure?.tmpdir ?? null));
     this.thread = thread.id;
     this.emit({ type: "session", session_id: this.thread });
   }
