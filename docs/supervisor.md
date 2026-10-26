@@ -423,10 +423,13 @@ These limits come from Apple's documentation and this codebase. No dialog was op
     ancestor of it (which could replace it), or inside it. Both are compared as written and as
     resolved. The protected side is also compared through every symlink its resolution passes, so
     whoever can replace a link is caught. Containment is by path segment, so a child named
-    `..x` is still inside.
+    `..x` is still inside. A path that can't be resolved, such as a symlink loop, counts as a conflict.
   - **Enforcement, only with a gate other than the locked one:** a worker found ineligible is
     stopped and held `gate_ineligible`.
-    - **Before it spawns,** a worker is held if any live worker can write what it would run.
+    - **Before it spawns,** a worker is held if any live worker can write what it would run. That
+      live worker is then held and stopped too, since it could replace that file for as long as it
+      runs.
+    - **Every tick,** each running worker is checked again against everything configured then.
     - **After it starts,** and whenever it reports a new confinement or a failed resume, it is
       checked again.
     - **During a thread open,** a resume included, the adapter counts as unconfined until Codex

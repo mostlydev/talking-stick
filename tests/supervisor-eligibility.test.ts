@@ -270,6 +270,47 @@ describe("closures beyond one worker", () => {
     await supervisor.tick();
     expect(adapter.handles).toHaveLength(spawned);
     expect(store.worker("victim")!.hold_reason).toBe("gate_ineligible");
+    // And the writer, which could replace that executable for as long as it ran, is held and stopped.
+    expect(store.worker("writer")!.hold_reason).toBe("gate_ineligible");
+    expect(adapter.handles[0].stopped).toBe(true);
+  });
+
+  test("each tick re-checks running workers against what is configured now", async () => {
+    const root = tmp();
+    const shared = path.join(root, "shared");
+    const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+    const adapter = new FakeAdapter("claude");
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "alive",
+      stateDir: path.join(root, "state"), gate: { kind: "scripted", confirm: async () => "confirmed" },
+      protectedSet: { paths: [path.join(root, "program")], unresolved: [] } });
+    supervisor.reconcileStartup();
+    adapter.nextConfinement = { kind: "workspace_write", writable: [shared] };
+    store.addWorker({ worker_id: "writer", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    await supervisor.tick();
+    expect(store.worker("writer")!.hold_reason).toBeNull();
+    // A stopped worker configured later still has an executable the writer could replace.
+    adapter.startClosures.later = { paths: [path.join(shared, "bin")], unresolved: [] };
+    store.addWorker({ worker_id: "later", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    store.setDesired("later", "stopped", "human:op", "t");
+    await supervisor.tick();
+    expect(store.worker("writer")!.hold_reason).toBe("gate_ineligible");
+  });
+
+  test("a protected path that can't be resolved, such as a symlink loop, is never out of reach", async () => {
+    const root = tmp();
+    fs.symlinkSync(path.join(root, "b"), path.join(root, "a"));
+    fs.symlinkSync(path.join(root, "a"), path.join(root, "b"));
+    expect(pathsConflict(path.join(root, "elsewhere"), path.join(root, "a", "x"))).toBe(true);
+    const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+    const adapter = new FakeAdapter("claude");
+    adapter.nextConfinement = { kind: "workspace_write", writable: [path.join(root, "work")] };
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "alive",
+      stateDir: path.join(root, "state"), gate: { kind: "scripted", confirm: async () => "confirmed" },
+      protectedSet: { paths: [path.join(root, "a", "program")], unresolved: [] } });
+    supervisor.reconcileStartup();
+    store.addWorker({ worker_id: "w1", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    await supervisor.tick();
+    expect(store.worker("w1")!.hold_reason).toBe("gate_ineligible");
   });
 
   test("the gate's own helper is protected", async () => {

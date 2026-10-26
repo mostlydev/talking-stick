@@ -192,6 +192,8 @@ export class Supervisor {
   async tick(): Promise<void> {
     if (!this.reconciled) throw new SupervisorError("Reconcile recorded generations before the first tick.");
     await Promise.allSettled(this.store.workers().map((worker) => bounded(this.reconcileWorker(worker), this.tickWaitMs)));
+    // Every tick, every running worker is checked again against everything configured now.
+    this.enforceEligibility();
   }
 
   private async reconcileWorker(worker: WorkerRow): Promise<void> {
@@ -221,7 +223,10 @@ export class Supervisor {
       this.drain(worker.worker_id);
       return;
     }
-    if (worker.hold_reason || this.starting.has(worker.worker_id)) return;
+    // The tick's snapshot can be stale: another worker's reconcile may have held or stopped this one.
+    const current = this.store.worker(worker.worker_id);
+    if (!current || current.desired !== "running" || current.hold_reason || this.starting.has(worker.worker_id) ||
+        this.stopping.has(worker.worker_id)) return;
     if (worker.restart_next) this.store.clearRestart(worker.worker_id);
     if (worker.next_start_at && Date.parse(worker.next_start_at) > this.now().getTime()) return;
     if (this.shuttingDown) return;
@@ -250,13 +255,20 @@ export class Supervisor {
     }
     // With a gate in use, nothing starts whose executable or startup files a live worker can rewrite.
     if (this.gate !== LOCKED_GATE) {
-      const guarded = this.guardedSet();
-      const closure = this.startClosure(spec);
-      const reasons = !guarded ? [NO_PROTECTED_SET] : [...closure.unresolved.map((what) => `${worker.worker_id}: ${what} couldn't be resolved.`),
-        ...[...this.handles].flatMap(([id, live]) => workerIneligibility(id, live, { paths: closure.paths, unresolved: [] }))];
+      let reasons: string[];
+      try {
+        const guarded = this.guardedSet();
+        const closure = this.startClosure(spec);
+        reasons = !guarded ? [NO_PROTECTED_SET] : [...closure.unresolved.map((what) => `${worker.worker_id}: ${what} couldn't be resolved.`),
+          ...[...this.handles].flatMap(([id, live]) => workerIneligibility(id, live, { paths: closure.paths, unresolved: [] }))];
+      } catch (error) {
+        reasons = [`${worker.worker_id} couldn't be checked: ${error instanceof Error ? error.message : String(error)}`];
+      }
       if (reasons.length) {
         this.store.audit(this.at(), "supervisor", "gate_ineligible", worker.worker_id, { during: "start", reasons });
         this.store.hold(worker.worker_id, "gate_ineligible", this.at());
+        // The live worker that could write it is a writer now, whatever happens to this one.
+        this.enforceEligibility();
         return;
       }
     }
@@ -761,27 +773,35 @@ export class Supervisor {
    * the gate rests on is stopped and held, whenever that is found, not only at
    * its start. Returns whether the named worker is still running.
    */
-  private enforceEligibility(workerId: string, handle: WorkerHandle): boolean {
+  private enforceEligibility(workerId?: string, handle?: WorkerHandle): boolean {
     if (this.gate === LOCKED_GATE) return true;
-    const guarded = this.guardedSet();
+    let guarded: ProtectedSet | null;
+    try { guarded = this.guardedSet(); }
+    catch (error) { guarded = { paths: [], unresolved: [`the guarded set (${error instanceof Error ? error.message : String(error)})`] }; }
     for (const [id, live] of [...this.handles]) {
       if (this.stopping.has(id)) continue;
       // Its own reasons only: an unresolved closure elsewhere blocks control, but stops no one else.
-      const reasons = guarded ? workerIneligibility(id, live, guarded) : [NO_PROTECTED_SET];
+      let reasons: string[];
+      try { reasons = guarded ? workerIneligibility(id, live, guarded) : [NO_PROTECTED_SET]; }
+      catch (error) { reasons = [`${id} couldn't be checked: ${error instanceof Error ? error.message : String(error)}`]; }
       if (!reasons.length) continue;
       this.store.audit(this.at(), "supervisor", "gate_ineligible", id, { generation: live.generation, reasons });
       this.store.hold(id, "gate_ineligible", this.at());
       this.stopHandle(id, live).catch(() => {});
     }
-    return this.handles.get(workerId) === handle && !this.stopping.has(workerId);
+    return workerId === undefined || (this.handles.get(workerId) === handle && !this.stopping.has(workerId));
   }
 
   /** Every reason, over every live generation, a gate may not act; checked before asking and again after. */
   gateIneligibility(): string[] {
-    const guarded = this.guardedSet();
-    if (!guarded) return [NO_PROTECTED_SET];
-    return [...new Set([...guarded.unresolved.map((what) => `${what} couldn't be resolved.`),
-      ...[...this.handles].flatMap(([workerId, handle]) => workerIneligibility(workerId, handle, guarded))])];
+    try {
+      const guarded = this.guardedSet();
+      if (!guarded) return [NO_PROTECTED_SET];
+      return [...new Set([...guarded.unresolved.map((what) => `${what} couldn't be resolved.`),
+        ...[...this.handles].flatMap(([workerId, handle]) => workerIneligibility(workerId, handle, guarded))])];
+    } catch (error) {
+      return [`eligibility couldn't be checked: ${error instanceof Error ? error.message : String(error)}`];
+    }
   }
 
   /** The exact live thing a control request names, as the gate will describe it. */

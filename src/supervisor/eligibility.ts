@@ -23,9 +23,14 @@ export interface ProtectedSet {
  * through, since whoever can replace a link changes what it names.
  */
 export function pathsConflict(writable: string, guarded: string): boolean {
-  const writableForms = [...new Set([path.resolve(writable), canonicalPath(writable)])];
-  const guardedForms = resolutionEntries(guarded);
-  return writableForms.some((a) => guardedForms.some((b) => a === b || isInside(b, a) || isInside(a, b)));
+  try {
+    const writableForms = [...new Set([path.resolve(writable), canonicalPath(writable)])];
+    const guardedForms = resolutionEntries(guarded);
+    return writableForms.some((a) => guardedForms.some((b) => a === b || isInside(b, a) || isInside(a, b)));
+  } catch {
+    // A path that can't be resolved, such as a symlink loop, can't be shown out of reach.
+    return true;
+  }
 }
 
 function isInside(child: string, parent: string): boolean {
