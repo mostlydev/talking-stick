@@ -453,9 +453,9 @@ These limits come from Apple's documentation and this codebase. No dialog was op
     of codex-cli 0.163.0 on macOS, reviewed by Codex and Grok.
     - **Setup:** one owned `codex app-server`, an empty 0700 `CODEX_HOME`, and throwaway paths
       under `/private/var/tmp` and `/private/tmp` only. Each command ran through `command/exec`
-      with a `sandboxPolicy` of the shape `thread/start` returns. `thread/start` reported
-      `workspaceWrite` with the requested writable root, network off, and both exclude flags
-      false.
+      with `{type: workspaceWrite, writableRoots: [<data>], networkAccess: false}`, or `readOnly`.
+      That policy left out the two exclude flags. For the adapter's own request, `thread/start`
+      reported the same writable root, network off, and both exclude flags false.
     - **Method:** each target first took an unsandboxed control write. Each sandboxed create,
       overwrite, rename and unlink was then judged by its exit, its error, and the target file's
       state afterwards.
@@ -463,14 +463,15 @@ These limits come from Apple's documentation and this codebase. No dialog was op
       - `workspaceWrite` allowed all four in the writable root and under `/tmp`.
       - It denied all four, with "Operation not permitted" and the files unchanged, in stand-ins
         for the state root, the program directory and LaunchAgents.
-      - It denied a write through a symlink in the cwd pointing at the state stand-in.
+      - It denied a write through a symlink in the cwd pointing at the state stand-in, including
+        in the run where that cwd was itself writable.
       - The writable cwd and temp directory are the app-server process's own, not a command's.
         That matches how the adapter spawns it, with cwd `spec.cwd` and `TMPDIR` only from an env
         reference.
       - `readOnly` denied every tested write and allowed reads.
     - **Not tested:** writes under `HOME`, `CODEX_HOME` or the host `TMPDIR`, and network
-      enforcement. Nor does it cover turn-time tool calls, which use the same server and policy
-      type but weren't exercised; the app-server's own unsandboxed writes; the dialog; or launchd.
+      enforcement. Turn-time tool calls weren't exercised, so this doesn't establish them. Nor
+      does it cover the app-server's own unsandboxed writes, the dialog, or launchd.
       The probe's `thread/start` also made one unauthenticated connection attempt to the Codex API,
       which got 401. Later non-model probes leave `thread/start` out.
   - **Still needed before enabling anything:** an attended acceptance of the dialog on a
