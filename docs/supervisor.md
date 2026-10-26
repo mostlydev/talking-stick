@@ -210,8 +210,9 @@ histories intact but cannot run this new adapter. Preserve CODEX_HOME when retai
 **Control is locked for now.** Every process of this user, supervised workers included, can read
 the control token, so the token can't prove that a human sent a request. Until a verified
 human-control boundary exists, the control socket refuses every change: `approve`, `deny` and
-`interrupt`. So do `tt supervisor approve`, `deny`, `interrupt` and `reconcile`. Each refused
-request is audited.
+`interrupt`, and audits each refusal. `tt supervisor approve`, `deny`, `interrupt` and `reconcile`
+refuse before connecting. So does the library's `reconcileManagedDelivery`, whatever `human:` id
+its caller claims.
 
 That means:
 - A supervised worker that reads the token and uses it on its own pending request gets nothing.
@@ -270,8 +271,10 @@ change never re-offers that batch as fresh text. The fence is released only when
 1. the model acknowledges the original token;
 2. there is evidence from before any write that nothing was written, which clears it to `unsent`
    so tt may re-offer it once;
-3. a human runs `tt supervisor reconcile <worker> <batch> --resend|--drop`, which is audited.
-   Resending something whose effects are unknown needs explicit, scoped human authority.
+3. a human runs `tt supervisor reconcile <batch> --resend|--drop`. Resending something whose
+   effects are unknown needs explicit, scoped human authority, so this is locked until a verified
+   human-control boundary exists (see "Approvals and control"). Until then a possibly delivered
+   message stays fenced.
 
 Fencing for writing also refuses a batch any of whose events is gone, already read, or held by
 another managed batch, since its text would repeat that event. The batch is released unwritten,

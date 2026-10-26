@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { TalkingStickService } from "../service.js";
+import { CONTROL_LOCKED_MESSAGE, TalkingStickService } from "../service.js";
 import { createSystemWakeTransport } from "../wake.js";
 import { createSystemNativeWakeTransport } from "../native-wake.js";
 import { createSystemProcessInspector, getCurrentProcessStartedAt } from "../process-utils.js";
@@ -22,8 +22,7 @@ export const TICK_INTERVAL_MS = 30_000;
  * boundary exists, the control socket changes nothing: no approve, deny or
  * interrupt. Unanswered approvals still expire as a deny.
  */
-export const CONTROL_LOCKED = "Supervisor control is unavailable until a verified human-control boundary exists; " +
-  "pending approvals expire as a deny after 24 hours.";
+export const CONTROL_LOCKED = CONTROL_LOCKED_MESSAGE;
 export const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 export const LOG_KEEP = 3;
 

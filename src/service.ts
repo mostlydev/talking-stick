@@ -231,6 +231,10 @@ interface NoteRow {
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
 const ENDED_MEMBER_GRACE_MS = 60 * 60 * 1000;
 
+/** Why supervisor control changes are refused until a verified human-control boundary exists. */
+export const CONTROL_LOCKED_MESSAGE = "Supervisor control is unavailable until a verified human-control boundary exists; " +
+  "pending approvals expire as a deny after 24 hours.";
+
 // A recovery notice repeats at most this often while messages keep arriving.
 const LOST_NOTICE_INTERVAL_MS = 30 * 60 * 1000;
 const LIFECYCLE_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -1226,39 +1230,13 @@ export class TalkingStickService {
   }
 
   /**
-   * An operator's decision on a fenced managed batch whose effect is unknown:
-   * resend lets tt offer it again, drop marks it read without delivering it.
-   * Only a human may decide this.
+   * An operator's decision on a fenced managed batch whose effect is unknown.
+   * Locked: no caller can prove it is the human, since any same-user process
+   * can claim a human: id. A possibly delivered message stays fenced until a
+   * verified human-control boundary exists (docs/supervisor.md).
    */
-  reconcileManagedDelivery(input: { agent_id: AgentId; batch_token: string; action: "resend" | "drop" }): { status: "resent" | "dropped" } {
-    if (!input.agent_id.startsWith("human:")) {
-      throw new ProtocolError("operator_only", "Only the operator can reconcile a managed delivery.");
-    }
-    return this.writeTransaction(() => {
-      const batch = this.db.prepare<[string], { room_id: string; agent_id: string; event_seqs_json: string;
-        delivery_mode: string | null; acknowledged_at: string | null }>(
-        "SELECT room_id, agent_id, event_seqs_json, delivery_mode, acknowledged_at FROM native_delivery_batches WHERE token = ?"
-      ).get(input.batch_token);
-      if (!batch || batch.acknowledged_at || (batch.delivery_mode !== "managed_writing" && batch.delivery_mode !== "managed_written")) {
-        throw new ProtocolError("invalid_input", "That batch is not a fenced managed delivery.");
-      }
-      if (input.action === "resend") {
-        this.db.prepare("DELETE FROM native_delivery_batches WHERE token = ?").run(input.batch_token);
-        this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, wake_pending = 1, batch_id = NULL
-          WHERE room_id = ? AND agent_id = ? AND batch_id = ?`).run(batch.room_id, batch.agent_id, input.batch_token);
-        this.wakeRooms.add(batch.room_id);
-      } else {
-        const at = this.now().toISOString();
-        for (const seq of JSON.parse(batch.event_seqs_json) as number[]) {
-          this.db.prepare(`UPDATE native_event_receipts SET consumed_at = COALESCE(consumed_at, ?)
-            WHERE room_id = ? AND agent_id = ? AND event_seq = ?`).run(at, batch.room_id, batch.agent_id, seq);
-        }
-        this.db.prepare("UPDATE native_delivery_batches SET acknowledged_at = ? WHERE token = ?").run(at, input.batch_token);
-        this.db.prepare(`UPDATE member_wake_endpoints SET awaiting_wait = 0, batch_id = NULL
-          WHERE room_id = ? AND agent_id = ? AND batch_id = ?`).run(batch.room_id, batch.agent_id, input.batch_token);
-      }
-      return { status: input.action === "resend" ? "resent" as const : "dropped" as const };
-    });
+  reconcileManagedDelivery(_input: { agent_id: AgentId; batch_token: string; action: "resend" | "drop" }): never {
+    throw new ProtocolError("control_locked", CONTROL_LOCKED_MESSAGE);
   }
 
   leaveRoom(input: LeaveRoomInput): LeaveRoomResult {

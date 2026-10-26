@@ -153,28 +153,24 @@ describe("a supervised member", () => {
     expect(requests).toHaveLength(1);
   });
 
-  test("only a human reconciles a fenced batch: resend offers it again, drop marks it read", async () => {
-    const resend = setup();
-    resend.register(1);
-    const first = await resend.send("first");
-    const batch = resend.requests[0].delivery_token!;
-    resend.fence(1, batch, "writing");
-    expect(() => resend.service.reconcileManagedDelivery({ agent_id: "claude:w", batch_token: batch, action: "resend" }))
-      .toThrow("Only the operator");
-    expect(resend.service.reconcileManagedDelivery({ agent_id: OP, batch_token: batch, action: "resend" }).status).toBe("resent");
-    await resend.service.flushWakes();
-    expect(resend.offered()).toEqual([[first], [first]]);
-
-    const drop = setup();
-    drop.register(1);
-    await drop.send("first");
-    const dropped = drop.requests[0].delivery_token!;
-    drop.fence(1, dropped, "writing");
-    drop.fence(1, dropped, "written");
-    expect(drop.service.reconcileManagedDelivery({ agent_id: OP, batch_token: dropped, action: "drop" }).status).toBe("dropped");
-    drop.register(2);
-    await drop.service.flushWakes();
-    expect(drop.requests).toHaveLength(1);
+  // Codex's review of #211 (#32680): no caller-supplied human id unlocks reconcile.
+  test.each(["resend", "drop"] as const)("reconciling a fenced batch is locked, even for a claimed human (%s)", async (action) => {
+    const { service, requests, register, send, fence, offered } = setup();
+    register(1);
+    const first = await send("uncertain effect");
+    const token = requests[0].delivery_token!;
+    fence(1, token, "writing");
+    fence(1, token, "written");
+    for (const agent of ["human:forged-by-worker", OP, "claude:w"]) {
+      expect(() => service.reconcileManagedDelivery({ agent_id: agent, batch_token: token, action }))
+        .toThrow(expect.objectContaining({ code: "control_locked" }));
+    }
+    register(2);
+    await service.flushWakes();
+    // Still fenced: never offered again, never marked read.
+    expect(offered().flat().filter((seq) => seq === first)).toHaveLength(1);
+    expect(service.db.prepare("SELECT delivery_mode FROM native_delivery_batches WHERE token = ?").get(token))
+      .toEqual({ delivery_mode: "managed_written" });
   });
 });
 
