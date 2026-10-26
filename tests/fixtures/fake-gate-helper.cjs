@@ -10,9 +10,13 @@ process.stdin.on("data", (chunk) => { reason += chunk; }).on("end", () => {
     process.exit(process.env.TT_GATE_ACCEPTANCE_FAULT === "background-dialog" ? 3 : 2);
   }
   if (reason.includes("do not answer") || process.env.TT_GATE_ACCEPTANCE_FAULT === "timeout") {
-    // With inspect-empty, this helper ignores SIGTERM for three seconds and then exits by itself.
+    // With inspect-empty, this helper ignores SIGTERM and stays alive until the test releases it
+    // (its release file appears), with a bounded emergency exit, so cleanup can't outrun it.
     if (process.env.TT_GATE_ACCEPTANCE_FAULT === "inspect-empty") {
-      process.on("SIGTERM", () => setTimeout(() => process.exit(0), 3_000));
+      process.on("SIGTERM", () => {});
+      const release = process.env.TT_GATE_ACCEPTANCE_RELEASE;
+      const deadline = Date.now() + 30_000;
+      setInterval(() => { if ((release && require("node:fs").existsSync(release)) || Date.now() > deadline) process.exit(0); }, 50);
     }
     setInterval(() => {}, 1000);
     return;

@@ -192,23 +192,31 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
   }, 60_000);
 
   test("an inspection that answers nothing never proves a live helper gone", async () => {
-    // ps answers empty, and the step-4 helper outlives its SIGTERM by three seconds.
-    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "inspect-empty" });
+    // ps answers empty, and the step-4 helper stays alive (ignoring SIGTERM) until released here.
+    const release = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tt-gate-release-")), "release");
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "inspect-empty", TT_GATE_ACCEPTANCE_RELEASE: release });
     const result = resultOf(stdout);
+    const unknown = result.bootouts.find((row: { helper: string }) => row.helper === "unknown");
     try {
+      // While it lived, an empty inspection was "unknown" on every check, never "gone".
       expect(status).not.toBe(0);
       expect(stdout).not.toContain("Accepted:");
       expect(result.ok).toBe(false);
-      // While the helper still lived, an empty inspection was "unknown", never "gone", and failed the step.
-      const firstCheck = result.bootouts.find((row: { domain: string; helper: string }) => row.helper === "unknown");
-      expect(firstCheck).toMatchObject({ job: "unloaded", ok: false });
-      // A later check, after the helper really exited (ESRCH), may prove it gone; nothing earlier did.
-      const sameLabel = result.bootouts.filter((row: { label: string }) => row.label === firstCheck.label);
-      expect(sameLabel[0].helper).toBe("unknown");
+      expect(unknown).toMatchObject({ job: "unloaded", ok: false });
+      expect(result.bootouts.filter((row: { label: string }) => row.label === unknown.label)
+        .every((row: { helper: string; ok: boolean }) => row.helper === "unknown" && !row.ok)).toBe(true);
+      expect(result.cleanup_incomplete).toEqual([unknown.label]);
+      expect(fs.existsSync(path.join(result.retained_root, "ledger.json"))).toBe(true);
     } finally {
-      // The test's own helper exits by itself; then only this run's kept root is removed.
-      await new Promise((resolve) => setTimeout(resolve, 3_500));
+      // Release only this run's helper, wait (bounded) for that exact pid to be gone, then remove its root.
+      fs.writeFileSync(release, "");
+      const pid = unknown?.helper_identity?.pid as number | undefined;
+      const deadline = Date.now() + 10_000;
+      const alive = () => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
+      while (alive() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(alive()).toBe(false);
       if (result.retained_root) fs.rmSync(result.retained_root, { recursive: true, force: true });
+      fs.rmSync(path.dirname(release), { recursive: true, force: true });
     }
   }, 60_000);
 
