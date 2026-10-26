@@ -370,8 +370,31 @@ its endpoint, and its delivery token. They aren't a boundary against a same-user
 deliberately reads the owner-only token file or hides its origin; supervised workers can do both.
 That's why control stays locked until a verified boundary exists.
 
-Codex is available on macOS and Linux. Claude and Grok workers are held with `start_failed`
-until their adapters land. Plugin install requests are not implemented.
+Codex and Claude are available on macOS and Linux. Grok workers are held with `start_failed`
+until their adapter lands. Plugin install requests are not implemented.
+
+### Claude workers
+
+- **How it runs:** a Claude worker runs `claude -p` in stream-json mode with the stdio
+  permission tool, user settings excluded (`--setting-sources project,local`) and no MCP servers
+  (`--strict-mcp-config`).
+- **Session id:** a fresh conversation gets its session id up front (`--session-id`), so the
+  supervisor knows it before the first turn; a restart resumes it with `--resume`.
+- **Turns:** a turn starts at the worker's first output after a prompt and ends at its `result`.
+  Claude takes no input mid-turn, so the supervisor never steers it and waits for the turn to
+  end. A prompt whose write may have reached Claude keeps the turn until that result or the
+  process's exit, so no second prompt can take its output. A turn counts as interrupted only when
+  an interrupt was asked for and Claude ends it as an aborted stream; any other failure is an
+  error.
+- **Session check:** each turn's `init` and `result` name the session. One naming any other
+  session is a protocol error: the supervisor holds the worker and stops it, and the running input
+  stays unconfirmed.
+- **Liveness:** the stream has no cheap ping, so liveness is the exact process.
+- **Permissions:** every tool call that needs permission becomes a pending approval, and approvals
+  are locked for now (see "Approvals and control"). So a Claude worker can only do what its
+  project's own `.claude/settings.local.json` allows without asking. For room work, that's at least
+  `Bash(tt:*)` and reading the talking-stick skill, `Read(//<skill dir>/**)`. Claude's rules spell
+  an absolute path with a leading `//`. Grant nothing broader than the work needs.
 
 ## What the supervisor does not prove
 
@@ -388,6 +411,6 @@ incident nor existing sessions are claimed solved by headless-worker tests.
 | S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | merged (#204) |
 | S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | merged (#206) |
 | S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | merged (#207) |
-| S2b | Claude | Claude stream-json adapter | after S2a |
-| S2c | Codex | Codex app-server adapter and shared process helpers | implemented; independent review pending |
+| S2b | Claude | Claude stream-json adapter | this change |
+| S2c | Codex | Codex app-server adapter and shared process helpers | merged (#210) |
 | S2d | Grok | Grok stdio adapter (the proven subset only) | after S2a |

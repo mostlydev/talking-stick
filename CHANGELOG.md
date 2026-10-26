@@ -25,6 +25,11 @@ changes will be called out under **Breaking changes**.
 - `tt supervisor` control is locked: `approve`, `deny`, `interrupt` and `reconcile` are refused
   until a verified human-control boundary exists, since any same-user process, supervised workers
   included, can read the control token. Pending approvals expire as a deny after 24 hours.
+- `tt supervisor` runs Claude workers (`claude -p` stream-json, the stdio permission tool, no user
+  settings or MCP servers). It gives each fresh conversation its session id, resumes it after a
+  restart, and turns tool prompts into pending approvals, which can't be granted while control is
+  locked. A Claude worker's project settings must
+  allow `tt` itself, since it can do nothing else without an approval.
 - `tt supervisor` (preview): an optional daemon that will start and keep headless harness workers
   running, with per-worker permissions, human-only audited controls and approvals behind a control
   token, and a macOS user agent (`install`/`uninstall`). Room messages reach supervised workers through a fenced, journalled

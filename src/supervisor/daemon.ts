@@ -361,6 +361,10 @@ export class Supervisor {
         this.store.audit(at, "supervisor", "native_request_refused", workerId, { generation,
           method: event.method.replace(/[^A-Za-z0-9/_-]/g, "?").slice(0, 160) });
         break;
+      case "protocol_error":
+        this.store.hold(workerId, "protocol_error", at);
+        this.stopHandle(workerId, handle).catch(() => {});
+        break;
       case "overflow":
         this.store.hold(workerId, "overflow", at);
         this.stopHandle(workerId, handle).catch(() => {});
