@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -15,7 +16,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     fs.rmSync(file);
     return result;
   };
-  const leftovers = () => fs.readdirSync("/tmp").filter((entry) => entry.startsWith("tt-gate-accept-"));
+  const leftovers = () => fs.readdirSync("/tmp").filter((entry) => entry.startsWith("tt-gate-accept-") || entry.startsWith("tt-gate-launchd-"));
 
   test("its self-test runs every step against the fixture worker, states its scope, and cleans up", () => {
     const before = leftovers();
@@ -72,6 +73,106 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     expect(result.approvals.every((row: { answer_status: string | null }) => row.answer_status !== "delivered")).toBe(true);
     expect(leftovers()).toEqual(before);
   }, 30_000);
+
+  test("its launchd self-test runs every step through a stand-in launchctl, and leaves no job or helper behind", async () => {
+    const before = leftovers();
+    const registry = path.join(os.tmpdir(), "tt-fake-launchctl");
+    const child = spawn(process.execPath, [script, "--launchd", "--self-test"]);
+    let stdout = "";
+    let signalled = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      // Step 4 asks for Ctrl-C with the dialog up instead of an answer.
+      if (stdout.includes("press Ctrl-C here") && !signalled) { signalled = true; child.kill("SIGINT"); }
+    });
+    const status = await new Promise<number | string | null>((resolve) => child.on("exit", (code, signal) => resolve(code ?? signal)));
+    expect(status).toBe(0);
+    for (const step of ["1: a launchd agent's dialog was shown in the GUI session and confirmed",
+      "2: a launchd agent's dialog was cancelled, and the helper refused", "3: background domain: the helper was unavailable there (exit 2)",
+      "4: an abort with the dialog up unloaded the agent and left no helper running"]) expect(stdout).toContain(step);
+    const result = resultOf(stdout);
+    expect(result).toMatchObject({ ok: true, self_test: true, scope: expect.stringContaining("does not show a supervisor LaunchAgent") });
+    expect(result.steps.map((step: { kind?: string }) => step.kind)).toEqual(["confirmed", "refused", "unavailable", "aborted"]);
+    expect(result.steps[3]).toMatchObject({ cleanup_ok: true, helper: "gone" });
+    expect(leftovers()).toEqual(before);
+    expect(fs.existsSync(registry) ? fs.readdirSync(registry) : []).toEqual([]);
+  }, 60_000);
+
+  // Runs the launchd self-test with one injected fault; Ctrl-C at step 4 when it gets there.
+  const launchdRun = async (env: Record<string, string>, signals = 1) => {
+    const child = spawn(process.execPath, [script, "--launchd", "--self-test"], { env: { ...process.env, ...env } });
+    let stdout = "";
+    let sent = 0;
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.includes("press Ctrl-C here")) while (sent < signals) { sent++; child.kill("SIGINT"); }
+    });
+    const status = await new Promise<number | string | null>((resolve) => child.on("exit", (code, signal) => resolve(code ?? signal)));
+    return { status, stdout };
+  };
+  const registry = path.join(os.tmpdir(), "tt-fake-launchctl");
+  const registryEmpty = () => (fs.existsSync(registry) ? fs.readdirSync(registry) : []).length === 0;
+
+  test("a bootstrap failure is an infrastructure error, not a helper result, and cleans up", async () => {
+    const before = leftovers();
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "bootstrap-fail" });
+    expect(status).toBe(1);
+    expect(resultOf(stdout).error).toContain("infrastructure_error");
+    expect(leftovers()).toEqual(before);
+    expect(registryEmpty()).toBe(true);
+  }, 60_000);
+
+  test("a stale exit record from another label never satisfies a step", async () => {
+    const before = leftovers();
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "stale-record" });
+    expect(status).toBe(0);
+    expect(resultOf(stdout).steps.map((step: { kind?: string }) => step.kind)).toEqual(["confirmed", "refused", "unavailable", "aborted"]);
+    expect(leftovers()).toEqual(before);
+  }, 60_000);
+
+  test("a helper that never finishes is a timeout, then its agent is unloaded and the helper gone", async () => {
+    const before = leftovers();
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "timeout", TT_GATE_ACCEPTANCE_STEP_TIMEOUT_MS: "500" });
+    expect(status).toBe(1);
+    const result = resultOf(stdout);
+    expect(result.error).toContain('"kind":"timeout"');
+    expect(result.bootouts[0]).toMatchObject({ unloaded: true, helper: "gone", ok: true });
+    expect(leftovers()).toEqual(before);
+    expect(registryEmpty()).toBe(true);
+  }, 60_000);
+
+  test("an agent that can't be shown unloaded keeps its evidence and is named", async () => {
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "bootout-fail" });
+    const result = resultOf(stdout);
+    try {
+      expect(status).toBe(1);
+      expect(result.cleanup_incomplete).toHaveLength(1);
+      expect(stdout).toContain("CLEANUP INCOMPLETE");
+      expect(fs.existsSync(path.join(result.retained_root, "ledger.json"))).toBe(true);
+    } finally {
+      // The test's own leftovers: stop the stand-in job and remove the kept root.
+      for (const entry of fs.existsSync(registry) ? fs.readdirSync(registry) : []) {
+        try { process.kill(-Number(fs.readFileSync(path.join(registry, entry), "utf8")), "SIGKILL"); } catch { /* gone */ }
+        fs.rmSync(path.join(registry, entry), { force: true });
+      }
+      if (result.retained_root) fs.rmSync(result.retained_root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("a second signal still unloads what this run loaded before it exits", async () => {
+    const before = leftovers();
+    const { status } = await launchdRun({}, 2);
+    expect([0, 130]).toContain(status);
+    expect(leftovers()).toEqual(before);
+    expect(registryEmpty()).toBe(true);
+    for (const file of fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("tt-gate-acceptance-"))) fs.rmSync(path.join(os.tmpdir(), file));
+  }, 60_000);
+
+  test("the attended launchd run refuses inside a harness session, before building or loading anything", () => {
+    const run = spawnSync(process.execPath, [script, "--launchd"], { encoding: "utf8", env: { ...process.env, CLAUDECODE: "1" }, timeout: 20_000 });
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain("doesn't run inside");
+  });
 
   test("the attended run refuses inside a harness session, asking nothing", () => {
     const run = spawnSync(process.execPath, [script], { encoding: "utf8", env: { ...process.env, CLAUDECODE: "1" }, timeout: 20_000 });

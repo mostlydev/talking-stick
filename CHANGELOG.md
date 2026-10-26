@@ -28,6 +28,12 @@ changes will be called out under **Breaking changes**.
   `--env XAI_API_KEY=keychain:SERVICE` names a credential for the child environment only. A missing
   item fails before spawn and the error does not include the secret. That reference is not a proven
   login. A recorded session is held as `resume_failed` rather than replaced. The user's Grok config is never copied.
+- `scripts/attended-gate-acceptance.mjs --launchd` is the attended launchd check of the human
+  gate's helper. It loads a throwaway LaunchAgent, with its own label and the plist in a temp
+  root, that runs only the helper. Confirm and cancel run in `gui/<uid>`, the background
+  `user/<uid>` domain is recorded as a finding, and an abort with the dialog up must leave no job
+  or helper. It starts no supervisor and enables nothing. Its `--self-test` uses a stand-in
+  launchctl and runs in CI.
 - `scripts/attended-gate-acceptance.mjs` is the operator's acceptance of the supervisor's human
   gate. It runs a disposable supervisor whose only worker is a confined fixture, and asks the
   person at the console to confirm and cancel real macOS LocalAuthentication dialogs. It enables
