@@ -11,6 +11,7 @@ import { startIntakeServer, type ControlAnswer, type ControlMessage } from "./in
 import { createRoomBridge } from "./room-bridge.js";
 import { SupervisorStore, supervisorDatabasePath } from "./state.js";
 import type { HumanGate } from "./human-gate.js";
+import { prepareSupervisorRoot } from "./root.js";
 
 // The supervisor daemon: one per data directory, in the foreground. launchd
 // keeps it running when installed; tt supervisor run starts it by hand.
@@ -27,11 +28,12 @@ export const CONTROL_LOCKED = CONTROL_LOCKED_MESSAGE;
 export const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 export const LOG_KEEP = 3;
 
-export function supervisorPaths(dataDir: string) {
-  const dir = path.join(dataDir, "supervisor");
+/** Every supervisor-owned path, all under its protected state root (see root.ts). */
+export function supervisorPaths(stateDir: string) {
+  const dir = stateDir;
   return {
     dir,
-    database: supervisorDatabasePath(dataDir),
+    database: supervisorDatabasePath(stateDir),
     /** Workers are given this one only, for tt deliveries. */
     socket: path.join(dir, "intake.sock"),
     control: path.join(dir, "control.sock"),
@@ -94,7 +96,9 @@ export interface RunSupervisorOptions {
 }
 
 export async function runSupervisor(options: RunSupervisorOptions): Promise<void> {
-  const paths = supervisorPaths(options.dataDir);
+  // Refuses while older state in the data directory still waits to move.
+  const root = prepareSupervisorRoot(options.dataDir);
+  const paths = supervisorPaths(root.dir);
   fs.mkdirSync(path.dirname(paths.log), { recursive: true, mode: 0o700 });
   const log = options.log ?? ((line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`));
   const liveness = options.processLiveness ?? systemProcessLiveness();
@@ -132,7 +136,7 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
     if (options.signal?.aborted) stopRequested();
     const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
       bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir, bootstrap: true,
-      gate: options.gate });
+      stateDir: root.dir, gate: options.gate });
     cleanups.push(() => supervisor.shutdown());
     const control = async (message: ControlMessage): Promise<ControlAnswer> => {
       const presented = Buffer.from(message.token);

@@ -63,8 +63,8 @@ nothing bypasses it.
 
 The daemon and workers currently share an OS user. The human-only CLI checks and separate
 control token prevent accidental cross-control; they do not prevent a worker deliberately
-reading `<data>/supervisor/control.token` and using it. The native workspace-write sandbox does
-not isolate that readable directory. Strong approval isolation needs a separate OS authority or
+reading `<state>/control.token` and using it. The native workspace-write sandbox restricts writes
+only, so it does not hide that readable file. Strong approval isolation needs a separate OS authority or
 an authenticated human channel; do not treat this preview as that security boundary.
 
 ### Codex
@@ -74,7 +74,7 @@ an official npm wrapper to its native binary rather than recording the wrapper's
 version-manager or launchd environment with a minimal PATH, use explicit non-secret `PATH` and
 `CODEX_EXECUTABLE` environment references; the latter names the absolute native executable.
 
-By default it creates a private CODEX_HOME under `<data>/supervisor/workers/<worker>/codex`.
+By default it creates a private CODEX_HOME under `<state>/workers/<worker>/codex`.
 It never copies credentials, user configuration, hooks or plugins there. Authenticate that home
 separately, or explicitly reference a prepared CODEX_HOME. Missing authentication is visible as
 `auth_required`, and the non-model probe detects a later login. Never put credentials in literals.
@@ -133,7 +133,7 @@ endpoint. It is reached only through its own `tt` calls.
 - **How it runs:** `grok agent --no-leader stdio`. There is no `--always-approve`, `--plugin-dir`,
   `--debug`, or leader attach. A model flag is not passed.
 - **Home:** `GROK_HOME` is always a private directory, mode 0700, at
-  `<data>/supervisor/workers/<worker>/grok`. A spec or inherited `GROK_HOME` is ignored. Nothing
+  `<state>/workers/<worker>/grok`. A spec or inherited `GROK_HOME` is ignored. Nothing
   is copied into it, including `~/.grok/config.toml` and credentials, because the user config can
   set always-approve.
 - **Environment:** the data directory, plus any explicit env refs. No supervisor endpoint or
@@ -171,7 +171,52 @@ endpoint. It is reached only through its own `tt` calls.
 
 ## State
 
-`<data>/supervisor.sqlite` (mode 0600) has its own migrations:
+### Where it lives
+
+Supervisor-owned state lives in a protected root, `<state>`, outside the tt data directory, since
+workers must be able to write the data directory for their own `tt` calls. That root holds the
+database, control token, sockets, owner lock, logs, worker native homes, process evidence and the
+gate helper.
+- **Location:** `~/Library/Application Support/talking-stick/supervisor/<id>` on macOS, and
+  `$XDG_STATE_HOME/talking-stick/supervisor/<id>` elsewhere, falling back to `~/.local/state`. An
+  absolute `TT_SUPERVISOR_STATE_DIR` overrides the base, which tests use.
+- **Identity:** `<id>` is the first 16 hex characters of the SHA-256 of the canonical data
+  directory. Canonical means its nearest existing ancestor resolved through symlinks, plus the
+  rest of the path. So aliases share one root, and one root never serves another directory:
+  `root.json` records the data directory, and a mismatch is refused.
+- **Socket length:** a root too long for its sockets (104 bytes on macOS) is refused, naming the
+  override.
+- **Reading creates nothing:** `status`, `approvals` and `logs` answer empty when there is no
+  state. Only a writing command (`add`, `run` and the like) initializes a root.
+
+### Migration from the old layout
+
+Older versions kept `<data>/supervisor.sqlite` (with `-wal` and `-shm`) beside the data, and
+`<data>/supervisor/` for homes, evidence, logs, sockets and the token. While that database, or
+`workers/` or `logs/` under that directory, exists,
+every command except `migrate` and `uninstall` refuses and names `tt supervisor migrate`. That
+includes reads, so nothing creates a new empty root that would hide the old state.
+
+`tt supervisor migrate` is human-only. It refuses while the launchd agent is installed, because
+launchd would restart a daemon on the old paths, and it takes both the old and the new owner
+locks. Then it:
+1. Copies the database as one consistent snapshot with `VACUUM INTO`, which includes rows still
+   in the WAL. It runs SQLite's integrity check and compares every table's row count with the old
+   database.
+2. Copies `workers/` and `logs/` with their modes and timestamps, skipping sockets. The token,
+   sockets and locks are made afresh by the next daemon.
+3. Commits by writing `root.json`.
+4. Renames the old files into `<data>/supervisor-legacy-<time>/`, keeping them rather than
+   deleting them, and leaves `<data>/supervisor.migrated.json` pointing at the new root.
+
+A journal in the root records the phase. Interrupted before the commit, a rerun discards the
+partial copy and starts over from the untouched old state. Interrupted after it, a rerun only
+finishes the renames. State found in both places, without a journal, is never merged or
+overwritten: both are refused until one is moved aside by hand. There is no reverse migration.
+
+### The database
+
+`<state>/supervisor.sqlite` (mode 0600) has its own migrations:
 
 - `workers`: the spec, desired state (`running`, `paused`, `stopped`), `desired_version`, a hold
   reason, the next allowed start, and a one-shot fresh-start flag.
@@ -331,9 +376,9 @@ These limits come from Apple's documentation and this codebase. No dialog was op
   gate.
 - **No current worker layout meets that.** Nothing may enable a gate on today's layout.
   - A Codex worker is granted its tt data directory as an extra writable root, so `tt` can write
-    the room database. `supervisor.sqlite`, `control.token`, worker homes and process evidence all
-    sit under that same root, so even `--sandbox workspace-write` with a separate cwd can rewrite
-    them.
+    the room database. The supervisor's own state now sits outside it (see "Where it lives"), but
+    nothing yet checks a worker's effective writable roots, its executables, its startup files or
+    the supervisor's program against that state. That is the next slice, gate eligibility.
   - A Claude worker runs `tt` outside any sandbox.
   - Before any gate is enabled, the supervisor's own state and code must sit outside every worker's
     writable roots, behind a proven boundary: a storage split with mediated access, or workers
@@ -367,7 +412,7 @@ managed worker.
 ### Delivery
 
 Managed workers get a dedicated native wake transport, `supervisor`. The daemon listens on
-`<data>/supervisor/control.sock` (0600), and each generation gets a random delivery token that
+`<state>/control.sock` (0600), and each generation gets a random delivery token that
 the daemon stores hashed. A managed worker registers only that endpoint, never `codex_queue` or
 `claude_inbox`, so nothing points the default Codex daemon at an owned server.
 
@@ -456,7 +501,7 @@ while the supervisor knows it's running.
 
 `run` starts the daemon in the foreground:
 - It takes the owner lock and reconciles, then ticks every 30 s.
-- It opens two sockets in `<data>/supervisor/`:
+- It opens two sockets in `<state>/`:
   - `intake.sock` takes tt deliveries only, and is the one workers are given.
   - `control.sock` takes control requests only, each with the daemon's control token. The token
     is new for each daemon, kept in the owner-only file `control.token`, and never put in a
@@ -557,5 +602,7 @@ was adopted or interrupted to test this boundary.
 | S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | merged (#207) |
 | S2b | Claude | Claude stream-json adapter | merged (#212) |
 | S2c | Codex | Codex app-server adapter and shared process helpers | merged (#210) |
-| S2a4 | Claude | human control: the `HumanGate` the daemon must pass, the LocalAuthentication helper, attack tests; locked until attended acceptance | this change |
+| S2a4 | Claude | human control: the `HumanGate` the daemon must pass, the LocalAuthentication helper, attack tests; locked until attended acceptance | merged (#216) |
+| S2a5a | Claude | protected supervisor state: one resolver, a root outside the data directory, crash-safe `migrate` | this change |
+| S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | next |
 | S2d | Grok | Grok stdio adapter (the proven subset only) | this change |

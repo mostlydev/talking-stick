@@ -5,9 +5,9 @@ import { writeFileAtomic } from "./atomic-write.js";
 
 // This is evidence supplied to an already selected native PID, not an
 // authority to select a PID, join a room or acquire a writer lease.
-export function createProcessEvidence(input: { dataDir: string; workerId: string; generation: number;
+export function createProcessEvidence(input: { stateDir: string; workerId: string; generation: number;
   harness: string; endpoint: string; token: string }) {
-  const dir = path.join(input.dataDir, "supervisor", "workers", input.workerId);
+  const dir = path.join(input.stateDir, "workers", input.workerId);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.chmodSync(dir, 0o700);
   const file = path.join(dir, `process-${input.generation}.json`);

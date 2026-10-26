@@ -26,6 +26,7 @@ function fixture(mode = "", overrides: Partial<WorkerSpec> = {}) {
   const spec: WorkerSpec = { worker_id: "w1", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" },
     env: [{ name: "FIXTURE_MODE", from: "literal", value: mode }, { name: "FIXTURE_TRACE", from: "literal", value: trace }],
     supervisor_env: { TALKING_STICK_DATA_DIR: path.join(root, "data"), TT_SUPERVISOR_ENDPOINT: "/tmp/test.sock#w1@1", TT_SUPERVISOR_TOKEN: "delivery" },
+    state_dir: path.join(root, "state"),
     ...overrides };
   const adapter = new ClaudeAdapter({ command: process.execPath,
     argsPrefix: [fileURLToPath(new URL("./fixtures/claude-stream.cjs", import.meta.url))], requestTimeoutMs: 300, startTimeoutMs: 500 });

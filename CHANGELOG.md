@@ -28,6 +28,11 @@ changes will be called out under **Breaking changes**.
   `--env XAI_API_KEY=keychain:SERVICE` names a credential for the child environment only. A missing
   item fails before spawn and the error does not include the secret. That reference is not a proven
   login. A recorded session is held as `resume_failed` rather than replaced. The user's Grok config is never copied.
+- `tt supervisor` keeps its own state (database, token, sockets, logs, worker homes, process evidence)
+  in a protected root outside the tt data directory, which workers must be able to write:
+  `~/Library/Application Support/talking-stick/supervisor/<id>` on macOS, or under
+  `$XDG_STATE_HOME`. Older state blocks every command until `tt supervisor migrate`, a human-only,
+  crash-safe copy that keeps the old files aside.
 - `tt supervisor` control now has to pass a human gate that confirms each exact request: the
   approval, its generation and the digest of the detail the human read. The question can't be
   reused or replayed, and a request is checked again after the answer. The gate ships locked. A

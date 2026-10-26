@@ -11,6 +11,7 @@ import { launchAgentPlist, installLaunchAgent, supervisorProgram, uninstallLaunc
 import { CONTROL_LOCKED, createFileLog, rotateLog, runSupervisor, supervisorPaths, systemProcessLiveness, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
 import { sendControl } from "../src/supervisor/intake.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
+import { prepareSupervisorRoot, supervisorRootFor } from "../src/supervisor/root.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -44,7 +45,7 @@ function setup() {
     return output.length ? JSON.parse(output.join("")) : null;
   };
   const store = () => {
-    const opened = new SupervisorStore(supervisorPaths(dataDir).database);
+    const opened = new SupervisorStore(supervisorPaths(prepareSupervisorRoot(dataDir).dir).database);
     cleanup.push(() => opened.close());
     return opened;
   };
@@ -131,7 +132,7 @@ describe("controls", () => {
   test("approvals recorded before full detail was kept read as empty, never as some other request", async () => {
     const { dataDir, cwd, run } = setup();
     await run(["add", "w1"], { harness: "claude", cwd });
-    const database = supervisorPaths(dataDir).database;
+    const database = supervisorPaths(supervisorRootFor(dataDir).dir).database;
     const old = new SupervisorStore(database);
     old.db.exec(`ALTER TABLE approvals DROP COLUMN detail_sha256; ALTER TABLE approvals DROP COLUMN detail;
       DELETE FROM schema_migrations WHERE id = 4;
@@ -177,7 +178,7 @@ describe("the daemon", () => {
     await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive" })).rejects.toThrow("Another supervisor");
     adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x", detail: "touch x" });
     const approval = opened.pendingApproval("w1", 1, "0")!;
-    const paths = supervisorPaths(dataDir);
+    const paths = supervisorPaths(supervisorRootFor(dataDir).dir);
     const token = fs.readFileSync(paths.controlToken, "utf8");
     if (process.platform !== "win32") expect(fs.statSync(paths.controlToken).mode & 0o777).toBe(0o600);
     // The intake socket a worker is given takes no control at all.
@@ -204,8 +205,8 @@ describe("the daemon", () => {
     await running;
     expect(adapter.last.stopped).toBe(true);
     expect(opened.crashesSince("w1", "2000-01-01")).toBe(0);
-    expect(fs.existsSync(supervisorPaths(dataDir).lock)).toBe(false);
-    expect(fs.existsSync(supervisorPaths(dataDir).controlToken)).toBe(false);
+    expect(fs.existsSync(supervisorPaths(supervisorRootFor(dataDir).dir).lock)).toBe(false);
+    expect(fs.existsSync(supervisorPaths(supervisorRootFor(dataDir).dir).controlToken)).toBe(false);
     expect(lines.at(-1)).toBe("supervisor stopped");
   });
 
@@ -280,7 +281,7 @@ describe("control authority", () => {
       while (!adapter.handles.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
       adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "shell", summary: "human decision required", detail: "human decision required" });
       const approval = opened.pendingApproval("w1", 1, "0")!;
-      const paths = supervisorPaths(dataDir);
+      const paths = supervisorPaths(supervisorRootFor(dataDir).dir);
       for (const socket of [paths.socket, paths.control]) {
         const answer = await sendControl(socket, { type: "control", action: "approve", actor: "human:forged",
           approval_id: approval.approval_id, token: adapter.last.spec.supervisor_env?.TT_SUPERVISOR_TOKEN ?? "" });
@@ -296,7 +297,7 @@ describe("control authority", () => {
 
 test("a startup failure after taking ownership releases it and closes everything", async () => {
   const { dataDir } = setup();
-  const paths = supervisorPaths(dataDir);
+  const paths = supervisorPaths(supervisorRootFor(dataDir).dir);
   fs.mkdirSync(paths.socket, { recursive: true });
   await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive", log: () => {} })).rejects.toThrow();
   expect(fs.existsSync(paths.lock)).toBe(false);
@@ -330,7 +331,7 @@ test("every worker gets the supervisor's data directory; only prompt-capable one
 // Codex's review of #207 (#32563).
 test("a database that can't open after taking ownership still releases it", async () => {
   const { dataDir } = setup();
-  const paths = supervisorPaths(dataDir);
+  const paths = supervisorPaths(supervisorRootFor(dataDir).dir);
   fs.mkdirSync(paths.database, { recursive: true });
   await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive", log: () => {} })).rejects.toThrow();
   expect(fs.existsSync(paths.lock)).toBe(false);
@@ -345,7 +346,7 @@ test.each(["socket", "control"] as const)("an idle client on the %s socket can't
   const running = runSupervisor({ dataDir, adapters: {}, signal: controller.signal, processLiveness: () => "alive", log: () => {} })
     .then(() => { done = true; });
   try {
-    const paths = supervisorPaths(dataDir);
+    const paths = supervisorPaths(supervisorRootFor(dataDir).dir);
     const target = which === "socket" ? paths.socket : paths.control;
     const deadline = Date.now() + 3_000;
     while (!fs.existsSync(target) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));

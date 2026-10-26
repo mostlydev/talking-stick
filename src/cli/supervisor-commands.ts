@@ -6,13 +6,16 @@ import type { EnvReference, Harness, WorkerPermissions, WorkerSpec } from "../su
 import { builtinAdapters } from "../supervisor/adapters/index.js";
 import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent } from "../supervisor/launchd.js";
 import { isStandalone, isInstalledRelease, standaloneRoot } from "../standalone-mode.js";
-import { CONTROL_LOCKED, createFileLog, runSupervisor, supervisorPaths } from "../supervisor/run.js";
+import { CONTROL_LOCKED, createFileLog, runSupervisor, supervisorPaths, systemProcessLiveness } from "../supervisor/run.js";
+import { acquireOwnerLock } from "../supervisor/daemon.js";
+import { getCurrentProcessStartedAt } from "../process-utils.js";
 import { SupervisorStore } from "../supervisor/state.js";
 import { runningInsideHarness } from "../identity.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
 import { getStringOption, getStringOptions, hasOption, type ParsedCommand } from "./parser.js";
 import { displayText, safeDetail } from "../supervisor/approval-detail.js";
+import { inspectSupervisorState, migrateSupervisorState, prepareSupervisorRoot } from "../supervisor/root.js";
 
 // tt supervisor: the optional managed headless supervisor (docs/supervisor.md).
 
@@ -25,7 +28,7 @@ export const SUPERVISOR_USAGE = [
   "tt supervisor interrupt <worker>",
   "tt supervisor approvals [show <approval-id>] | approve <approval-id> [--note TEXT] | deny <approval-id> [--note TEXT]",
   "tt supervisor reconcile <batch-token> --resend|--drop",
-  "tt supervisor run | install | uninstall | logs [--lines N]"
+  "tt supervisor run | install | uninstall | migrate | logs [--lines N]"
 ].join("\n");
 
 export class SupervisorCommandError extends Error {}
@@ -36,8 +39,8 @@ function fail(message: string): never {
   throw new SupervisorCommandError(message);
 }
 
-function openStore(dataDir: string): SupervisorStore {
-  return new SupervisorStore(supervisorPaths(dataDir).database);
+function openStore(stateDir: string): SupervisorStore {
+  return new SupervisorStore(supervisorPaths(stateDir).database);
 }
 
 function workerArg(parsed: ParsedCommand): string {
@@ -117,7 +120,15 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     if (harness || !actor.startsWith("human:")) fail(`Only a human can ${what.toLowerCase()}${harness ? `, not a ${harness} session` : ""}.`);
   };
   const now = () => new Date().toISOString();
-  const paths = supervisorPaths(dataDir);
+  // Reading never creates state; writing prepares the protected root, and both
+  // refuse while older state in the data directory still waits to move.
+  const readOnly = ["status", "approvals", "logs"].includes(action);
+  const state = inspectSupervisorState(dataDir);
+  if (readOnly && (state.kind === "legacy" || state.kind === "migrating")) {
+    fail(`Supervisor state in ${state.root.dataDir} must move to ${state.root.dir} first: run \`tt supervisor migrate\`.`);
+  }
+  const root = readOnly || action === "migrate" || action === "uninstall" ? state.root : prepareSupervisorRoot(dataDir);
+  const paths = supervisorPaths(root.dir);
 
   // Until a scoped operator policy exists, only a human changes the
   // supervisor, including starting its daemon by hand; agents may read its
@@ -134,6 +145,18 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     printResult(parsed, { status: "installed", plist: file, log: paths.log }, () => `Installed ${file}; the supervisor now runs as a user agent.`);
     return;
   }
+  if (action === "migrate") {
+    // launchd would restart a daemon on the old paths, so its agent goes first.
+    if (fs.existsSync(launchAgentPath())) fail("Run `tt supervisor uninstall` first; install again after migrating.");
+    const startedAt = getCurrentProcessStartedAt();
+    if (!startedAt?.trim()) fail("Can't read this process's start time, so it can't hold the supervisor's locks.");
+    const liveness = systemProcessLiveness();
+    const result = migrateSupervisorState(dataDir, (lock) => acquireOwnerLock(lock, { pid: process.pid, process_started_at: startedAt }, liveness));
+    printResult(parsed, result, () => result.status === "migrated"
+      ? `Moved the supervisor's state to ${result.root}; the old files are kept in ${result.retired}.`
+      : `Nothing to migrate; the supervisor's state is in ${result.root}.`);
+    return;
+  }
   if (action === "uninstall") {
     const removed = uninstallLaunchAgent();
     printResult(parsed, { status: removed ? "uninstalled" : "not_installed", plist: launchAgentPath() },
@@ -148,7 +171,15 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   }
   // Fail closed until a verified human-control boundary exists (docs/supervisor.md).
   if (action === "interrupt" || action === "approve" || action === "deny" || action === "reconcile") fail(CONTROL_LOCKED);
-  const store = openStore(dataDir);
+  if (state.kind === "none" && readOnly) {
+    // No supervisor state yet: an empty answer, without creating any.
+    if (action === "approvals" && parsed.positionals[1] === "show") fail("No such approval request.");
+    const empty = { workers: [], pending_approvals: [] };
+    printResult(parsed, action === "approvals" ? { pending_approvals: [] } : empty,
+      () => action === "approvals" ? "No pending approvals." : "No workers.");
+    return;
+  }
+  const store = openStore(root.dir);
   try {
     if (action === "approvals" && parsed.positionals[1] === "show") {
       // The whole request, read-only: what a human would be deciding.

@@ -24,7 +24,8 @@ function fixture(mode = "") {
   const spec: WorkerSpec = { worker_id: "w1", harness: "codex", cwd: root,
     permissions: { harness: "codex", sandbox: "workspace-write", approval: "on-request" },
     env: [{ name: "FIXTURE_MODE", from: "literal", value: mode }, { name: "FIXTURE_TRACE", from: "literal", value: trace }],
-    supervisor_env: { TALKING_STICK_DATA_DIR: path.join(root, "data"), TT_SUPERVISOR_ENDPOINT: "/tmp/test.sock#w1@1", TT_SUPERVISOR_TOKEN: "delivery" } };
+    supervisor_env: { TALKING_STICK_DATA_DIR: path.join(root, "data"), TT_SUPERVISOR_ENDPOINT: "/tmp/test.sock#w1@1", TT_SUPERVISOR_TOKEN: "delivery" },
+    state_dir: path.join(root, "state") };
   const adapter = new CodexAdapter({ command: process.execPath,
     argsPrefix: [fileURLToPath(new URL("./fixtures/codex-app-server.cjs", import.meta.url))], requestTimeoutMs: 100, startTimeoutMs: 500 });
   const events: WorkerEvent[] = [];
@@ -40,7 +41,7 @@ function fixture(mode = "") {
 describe("worker environments", () => {
   test("a crashed daemon's stale process file cannot identify a new generation", () => {
     const { root } = fixture();
-    const evidence = createProcessEvidence({ dataDir: root, workerId: "w1", generation: 1,
+    const evidence = createProcessEvidence({ stateDir: root, workerId: "w1", generation: 1,
       harness: "codex", endpoint: "/tmp/owned.sock#w1@1", token: "old-token" });
     evidence.record({ pid: 123, processStartedAt: "old-start" });
     const env = { TT_SUPERVISOR_PROCESS_FILE: evidence.file,
@@ -92,7 +93,9 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
       config: { "sandbox_workspace_write.writable_roots": [f.spec.supervisor_env!.TALKING_STICK_DATA_DIR] } });
     expect(f.events).toContainEqual({ type: "session", session_id: "owned-thread" });
     expect(await h.probe()).toBe("alive");
-    expect(fs.statSync(path.join(f.spec.supervisor_env!.TALKING_STICK_DATA_DIR, "supervisor/workers/w1/codex")).mode & 0o777).toBe(0o700);
+    // The native home is under the protected state root, not the worker-writable data directory.
+    expect(fs.statSync(path.join(f.spec.state_dir!, "workers/w1/codex")).mode & 0o777).toBe(0o700);
+    expect(fs.existsSync(path.join(f.spec.supervisor_env!.TALKING_STICK_DATA_DIR, "supervisor"))).toBe(false);
   });
   test("idle input wakes again and a completion before the RPC reply stays complete", async () => {
     const f = fixture(); const h = await f.start();
