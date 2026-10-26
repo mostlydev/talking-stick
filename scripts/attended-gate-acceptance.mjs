@@ -54,9 +54,12 @@ const result = { scope: SCOPE, started_at: new Date().toISOString(), self_test: 
 // A signal, or Ctrl-C at a prompt, aborts: the run stops at its next wait or decision, then cleans up.
 let abortReason = null;
 const abortWaiters = [];
+// Aborts a dialog in flight too: the gate sees it as its own signal and refuses, before anything settles.
+const runAbort = new AbortController();
 const abort = (reason) => {
   if (abortReason) return;
   abortReason = reason;
+  runAbort.abort();
   for (const wake of abortWaiters.splice(0)) wake();
 };
 const aborted = () => new Promise((resolve) => { if (abortReason) resolve(); else abortWaiters.push(resolve); });
@@ -78,18 +81,22 @@ const until = async (what, done, ms = 10_000) => {
 };
 
 // Everything from here on is owned, and one cleanup releases it, on success, failure or a signal.
-const owned = { root: null, ask: null, store: null, supervisor: null };
+const owned = { root: null, ask: null, store: null, supervisor: null, deciding: null };
 let finished = false;
 async function finish(outcome) {
   if (finished) return;
   finished = true;
   if (outcome) Object.assign(result, outcome);
   owned.ask?.close();
-  // Stops the fixture worker, and with it anything it owns; a helper mid-dialog goes with this process group.
+  // A dialog in flight was aborted with the run; wait until its helper has exited and the decision is refused.
+  try { await owned.deciding; } catch { /* recorded where it was awaited */ }
+  // Then the fixture worker, and with it anything it owns.
   try { await owned.supervisor?.shutdown(); } catch (error) { result.cleanup_error = String(error); }
   if (owned.store) {
     try {
       result.audit = owned.store.auditRows().filter((row) => row.action.startsWith("control_")).map((row) => ({ at: row.at, action: row.action }));
+      // What every request ended as, so an abort can be shown to have settled nothing.
+      result.approvals = owned.store.db.prepare("SELECT approval_id, status, answer_status FROM approvals ORDER BY requested_at").all();
       owned.store.close();
     } catch { /* already closed */ }
   }
@@ -101,8 +108,12 @@ async function finish(outcome) {
   process.exitCode = result.ok ? 0 : result.aborted ? 130 : 1;
 }
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  // The first signal aborts in order; a second one doesn't wait.
-  process.on(signal, () => { if (abortReason) process.exit(130); abort(`Stopped by ${signal}.`); });
+  // The first signal aborts in order; a second one doesn't wait, but still removes the temp root.
+  process.on(signal, () => {
+    if (!abortReason) return abort(`Stopped by ${signal}.`);
+    if (owned.root) fs.rmSync(owned.root, { recursive: true, force: true });
+    process.exit(130);
+  });
 }
 
 try {
@@ -113,22 +124,42 @@ try {
   for (const dir of [stateDir, dataDir, work]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const trace = path.join(owned.root, "fixture-trace.jsonl");
 
-  let gate;
+  let inner;
   if (selfTest) {
-    // A scripted human: confirms what the script expects confirmed, cancels the rest.
+    // A scripted human: confirms what the script expects confirmed, cancels the rest. A delay
+    // (self-test only) lets a test signal the run while a "dialog" is up.
     let next = [];
-    gate = { kind: "scripted", protectedPaths: [], asked: 0, expect: (answers) => { next = answers; },
-      confirm: async () => { gate.asked++; return next.shift() ?? "refused"; } };
+    const delay = Number(process.env.TT_GATE_ACCEPTANCE_CONFIRM_DELAY_MS ?? 0);
+    inner = { kind: "scripted", protectedPaths: [], asked: 0, expect: (answers) => { next = answers; },
+      confirm: async (_request, signal) => {
+        inner.asked++;
+        const answer = next.shift() ?? "refused";
+        if (!delay) return answer;
+        process.stdout.write("  … the gate is asking\n");
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => resolve(answer), delay);
+          signal.addEventListener("abort", () => { clearTimeout(timer); resolve("refused"); }, { once: true });
+        });
+      } };
   } else {
     const helper = path.join(stateDir, "tt-human-gate");
     process.stdout.write("Building the LocalAuthentication helper (no dialog yet)…\n");
     execFileSync("swiftc", ["-O", path.join(repo, "native", "human-gate", "main.swift"), "-o", helper],
       { stdio: "inherit", timeout: 300_000, killSignal: "SIGKILL" });
     fs.chmodSync(helper, 0o700);
-    gate = localAuthenticationGate({ helper, timeoutMs: 120_000 });
+    inner = localAuthenticationGate({ helper, timeoutMs: 120_000 });
     owned.ask = readline.createInterface({ input: process.stdin, output: process.stdout });
     owned.ask.on("SIGINT", () => abort("Stopped by SIGINT."));
   }
+  // The gate the supervisor uses: the run's abort reaches the dialog, and nothing answered after it counts.
+  const gate = { kind: inner.kind, protectedPaths: inner.protectedPaths, expect: inner.expect?.bind(inner),
+    get asked() { return inner.asked; },
+    confirm: async (request, signal) => {
+      if (runAbort.signal.aborted) return "refused";
+      const either = AbortSignal.any([signal, runAbort.signal]);
+      const answer = await inner.confirm(request, either);
+      return runAbort.signal.aborted ? "refused" : answer;
+    } };
   const pause = async (text) => {
     checkAbort();
     if (owned.ask) await Promise.race([owned.ask.question(`\n${text}\nPress Enter when ready… `), aborted()]);
@@ -182,7 +213,8 @@ try {
   };
   const decide = async (row) => {
     checkAbort();
-    const outcome = await supervisor.control({ action: "approve", actor, approval_id: row.approval_id, detail_sha256: row.detail_sha256 });
+    owned.deciding = supervisor.control({ action: "approve", actor, approval_id: row.approval_id, detail_sha256: row.detail_sha256 });
+    const outcome = await owned.deciding;
     // A dialog cut short by the abort is no decision of anyone's.
     checkAbort();
     return outcome;

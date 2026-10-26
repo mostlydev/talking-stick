@@ -38,17 +38,38 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     const before = leftovers();
     const child = spawn(process.execPath, [script, "--self-test"], { env: { ...process.env, TT_GATE_ACCEPTANCE_WAIT_AFTER: "3:" } });
     let stdout = "";
+    let signalled = false;
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
-      if (stdout.includes("waiting at the prompt")) child.kill("SIGTERM");
+      if (stdout.includes("waiting at the prompt")) { if (!signalled) { signalled = true; child.kill("SIGTERM"); } }
     });
-    const status = await new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+    const status = await new Promise<number | string | null>((resolve) => child.on("exit", (code, signal) => resolve(code ?? signal)));
     expect(status).toBe(130);
     const result = resultOf(stdout);
     expect(result).toMatchObject({ ok: false, aborted: true, error: "Stopped by SIGTERM." });
     // Stopped before step 4: nothing after the prompt ran.
     expect(result.steps.map((step: { step: string }) => step.step.slice(0, 2))).not.toContain("4:");
     expect(result.audit.map((row: { action: string }) => row.action)).toEqual(["control_approve_confirmed"]);
+    expect(leftovers()).toEqual(before);
+  }, 30_000);
+
+  test("a signal while the gate is asking refuses that decision before anything settles", async () => {
+    const before = leftovers();
+    const child = spawn(process.execPath, [script, "--self-test"], { env: { ...process.env, TT_GATE_ACCEPTANCE_CONFIRM_DELAY_MS: "10000" } });
+    let stdout = "";
+    let signalled = false;
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.includes("the gate is asking")) { if (!signalled) { signalled = true; child.kill("SIGTERM"); } }
+    });
+    const status = await new Promise<number | string | null>((resolve) => child.on("exit", (code, signal) => resolve(code ?? signal)));
+    expect(status).toBe(130);
+    const result = resultOf(stdout);
+    expect(result).toMatchObject({ ok: false, aborted: true, error: "Stopped by SIGTERM." });
+    // The confirmation the scripted human would have given never landed.
+    expect(result.audit.map((row: { action: string }) => row.action)).toEqual(["control_approve_refused"]);
+    expect(result.approvals.every((row: { status: string }) => row.status !== "allowed")).toBe(true);
+    expect(result.approvals.every((row: { answer_status: string | null }) => row.answer_status !== "delivered")).toBe(true);
     expect(leftovers()).toEqual(before);
   }, 30_000);
 

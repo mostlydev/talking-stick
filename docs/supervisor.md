@@ -463,8 +463,11 @@ These limits come from Apple's documentation and this codebase. No dialog was op
     1. It creates one 0700 temp root under `/tmp`, and from then on a single cleanup owns
        everything: the compile (bounded at 5 minutes), the helper, the prompt, the store and the
        supervisor. That cleanup runs on success, failure, or SIGINT or SIGTERM, including Ctrl-C
-       at a prompt. A signal aborts at the next wait or decision. It is recorded as aborted, and
-       a dialog cut short counts as no one's decision.
+       at a prompt. A signal aborts the run. A dialog in flight is aborted through the gate's own
+       signal, so it comes back refused before the supervisor can settle anything. Cleanup waits
+       for that decision, and for the helper's exit, before it stops the fixture. The run is
+       recorded as aborted, along with every request's final status. A second signal exits at
+       once, after removing the temp root.
     2. It builds the helper into that root and runs an in-process supervisor there with the
        LocalAuthentication gate. Its only worker is the deterministic Codex app-server fixture,
        with no model and no credentials.
@@ -487,7 +490,8 @@ These limits come from Apple's documentation and this codebase. No dialog was op
     `gateIneligibility()` exercises the algorithm, not OS-enforced worker confinement. Whether
     launchd can present the dialog is also unproven here.
   - **Self-test:** `--self-test` runs the same steps with a scripted gate and no dialog. CI runs
-    it, along with a real SIGTERM at a prompt and the harness refusal.
+    it, along with a real SIGTERM at a prompt, a real SIGTERM while the gate is asking (nothing
+    settles), and the harness refusal.
   - **Until it passes,** the gate stays locked and the CLI refuses control before connecting.
     Wiring a gate into `run` and unlocking the CLI is a separate, reviewed change after it.
 
