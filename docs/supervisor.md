@@ -1,7 +1,7 @@
 # Managed headless supervisor
 
-Status: design agreed (room notes 2824973c, 01cd46da and 4ffa33a6, consolidated here). The core, room bridge, CLI, launchd integration and Codex adapter are in `src/supervisor/`.
-Claude and Grok adapters follow in later slices; the "Slices" table records their state.
+Status: design agreed (room notes 2824973c, 01cd46da and 4ffa33a6, consolidated here). The core, room bridge, CLI, launchd integration, and the Codex, Claude, and Grok adapters are in `src/supervisor/`.
+The Grok adapter only attempts a fresh session, which needs credentials it doesn't have yet. The "Slices" table records each slice.
 
 The supervisor is optional. It starts Claude, Codex and Grok in their headless modes as
 processes it owns, and keeps them running. It changes nothing for Herdr, tmux or terminal sessions,
@@ -125,10 +125,42 @@ also needs Node; a standalone tt binary does not. No shell profile is sourced by
 
 ### Grok
 
-All four Grok capabilities are false until each is proven safely. `start` rejects a resume
-session instead of ignoring it, `probe` is the process plus `session/list`, and the session id
-comes from `session/new`. A Grok worker never registers the supervisor endpoint (below). It is
-reached only through its own `tt` calls.
+All four Grok capabilities are false on every platform until each is proven safely. `start`
+rejects a resume session instead of ignoring it, `probe` is the process plus `session/list`,
+and the session id comes from `session/new`. A Grok worker never registers the supervisor
+endpoint. It is reached only through its own `tt` calls.
+
+- **How it runs:** `grok agent --no-leader stdio`. There is no `--always-approve`, `--plugin-dir`,
+  `--debug`, or leader attach. A model flag is not passed.
+- **Home:** `GROK_HOME` is always a private directory, mode 0700, at
+  `<data>/supervisor/workers/<worker>/grok`. A spec or inherited `GROK_HOME` is ignored. Nothing
+  is copied into it, including `~/.grok/config.toml` and credentials, because the user config can
+  set always-approve.
+- **Environment:** the data directory only. No supervisor endpoint or delivery token, and no
+  inherited `TT_ROOM`, `GROK_AGENT`, or `GROK_SESSION_ID`.
+- **Handshake:** `initialize` (`protocolVersion` 1 and client info only; no file or terminal
+  capabilities), then `session/new` with the working directory and an empty MCP server list.
+  The session id is `result.sessionId`. A missing id, an authentication error, or any other
+  handshake failure stops the child. `session/update` during setup is a notification, not a turn.
+- **Later starts:** a recorded session holds `resume_failed`. `restart --fresh` is how an operator
+  starts a new conversation. The adapter never calls `session/prompt`, `session/resume`, or
+  `session/load`.
+- **Input:** `submit` is rejected before any write. `interrupt` returns unsupported and sends
+  nothing. `answerApproval` throws. A server request is refused with a JSON-RPC error and
+  `request_refused`, and does not wait for input. A malformed line is an overflow and stops the
+  child.
+- **Liveness:** the process alone is not enough. `probe` is alive only when `session/list`
+  names this worker's session id; an empty, other or unreadable list is unknown.
+- **Approvals stay locked.** This adapter does not answer them.
+- **Native evidence (grok 1.0.70, macOS, a disposable probe with an empty private home):**
+  - `initialize` answers protocol version 1 with an `authMethods` list. The adapter never calls
+    `authenticate`, so nothing starts a login.
+  - `session/new` fails with -32000 "Authentication required". Grok writes its own `config.toml`,
+    logs and session store into the private home, and no credentials are there.
+  - `session/list` answers `{ sessions: [] }`, and EOF exits 0 within 3 seconds.
+- **So no Grok worker starts today.** Each attempt fails at `session/new`, backs off, and the
+  worker is held `crash_loop` after five failures in 15 minutes. Giving the private home
+  credentials, such as an `XAI_API_KEY` environment reference, is not proven or supported yet.
 
 ## State
 
@@ -378,8 +410,9 @@ its endpoint, and its delivery token. They aren't a boundary against a same-user
 deliberately reads the owner-only token file or hides its origin; supervised workers can do both.
 That's why control stays locked until a verified boundary exists.
 
-Codex and Claude are available on macOS and Linux. Grok workers are held with `start_failed`
-until their adapter lands. Plugin install requests are not implemented.
+Codex and Claude are available on macOS and Linux. A Grok worker is attempted there, but without
+credentials in its private home it fails at `session/new` and is held `crash_loop` (see "Grok").
+A Grok session that was already recorded is held `resume_failed` until resume is proven. Plugin install requests are not implemented.
 
 ### Claude workers
 
@@ -419,6 +452,6 @@ incident nor existing sessions are claimed solved by headless-worker tests.
 | S2a2a | Claude | room side: the `supervisor` transport, `fenceManagedDelivery`, the managed fence modes, `reconcileManagedDelivery` | merged (#204) |
 | S2a2b | Claude | supervisor side: the intake socket, fence-before-write, recovery of owned workers, end-to-end crash tests over both databases | merged (#206) |
 | S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | merged (#207) |
-| S2b | Claude | Claude stream-json adapter | this change |
+| S2b | Claude | Claude stream-json adapter | merged (#212) |
 | S2c | Codex | Codex app-server adapter and shared process helpers | merged (#210) |
-| S2d | Grok | Grok stdio adapter (the proven subset only) | after S2a |
+| S2d | Grok | Grok stdio adapter (the proven subset only) | this change |

@@ -22,6 +22,10 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
+- `tt supervisor` attempts a Grok worker (`grok agent --no-leader stdio`) in a private `GROK_HOME`.
+  It does not prompt, resume, interrupt, or approve. Without credentials in that home, `session/new`
+  answers "Authentication required" and the worker is held `crash_loop`, so none starts yet.
+  A recorded session is held as `resume_failed` rather than replaced. The user's Grok config is never copied.
 - `tt supervisor approvals show <approval-id>` prints the whole native request behind an approval,
   with its SHA-256, so a human never decides on a summary. A request too large to review (over
   128 KiB) is refused and never pending.
@@ -39,7 +43,7 @@ changes will be called out under **Breaking changes**.
   delivery, and a restarted worker rejoins with its own credential. The Codex app-server adapter
   supports isolated native sessions on macOS/Linux, idle wake, busy steering, interruption and
   per-request approvals. Enrolment is journalled once per session; credentials are never copied.
-  Claude and Grok adapters are still pending. See `docs/supervisor.md`.
+  The Codex and Claude adapters are included. A Grok worker is attempted but can't authenticate yet. See `docs/supervisor.md`.
 - A Claude or Codex member whose harness reports its session ended is now lost, not removed,
   since an idle conversation can be unloaded while its window stays open. Messages to it are
   kept and reported to senders as held. Its still-running process gets one body-free notice to
