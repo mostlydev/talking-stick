@@ -552,6 +552,17 @@ describe("restart and status", () => {
   });
 });
 
+test("an approval is recorded with its tool, summary and detail escaped, whatever the adapter sent", async () => {
+  const { store, adapter, supervisor, spec } = setup();
+  store.addWorker(spec, "human:op", "t");
+  await supervisor.tick();
+  adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash\u001b[2J\u202e", summary: "rm\u0085\u061c",
+    detail: JSON.stringify({ tool_name: "Bash\u202e" }) });
+  const recorded = store.pendingApproval("w1", 1, "0")!;
+  for (const text of [recorded.tool, recorded.summary, recorded.detail]) expect(text).toMatch(/^[\x20-\x7e\n]*$/);
+  expect(JSON.parse(recorded.detail)).toEqual({ tool_name: "Bash\u202e" });
+});
+
 test.each(["overflow", "protocol_error"] as const)("a worker's %s holds the worker and stops it", async (type) => {
   const { store, adapter, supervisor, spec } = setup();
   store.addWorker(spec, "human:op", "t");

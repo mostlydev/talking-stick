@@ -154,8 +154,10 @@ reached only through its own `tt` calls.
   - Input text is not stored.
 - `approvals`: each request occurrence has its own `approval_id`.
   - Each keeps the whole native request as `detail`, with its SHA-256, beside a one-line summary.
-    The detail is indented JSON with invisible and direction-changing characters escaped; for
-    Claude it is the very input an allow sends back. A request over 128 KiB is refused natively and
+    The detail is indented JSON. Every control, format (bidi marks and overrides included),
+    separator and default-ignorable character is escaped, in the detail, the summary and the tool
+    name alike, and the daemon escapes them again when it records a request. For Claude the detail
+    is the very input an allow sends back. A request over 128 KiB is refused natively and
     never becomes pending, since no human could review it whole.
   - A native id may repeat across processes, like Codex's `0`, or within one generation once its
     earlier request settled. Each repeat is a new request.

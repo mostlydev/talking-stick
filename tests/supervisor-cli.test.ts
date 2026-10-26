@@ -365,3 +365,18 @@ test.each(["socket", "control"] as const)("an idle client on the %s socket can't
 test("a live pid with no recorded start time is unknown, never gone", () => {
   expect(systemProcessLiveness()(process.pid, "")).toBe("unknown");
 });
+
+test("review: plaintext approval headers cannot execute controls from the native tool name", async () => {
+  const { cwd, run, store } = setup();
+  await run(["add", "w1"], { harness: "claude", cwd });
+  const tool = "Bash\u001b[2J\u202eHIDDEN";
+  store().recordApproval({ approval_id: "display-test", worker_id: "w1", generation: 1, native_request_id: "r",
+    tool, summary: "safe", detail: JSON.stringify({tool_name:tool,input:{}}), requested_at: "t" });
+  let text = "";
+  const spy = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { text += String(chunk); return true; });
+  try {
+    await handleSupervisorCommand({ name: "supervisor", positionals: ["approvals", "show", "display-test"],
+      options: new Map([["text", true]]) }, { insideHarness: () => null });
+    expect(text).not.toContain("\u001b"); expect(text).not.toContain("\u202e");
+  } finally { spy.mockRestore(); }
+});

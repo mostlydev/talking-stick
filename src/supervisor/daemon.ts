@@ -5,6 +5,7 @@ import type { GenerationState, SupervisorStore, WorkerRow } from "./state.js";
 import type { IntakeAnswer, IntakeMessage } from "./intake.js";
 import type { RoomBridge } from "./room-bridge.js";
 import { resolveBundledSkillPath } from "../skill-install.js";
+import { displayText, safeDetail } from "./approval-detail.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
 // running and acts. Its probes never prompt a worker or touch room presence. The
@@ -333,7 +334,7 @@ export class Supervisor {
         break;
       case "approval_requested":
         if (!this.store.recordApproval({ approval_id: this.newId(), worker_id: workerId, generation,
-          native_request_id: event.native_request_id, tool: event.tool, summary: event.summary.slice(0, 500), detail: event.detail, requested_at: at })) {
+          native_request_id: event.native_request_id, tool: displayText(event.tool, 80), summary: displayText(event.summary, 500), detail: safeDetail(event.detail), requested_at: at })) {
           // A second request under a still-pending id is ambiguous: no decision could name it safely.
           this.store.hold(workerId, "protocol_error", at);
           this.stopHandle(workerId, handle).catch(() => {});

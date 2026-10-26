@@ -218,3 +218,14 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     expect(createSystemProcessInspector().inspect(pid)).toBeNull();
   });
 });
+
+test.skipIf(process.platform === "win32")("review: Codex approval summaries escape bidi, C1 and zero-width controls", async () => {
+  const f = fixture(); const handle = await f.start();
+  await handle.submit({ input_id: "review", text: "busy", mode: "start_turn" });
+  (handle as unknown as { receive(line: string): void }).receive(JSON.stringify({ id: 99,
+    method: "item/commandExecution/requestApproval", params: { threadId: handle.sessionId(), turnId: "turn-1",
+      command: "echo safe\u202eHIDDEN\u0085\u200b", availableDecisions: ["accept", "decline", "cancel"] } }));
+  const event = f.events.find(e => e.type === "approval_requested") as Extract<WorkerEvent, {type:"approval_requested"}>;
+  expect(event.detail).toContain("\\u202e");
+  expect(event.summary).not.toMatch(/[\u202e\u0085\u200b]/);
+});

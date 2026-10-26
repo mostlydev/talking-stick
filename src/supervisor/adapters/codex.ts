@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
-import { approvalDetail } from "../approval-detail.js";
+import { approvalDetail, approvalSummary, displayText } from "../approval-detail.js";
 import type { Capabilities, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
@@ -314,13 +314,13 @@ class CodexHandle implements WorkerHandle {
     if (this.pendingApprovals.has(key)) { this.overflow(); return; }
     const pending: PendingApproval = { id, method, choices: Array.isArray(params.availableDecisions) ? params.availableDecisions : null };
     const text = method.includes("commandExecution") ? String(params.command ?? params.reason ?? "Command approval") : JSON.stringify(params);
-    let summary = text.replace(/[\x00-\x1f\x7f]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+    let summary = displayText(text, Infinity);
     if (summary.length > 350) {
       const dir = path.join(this.nativeHome, "talking-stick-approvals", this.spec.worker_id);
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       pending.file = path.join(dir, `${this.generation}-${createHash("sha256").update(key).digest("hex").slice(0, 16)}.json`);
       fs.writeFileSync(pending.file, JSON.stringify({ method, params }, null, 2), { mode: 0o600, flag: "wx" });
-      summary = `Full request: ${pending.file}\n${summary.slice(0, 120)}`;
+      summary = `Full request: ${approvalSummary(pending.file)}\n${summary.slice(0, 120)}`;
     }
     this.pendingApprovals.set(key, pending);
     this.emit({ type: "approval_requested", native_request_id: key,

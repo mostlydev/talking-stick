@@ -12,6 +12,7 @@ import { runningInsideHarness } from "../identity.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
 import { getStringOption, getStringOptions, hasOption, type ParsedCommand } from "./parser.js";
+import { displayText, safeDetail } from "../supervisor/approval-detail.js";
 
 // tt supervisor: the optional managed headless supervisor (docs/supervisor.md).
 
@@ -156,15 +157,16 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
       printResult(parsed, { approval_id: approval.approval_id, worker_id: approval.worker_id, generation: approval.generation,
         tool: approval.tool, summary: approval.summary, status: approval.status, requested_at: approval.requested_at,
         detail_sha256: approval.detail_sha256, detail: approval.detail },
-      () => [`${approval.approval_id}  ${approval.worker_id}#${approval.generation}  ${approval.tool}  ${approval.status}`,
-        `sha256 ${approval.detail_sha256}`, approval.detail || "(recorded before full detail was kept)"].join("\n"));
+      () => [`${approval.approval_id}  ${approval.worker_id}#${approval.generation}  ${displayText(approval.tool, 80)}  ${approval.status}`,
+        `sha256 ${approval.detail_sha256}`, safeDetail(approval.detail) || "(recorded before full detail was kept)"].join("\n"));
       return;
     }
     if (action === "status" || action === "approvals") {
       const status = describeStatus(store);
       const result = action === "approvals" ? { pending_approvals: status.pending_approvals } : status;
       printResult(parsed, result, () => action === "approvals"
-        ? (status.pending_approvals.map((a) => `${a.approval_id}  ${a.worker_id}#${a.generation}  ${a.tool}: ${a.summary}`).join("\n") || "No pending approvals.")
+        ? (status.pending_approvals.map((a) => `${a.approval_id}  ${a.worker_id}#${a.generation}  ${displayText(a.tool, 80)}: ${displayText(a.summary, 500)}`)
+          .join("\n") || "No pending approvals.")
         : (status.workers.map((w) => `${w.worker_id}  ${w.harness}  ${w.desired}${w.hold_reason ? ` (held: ${w.hold_reason})` : ""}  ` +
             `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}` +
             `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}`).join("\n") || "No workers.") +
