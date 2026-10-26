@@ -9,7 +9,14 @@ process.stdin.on("data", (chunk) => { reason += chunk; }).on("end", () => {
     if (process.env.TT_GATE_ACCEPTANCE_FAULT === "background-timeout") { setInterval(() => {}, 1000); return; }
     process.exit(process.env.TT_GATE_ACCEPTANCE_FAULT === "background-dialog" ? 3 : 2);
   }
-  if (reason.includes("do not answer") || process.env.TT_GATE_ACCEPTANCE_FAULT === "timeout") { setInterval(() => {}, 1000); return; }
+  if (reason.includes("do not answer") || process.env.TT_GATE_ACCEPTANCE_FAULT === "timeout") {
+    // With inspect-empty, this helper ignores SIGTERM for three seconds and then exits by itself.
+    if (process.env.TT_GATE_ACCEPTANCE_FAULT === "inspect-empty") {
+      process.on("SIGTERM", () => setTimeout(() => process.exit(0), 3_000));
+    }
+    setInterval(() => {}, 1000);
+    return;
+  }
   if (reason.includes("CANCEL")) process.exit(3);
   if (reason.includes("CONFIRM")) process.exit(0);
   process.exit(2);

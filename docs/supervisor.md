@@ -527,9 +527,11 @@ These limits come from Apple's documentation and this codebase. No dialog was op
        - its plist, reason and logs in the temp root, never `~/Library/LaunchAgents`
        - `RunAtLoad` set, `KeepAlive` off, and `LimitLoadToSessionType` unset, so the domain is
          the only difference between steps
-    3. Each agent's program is a wrapper shell. It feeds the helper the step's validated reason
-       (non-empty, at most 4096 bytes) on stdin, and records the helper's pid. Only after the
-       helper exits does it write `<label> <raw status>`. Every file is named by the agent's own
+    3. Each agent's program is a wrapper shell. It records its own pid first, then starts a
+       shell that records its pid and `exec`s into the helper, so that pid is the helper's and is
+       written before the helper runs. The helper gets the step's validated reason (non-empty, at
+       most 4096 bytes) on stdin. Only after the helper exits does the wrapper write
+       `<label> <raw status>`. Every file is named by the agent's own
        label, and a record carrying any other label is ignored, so a stale file can't satisfy a
        step.
     4. Each step's outcome is one of these kinds:
@@ -554,10 +556,13 @@ These limits come from Apple's documentation and this codebase. No dialog was op
        proof:
        - the agent is unloaded only when `launchctl print` answers "could not find service"
          (113); any other failure is unknown
-       - the helper is gone only when its pid no longer exists, or now belongs to a process with
-         a different start time, since its identity is recorded as pid plus start time when first
-         seen; a permission error is unknown
-       - a load attempt that left no pid is clean only if the agent is proven unloaded
+       - the wrapper and the helper are each gone only when `kill(pid, 0)` answers ESRCH, or when
+         that pid now belongs to a process whose known start time differs from the one recorded
+         when the process was first seen. A permission error, or an inspection that answers
+         nothing, empty or malformed `ps` output included, is unknown. A live pid is never gone.
+       - no pid record proves a process never ran only for an agent that never loaded (a failed
+         bootstrap) and is proven unloaded. A loaded agent without a record is unknown, and a
+         step waits, bounded, for the helper's record before it says a dialog is up.
        If anything is unknown or still running, the root (ledger, plist, logs) is kept, the run
        reports `CLEANUP INCOMPLETE` with the exact labels, and it can't be Accepted, whatever
        its steps showed.
@@ -569,7 +574,8 @@ These limits come from Apple's documentation and this codebase. No dialog was op
     stand-in launchctl and helper, loading nothing and running no compiler. CI runs it with
     these faults: bootstrap failure, a stale record from another label, a timeout, an unload
     that fails (the evidence is kept and named), unload and inspection both denied (nothing
-    counts as gone), a dialog or a timeout in the background domain (not accepted), and a
+    counts as gone), an inspector that answers nothing while the helper still lives (unknown,
+    not gone), a dialog or a timeout in the background domain (not accepted), and a
     second signal arriving during cleanup. The stand-in keeps its jobs in a registry private to
     each run, and each test removes only the jobs and files that its own run created. Each step's cleanup targets only its own label, and a
     signalled helper gets up to two seconds to exit before it counts as still running.

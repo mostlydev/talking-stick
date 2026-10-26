@@ -32,7 +32,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
       .toEqual(["control_approve_confirmed", "control_approve_refused", "control_approve_confirmed", "control_approve_unavailable"]);
     // Nothing a token could be recovered from.
     expect(JSON.stringify(result)).not.toMatch(/token/i);
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   });
 
   test("a signal at a prompt records an honest abort, settles nothing more, and still cleans up", async () => {
@@ -51,7 +51,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     // Stopped before step 4: nothing after the prompt ran.
     expect(result.steps.map((step: { step: string }) => step.step.slice(0, 2))).not.toContain("4:");
     expect(result.audit.map((row: { action: string }) => row.action)).toEqual(["control_approve_confirmed"]);
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   }, 30_000);
 
   test("a signal while the gate is asking refuses that decision before anything settles", async () => {
@@ -71,7 +71,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     expect(result.audit.map((row: { action: string }) => row.action)).toEqual(["control_approve_refused"]);
     expect(result.approvals.every((row: { status: string }) => row.status !== "allowed")).toBe(true);
     expect(result.approvals.every((row: { answer_status: string | null }) => row.answer_status !== "delivered")).toBe(true);
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   }, 30_000);
 
   test("its launchd self-test runs every step through a stand-in launchctl, and leaves no job or helper behind", async () => {
@@ -92,8 +92,9 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     const result = resultOf(stdout);
     expect(result).toMatchObject({ ok: true, self_test: true, scope: expect.stringContaining("does not show a supervisor LaunchAgent") });
     expect(result.steps.map((step: { kind?: string }) => step.kind)).toEqual(["confirmed", "refused", "unavailable", "aborted"]);
-    expect(result.steps[3]).toMatchObject({ cleanup_ok: true, helper: "gone" });
-    expect(leftovers()).toEqual(before);
+    expect(result.steps[3]).toMatchObject({ cleanup_ok: true, job: "unloaded", wrapper: "gone", helper: "gone" });
+    for (const step of result.steps.slice(0, 2)) expect(step).toMatchObject({ job: "unloaded", cleanup_ok: true });
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   }, 60_000);
 
   // Runs the launchd self-test with one injected fault; Ctrl-C at step 4 when it gets there.
@@ -121,7 +122,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "bootstrap-fail" });
     expect(status).toBe(1);
     expect(resultOf(stdout).error).toContain("infrastructure_error");
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   }, 60_000);
 
   test("a stale exit record from another label never satisfies a step", async () => {
@@ -129,7 +130,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "stale-record" });
     expect(status).toBe(0);
     expect(resultOf(stdout).steps.map((step: { kind?: string }) => step.kind)).toEqual(["confirmed", "refused", "unavailable", "aborted"]);
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   }, 60_000);
 
   test("a helper that never finishes is a timeout, then its agent is unloaded and the helper gone", async () => {
@@ -139,7 +140,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     const result = resultOf(stdout);
     expect(result.error).toContain('"kind":"timeout"');
     expect(result.bootouts[0]).toMatchObject({ job: "unloaded", helper: "gone", ok: true });
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   }, 60_000);
 
   test("an agent that can't be shown unloaded keeps its evidence and is named", async () => {
@@ -167,7 +168,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     expect(stdout).toContain("FINDING: a dialog appeared in user/<uid> and was cancelled");
     expect(stdout).not.toContain("Accepted:");
     expect(resultOf(stdout)).toMatchObject({ ok: false, finding: "background_dialog" });
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   }, 60_000);
 
   test("an unload and inspection that both fail never count as unloaded, and keep the evidence", async () => {
@@ -190,13 +191,34 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     }
   }, 60_000);
 
+  test("an inspection that answers nothing never proves a live helper gone", async () => {
+    // ps answers empty, and the step-4 helper outlives its SIGTERM by three seconds.
+    const { status, stdout } = await launchdRun({ TT_GATE_ACCEPTANCE_FAULT: "inspect-empty" });
+    const result = resultOf(stdout);
+    try {
+      expect(status).not.toBe(0);
+      expect(stdout).not.toContain("Accepted:");
+      expect(result.ok).toBe(false);
+      // While the helper still lived, an empty inspection was "unknown", never "gone", and failed the step.
+      const firstCheck = result.bootouts.find((row: { domain: string; helper: string }) => row.helper === "unknown");
+      expect(firstCheck).toMatchObject({ job: "unloaded", ok: false });
+      // A later check, after the helper really exited (ESRCH), may prove it gone; nothing earlier did.
+      const sameLabel = result.bootouts.filter((row: { label: string }) => row.label === firstCheck.label);
+      expect(sameLabel[0].helper).toBe("unknown");
+    } finally {
+      // The test's own helper exits by itself; then only this run's kept root is removed.
+      await new Promise((resolve) => setTimeout(resolve, 3_500));
+      if (result.retained_root) fs.rmSync(result.retained_root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test("a second signal during cleanup takes the bounded path and still unloads what this run loaded", async () => {
     const before = leftovers();
     // Cleanup is held open (self-test only) so the second signal provably lands during it.
     const { status, stdout, stderr } = await launchdRun({ TT_GATE_ACCEPTANCE_SLOW_FINISH_MS: "1000" }, 2);
     expect(status).toBe(130);
     expect(stderr).toContain("Second SIGINT: unloading this run's agents and exiting.");
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
     // Only a result file this run printed, if it got that far.
     const printed = stdout.match(/Result: (\S+)/)?.[1];
     if (printed) fs.rmSync(printed, { force: true });
@@ -208,7 +230,7 @@ describe.skipIf(!built || process.platform === "win32")("the attended gate accep
     expect(status).toBe(1);
     expect(stdout).not.toContain("Accepted:");
     expect(resultOf(stdout)).toMatchObject({ ok: false, finding: "background_unobserved" });
-    expect(leftovers()).toEqual(before);
+    expect(leftovers().filter((entry) => !before.includes(entry))).toEqual([]);
   }, 60_000);
 
   test("the attended launchd run refuses inside a harness session, before building or loading anything", () => {

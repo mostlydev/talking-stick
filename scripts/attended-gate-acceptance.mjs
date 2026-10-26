@@ -49,7 +49,10 @@ const { gateReason, localAuthenticationGate } = await dist("supervisor/human-gat
 const { displayText, safeDetail } = await dist("supervisor/approval-detail.js");
 const { supervisorProtectedSet } = await dist("supervisor/run.js");
 const { createSystemProcessInspector } = await dist("process-utils.js");
-const inspector = createSystemProcessInspector();
+// Self-test only: an inspector whose ps answers nothing, as a failed inspection would.
+const inspector = selfTest && process.env.TT_GATE_ACCEPTANCE_FAULT === "inspect-empty"
+  ? createSystemProcessInspector({ processExists: () => true, execFile: () => "" })
+  : createSystemProcessInspector();
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -103,48 +106,60 @@ const runLaunchctl = (args) => spawnSync(launchctl, args, { encoding: "utf8", ti
   env: selfTest && owned.root ? { ...process.env, TT_FAKE_LAUNCHCTL_REGISTRY: path.join(owned.root, "fake-registry") } : process.env });
 // launchctl print's "could not find service": the only answer that proves a job unloaded.
 const NOT_FOUND = 113;
-// The helper's identity once seen: its pid and that process's start time, so a reused pid is not it.
-function helperIdentity(entry) {
-  if (entry.helper) return entry.helper;
-  if (!fs.existsSync(entry.pidFile)) return null;
-  const pid = Number(fs.readFileSync(entry.pidFile, "utf8").trim());
+// A process's identity once seen: its pid and that process's start time, so a reused pid is not it.
+function identityOf(file, cache, entry) {
+  if (entry[cache]) return entry[cache];
+  if (!fs.existsSync(file)) return null;
+  const pid = Number(fs.readFileSync(file, "utf8").trim());
   const seen = inspector.inspect(pid);
-  entry.helper = { pid, started: seen?.startTime?.trim() ?? null };
-  return entry.helper;
+  entry[cache] = { pid, started: seen?.startTime?.trim() ?? null };
+  return entry[cache];
 }
-// "gone" only on proof: no such process, or that pid now belongs to a different start.
-function helperState(entry) {
-  const identity = helperIdentity(entry);
-  if (!identity) return null;
+// "gone" only on proof: the kernel says no such process (ESRCH), or that pid now belongs to a
+// process with a different, known start. An inspector answer alone, even null, proves nothing.
+function processState(identity) {
+  try {
+    process.kill(identity.pid, 0);
+  } catch (error) {
+    return error.code === "ESRCH" ? "gone" : "unknown";
+  }
   const now = inspector.inspect(identity.pid);
-  if (now === null) return "gone";
-  if (now === undefined || !now.startTime || !identity.started) return "unknown";
+  if (!now?.startTime || !identity.started) return "unknown";
   return now.startTime.trim() === identity.started ? "still running" : "gone";
 }
-// Unloads every agent this run loaded, then checks it is unloaded and its helper process gone.
-// Returns whether all of that was shown; otherwise the evidence stays and the labels are named.
 function bootoutAll(only = null) {
   let complete = true;
   for (const [label, entry] of owned.labels) {
     if (only && label !== only) continue;
-    // Seen before the bootout, so its identity is known even if it exits during it.
-    helperIdentity(entry);
+    // Seen before the bootout, so their identities are known even if they exit during it.
+    const wrapperId = identityOf(entry.wrapperFile, "wrapper", entry);
+    const helperId = identityOf(entry.pidFile, "helper", entry);
     const run = runLaunchctl(["bootout", `${entry.domain}/${label}`]);
     const printed = runLaunchctl(["print", `${entry.domain}/${label}`]).status;
     const job = printed === NOT_FOUND ? "unloaded" : printed === 0 ? "loaded" : "unknown";
-    let helper = helperState(entry);
-    // A signalled helper may take a moment to exit: give it two seconds, and it must then be proven gone.
-    const deadline = Date.now() + 2_000;
-    while (helper === "still running" && Date.now() < deadline) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
-      helper = helperState(entry);
-    }
-    // No pid recorded: only a job proven unloaded that never started is clean; anything else is unknown.
-    if (helper === null) helper = job === "unloaded" ? "never started" : "unknown";
-    const ok = job === "unloaded" && (helper === "gone" || helper === "never started");
+    // A signalled process may take a moment to exit: give it two seconds, and it must then be proven gone.
+    const settle = (identity) => {
+      if (!identity) return null;
+      let state = processState(identity);
+      const deadline = Date.now() + 2_000;
+      while (state !== "gone" && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+        state = processState(identity);
+      }
+      return state;
+    };
+    const wrapper = settle(wrapperId);
+    let helper = settle(helperId);
+    // No record of a process proves it never ran only if the job was never loaded (a bootstrap that
+    // failed) and is proven unloaded. A loaded job without a record is unknown.
+    const absent = (state) => state ?? (job === "unloaded" && !entry.started ? "never started" : "unknown");
+    const wrapperState = absent(wrapper);
+    helper = absent(helper);
+    const clean = (state) => state === "gone" || state === "never started";
+    const ok = job === "unloaded" && clean(wrapperState) && clean(helper);
     if (!ok) complete = false;
     (result.bootouts ??= []).push({ label, domain: entry.domain, bootout_status: run.status, print_status: printed, job,
-      helper_identity: entry.helper ?? null, helper, ok });
+      wrapper_identity: entry.wrapper ?? null, wrapper: wrapperState, helper_identity: entry.helper ?? null, helper, ok });
     if (ok) owned.labels.delete(label);
   }
   writeLedger();
@@ -425,10 +440,11 @@ async function launchdRun() {
       // The helper refuses an empty or over-4096-byte reason before any dialog; never send one.
       if (!text.trim() || Buffer.byteLength(text) > 4096) throw new Error("The step's reason is not a valid dialog reason.");
       fs.writeFileSync(file("reason"), text, { mode: 0o600 });
-      // A wrapper shell, the LaunchAgent's program, runs the helper with that reason on stdin,
-      // records its pid, and only after it exits writes "<label> <raw status>".
-      const job = `"$0" < "$1" & echo $! > "$2"; wait $!; status=$?; echo "$4 $status" > "$3"`;
-      const args = ["/bin/sh", "-c", job, helper, file("reason"), file("pid"), file("exit"), label];
+      // A wrapper shell, the LaunchAgent's program, records its own pid, then starts a shell that
+      // records its pid and execs into the helper (so that pid IS the helper's, written before it
+      // runs), with the reason on stdin. Only after the helper exits does it write "<label> <status>".
+      const job = `echo $$ > "$5"; /bin/sh -c 'echo $$ > "$1"; exec "$0" < "$2"' "$0" "$2" "$1" & wait $!; status=$?; echo "$4 $status" > "$3"`;
+      const args = ["/bin/sh", "-c", job, helper, file("reason"), file("pid"), file("exit"), label, file("wrapper")];
       fs.writeFileSync(file("plist"), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -448,7 +464,7 @@ async function launchdRun() {
       if (fault === "stale-record") fs.writeFileSync(file("exit"), "com.talking-stick.gate-acceptance.stale 0\n");
       process.stdout.write(`\nThe dialog should read:\n    ${text}\n`);
       // In the ledger before it is loaded, so every exit path unloads it.
-      owned.labels.set(label, { domain, uid, plist: file("plist"), pidFile: file("pid"), exitFile: file("exit"), started: false });
+      owned.labels.set(label, { domain, uid, plist: file("plist"), pidFile: file("pid"), wrapperFile: file("wrapper"), exitFile: file("exit"), started: false });
       writeLedger();
       const loaded = runLaunchctl(["bootstrap", domain, file("plist")]);
       if (loaded.status !== 0) {
@@ -463,6 +479,12 @@ async function launchdRun() {
         return owner === label && /^\d+$/.test(status ?? "") ? Number(status) : null;
       };
       let exit = null;
+      // The dialog can only be up once the helper runs: wait, bounded, for its own pid record.
+      const running = Date.now() + 10_000;
+      while (!fs.existsSync(file("pid")) && record() === null && Date.now() < running) {
+        checkAbort();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       if (waitForAbort) {
         process.stdout.write("  … the dialog is up; press Ctrl-C here without answering it\n");
         // Something has to keep the event loop alive while only a signal can end the wait.
@@ -481,7 +503,7 @@ async function launchdRun() {
       const unloaded = bootoutAll(label);
       const check = result.bootouts?.[before] ?? {};
       const kind = waitForAbort ? "aborted" : gateKind(exit);
-      return { domain, label, loaded: true, exit, kind, unloaded: check.unloaded === true, helper: check.helper, cleanup_ok: unloaded };
+      return { domain, label, loaded: true, exit, kind, job: check.job, wrapper: check.wrapper, helper: check.helper, cleanup_ok: unloaded };
     };
     const gui = `gui/${uid}`;
 
