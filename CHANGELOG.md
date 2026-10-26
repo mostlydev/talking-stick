@@ -28,6 +28,10 @@ changes will be called out under **Breaking changes**.
   `--env XAI_API_KEY=keychain:SERVICE` names a credential for the child environment only. A missing
   item fails before spawn and the error does not include the secret. That reference is not a proven
   login. A recorded session is held as `resume_failed` rather than replaced. The user's Grok config is never copied.
+- `scripts/attended-gate-acceptance.mjs` is the operator's acceptance of the supervisor's human
+  gate. It runs a disposable supervisor whose only worker is a confined fixture, and asks the
+  person at the console to confirm and cancel real macOS LocalAuthentication dialogs. It enables
+  nothing. Its `--self-test` runs the same steps without a dialog, in CI.
 - `tt supervisor` gate eligibility. A human gate may act only while every live worker is
   provably unable to write the supervisor's state, program, launch agent or its own startup
   closure. That is judged from the sandbox the native process reports, never from the spec. An

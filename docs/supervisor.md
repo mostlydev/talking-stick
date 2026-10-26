@@ -456,11 +456,44 @@ These limits come from Apple's documentation and this codebase. No dialog was op
 - **Unproven until attended.** It hasn't been shown that a launchd user agent can present the
   LocalAuthentication dialog, or how it fails without a console session (`notInteractive` is
   mapped to unavailable).
-  - The attended acceptance builds the helper (`swiftc -O native/human-gate/main.swift`).
-  - It runs a daemon in a disposable data directory with the gate.
-  - Wojtek confirms one approval. One worker request is refused, and a confirmation for one request
-    is shown not to settle another.
-  - Until it passes, the gate stays locked and the CLI refuses control before connecting.
+  - **The kit:** `node scripts/attended-gate-acceptance.mjs`, run by the operator from a checkout
+    after `npm run build`, in a plain terminal. It refuses inside a harness session (environment
+    and ancestry), off macOS or without a terminal, before it builds anything. It enables
+    nothing:
+    1. It creates one 0700 temp root under `/tmp`, and from then on a single cleanup owns
+       everything: the compile (bounded at 5 minutes), the helper, the prompt, the store and the
+       supervisor. That cleanup runs on success, failure, or SIGINT or SIGTERM, including Ctrl-C
+       at a prompt. A signal aborts the run. A dialog in flight is aborted through the gate's own
+       signal, so it comes back refused before the supervisor can settle anything. Cleanup waits
+       for that decision, and for the helper's exit, before it stops the fixture. The run is
+       recorded as aborted, along with every request's final status. A second signal exits at
+       once, after removing the temp root.
+    2. It builds the helper into that root and runs an in-process supervisor there with the
+       LocalAuthentication gate. Its only worker is the deterministic Codex app-server fixture,
+       with no model and no credentials.
+    3. It stops unless `gateIneligibility()` is empty.
+    4. Before each dialog it prints the request's stored detail, its full digest and the text the
+       dialog should show, then walks the steps:
+       1. A confirmed approval is allowed and delivered.
+       2. A replay is refused without any dialog.
+       3. Two requests with distinct native ids are pending at once, from the fixture's
+          `two-approvals` mode.
+       4. Cancelling the first must come back as the gate's own `refused`. Unavailable,
+          ineligible or a transport failure doesn't count. Both requests stay pending, and
+          nothing reaches the worker.
+       5. Confirming the second decides and delivers only it.
+       In `--self-test` a sixth step requires `unavailable`, the helper's exit 2, and that it
+       settles nothing.
+    5. It writes a result JSON without secrets to the temp directory.
+  - **Its scope, as stated in its output and result:** the foreground dialog and its binding to
+    exact requests, nothing more. The fixture only reports a read-only sandbox, so an empty
+    `gateIneligibility()` exercises the algorithm, not OS-enforced worker confinement. Whether
+    launchd can present the dialog is also unproven here.
+  - **Self-test:** `--self-test` runs the same steps with a scripted gate and no dialog. CI runs
+    it, along with a real SIGTERM at a prompt, a real SIGTERM while the gate is asking (nothing
+    settles), and the harness refusal.
+  - **Until it passes,** the gate stays locked and the CLI refuses control before connecting.
+    Wiring a gate into `run` and unlocking the CLI is a separate, reviewed change after it.
 
 Once control is unlocked: approvals stay pending and visible until a human decides. Unanswered ones expire after 24 hours,
 as a deny. A decision names the full key (worker, generation, native id), and is refused unless
@@ -672,5 +705,6 @@ was adopted or interrupted to test this boundary.
 | S2c | Codex | Codex app-server adapter and shared process helpers | merged (#210) |
 | S2a4 | Claude | human control: the `HumanGate` the daemon must pass, the LocalAuthentication helper, attack tests; locked until attended acceptance | merged (#216) |
 | S2a5a | Claude | protected supervisor state: one resolver, a root outside the data directory, crash-safe `migrate` | merged (#218) |
-| S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | this change |
+| S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | merged (#219) |
+| S2a6 | Claude | attended gate acceptance kit, with a scripted self-test in CI; enables nothing | this change |
 | S2d | Grok | Grok stdio adapter (the proven subset only) | this change |
