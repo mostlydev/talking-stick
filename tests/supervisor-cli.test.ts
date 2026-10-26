@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { handleSupervisorCommand, parseEnvReference } from "../src/cli/supervisor-commands.js";
 import type { ParsedCommand } from "../src/cli/parser.js";
@@ -111,6 +112,35 @@ describe("controls", () => {
     }
   });
 
+  test("anyone can read one approval's whole request, and the list never carries it", async () => {
+    const { cwd, run, store } = setup();
+    await run(["add", "w1"], { harness: "claude", cwd });
+    const detail = JSON.stringify({ tool_name: "Bash", input: { command: `echo ${"x".repeat(1000)}; rm -rf ./build` } }, null, 2);
+    store().recordApproval({ approval_id: "ap1", worker_id: "w1", generation: 1, native_request_id: "perm-1", tool: "Bash",
+      summary: "echo xxx", detail, requested_at: "t" });
+    const shown = await run(["approvals", "show", "ap1"], {}, "codex");
+    expect(shown).toMatchObject({ approval_id: "ap1", tool: "Bash", status: "pending", detail,
+      detail_sha256: createHash("sha256").update(detail).digest("hex") });
+    const listed = await run(["approvals"]);
+    expect(listed.pending_approvals[0]).toMatchObject({ approval_id: "ap1", detail_sha256: shown.detail_sha256 });
+    expect(listed.pending_approvals[0]).not.toHaveProperty("detail");
+    expect((await run(["status"])).pending_approvals[0]).not.toHaveProperty("detail");
+    await expect(run(["approvals", "show", "nope"])).rejects.toThrow("No such approval request");
+  });
+
+  test("approvals recorded before full detail was kept read as empty, never as some other request", async () => {
+    const { dataDir, cwd, run } = setup();
+    await run(["add", "w1"], { harness: "claude", cwd });
+    const database = supervisorPaths(dataDir).database;
+    const old = new SupervisorStore(database);
+    old.db.exec(`ALTER TABLE approvals DROP COLUMN detail_sha256; ALTER TABLE approvals DROP COLUMN detail;
+      DELETE FROM schema_migrations WHERE id = 4;
+      INSERT INTO approvals (approval_id, worker_id, generation, native_request_id, tool, summary, status, requested_at)
+        VALUES ('old1', 'w1', 1, '0', 'Bash', 'touch x', 'pending', 't');`);
+    old.close();
+    expect(await run(["approvals", "show", "old1"])).toMatchObject({ approval_id: "old1", detail: "", detail_sha256: "" });
+  });
+
   test("a running worker can't be removed", async () => {
     const { cwd, run } = setup();
     await run(["add", "w1"], { harness: "claude", cwd });
@@ -145,7 +175,7 @@ describe("the daemon", () => {
     while (!adapter.handles.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
     expect(adapter.handles).toHaveLength(1);
     await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive" })).rejects.toThrow("Another supervisor");
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x" });
+    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x", detail: "touch x" });
     const approval = opened.pendingApproval("w1", 1, "0")!;
     const paths = supervisorPaths(dataDir);
     const token = fs.readFileSync(paths.controlToken, "utf8");
@@ -248,7 +278,7 @@ describe("control authority", () => {
     try {
       const deadline = Date.now() + 3_000;
       while (!adapter.handles.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-      adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "shell", summary: "human decision required" });
+      adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "shell", summary: "human decision required", detail: "human decision required" });
       const approval = opened.pendingApproval("w1", 1, "0")!;
       const paths = supervisorPaths(dataDir);
       for (const socket of [paths.socket, paths.control]) {

@@ -22,7 +22,7 @@ export const SUPERVISOR_USAGE = [
   "tt supervisor pause|resume|stop|remove <worker>",
   "tt supervisor restart <worker> [--fresh]",
   "tt supervisor interrupt <worker>",
-  "tt supervisor approvals | approve <approval-id> [--note TEXT] | deny <approval-id> [--note TEXT]",
+  "tt supervisor approvals [show <approval-id>] | approve <approval-id> [--note TEXT] | deny <approval-id> [--note TEXT]",
   "tt supervisor reconcile <batch-token> --resend|--drop",
   "tt supervisor run | install | uninstall | logs [--lines N]"
 ].join("\n");
@@ -90,7 +90,8 @@ function describeStatus(store: SupervisorStore) {
       };
     }),
     pending_approvals: store.pendingApprovals().map((approval) => ({ approval_id: approval.approval_id, worker_id: approval.worker_id,
-      generation: approval.generation, tool: approval.tool, summary: approval.summary, requested_at: approval.requested_at }))
+      generation: approval.generation, tool: approval.tool, summary: approval.summary, detail_sha256: approval.detail_sha256,
+      requested_at: approval.requested_at }))
   };
 }
 
@@ -148,6 +149,17 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   if (action === "interrupt" || action === "approve" || action === "deny" || action === "reconcile") fail(CONTROL_LOCKED);
   const store = openStore(dataDir);
   try {
+    if (action === "approvals" && parsed.positionals[1] === "show") {
+      // The whole request, read-only: what a human would be deciding.
+      const approval = store.approval(parsed.positionals[2] ?? "");
+      if (!approval) fail("No such approval request. Run `tt supervisor approvals` for the pending ones.");
+      printResult(parsed, { approval_id: approval.approval_id, worker_id: approval.worker_id, generation: approval.generation,
+        tool: approval.tool, summary: approval.summary, status: approval.status, requested_at: approval.requested_at,
+        detail_sha256: approval.detail_sha256, detail: approval.detail },
+      () => [`${approval.approval_id}  ${approval.worker_id}#${approval.generation}  ${approval.tool}  ${approval.status}`,
+        `sha256 ${approval.detail_sha256}`, approval.detail || "(recorded before full detail was kept)"].join("\n"));
+      return;
+    }
     if (action === "status" || action === "approvals") {
       const status = describeStatus(store);
       const result = action === "approvals" ? { pending_approvals: status.pending_approvals } : status;

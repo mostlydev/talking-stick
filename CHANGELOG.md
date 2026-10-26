@@ -22,6 +22,9 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
+- `tt supervisor approvals show <approval-id>` prints the whole native request behind an approval,
+  with its SHA-256, so a human never decides on a summary. A request too large to review (over
+  128 KiB) is refused and never pending.
 - `tt supervisor` control is locked: `approve`, `deny`, `interrupt` and `reconcile` are refused
   until a verified human-control boundary exists, since any same-user process, supervised workers
   included, can read the control token. Pending approvals expire as a deny after 24 hours.

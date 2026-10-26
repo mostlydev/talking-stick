@@ -307,7 +307,7 @@ describe("approvals", () => {
     store.addWorker(spec, "human:op", "t");
     await supervisor.tick();
     const first = adapter.last;
-    first.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x" });
+    first.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x", detail: "touch x" });
     expect(store.latestGeneration("w1")!.state).toBe("awaiting_approval");
     const firstRequest = store.pendingApproval("w1", 1, "0")!;
     first.emit({ type: "exited", code: 1, signal: null });
@@ -315,7 +315,7 @@ describe("approvals", () => {
     advance(10_000);
     await supervisor.tick();
     const second = adapter.last;
-    second.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "rm y" });
+    second.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "rm y", detail: "rm y" });
     const secondRequest = store.pendingApproval("w1", 2, "0")!;
     await expect(supervisor.decideApproval({ approval_id: firstRequest.approval_id, worker_id: "w1", generation: 1 }, "allow", "human:op"))
       .rejects.toThrow("is not running");
@@ -328,7 +328,7 @@ describe("approvals", () => {
     await expect(supervisor.decideApproval({ approval_id: secondRequest.approval_id, worker_id: "w1", generation: 2 }, "allow", "human:op"))
       .rejects.toThrow("not pending");
     // Events from the dead generation never reach the live one.
-    first.emit({ type: "approval_requested", native_request_id: "7", tool: "Bash", summary: "late" });
+    first.emit({ type: "approval_requested", native_request_id: "7", tool: "Bash", summary: "late", detail: "late" });
     expect(store.pendingApproval("w1", 1, "7")).toBeNull();
   });
 
@@ -336,10 +336,10 @@ describe("approvals", () => {
     const { store, adapter, supervisor, spec } = setup();
     store.addWorker(spec, "human:op", "t");
     await supervisor.tick();
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first" });
+    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first", detail: "first" });
     const oldKey = { approval_id: store.pendingApproval("w1", 1, "0")!.approval_id, worker_id: "w1", generation: 1 };
     await supervisor.decideApproval(oldKey, "deny", "human:op");
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "different request" });
+    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "different request", detail: "different request" });
     await expect(supervisor.decideApproval(oldKey, "allow", "human:op")).rejects.toThrow();
     expect(adapter.last.answers).toEqual([{ id: "0", decision: "deny" }]);
   });
@@ -348,8 +348,8 @@ describe("approvals", () => {
     const { store, adapter, supervisor, spec } = setup();
     store.addWorker(spec, "human:op", "t");
     await supervisor.tick();
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first" });
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "second" });
+    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first", detail: "first" });
+    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "second", detail: "second" });
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(store.worker("w1")!.hold_reason).toBe("protocol_error");
     expect(adapter.last.stopped).toBe(true);
@@ -359,7 +359,7 @@ describe("approvals", () => {
     const { store, adapter, supervisor, spec } = setup();
     store.addWorker(spec, "human:op", "t");
     await supervisor.tick();
-    adapter.last.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x" });
+    adapter.last.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x", detail: "x" });
     adapter.last.answerApproval = async () => { throw new Error("EPIPE"); };
     const request = store.pendingApproval("w1", 1, "a1")!;
     expect(await supervisor.decideApproval({ approval_id: request.approval_id, worker_id: "w1", generation: 1 }, "allow", "human:op"))
@@ -371,7 +371,7 @@ describe("approvals", () => {
     const { store, adapter, supervisor, spec, advance } = setup();
     store.addWorker(spec, "human:op", "t");
     await supervisor.tick();
-    adapter.last.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x" });
+    adapter.last.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x", detail: "x" });
     const request = store.pendingApproval("w1", 1, "a1")!;
     advance(24 * 60 * 60_000 + 1);
     await supervisor.tick();
@@ -385,7 +385,7 @@ test("a request the harness settles itself expires, and a later decision is refu
   store.addWorker(spec, "human:op", "t");
   await supervisor.tick();
   adapter.last.emit({ type: "turn_started", native_turn_id: "t1" });
-  adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "x" });
+  adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "x", detail: "x" });
   const request = store.pendingApproval("w1", 1, "0")!;
   adapter.last.emit({ type: "approval_resolved", native_request_id: "0" });
   expect(store.approval(request.approval_id)).toMatchObject({ status: "expired", decided_by: "harness" });

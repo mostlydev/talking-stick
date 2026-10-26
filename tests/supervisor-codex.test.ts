@@ -117,6 +117,7 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     await until(() => f.events.some(e => e.type === "approval_requested"));
     const request = f.events.find(e => e.type === "approval_requested") as Extract<WorkerEvent, { type: "approval_requested" }>;
     expect(request.native_request_id).toBe("n:0");
+    expect(JSON.parse(request.detail)).toMatchObject({ method: expect.stringMatching(/requestApproval$/), params: expect.any(Object) });
     await h.answerApproval(request.native_request_id, "deny");
     await until(() => f.events.some(e => e.type === "approval_resolved"));
     expect(f.messages().find(m => m.id === 0)).toEqual({ id: 0, result: { decision: "decline" } });

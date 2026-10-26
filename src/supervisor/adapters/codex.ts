@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
+import { approvalDetail } from "../approval-detail.js";
 import type { Capabilities, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
@@ -296,7 +297,9 @@ class CodexHandle implements WorkerHandle {
   }
 
   private approval(id: string | number, method: string, params: Json): void {
-    if (params.threadId !== this.thread ||
+    // A request too large to review whole is never put to a human.
+    const detail = approvalDetail({ method, params });
+    if (params.threadId !== this.thread || detail === null ||
         (method !== "item/commandExecution/requestApproval" && method !== "item/fileChange/requestApproval")) {
       // This request is refused immediately: no pending question remains.
       this.emit({ type: "request_refused", method });
@@ -321,7 +324,7 @@ class CodexHandle implements WorkerHandle {
     }
     this.pendingApprovals.set(key, pending);
     this.emit({ type: "approval_requested", native_request_id: key,
-      tool: method.includes("commandExecution") ? "shell" : "file change", summary });
+      tool: method.includes("commandExecution") ? "shell" : "file change", summary, detail });
   }
 
   async submit(input: { input_id: string; text: string; mode: InputMode }): Promise<InputOutcome> {
