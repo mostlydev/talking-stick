@@ -258,10 +258,78 @@ That means:
   approvals show <approval-id>`, and expire after 24 hours as a deny.
 - A possibly delivered message stays fenced, never resent.
 
-The candidate boundary is a login-Keychain control item with an empty trusted-app list, so reading
-it takes the macOS authorization dialog, a human's click. It would be recreated at each daemon
-start and rotated after every approval, with no token file. It needs an attended acceptance; the
-alternative is running workers as a separate macOS user.
+### Human control
+
+The control token only admits a request to the daemon. Whether it takes effect is up to a
+`HumanGate` (`src/supervisor/human-gate.ts`), which the daemon asks to confirm that exact request.
+The built-in gate is locked: it refuses everything and asks nothing. Nothing in the shipped build
+selects another gate.
+
+What the daemon does with a gate (`Supervisor.control`):
+- **Before asking:** the request must name a pending approval of the running generation, or a
+  running worker for an interrupt. An approve or deny must also name the detail digest its requester
+  reviewed (`tt supervisor approvals show`), in full or as a 12+ hex prefix. A row recorded without
+  full detail is refused. None of these reach the gate.
+- **The question:** the daemon builds it from its own records: action, tool, summary, worker,
+  generation, approval id and digest, all escaped (`gateReason`). The requester supplies none of
+  that text.
+- **One at a time:** a second request while one waits is refused, not queued, so a worker can't
+  slip its request in behind a human's.
+- **Fail closed:** a gate that throws, or doesn't answer within two minutes, is a refusal. An
+  unavailable gate answers as locked.
+- **After the answer:** the daemon checks the request again, the same pending approval, generation,
+  worker handle and digest. If anything changed while the human was asked, such as the generation
+  exiting or the harness settling the request, the confirmation applies to nothing. Settling is
+  single-use, so a replay finds nothing pending.
+- **Audit:** every outcome is recorded: confirmed, refused, unavailable, busy, or changed.
+
+`reconcileManagedDelivery`, on the room side, stays locked whatever the gate says. A resend or
+drop decision is not wired to a gate yet.
+
+#### The mechanism, and its limits
+
+These limits come from Apple's documentation and this codebase. No dialog was opened to find them.
+
+- **Keychain item ACLs are not a human gate.** The candidate in the earlier design was a control
+  item with an empty trusted-app list.
+  - Apple's ACL documentation: an untrusted caller gets "Deny, Allow, or Always Allow", and Always
+    Allow "adds the app to the list of trusted apps". The app here would be `/usr/bin/security` or
+    the runtime, which a worker can run too, so one Always Allow click opens the item to every later
+    caller, the worker included.
+  - The dialog names the item and the calling app, not the request, so a human can't tell a
+    worker's read from their own.
+  - A token read once can be replayed until it is rotated.
+  - Rotating the token per approval doesn't help either: the click proves that some read happened,
+    not which approval it was for.
+- **LocalAuthentication is the chosen mechanism.** `native/human-gate/main.swift` is a helper the
+  daemon runs itself. It evaluates `deviceOwnerAuthentication` with the daemon's reason text, then
+  exits 0 (confirmed), 3 (refused) or 2 (unavailable).
+  - Each run uses a new `LAContext`, with `touchIDAuthenticationAllowableReuseDuration` set to 0.
+    That is Apple's default: "Touch ID authentication isn't reused".
+  - It invalidates the context afterwards. Apple: once invalidated, a context "cannot be used for
+    policy evaluation".
+  - There is no Always Allow, and the result never leaves the helper except as its exit status to
+    the daemon. So a confirmation can't be carried to a different request, and nothing is replayed.
+  - The dialog shows the daemon's reason, so a human reads what they would allow.
+- **A worker can still ask.** It can send a control request with the token and make the dialog
+  appear for its own pending request. The dialog then describes that request truthfully, and only
+  a human's Touch ID or password confirms it. One question at a time limits how often it can ask.
+  The dialog doesn't say who asked.
+- **The boundary assumes workers can't change the supervisor.** That means its program,
+  `dist/`, the helper, the launch agent plist or its data directory. A same-user process that can
+  write those can replace the gate itself. So the gate holds only for confined workers: a Codex
+  worker with `--sandbox workspace-write` or `read-only` whose cwd excludes those paths, or a Claude
+  worker whose project settings grant no file writes beyond its workspace and no shell beyond `tt`.
+  An unconfined same-user worker defeats any same-user gate. Against that, the boundary is running
+  workers as a separate macOS user.
+- **Unproven until attended.** It hasn't been shown that a launchd user agent can present the
+  LocalAuthentication dialog, or how it fails without a console session (`notInteractive` is
+  mapped to unavailable).
+  - The attended acceptance builds the helper (`swiftc -O native/human-gate/main.swift`).
+  - It runs a daemon in a disposable data directory with the gate.
+  - Wojtek confirms one approval. One worker request is refused, and a confirmation for one request
+    is shown not to settle another.
+  - Until it passes, the gate stays locked and the CLI refuses control before connecting.
 
 Once control is unlocked: approvals stay pending and visible until a human decides. Unanswered ones expire after 24 hours,
 as a deny. A decision names the full key (worker, generation, native id), and is refused unless
@@ -454,4 +522,5 @@ incident nor existing sessions are claimed solved by headless-worker tests.
 | S2a3 | Claude | `tt supervisor` commands, launchd install/uninstall, logs | merged (#207) |
 | S2b | Claude | Claude stream-json adapter | merged (#212) |
 | S2c | Codex | Codex app-server adapter and shared process helpers | merged (#210) |
+| S2a4 | Claude | human control: the `HumanGate` the daemon must pass, the LocalAuthentication helper, attack tests; locked until attended acceptance | this change |
 | S2d | Grok | Grok stdio adapter (the proven subset only) | this change |

@@ -26,6 +26,11 @@ changes will be called out under **Breaking changes**.
   It does not prompt, resume, interrupt, or approve. Without credentials in that home, `session/new`
   answers "Authentication required" and the worker is held `crash_loop`, so none starts yet.
   A recorded session is held as `resume_failed` rather than replaced. The user's Grok config is never copied.
+- `tt supervisor` control now has to pass a human gate that confirms each exact request: the
+  approval, its generation and the digest of the detail the human read. The question can't be
+  reused or replayed, and a request is checked again after the answer. The gate ships locked. A
+  macOS LocalAuthentication helper is the candidate, pending an attended acceptance, and Keychain
+  item ACLs were ruled out (Always Allow trusts the calling binary).
 - `tt supervisor approvals show <approval-id>` prints the whole native request behind an approval,
   with its SHA-256, so a human never decides on a summary. A request too large to review (over
   128 KiB) is refused and never pending.

@@ -25,6 +25,8 @@ export interface ControlMessage {
   token: string;
   approval_id?: string;
   worker_id?: string;
+  /** The detail digest the requester reviewed, which an approval or deny must name. */
+  detail_sha256?: string;
   note?: string;
 }
 
