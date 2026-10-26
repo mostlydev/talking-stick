@@ -7,7 +7,7 @@ export default function setup() {
   process.env.TALKING_STICK_DATA_DIR = tempDir;
   // Supervisor state never lands in the real user state directory during
   // tests, and stays short enough for its UNIX socket paths.
-  const stateDir = fs.mkdtempSync("/tmp/tt-svs-");
+  const stateDir = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "tt-svs-"));
   process.env.TT_SUPERVISOR_STATE_DIR = stateDir;
   process.env.TT_NO_AUTO_UPDATE = "1";
   // Terminal-mode chat tests drive Node's readline directly, and readline

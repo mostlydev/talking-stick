@@ -206,13 +206,20 @@ locks. Then it:
 2. Copies `workers/` and `logs/` with their modes and timestamps, skipping sockets. The token,
    sockets and locks are made afresh by the next daemon.
 3. Commits by writing `root.json`.
-4. Renames the old files into `<data>/supervisor-legacy-<time>/`, keeping them rather than
-   deleting them, and leaves `<data>/supervisor.migrated.json` pointing at the new root.
+4. Moves the old files into `<data>/supervisor-legacy-<time>/`, keeping them rather than
+   deleting them, and leaves `<data>/supervisor.migrated.json` pointing at the new root. The old
+   directory keeps only its held owner lock until then, so no older supervisor can start while
+   its files move.
 
-A journal in the root records the phase. Interrupted before the commit, a rerun discards the
-partial copy and starts over from the untouched old state. Interrupted after it, a rerun only
-finishes the renames. State found in both places, without a journal, is never merged or
-overwritten: both are refused until one is moved aside by hand. There is no reverse migration.
+A journal in the root records the phase. It is trusted only if it names this root's id, this
+data directory and a `supervisor-legacy-<time>` path inside it, and if its phase agrees with
+`root.json`.
+- **Interrupted before the commit:** a rerun discards that journal's own partial copy and starts
+  over from the untouched old state.
+- **Interrupted after the commit:** a rerun only finishes the moves.
+- **Never deleted or merged:** a root holding anything without a `root.json` or a valid journal
+  is someone's state. Every command refuses it, and nothing is deleted. The same goes for state in
+  both places. Either way, a human moves one aside. There is no reverse migration.
 
 ### The database
 

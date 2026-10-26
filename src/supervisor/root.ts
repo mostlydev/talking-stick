@@ -108,10 +108,42 @@ function readRootRecord(root: SupervisorRoot): RootRecord | null {
   return record;
 }
 
+/** Entries a root may hold before it is initialized: only an owner lock. */
+function unrecordedEntries(root: SupervisorRoot): string[] {
+  if (!fs.existsSync(root.dir)) return [];
+  return fs.readdirSync(root.dir).filter((entry) => entry !== "owner.lock");
+}
+
+interface Journal { version: 1; id: string; from: string; retired: string; committed: boolean; started_at: string }
+
+/** A journal is trusted only if it names this root, this data directory and a retirement path inside it. */
+function readJournal(root: SupervisorRoot): Journal | null {
+  const file = path.join(root.dir, JOURNAL_FILE);
+  if (!fs.existsSync(file)) return null;
+  let journal: Journal;
+  try { journal = JSON.parse(fs.readFileSync(file, "utf8")) as Journal; }
+  catch { throw new SupervisorStateError(`${file} is unreadable; the migration it recorded can't be trusted.`); }
+  const retiredOk = typeof journal.retired === "string" && path.dirname(journal.retired) === root.dataDir &&
+    /^supervisor-legacy-[0-9TZ-]+$/.test(path.basename(journal.retired));
+  if (journal.version !== 1 || journal.id !== root.id || journal.from !== root.dataDir || !retiredOk ||
+      typeof journal.committed !== "boolean") {
+    throw new SupervisorStateError(`${file} doesn't describe a migration of ${root.dataDir} into ${root.dir}.`);
+  }
+  // A committed journal must agree with the root it committed.
+  const record = readRootRecord(root);
+  if (journal.committed && !record?.migrated_from_legacy) {
+    throw new SupervisorStateError(`${file} says the migration committed, but ${root.dir} has no matching root.json.`);
+  }
+  if (!journal.committed && record) {
+    throw new SupervisorStateError(`${file} says the migration didn't commit, but ${root.dir} already has root.json.`);
+  }
+  return journal;
+}
+
 /** What state exists for this data directory. It writes nothing. */
 export function inspectSupervisorState(dataDir: string, env: NodeJS.ProcessEnv = process.env): { root: SupervisorRoot; kind: SupervisorStateKind } {
   const root = supervisorRootFor(dataDir, env);
-  if (fs.existsSync(path.join(root.dir, JOURNAL_FILE))) return { root, kind: "migrating" };
+  if (readJournal(root)) return { root, kind: "migrating" };
   const record = readRootRecord(root);
   const legacy = hasLegacyState(root.dataDir);
   if (record && legacy) {
@@ -119,6 +151,12 @@ export function inspectSupervisorState(dataDir: string, env: NodeJS.ProcessEnv =
       "Neither is overwritten; move one aside by hand.");
   }
   if (record) return { root, kind: "ready" };
+  // Anything in a root that no record or journal explains is someone's state: never initialized over, never deleted.
+  const unknown = unrecordedEntries(root);
+  if (unknown.length) {
+    throw new SupervisorStateError(`${root.dir} holds ${unknown.slice(0, 3).join(", ")} without a root.json; ` +
+      "nothing will be created over or delete it. Move it aside by hand.");
+  }
   return { root, kind: legacy ? "legacy" : "none" };
 }
 
@@ -146,17 +184,16 @@ function writeRootRecord(root: SupervisorRoot, migrated: boolean): void {
 
 export interface MigrationResult { status: "migrated" | "nothing_to_migrate"; root: string; retired?: string }
 
-interface Journal { from: string; retired: string; committed: boolean; started_at: string }
-
 /**
  * Moves older state into the protected root, while holding both owner locks
  * so no supervisor of either layout runs. The database is copied as one
  * consistent snapshot (VACUUM INTO includes its WAL), verified, and only then
- * is the root marked ready. The old files are kept, renamed aside.
+ * is the root marked ready. The old files are kept, moved aside.
  *
- * A journal records the phase. Before the commit, a rerun discards the partial
- * copy and starts over, the old state untouched. After it, a rerun only
- * finishes moving the old files aside.
+ * A journal records the phase. Before the commit, a rerun discards its own
+ * partial copy and starts over, the old state untouched. After it, a rerun
+ * only finishes moving the old files aside. The old owner lock stays held,
+ * at its own path, until that is done.
  */
 export function migrateSupervisorState(dataDir: string, acquireLock: (lockPath: string) => () => void,
   env: NodeJS.ProcessEnv = process.env): MigrationResult {
@@ -164,44 +201,52 @@ export function migrateSupervisorState(dataDir: string, acquireLock: (lockPath: 
   if (kind === "ready" || kind === "none") return { status: "nothing_to_migrate", root: root.dir };
   const legacy = legacyPaths(root.dataDir);
   const journalFile = path.join(root.dir, JOURNAL_FILE);
-  fs.mkdirSync(root.dir, { recursive: true, mode: 0o700 });
-  fs.chmodSync(root.dir, 0o700);
   const releases: Array<() => void> = [];
-  if (fs.existsSync(legacy.dir) || fs.existsSync(legacy.database)) {
+  try {
+    fs.mkdirSync(root.dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(root.dir, 0o700);
     fs.mkdirSync(legacy.dir, { recursive: true, mode: 0o700 });
     releases.push(acquireLock(legacy.lock));
-  }
-  releases.push(acquireLock(path.join(root.dir, "owner.lock")));
-  try {
-    let journal = fs.existsSync(journalFile) ? JSON.parse(fs.readFileSync(journalFile, "utf8")) as Journal : null;
-    if (!journal?.committed) {
-      // A partial copy from an earlier attempt is discarded, never trusted.
-      for (const entry of fs.readdirSync(root.dir)) {
-        if (entry !== "owner.lock") fs.rmSync(path.join(root.dir, entry), { recursive: true, force: true });
-      }
-      journal = { from: root.dataDir, committed: false, started_at: new Date().toISOString(),
+    releases.push(acquireLock(path.join(root.dir, "owner.lock")));
+    // Re-read under the locks: what was seen before them may have changed.
+    let journal = readJournal(root);
+    if (!journal) {
+      if (inspectSupervisorState(dataDir, env).kind !== "legacy") throw new SupervisorStateError(`${root.dir} changed; nothing was migrated.`);
+      journal = { version: 1, id: root.id, from: root.dataDir, committed: false, started_at: new Date().toISOString(),
         retired: path.join(root.dataDir, `supervisor-legacy-${new Date().toISOString().replace(/[:.]/g, "-")}`) };
       writeJournal(journalFile, journal);
+    }
+    if (!journal.committed) {
+      // Only this journal's own partial copy is discarded: the root held nothing else when it began.
+      for (const entry of fs.readdirSync(root.dir)) {
+        if (entry !== "owner.lock" && entry !== JOURNAL_FILE) fs.rmSync(path.join(root.dir, entry), { recursive: true, force: true });
+      }
       copyLegacyState(root, legacy);
       // The commit point: from here the root is the state.
       writeRootRecord(root, true);
       journal = { ...journal, committed: true };
       writeJournal(journalFile, journal);
     }
-    // Retire the old files: renamed aside, never deleted, so nothing is lost.
+    // Retire the old files: moved aside, never deleted. The old directory keeps
+    // only its held lock, so no older supervisor can start in the meantime.
     fs.mkdirSync(journal.retired, { recursive: true, mode: 0o700 });
     for (const file of [legacy.database, `${legacy.database}-wal`, `${legacy.database}-shm`]) {
       if (fs.existsSync(file)) fs.renameSync(file, path.join(journal.retired, path.basename(file)));
     }
     if (fs.existsSync(legacy.dir)) {
-      releases.shift()?.();
-      fs.renameSync(legacy.dir, path.join(journal.retired, "supervisor"));
+      const keep = path.join(journal.retired, "supervisor");
+      fs.mkdirSync(keep, { recursive: true, mode: 0o700 });
+      for (const entry of fs.readdirSync(legacy.dir)) {
+        if (entry !== "owner.lock") fs.renameSync(path.join(legacy.dir, entry), path.join(keep, entry));
+      }
     }
     writeFileAtomic(legacy.tombstone, `${JSON.stringify({ root: root.dir, retired: journal.retired, at: new Date().toISOString() }, null, 2)}\n`, 0o600);
     fs.rmSync(journalFile, { force: true });
     return { status: "migrated", root: root.dir, retired: journal.retired };
   } finally {
     for (const release of releases.reverse()) { try { release(); } catch { /* already gone */ } }
+    // The old directory held only its lock; remove it once that is released.
+    try { fs.rmdirSync(legacy.dir); } catch { /* not empty, or already gone */ }
   }
 }
 

@@ -15,7 +15,8 @@ afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); vi.unstubA
 
 function dirs() {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "tt-root-"));
-  const state = fs.mkdtempSync("/tmp/tt-rs-");
+  // A short base keeps UNIX socket paths in bounds; Windows has no /tmp.
+  const state = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "tt-rs-"));
   cleanup.push(() => { fs.rmSync(base, { recursive: true, force: true }); fs.rmSync(state, { recursive: true, force: true }); });
   const dataDir = path.join(base, "data");
   fs.mkdirSync(dataDir);
@@ -132,8 +133,8 @@ describe("older state in the data directory", () => {
     const legacy = legacyState(dataDir);
     const root = supervisorRootFor(dataDir, env);
     fs.mkdirSync(root.dir, { recursive: true });
-    fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify({ from: root.dataDir, committed: false,
-      retired: path.join(root.dataDir, "supervisor-legacy-x"), started_at: "t" }));
+    fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify({ version: 1, id: root.id, from: root.dataDir, committed: false,
+      retired: path.join(root.dataDir, "supervisor-legacy-2026-10-26T01-00-00-000Z"), started_at: "t" }));
     fs.writeFileSync(path.join(root.dir, "supervisor.sqlite"), "half a copy");
     expect(inspectSupervisorState(dataDir, env).kind).toBe("migrating");
     expect(() => prepareSupervisorRoot(dataDir, env)).toThrow("tt supervisor migrate");
@@ -155,8 +156,8 @@ describe("older state in the data directory", () => {
     committed.close();
     fs.writeFileSync(path.join(root.dir, "root.json"), JSON.stringify({ version: 1, id: root.id, data_dir: root.dataDir,
       created_at: "t", migrated_from_legacy: true }));
-    const retired = path.join(root.dataDir, "supervisor-legacy-x");
-    fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify({ from: root.dataDir, committed: true, retired, started_at: "t" }));
+    const retired = path.join(root.dataDir, "supervisor-legacy-2026-10-26T01-00-00-000Z");
+    fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify({ version: 1, id: root.id, from: root.dataDir, committed: true, retired, started_at: "t" }));
     expect(migrateSupervisorState(dataDir, noLock, env)).toMatchObject({ status: "migrated", retired });
     const kept = new SupervisorStore(path.join(root.dir, "supervisor.sqlite"));
     cleanup.push(() => kept.close());
@@ -164,6 +165,62 @@ describe("older state in the data directory", () => {
     expect(fs.existsSync(path.join(retired, "supervisor.sqlite"))).toBe(true);
     expect(fs.existsSync(legacy.dir)).toBe(false);
     expect(inspectSupervisorState(dataDir, env).kind).toBe("ready");
+  });
+
+  test("a second lock that fails releases the first", () => {
+    const { dataDir, env } = dirs();
+    legacyState(dataDir);
+    let calls = 0;
+    const released: number[] = [];
+    expect(() => migrateSupervisorState(dataDir, () => {
+      const call = ++calls;
+      if (call === 2) throw new Error("new root busy");
+      return () => { released.push(call); };
+    }, env)).toThrow("new root busy");
+    expect(released).toEqual([1]);
+  });
+
+  test("the old lock is held until the old files are retired and the tombstone written", () => {
+    const { dataDir, env } = dirs();
+    const legacy = legacyState(dataDir);
+    const canonical = legacyPaths(supervisorRootFor(dataDir, env).dataDir);
+    const seen: Array<{ tombstone: boolean; lockStillThere: boolean }> = [];
+    migrateSupervisorState(dataDir, (lock) => {
+      fs.writeFileSync(lock, "held");
+      return () => {
+        if (lock === canonical.lock) seen.push({ tombstone: fs.existsSync(legacy.tombstone), lockStillThere: fs.existsSync(lock) });
+        fs.rmSync(lock, { force: true });
+      };
+    }, env);
+    expect(seen).toEqual([{ tombstone: true, lockStillThere: true }]);
+    expect(fs.existsSync(legacy.dir)).toBe(false);
+  });
+
+  test("a root holding state no record explains is refused, and nothing in it is deleted", () => {
+    const { dataDir, env } = dirs();
+    legacyState(dataDir);
+    const root = supervisorRootFor(dataDir, env);
+    fs.mkdirSync(root.dir, { recursive: true });
+    const valuable = path.join(root.dir, "supervisor.sqlite");
+    fs.writeFileSync(valuable, "existing unknown supervisor state");
+    expect(() => migrateSupervisorState(dataDir, noLock, env)).toThrow("without a root.json");
+    expect(() => prepareSupervisorRoot(dataDir, env)).toThrow("without a root.json");
+    expect(fs.readFileSync(valuable, "utf8")).toBe("existing unknown supervisor state");
+  });
+
+  test("a journal for another root, an odd retirement path, or a phase the root contradicts is refused", () => {
+    const { dataDir, env } = dirs();
+    legacyState(dataDir);
+    const root = supervisorRootFor(dataDir, env);
+    fs.mkdirSync(root.dir, { recursive: true });
+    const good = { version: 1, id: root.id, from: root.dataDir, committed: false,
+      retired: path.join(root.dataDir, "supervisor-legacy-2026-10-26T01-00-00-000Z"), started_at: "t" };
+    for (const journal of [{ ...good, id: "0".repeat(16) }, { ...good, from: "/elsewhere" }, { ...good, retired: "/etc/supervisor-legacy-x" },
+      { ...good, retired: path.join(root.dataDir, "anything") }, { ...good, committed: true }]) {
+      fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify(journal));
+      expect(() => migrateSupervisorState(dataDir, noLock, env)).toThrow();
+      expect(fs.existsSync(legacyPaths(root.dataDir).database)).toBe(true);
+    }
   });
 
   test("state in both places is never merged or overwritten", () => {
