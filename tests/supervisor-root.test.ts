@@ -406,3 +406,16 @@ test("a WAL-only row survives even when SQLite never checkpointed it", () => {
   expect(copy.prepare("SELECT COUNT(*) AS n FROM t").get()).toEqual({ n: 1 });
   copy.close();
 });
+
+// Codex's reproducer from the #218 review (#32859), kept verbatim.
+test("review: crash after root.json commit but before journal phase update is recoverable", () => {
+  const { dataDir, env } = dirs(); const legacy = legacyState(dataDir);
+  const root = supervisorRootFor(dataDir, env); fs.mkdirSync(root.dir, { recursive: true });
+  const db = new SupervisorStore(path.join(root.dir, "supervisor.sqlite")); db.close();
+  fs.writeFileSync(path.join(root.dir, "migration.json"), JSON.stringify({ version: 1, id: root.id, from: root.dataDir,
+    committed: false, retired: path.join(root.dataDir, "supervisor-legacy-2026-10-26T01-00-00-000Z"), started_at: "t" }));
+  fs.writeFileSync(path.join(root.dir, "root.json"), JSON.stringify({ version: 1, id: root.id, data_dir: root.dataDir,
+    created_at: "t", migrated_from_legacy: true }));
+  expect(migrateSupervisorState(dataDir, noLock, env).status).toBe("migrated");
+  expect(fs.existsSync(legacy.database)).toBe(false);
+});
