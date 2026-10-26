@@ -90,17 +90,27 @@ const LOAD_WALK_LIMIT = 200_000;
 export function packageLinkTargets(root: string): ProtectedSet {
   const paths: string[] = [];
   const pending = [root];
-  let visited = 0;
+  // Directories walked, by their real path: a linked directory is walked too, once, so its own links count.
+  const seen = new Set<string>();
   while (pending.length) {
     const dir = pending.pop()!;
-    if (++visited > LOAD_WALK_LIMIT) return { paths, unresolved: [`the dependencies under ${root} (too many to walk)`] };
+    let real: string;
+    try { real = fs.realpathSync(dir); }
+    catch { return { paths, unresolved: [`the dependencies under ${dir}`] }; }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    if (seen.size > LOAD_WALK_LIMIT) return { paths, unresolved: [`the dependencies under ${root} (too many to walk)`] };
     let entries: fs.Dirent[];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch { return { paths, unresolved: [`the dependencies under ${dir}`] }; }
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) {
-        try { paths.push(full, canonicalPath(full)); }
+        let target: string;
+        try { target = fs.realpathSync(full); }
+        catch { return { paths, unresolved: [`the link ${full}`] }; }
+        paths.push(full, target);
+        try { if (fs.statSync(target).isDirectory()) pending.push(target); }
         catch { return { paths, unresolved: [`the link ${full}`] }; }
       } else if (entry.isDirectory() && entry.name !== ".git") {
         pending.push(full);
@@ -108,6 +118,18 @@ export function packageLinkTargets(root: string): ProtectedSet {
     }
   }
   return { paths, unresolved: [] };
+}
+
+/**
+ * Environment variables that select code a process loads before any tool
+ * sandbox applies: dynamic loader paths, preload lists and runtime startup
+ * options. A worker spec referencing one can't be shown to run only what its
+ * closure names, so under a real gate it is unresolved.
+ */
+const STARTUP_ENV = /^(LD_|DYLD_|BUN_|NODE_OPTIONS$|NODE_PATH$|NODE_REPL_EXTERNAL_MODULE$|PYTHON(PATH|STARTUP|HOME)$|PERL5?LIB$|PERL5OPT$|RUBY(OPT|LIB)$|BASH_ENV$|ENV$|ZDOTDIR$|GIT_EXEC_PATH$)/;
+
+export function startupEnvironmentRisks(spec: { env: Array<{ name: string }> }): string[] {
+  return spec.env.filter((ref) => STARTUP_ENV.test(ref.name)).map((ref) => `its ${ref.name} reference, which can load code at start`);
 }
 
 /** This supervisor's own program: the runtime it runs on, the package it was loaded from, and what that links to. */

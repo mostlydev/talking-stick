@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { packageLinkTargets, packageRoot, pathsConflict, supervisorProgramPaths, workerIneligibility } from "../src/supervisor/eligibility.js";
+import { packageLinkTargets, packageRoot, pathsConflict, startupEnvironmentRisks, supervisorProgramPaths, workerIneligibility } from "../src/supervisor/eligibility.js";
 import { CodexAdapter, effectiveConfinement } from "../src/supervisor/adapters/codex.js";
 import type { WorkerHandle, WorkerSpec } from "../src/supervisor/adapter.js";
 import { Supervisor } from "../src/supervisor/daemon.js";
@@ -394,3 +394,57 @@ test("an eligible Codex worker survives an idle reload with a gate in use, and t
   expect(store.worker("w1")!.hold_reason).toBeNull();
   expect(store.auditRows("w1").some((row) => row.action === "gate_ineligible")).toBe(false);
 });
+
+// Codex's review of #219 (#32891), kept verbatim.
+test("review: dependency traversal protects a second linked dependency outside the first", () => {
+  const root = tmp(), pkg = path.join(root, "package"), dep = path.join(root, "dependency"), writable = path.join(root, "worker-code");
+  for (const dir of [pkg, dep, writable]) fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(pkg, "package.json"), "{}"); fs.writeFileSync(path.join(pkg, "entry.js"), "");
+  fs.mkdirSync(path.join(pkg, "node_modules")); fs.symlinkSync(dep, path.join(pkg, "node_modules", "dep"));
+  fs.mkdirSync(path.join(dep, "node_modules")); fs.symlinkSync(writable, path.join(dep, "node_modules", "nested"));
+  const guarded = supervisorProgramPaths({ execPath: process.execPath, moduleFile: path.join(pkg, "entry.js") });
+  const handle = { confinement: () => ({ kind: "workspace_write", writable: [writable] }),
+    executionClosure: () => ({ paths: [], unresolved: [] }) } as unknown as WorkerHandle;
+  expect(workerIneligibility("writer", handle, guarded).length + guarded.unresolved.length).toBeGreaterThan(0);
+});
+
+test("a link cycle in the package is walked once, never forever", () => {
+  const root = tmp(), pkg = path.join(root, "package");
+  fs.mkdirSync(path.join(pkg, "node_modules"), { recursive: true });
+  fs.writeFileSync(path.join(pkg, "package.json"), "{}");
+  fs.symlinkSync(pkg, path.join(pkg, "node_modules", "self"));
+  expect(packageLinkTargets(pkg)).toEqual({ paths: [path.join(pkg, "node_modules", "self"), pkg], unresolved: [] });
+});
+
+describe("loader and startup environment", () => {
+  test("a spec naming a loader or startup variable is unresolved, whatever its value", () => {
+    expect(startupEnvironmentRisks({ env: [{ name: "DYLD_INSERT_LIBRARIES" }, { name: "LD_PRELOAD" }, { name: "NODE_OPTIONS" },
+      { name: "PYTHONPATH" }, { name: "BASH_ENV" }, { name: "XAI_API_KEY" }, { name: "HOME" }] })).toHaveLength(5);
+  });
+
+  test("with a gate in use, such a worker never starts, and a live one is held and stopped", async () => {
+    const root = tmp();
+    const store = new SupervisorStore(supervisorDatabasePath(root)); cleanup.push(() => store.close());
+    const adapter = new FakeAdapter("claude");
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "alive",
+      stateDir: path.join(root, "state"), gate: { kind: "scripted", confirm: async () => "confirmed" },
+      protectedSet: { paths: [path.join(root, "program")], unresolved: [] } });
+    supervisor.reconcileStartup();
+    store.addWorker({ worker_id: "w1", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" },
+      env: [{ name: "DYLD_INSERT_LIBRARIES", from: "literal", value: "/tmp/x.dylib" }] }, "human:op", "t");
+    await supervisor.tick();
+    expect(adapter.handles).toHaveLength(0);
+    expect(store.worker("w1")!.hold_reason).toBe("gate_ineligible");
+    // A running worker whose spec gains such a variable is held and stopped at the next tick.
+    store.addWorker({ worker_id: "w2", harness: "claude", cwd: root, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    await supervisor.tick();
+    expect(adapter.last.spec.worker_id).toBe("w2");
+    const spec = JSON.parse(store.worker("w2")!.spec_json);
+    spec.env.push({ name: "NODE_OPTIONS", from: "literal", value: "--require /tmp/x.js" });
+    store.db.prepare("UPDATE workers SET spec_json = ? WHERE worker_id = 'w2'").run(JSON.stringify(spec));
+    await supervisor.tick();
+    expect(store.worker("w2")!.hold_reason).toBe("gate_ineligible");
+    expect(adapter.last.stopped).toBe(true);
+  });
+});
+

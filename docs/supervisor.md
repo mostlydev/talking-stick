@@ -404,7 +404,9 @@ These limits come from Apple's documentation and this codebase. No dialog was op
   - **Protected set:** the state root, the runtime the supervisor runs on (its real
     `process.execPath`), and the package it was loaded from, or the standalone root.
     - Every symlink under that package is followed to its target, since a linked dependency can
-      live anywhere. A tree too large to walk is unresolved.
+      live anywhere. A linked directory is walked in turn, once by its real path, so a link
+      inside a linked dependency counts too. A tree too large to walk, or a link that can't be
+      read, is unresolved.
     - It also covers the launch agent plist with its directory, and the gate's own files, such as
       its helper.
     - It covers the startup closure of every configured worker, live, stopped or paused: its
@@ -413,6 +415,11 @@ These limits come from Apple's documentation and this codebase. No dialog was op
       worker that can rewrite another's executable is as bad as one rewriting its own.
     - Anything unresolvable makes the gate ineligible. That includes a Keychain-held `PATH`,
       `CODEX_EXECUTABLE` or `CODEX_HOME`, and a harness that can't say what it would run.
+    - A spec naming any loader or startup variable is unresolved, whatever its value: `LD_*`,
+      `DYLD_*`, `BUN_*`, `NODE_OPTIONS`, `NODE_PATH`, `PYTHONPATH`, `PYTHONSTARTUP`, Perl and Ruby
+      library paths, `BASH_ENV`, `ENV`, `ZDOTDIR` and `GIT_EXEC_PATH`. These can load code before
+      any tool sandbox applies, and no binary is assumed to ignore them. Such a worker never
+      starts while a gate is in use, and a running one is held and stopped.
   - **Confinement comes from the native process, never the spec.** Codex's `thread/start` and
     `thread/resume` return the effective sandbox. `workspaceWrite` covers the cwd, every
     `writableRoots` entry, `/tmp` unless `excludeSlashTmp`, and the child's `TMPDIR` unless

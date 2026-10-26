@@ -7,7 +7,7 @@ import type { RoomBridge } from "./room-bridge.js";
 import { resolveBundledSkillPath } from "../skill-install.js";
 import { displayText, safeDetail } from "./approval-detail.js";
 import { CONTROL_LOCKED_MESSAGE as CONTROL_LOCKED_ERROR } from "../service.js";
-import { handleClosure, workerIneligibility, type ProtectedSet } from "./eligibility.js";
+import { handleClosure, startupEnvironmentRisks, workerIneligibility, type ProtectedSet } from "./eligibility.js";
 
 const NO_PROTECTED_SET = "the supervisor has no protected set, so nothing is known to be out of a worker's reach.";
 import { LOCKED_GATE, type GateRequest, type GateResult, type HumanGate } from "./human-gate.js";
@@ -756,8 +756,11 @@ export class Supervisor {
     }
     // Every configured worker, stopped or paused included: any of them can be started again.
     for (const worker of this.store.workers()) {
+      const spec = JSON.parse(worker.spec_json) as WorkerSpec;
+      // A loader or startup variable could make any start, live or later, run something else.
+      unresolved.push(...startupEnvironmentRisks(spec).map((what) => `${worker.worker_id}: ${what}`));
       if (this.handles.has(worker.worker_id)) continue;
-      const closure = this.startClosure(JSON.parse(worker.spec_json) as WorkerSpec);
+      const closure = this.startClosure(spec);
       paths.push(...closure.paths);
       unresolved.push(...closure.unresolved.map((what) => `${worker.worker_id}: ${what}`));
     }
@@ -765,7 +768,8 @@ export class Supervisor {
   }
 
   private startClosure(spec: WorkerSpec): { paths: string[]; unresolved: string[] } {
-    return this.adapters[spec.harness]?.startClosure?.(spec) ?? { paths: [], unresolved: ["what a start would run"] };
+    const closure = this.adapters[spec.harness]?.startClosure?.(spec) ?? { paths: [], unresolved: ["what a start would run"] };
+    return { paths: closure.paths, unresolved: [...closure.unresolved, ...startupEnvironmentRisks(spec)] };
   }
 
   /**
@@ -782,7 +786,12 @@ export class Supervisor {
       if (this.stopping.has(id)) continue;
       // Its own reasons only: an unresolved closure elsewhere blocks control, but stops no one else.
       let reasons: string[];
-      try { reasons = guarded ? workerIneligibility(id, live, guarded) : [NO_PROTECTED_SET]; }
+      try {
+        reasons = guarded ? workerIneligibility(id, live, guarded) : [NO_PROTECTED_SET];
+        // Started with a loader or startup variable, it may already run code its closure doesn't name.
+        const row = this.store.worker(id);
+        if (row) reasons.push(...startupEnvironmentRisks(JSON.parse(row.spec_json) as WorkerSpec).map((what) => `${id}: ${what}`));
+      }
       catch (error) { reasons = [`${id} couldn't be checked: ${error instanceof Error ? error.message : String(error)}`]; }
       if (!reasons.length) continue;
       this.store.audit(this.at(), "supervisor", "gate_ineligible", id, { generation: live.generation, reasons });
