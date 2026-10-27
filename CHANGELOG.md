@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.33.0] — 2026-10-27
+
+Full notes: [`docs/releases/0.33.0.md`](docs/releases/0.33.0.md).
+
 ### Changed
 
 - Chat's unread view is only about messages addressed to you (#196). Ctrl-G jumps from the
@@ -1048,6 +1052,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.33.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.0
 [0.32.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.32.0
 [0.31.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.31.0
 [0.30.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.30.0
