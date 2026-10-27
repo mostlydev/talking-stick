@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.33.0] — 2026-10-27
+
+Full notes: [`docs/releases/0.33.0.md`](docs/releases/0.33.0.md).
+
 ### Changed
 
 - Chat's unread view is only about messages addressed to you (#196). Ctrl-G jumps from the
@@ -39,19 +43,26 @@ changes will be called out under **Breaking changes**.
   accepted. It starts no supervisor and enables nothing. Its `--self-test` uses a stand-in
   launchctl, private to each run, and runs in CI.
 - `scripts/attended-gate-acceptance.mjs` is the operator's acceptance of the supervisor's human
-  gate. It runs a disposable supervisor whose only worker is a confined fixture, and asks the
-  person at the console to confirm and cancel real macOS LocalAuthentication dialogs. It enables
-  nothing. Its `--self-test` runs the same steps without a dialog, in CI.
-- `tt supervisor` gate eligibility. A human gate may act only while every live worker is
-  provably unable to write the supervisor's state, program, launch agent or its own startup
-  closure. That is judged from the sandbox the native process reports, never from the spec. An
-  ineligible worker is held `gate_ineligible`, and control is refused, rechecked after each answer.
-  Claude and Grok workers are always ineligible. The gate still ships locked.
+  gate. It runs a disposable supervisor whose only worker is a fixture that reports a read-only
+  sandbox (self-reported, not OS-enforced), and asks the person at the console to confirm and
+  cancel real macOS LocalAuthentication dialogs. It tests the binding between a request and its
+  dialog, not confinement, and not whether the real supervisor's launchd agent can present the
+  dialog. It enables nothing. Its `--self-test` runs the same steps without a dialog, in CI.
+- `tt supervisor` gate eligibility. A human gate may act only while every live worker's reported
+  native sandbox policy and its startup and write-root closure exclude the supervisor's state,
+  program and launch agent. That is judged from the sandbox the native process reports, never
+  from the spec; the check alone is no proof of OS confinement, and enforcement of a model's own
+  tool calls is still unproven. An ineligible worker is held `gate_ineligible`, and control is
+  refused, rechecked after each answer. Claude and Grok workers are always ineligible. The gate
+  still ships locked.
 - `tt supervisor` keeps its own state (database, token, sockets, logs, worker homes, process evidence)
-  in a protected root outside the tt data directory, which workers must be able to write:
+  in a separate root outside the tt data directory, which workers must be able to write:
   `~/Library/Application Support/talking-stick/supervisor/<id>` on macOS, or under
-  `$XDG_STATE_HOME`. Older state blocks every command until `tt supervisor migrate`, a human-only,
-  crash-safe copy that keeps the old files aside.
+  `$XDG_STATE_HOME`. This separates storage; it doesn't protect against an unconfined worker
+  running as the same user, so workers are trusted. Older state blocks every command other than
+  `migrate` and `uninstall` until `tt supervisor migrate`, a human-only, crash-safe copy that
+  keeps the old files aside. With the launchd agent installed, run `tt supervisor uninstall`,
+  then `migrate`, then `install` again.
 - `tt supervisor` control now has to pass a human gate that confirms each exact request: the
   approval, its generation and the digest of the detail the human read. The question can't be
   reused or replayed, and a request is checked again after the answer. The gate ships locked. A
@@ -1048,6 +1059,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.33.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.0
 [0.32.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.32.0
 [0.31.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.31.0
 [0.30.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.30.0
