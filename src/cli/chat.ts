@@ -1231,10 +1231,19 @@ export async function runChatSession(
     if (seqs.length) transcript.invalidate();
   };
 
+  // Use the rendered review body, including its bar and footer, for every
+  // jump. Recompute after resize or draft changes instead of keeping the
+  // height from the first visit.
+  const reviewTranscriptHeight = () => {
+    const input = topViewportInput();
+    return Math.max(1, inline ? inlineTopTranscriptHeight(input)
+      : chatTranscriptHeight(input) - renderAttention(input.attention, Math.max(1, input.columns - 1), input.rows, input.format).lines.length);
+  };
   const scrollHistory = (amount: number) => {
     const { columns, rows } = dimensions();
     const draft = editor?.draft ?? { line: "", cursor: 0 };
-    const height = chatTranscriptHeight({ draft, columns, rows, room_path: joined.canonical_path });
+    const height = unreadReview !== null ? reviewTranscriptHeight()
+      : chatTranscriptHeight({ draft, columns, rows, room_path: joined.canonical_path });
     if (!height) return;
     if (transcript.following && transcript.oldestEventSeq !== undefined) {
       historyCursor = transcript.oldestEventSeq;
@@ -1432,13 +1441,8 @@ export async function runChatSession(
       .sort((a, b) => a.event_seq - b.event_seq)[0];
     if (!next) { closeUnreadReview(); return false; }
     if (requested !== undefined && requested !== next.event_seq) { if (opening) unreadReview = null; return false; }
-    const { columns, rows } = dimensions();
-    // Measure the transcript as it will be drawn, review bar and spacer
-    // included, so a visit near the end still shows the whole message.
-    const barRows = renderAttention({ ...attention, reviewing: true }, columns - 1, rows, formatContext()).lines.length || 1;
-    const height = Math.max(1, inline
-      ? inlineTopTranscriptHeight({ ...topViewportInput(), attention: { ...attention, reviewing: true } })
-      : chatTranscriptHeight({ columns, rows, draft: editor?.draft ?? { line: "", cursor: 0 }, room_path: joined.canonical_path }) - barRows);
+    const { columns } = dimensions();
+    const height = reviewTranscriptHeight();
     const context = formatContext();
     if (inline) freezeInlineHistory();
     else transcript.setOutputBuffered(true);
@@ -1469,7 +1473,7 @@ export async function runChatSession(
         visitUnread();
       }
       else if (["up", "down", "page_up", "page_down"].includes(key)) {
-        scrollHistory((key === "up" || key === "page_up" ? -1 : 1) * (key.startsWith("page") ? Math.max(1, height - 1) : 1));
+        scrollHistory((key === "up" || key === "page_up" ? -1 : 1) * (key.startsWith("page") ? Math.max(1, reviewTranscriptHeight() - 1) : 1));
       }
     }, undefined, true, closeUnreadReview);
     redraw();

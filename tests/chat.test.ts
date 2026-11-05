@@ -3471,3 +3471,70 @@ test.each([true, false])("Ctrl-G review does not let composer completions hide t
     expect(screen().some(line => line.startsWith("> @co"))).toBe(true);
   } finally { input.end(); await session; vt.dispose(); }
 });
+
+test.each([[true, false], [false, false], [true, true], [false, true]])("unread review paging covers every line (inline=%s, resize=%s)", async (inline, resize) => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
+  const input = Object.assign(new PassThrough(), { setRawMode() {} });
+  const output = Object.assign(new PassThrough(), { columns: 80, rows: 20 });
+  const vt = new Terminal({ cols: 80, rows: 20, allowProposedApi: true });
+  vt.onData(data => input.write(data));
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("", resolve));
+  const screen = () => Array.from({ length: output.rows }, (_, row) =>
+    vt.buffer.active.getLine(vt.buffer.active.baseY + row)?.translateToString(true) ?? "");
+  const bodyRows = () => screen().flatMap(line => [...line.matchAll(/REVIEW-LINE-(\d+)/g)].map(match => Number(match[1])));
+  const seen = new Set<number>();
+  const record = () => {
+    expect(screen()[inline ? 0 : 1]).toContain("All caught up");
+    for (const row of bodyRows()) seen.add(row);
+  };
+  const page = async (down: boolean) => {
+    const before = bytes.length;
+    input.write(down ? "\u001b[6~" : "\u001b[5~");
+    await until(() => bytes.length > before);
+    await flush();
+    record();
+  };
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline,
+    color: false, history: 0, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Type to message the room"));
+    service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op",
+      body: Array.from({ length: 65 }, (_, i) => `REVIEW-LINE-${String(i).padStart(2, "0")}`).join("\n") });
+    await until(() => bytes.includes("REVIEW-LINE-64"));
+    input.write("\u0007");
+    await until(() => screen()[inline ? 0 : 1]?.includes("All caught up") === true);
+    await flush();
+    record();
+    const firstBodyRow = screen().findIndex(line => line.includes("REVIEW-LINE-00"));
+    expect(firstBodyRow).toBeGreaterThan(0);
+    expect(screen()[firstBodyRow - 1]).toContain("codex → you");
+    const first = bodyRows()[0];
+    await page(true);
+    await page(false);
+    expect(bodyRows()[0]).toBe(first);
+    if (resize) {
+      const before = bytes.length;
+      output.rows = 28;
+      output.columns = 64;
+      vt.resize(output.columns, output.rows);
+      output.emit("resize");
+      await until(() => bytes.length > before);
+      await flush();
+      record();
+      const lastVisible = bodyRows().at(-1);
+      await page(true);
+      expect(bodyRows()[0]).toBe(lastVisible); // One overlap row at the new height.
+      await page(false);
+      expect(bodyRows()[0]).toBe(first);
+    }
+    for (let pages = 0; !bodyRows().includes(64) && pages < 15; pages++) await page(true);
+    expect(bodyRows()).toContain(64);
+    expect(Array.from({ length: 65 }, (_, i) => i).filter(i => !seen.has(i))).toEqual([]);
+    input.write("\u001b[27u");
+    await until(() => screen().some(line => line.startsWith("> ")));
+  } finally { input.end(); await session; vt.dispose(); }
+});
