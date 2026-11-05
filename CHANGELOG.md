@@ -11,6 +11,11 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- Unread-message review paging uses the visible body height, including after a terminal
+  resize. Long messages no longer skip lines near the end in inline chat.
+
 ## [0.33.0] — 2026-10-27
 
 Full notes: [`docs/releases/0.33.0.md`](docs/releases/0.33.0.md).
