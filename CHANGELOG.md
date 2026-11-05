@@ -15,6 +15,8 @@ changes will be called out under **Breaking changes**.
 
 - Unread-message review paging uses the visible body height, including after a terminal
   resize. Long messages no longer skip lines near the end in inline chat.
+- In Herdr, scrolling up in inline chat hides the unread or review bar until you return to the
+  bottom, so it no longer cuts through the text. Scrolling and selection stay native.
 
 ## [0.33.0] — 2026-10-27
 

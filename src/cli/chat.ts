@@ -41,6 +41,7 @@ import {
   formatChatHelp,
   renderInlinePanel,
   renderInlineTopPanel,
+  inlineBrowsingFrame,
   inlineCursorRow,
   textWidth,
   truncateStyled,
@@ -827,7 +828,7 @@ export async function runChatSession(
   // message the operator scrolls past natively stops pinning.
   const nativeScrollLedger = new NativeScrollLedger();
   // While the operator browses Herdr scrollback, chat writes nothing to the
-  // pane: no repaint, no commits. Herdr returns a pane to the bottom on any
+  // pane except one repaint dropping the unread bar: no commits. Herdr returns a pane to the bottom on any
   // key, and the scroll event that follows brings the frame up to date.
   let nativeAway = false;
   let inlineNeedsRebuild = false;
@@ -900,6 +901,16 @@ export async function runChatSession(
     const bodyHeight = Math.max(0, size.rows - (inlineFrame?.lines.length ?? 0));
     inlinePinHistory.observe(all, Math.max(0, all.length - bodyHeight));
     inlineHistoryInitialized = true;
+  };
+  // A repaint from home adds no scrollback, so it leaves the operator's place.
+  const paintBrowsingFrame = () => {
+    const frame = inlineFrame && inlineBrowsingFrame(inlineFrame);
+    if (!frame) return;
+    output.write("\u001b[?2026h\u001b[H\u001b[J" + frame.lines.join("\r\n") +
+      `\u001b[${frame.cursor.row + 1};${frame.cursor.col + 1}H\u001b[?2026l`);
+    inlineFrame = frame;
+    // The bar has to come back on return, even with nothing left unread.
+    inlineNeedsRebuild = true;
   };
   const resumeInlineTail = () => {
     const buffered = inlineNeedsRebuild;
@@ -1968,7 +1979,7 @@ export async function runChatSession(
         if (closed) return;
         const away = scroll.offset_from_bottom > 0;
         const awayChanged = away !== nativeAway;
-        if (away && awayChanged) freezeInlineHistory();
+        if (away && awayChanged) { freezeInlineHistory(); paintBrowsingFrame(); }
         nativeAway = away;
         const seqs = unreadReview === null ? nativeScrollLedger.observe(scroll) : [];
         transcript.markHumanMessagesTraversed(seqs);
