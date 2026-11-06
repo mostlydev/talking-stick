@@ -63,7 +63,7 @@ An explicit task given with the skill still runs normally: join, then work the l
 
 4. When `tt wait` actually exits, process its events and result. Start one successor wait if shared work remains.
 
-The wait subprocess is the receive path; its output is not magically injected into model context. A harness must surface or poll the running process output. Never use global `pkill`; stop only a process handle you started.
+The wait subprocess is the receive path; its output is not magically injected into model context. A harness must surface or poll the running process output. Never use global `pkill`; stop only a process handle you started. Never restart or stop another member's process.
 
 Do not build a polling loop from `tt try`, `tt state`, `tt health`, `tt events`, or `tt msg recv`. Those commands are diagnostics or lower-level human tooling. Reusing a stale explicit cursor replays the same event and makes a nominal long-poll exit immediately.
 
@@ -155,6 +155,10 @@ tt room replies <request-id> --timeout 30 --json
 
 `--to` takes an agent id, a harness name such as `codex` when it matches one agent, or `room` for every live agent. An empty `replies` with `timed_out: true` means no answer yet, not that the question is closed; check again later with the returned `cursor_event_seq` as `--after`. Asking never joins, moves, or claims anything. Do not use it to direct work in another room's checkout.
 
+## Peers
+
+Peers are sessions the operator starts. Don't launch another harness, such as a headless CLI run, to act as your counterpart; use your own harness's subagents if you need help. Don't take a turn assigned to another member.
+
 ## Handoff
 
 Test before handing off unless no meaningful check exists. Keep quick checks inside the turn; do not idle-hold while waiting on long CI or external work.
@@ -172,6 +176,8 @@ JSON
 ```
 
 Use `tt assign <agent> --stdin` only when a named member has unique context, credentials, or an explicit review request. Otherwise release to fair ordering.
+
+Before acting on a plan a peer agreed to, reread the room with `tt events --after <proposal seq> --target any --json`. A restarted wait can miss an acknowledgement or an objection.
 
 A non-zero exit from `tt release`, `tt pass`, `tt assign`, or `tt take` means the command did not take effect (including exit 127 when `node` is missing from PATH). The turn did not change; re-verify with `tt state --json` before assuming you handed off.
 

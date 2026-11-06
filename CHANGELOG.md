@@ -11,6 +11,11 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Documentation
+
+- The skill tells agents not to launch another harness as their counterpart, not to stop
+  another member's process, and to reread room events before acting on an agreed plan.
+
 ### Fixed
 
 - Unread-message review paging uses the visible body height, including after a terminal
