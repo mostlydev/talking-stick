@@ -681,9 +681,9 @@ visit the control reads `✓ All caught up · type to reply` until you return li
 one message per press, including messages already on screen; with none, it says `Nothing unread
 for you`. A pasted Ctrl-G character never navigates.
 
-Room badges count the same way: `#api 1@` in the room strip, and `1 for you` in `/rooms`,
-count unread messages addressed to you across all of your consoles, until acknowledged. In
-fullscreen, `↓ N more` counts every message below the viewport and is not a personal count.
+Room badges count the same way: `other rooms: #api 1 for you` in the room header (`#api 1@`
+when the header is narrow), and `1 for you` in `/rooms`, count unread messages addressed to
+you across all of your consoles, until acknowledged. `/go api` opens that room. In fullscreen, `↓ N more` counts every message below the viewport and is not a personal count.
 
 In Herdr, run `tt install herdr` once and restart chat, then **Ctrl-click** the unread
 control. The native link handler reaches only the live console in the clicked pane.

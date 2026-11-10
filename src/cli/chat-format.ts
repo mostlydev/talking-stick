@@ -574,13 +574,19 @@ export interface RoomStripEntry {
 
 // Other rooms in the repository, most urgent first: `#api 1@ · #web · #docs`.
 // `@` counts unread messages addressed to you; other traffic is not counted.
-export function formatRoomStrip(entries: readonly RoomStripEntry[], context: ChatFormatContext): string {
-  return [...entries]
+// The labelled form, `other rooms: #api 1 for you · #web`, says what the strip
+// is; the header falls back to the compact form when it does not fit.
+export function formatRoomStrip(entries: readonly RoomStripEntry[], context: ChatFormatContext,
+  labelled = false): string {
+  if (!entries.length) return "";
+  const rooms = [...entries]
     .sort((left, right) => right.directed - left.directed || left.name.localeCompare(right.name))
     .map((entry) => {
       const name = `#${sanitizeChatText(entry.name).replace(/\s+/g, "-")}`;
-      if (entry.directed > 0) return paint(context, `1;${themeStyle("warn", context.color_mode)}`, `${name} ${entry.directed}@`);
+      const badge = labelled ? `${entry.directed} for you` : `${entry.directed}@`;
+      if (entry.directed > 0) return paint(context, `1;${themeStyle("warn", context.color_mode)}`, `${name} ${badge}`);
       return paint(context, "2", name);
     })
     .join(paint(context, "2", " · "));
+  return labelled ? paint(context, "2", "other rooms: ") + rooms : rooms;
 }

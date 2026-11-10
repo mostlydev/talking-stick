@@ -912,8 +912,9 @@ function commonPrefix(values: string[]): string {
 
 export interface ChatScreenInput {
   room_path?: string;
-  /** Other rooms in this repository, e.g. "#api 2● · #web", already painted. */
-  room_strip?: string;
+  /** Other rooms in this repository, e.g. "#api 2@ · #web", already painted.
+   * Several forms are tried in order, the first that fits wins. */
+  room_strip?: string | readonly string[];
   /**
    * A modal panel (e.g. the /roles editor), already painted. It takes the
    * place of the suggestion menu above the room bar.
@@ -1123,10 +1124,10 @@ export function chatWheelRegion(
 // The active room's path, shortened from the left, then the strip of other
 // rooms when there is room for both.
 function roomTitle(input: Pick<ChatScreenInput, "room_path" | "room_strip" | "format">, width: number): string {
-  const strip = input.room_strip ?? "";
-  const stripWidth = strip ? textWidth(strip) + 3 : 0;
-  if (!strip || width - stripWidth < 16) return roomHeader(input.room_path!, width, input.format);
-  return `${roomHeader(input.room_path!, width - stripWidth, input.format)}${dim(input.format, " │ ")}${strip}`;
+  const forms = typeof input.room_strip === "string" ? [input.room_strip] : input.room_strip ?? [];
+  const strip = forms.find(form => form && width - textWidth(form) - 3 >= 16);
+  if (!strip) return roomHeader(input.room_path!, width, input.format);
+  return `${roomHeader(input.room_path!, width - textWidth(strip) - 3, input.format)}${dim(input.format, " │ ")}${strip}`;
 }
 
 function roomHeader(path: string, width: number, context: ChatFormatContext): string {
