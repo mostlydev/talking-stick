@@ -25,6 +25,7 @@ This repo uses strict TypeScript with ESM (`"type": "module"` and `moduleResolut
 
 - Every menu and completion list must have a blank terminal row separating it from the chat stream. Keep the separator in the shared layout, including on narrow terminals.
 - Menu choices use the same semantic and agent colors as the composer and transcript, with a visible selected row.
+- Every architectural change and user-facing function must be clearly presented and navigable in `tt chat`, not only through CLI commands or JSON. For example, room structure, scope and ownership, and blocked states should be visible in the TUI and reachable with its existing navigation (`/rooms`, `/go`). A feature that changes coordination is not done until an operator can see and navigate it from chat.
 
 ## Testing Guidelines
 
