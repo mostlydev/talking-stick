@@ -24,6 +24,7 @@ tt whoami [--explain]                                     # show the resolved CL
 tt list [path]                                            # rooms whose scope covers the path, most specific first
 tt roles [show] | set <agent|harness> <roles|none|clear> | default <harness> <roles|none|clear> [--in ROOM]
 tt room create [path] [--name NAME]                       # declare a room boundary (.talking-stick/room.toml)
+tt room ensure <path> [--name NAME]                       # declare it unless already declared; same room either way (for launchers)
 tt room list [path]                                       # this repository's rooms, live agents in each, current marked
 tt room list --all                                        # every room on this host with live members, most recent room activity first
 tt room brief [room] [--limit N]                          # what a room is doing: holder, members, last handoff, notes, recent messages
@@ -70,8 +71,26 @@ want a different room.
 `wait`, `try`, `standby`, `take`, `chat`, `state`, `health`, `events`, `msg`, `notes`,
 `release`, `pass`, and `assign`. `ROOM` is a room id, an absolute room path, `root`
 (the repository's root room), a short name (`api` or `#api`), or a path suffix
-(`web/api`). Exactly one open room must match; `--in` never creates a room. `tt chat #api`
-is shorthand for `tt chat --in api` (quote `#api` in shells where `#` starts a comment).
+(`web/api`). Exactly one open room must match. `--in` wins over `TT_ROOM` for that one
+command. `tt chat #api` is shorthand for `tt chat --in api` (quote `#api` in shells where
+`#` starts a comment).
+
+A room is deleted when its last member leaves, so a room id does not survive between
+sessions. Only one kind of selector reopens a room: an absolute path whose directory
+declares one. `join` and `chat` then reopen it; other commands say so and change nothing.
+Ids and short names never reopen. A launcher pins agents this way:
+
+```sh
+room=$(tt room ensure "$session_dir" --json)   # {"status":"created"|"exists","room_path":...}
+TT_ROOM="<room_path from that result>" <harness>
+```
+
+`tt room ensure` is safe to run on every launch. It declares the directory only if it has no
+`.talking-stick/room.toml`. It never rewrites an existing declaration. A `--name` that
+differs from the declared one is an error. Content tt does not understand comes back as a
+`warning`. Older `tt` versions reject `ensure`, so a launcher can tell them apart. A room
+pinned this way only routes conversation. Its stick is independent of any enclosing
+room's, so neither stops writes the other covers.
 
 Help flags are always read-only. `--help` and `-h` take precedence over command execution,
 even for stateful commands such as `wait`, `release`, `assign`, `notes add`, or `msg send`;

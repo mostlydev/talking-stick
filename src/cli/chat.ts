@@ -230,7 +230,7 @@ export async function handleChatCommand(
   const positional = parsed.positionals[0];
   const explicit = positional?.startsWith("#")
     ? resolveRoomSelector(runtime.commands.listRooms({}).rooms, positional)
-    : selectedRoom(runtime, parsed);
+    : selectedRoom(runtime, parsed, process.env, { reopen: true });
   const herdr = terminal ? readHerdrContext() : null;
   await runChatConsole({
     runtime,

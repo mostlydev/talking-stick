@@ -207,8 +207,8 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt room create [path] [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> [--stdin] [--request-key KEY] | replies <request-id> [--after SEQ] [--limit N] [--timeout S] | adopt [path] [--name NAME] | remove [path]",
-    description: "Declare, list, adopt, or remove rooms inside a repository (remove deletes an agent-free room and its history). list --all shows every room on this host with live members; brief shows what one room is doing, without joining it; ask puts a question to its agents and replies reads their answers.",
+    usage: "tt room create [path] [--name NAME] | ensure <path> [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> [--stdin] [--request-key KEY] | replies <request-id> [--after SEQ] [--limit N] [--timeout S] | adopt [path] [--name NAME] | remove [path]",
+    description: "Declare, list, adopt, or remove rooms inside a repository (remove deletes an agent-free room and its history). ensure declares a room unless that directory already declares it, and returns the same room either way, for launchers that pin agents with TT_ROOM=<room_path>. list --all shows every room on this host with live members; brief shows what one room is doing, without joining it; ask puts a question to its agents and replies reads their answers.",
     handler: ({ runtime, parsed }) => handleRoomCommand(requireRuntime(runtime), parsed)
   },
   {

@@ -64,7 +64,7 @@ export function handleJoinCommand(
 ): void {
   const contextPath = parsed.positionals[0] ?? process.cwd();
   const identity = deriveCliIdentity(parsed);
-  const explicit = selectedRoom(runtime, parsed);
+  const explicit = selectedRoom(runtime, parsed, process.env, { reopen: true });
   // Only this explicit join may restore a membership the harness lost.
   const joined = runtime.commands.joinPath(identity, {
     context_path: contextPath,

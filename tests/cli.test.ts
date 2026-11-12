@@ -3451,6 +3451,126 @@ describe("harness heartbeat and health output hardening", () => {
 });
 
 describe("tt room", () => {
+  test("ensure is idempotent, validates an existing declaration, and never rewrites it", async () => {
+    const registry: string[] = [];
+    const { project } = setupIsolatedCli(registry);
+    execFileSync("git", ["init", "-q", "-b", "main", project]);
+    const session = path.join(project, "sessions", "s1");
+    fs.mkdirSync(session, { recursive: true });
+    process.env.TT_HARNESS_AGENT_ID = "claude:ensure";
+
+    const created = JSON.parse(await captureStdout(["room", "ensure", session, "--name", "s1", "--json"]));
+    expect(created).toMatchObject({ status: "created", room_path: session, name: "s1",
+      declaration: path.join(session, ".talking-stick", "room.toml") });
+    const again = JSON.parse(await captureStdout(["room", "ensure", session, "--name", "s1", "--json"]));
+    expect(again).toMatchObject({ status: "exists", room_id: created.room_id, room_path: session });
+    // No name asks only for a room; the declared name is reported.
+    expect(JSON.parse(await captureStdout(["room", "ensure", session, "--json"]))).toMatchObject({ status: "exists", name: "s1" });
+    await expect(captureStdout(["room", "ensure", session, "--name", "other", "--json"])).rejects.toThrow(/already declares the room name "s1"/);
+    await expect(captureStdout(["room", "ensure", path.join(project, "missing"), "--json"])).rejects.toThrow(/not a directory/);
+
+    // Content tt does not understand still declares the room; it is reported, never replaced.
+    const odd = path.join(project, "sessions", "odd");
+    fs.mkdirSync(path.join(odd, ".talking-stick"), { recursive: true });
+    fs.writeFileSync(path.join(odd, ".talking-stick", "room.toml"), "owner = \"someone\"\n");
+    expect(JSON.parse(await captureStdout(["room", "ensure", odd, "--json"])))
+      .toMatchObject({ status: "exists", room_path: odd, warning: expect.stringMatching(/not understood/) });
+    await expect(captureStdout(["room", "ensure", odd, "--name", "odd", "--json"])).rejects.toThrow(/without a name/);
+    expect(fs.readFileSync(path.join(odd, ".talking-stick", "room.toml"), "utf8")).toBe("owner = \"someone\"\n");
+
+    // Concurrent launches declare one room and agree on it.
+    const racing = path.join(project, "sessions", "s2");
+    fs.mkdirSync(racing);
+    const runs = [0, 1, 2].map(() => spawnCliProcess(["room", "ensure", racing, "--name", "s2", "--json"]));
+    const codes = await Promise.all(runs.map((run) => new Promise<number | null>((resolve) => run.child.on("close", resolve))));
+    expect(codes, runs.map((run) => run.stderr()).join("\n")).toEqual([0, 0, 0]);
+    const results = runs.map((run) => JSON.parse(run.stdout()));
+    expect(new Set(results.map((result) => result.room_id)).size).toBe(1);
+    expect(results.filter((result) => result.status === "created")).toHaveLength(1);
+    expect(fs.readdirSync(path.join(racing, ".talking-stick"))).toEqual(["room.toml"]);
+    for (const dir of registry) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a launcher's path pin reopens an emptied room on join, and --in still wins", async () => {
+    const registry: string[] = [];
+    const { project } = setupIsolatedCli(registry);
+    execFileSync("git", ["init", "-q", "-b", "main", project]);
+    const session = path.join(project, "sessions", "s1");
+    fs.mkdirSync(session, { recursive: true });
+    process.env.TT_HARNESS_AGENT_ID = "claude:pinned";
+    const ensured = JSON.parse(await captureStdout(["room", "ensure", session, "--json"]));
+
+    try {
+      // The launcher keeps the umbrella as the working directory.
+      process.env.TT_ROOM = ensured.room_path;
+      const first = JSON.parse(await captureStdout(["join", project, "--json"]));
+      expect(first).toMatchObject({ room_id: ensured.room_id, canonical_path: session });
+      await captureStdout(["leave", "--json"]);
+      // The last agent left, so the room row is gone; a read says how to recover.
+      await expect(captureStdout(["state", "--json"])).rejects.toThrow(/`tt join` reopens it/);
+      const reopened = JSON.parse(await captureStdout(["join", project, "--json"]));
+      expect(reopened.canonical_path).toBe(session);
+      expect(reopened.room_id).not.toBe(ensured.room_id);
+      // An ephemeral id never reopens.
+      await captureStdout(["leave", "--json"]);
+      process.env.TT_ROOM = reopened.room_id;
+      await expect(captureStdout(["join", project, "--json"])).rejects.toThrow(/No open room matches/);
+      process.env.TT_ROOM = ensured.room_path;
+
+      // --in wins over TT_ROOM for that command, even over a stale one.
+      process.env.TT_ROOM = "00000000-0000-4000-8000-000000000000";
+      const explicit = JSON.parse(await captureStdout(["join", project, "--in", ensured.room_path, "--json"]));
+      expect(explicit.canonical_path).toBe(session);
+      await captureStdout(["leave", "--in", ensured.room_path, "--json"]);
+      process.env.TT_ROOM = ensured.room_path;
+
+      // A declaration removed under the pin is not reopened.
+      fs.rmSync(path.join(session, ".talking-stick"), { recursive: true });
+      await expect(captureStdout(["join", project, "--json"])).rejects.toThrow(/No open room matches/);
+    } finally {
+      delete process.env.TT_ROOM;
+      for (const dir of registry) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a pinned agent working in a nested linked worktree joins only the pinned room", async () => {
+    const registry: string[] = [];
+    const { project, dataDir } = setupIsolatedCli(registry);
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "ignore" });
+    execFileSync("git", ["init", "-q", "-b", "main", project]);
+    const base = path.join(dataDir, "base");
+    execFileSync("git", ["init", "-q", "-b", "main", base]);
+    git(base, "config", "user.name", "Test"); git(base, "config", "user.email", "t@example.com");
+    fs.writeFileSync(path.join(base, "README"), "x\n");
+    git(base, "add", "-A"); git(base, "commit", "-q", "-m", "init");
+    const session = path.join(project, "sessions", "s1");
+    fs.mkdirSync(session, { recursive: true });
+    const mount = path.join(session, "mounts", "base");
+    git(base, "worktree", "add", "-q", "-b", "session-s1", mount);
+    process.env.TT_HARNESS_AGENT_ID = "codex:mounted";
+    const ensured = JSON.parse(await captureStdout(["room", "ensure", session, "--json"]));
+
+    const cwd = process.cwd();
+    try {
+      process.env.TT_ROOM = ensured.room_path;
+      process.chdir(mount);
+      const joined = JSON.parse(await captureStdout(["join", "--json"]));
+      expect(joined.room_id).toBe(ensured.room_id);
+      const memberships = new TalkingStickService();
+      try {
+        const rooms = memberships.listRooms({}).rooms.filter((room) =>
+          memberships.getRoomState({ room_id: room.room_id }).members.some((member) => member.agent_id === "codex:mounted"));
+        expect(rooms.map((room) => room.canonical_path)).toEqual([session]);
+      } finally {
+        memberships.close();
+      }
+    } finally {
+      process.chdir(cwd);
+      delete process.env.TT_ROOM;
+      for (const dir of registry) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("create declares a room that join, --room, and list agree on", async () => {
     const registry: string[] = [];
     const { project } = setupIsolatedCli(registry);

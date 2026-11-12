@@ -54,10 +54,35 @@ export function resolveRoomSelector(rooms: readonly PathRoom[], selector: string
     `${room.canonical_path} (${room.room_id})`).join(", ")}. Use a longer path or the room id.`);
 }
 
-/** The explicitly selected room, or null when the command should resolve its path. */
-export function selectedRoom(runtime: Runtime, parsed: ParsedCommand, env: NodeJS.ProcessEnv = process.env): PathRoom | null {
+/** The explicitly selected room, or null when the command should resolve its path.
+ * With `reopen`, an absolute path that declares a room opens that room when it
+ * has no open row: rooms are deleted once empty, so a launcher pins agents by
+ * path (`tt room ensure`), and their next join brings the room back. Ids and
+ * short names never reopen, and read-only commands never create a room. */
+export function selectedRoom(runtime: Runtime, parsed: ParsedCommand, env: NodeJS.ProcessEnv = process.env,
+  options: { reopen?: boolean } = {}): PathRoom | null {
   const selector = roomSelectorFrom(parsed, env);
-  return selector
-    ? resolveRoomSelector(runtime.commands.listRooms({}).rooms, selector, getStringOption(parsed, "path") ?? process.cwd())
-    : null;
+  if (!selector) return null;
+  try {
+    return resolveRoomSelector(runtime.commands.listRooms({}).rooms, selector, getStringOption(parsed, "path") ?? process.cwd());
+  } catch (error) {
+    if (!(error instanceof RoomSelectorError) || error.reason !== "not_found") throw error;
+    const declared = path.isAbsolute(selector) ? declaredRoomAt(selector) : null;
+    if (!declared) throw error;
+    if (!options.reopen) {
+      throw new RoomSelectorError("not_found", `${error.message} ${selector} declares a room that is empty; \`tt join\` reopens it.`);
+    }
+    return runtime.commands.openRoom({ context_path: declared });
+  }
+}
+
+// The directory, when this absolute path is exactly a room declaration's
+// directory (or the room path it is keyed by).
+function declaredRoomAt(selector: string): string | null {
+  const wanted = path.resolve(selector);
+  if (!fs.statSync(wanted, { throwIfNoEntry: false })?.isDirectory()) return null;
+  const resolved = resolveContextPath(wanted);
+  const declaration = resolved.declaration;
+  if (!declaration || declaration.directory !== resolved.canonical_context_path) return null;
+  return resolved.room_path === wanted || resolved.canonical_context_path === wanted ? declaration.directory : null;
 }
