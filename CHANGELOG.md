@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.33.1] — 2026-11-12
+
+Full notes: [`docs/releases/0.33.1.md`](docs/releases/0.33.1.md).
+
 ### Changed
 
 - The room header labels the list of other rooms: `other rooms: #api 2 for you` instead of
@@ -1076,6 +1080,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.33.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.1
 [0.33.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.0
 [0.32.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.32.0
 [0.31.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.31.0
