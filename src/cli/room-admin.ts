@@ -116,7 +116,15 @@ function ensureRoom(runtime: Runtime, parsed: ParsedCommand, target: string | un
     }
   }
   const file = declarationFile(directory);
-  // Content tt does not understand still declares the room, as for a join.
+  // Content tt does not understand still declares the room, as for a join, so
+  // it is only a warning. A declaration tt cannot read is an error: ensure
+  // must not certify a room it cannot vouch for.
+  if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error(`${file} is not a file.`);
+  try {
+    fs.accessSync(file, fs.constants.R_OK);
+  } catch (error) {
+    throw new Error(`${file} is unreadable: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const declared = readDeclaration(file);
   if (name !== undefined && declared.name !== name) {
     throw new Error(`${file} already declares ${declared.name ? `the room name ${JSON.stringify(declared.name)}` : "a room without a name"}, not ${JSON.stringify(name)}.`);
@@ -126,13 +134,15 @@ function ensureRoom(runtime: Runtime, parsed: ParsedCommand, target: string | un
     throw new Error(`${file} does not declare a room for ${directory}.`);
   }
   const room = runtime.commands.openRoom({ context_path: directory });
-  const result = { status, room_id: room.room_id, room_path: room.canonical_path, rel_path: resolved.declaration.rel_path,
+  // room_path is the room's identity, keyed by the main checkout inside a
+  // linked worktree; pin is the declared directory, which reopens the room.
+  const result = { status, room_id: room.room_id, room_path: room.canonical_path, pin: directory, rel_path: resolved.declaration.rel_path,
     name: resolved.declaration.name ?? path.basename(directory), declaration: file,
     ...(declared.problem ? { warning: declared.problem } : {}) };
   printResult(parsed, result, () => [
     `${status === "created" ? "Declared" : "Found"} room ${result.name} at ${directory}.`,
     ...(declared.problem ? [`Warning: ${declared.problem}`] : []),
-    `Pin agents to it with TT_ROOM=${result.room_path}; it reopens on join after it empties.`
+    `Pin agents to it with TT_ROOM=${result.pin}; it reopens on join after it empties.`
   ].join("\n"));
 }
 

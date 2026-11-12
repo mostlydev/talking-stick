@@ -3460,7 +3460,7 @@ describe("tt room", () => {
     process.env.TT_HARNESS_AGENT_ID = "claude:ensure";
 
     const created = JSON.parse(await captureStdout(["room", "ensure", session, "--name", "s1", "--json"]));
-    expect(created).toMatchObject({ status: "created", room_path: session, name: "s1",
+    expect(created).toMatchObject({ status: "created", room_path: session, pin: session, name: "s1",
       declaration: path.join(session, ".talking-stick", "room.toml") });
     const again = JSON.parse(await captureStdout(["room", "ensure", session, "--name", "s1", "--json"]));
     expect(again).toMatchObject({ status: "exists", room_id: created.room_id, room_path: session });
@@ -3477,6 +3477,10 @@ describe("tt room", () => {
       .toMatchObject({ status: "exists", room_path: odd, warning: expect.stringMatching(/not understood/) });
     await expect(captureStdout(["room", "ensure", odd, "--name", "odd", "--json"])).rejects.toThrow(/without a name/);
     expect(fs.readFileSync(path.join(odd, ".talking-stick", "room.toml"), "utf8")).toBe("owner = \"someone\"\n");
+    // A declaration that cannot be read is an error, not a warning.
+    const broken = path.join(project, "sessions", "broken");
+    fs.mkdirSync(path.join(broken, ".talking-stick", "room.toml"), { recursive: true });
+    await expect(captureStdout(["room", "ensure", broken, "--json"])).rejects.toThrow(/is not a file/);
 
     // Concurrent launches declare one room and agree on it.
     const racing = path.join(project, "sessions", "s2");
@@ -3502,7 +3506,7 @@ describe("tt room", () => {
 
     try {
       // The launcher keeps the umbrella as the working directory.
-      process.env.TT_ROOM = ensured.room_path;
+      process.env.TT_ROOM = ensured.pin;
       const first = JSON.parse(await captureStdout(["join", project, "--json"]));
       expect(first).toMatchObject({ room_id: ensured.room_id, canonical_path: session });
       await captureStdout(["leave", "--json"]);
@@ -3527,6 +3531,39 @@ describe("tt room", () => {
       // A declaration removed under the pin is not reopened.
       fs.rmSync(path.join(session, ".talking-stick"), { recursive: true });
       await expect(captureStdout(["join", project, "--json"])).rejects.toThrow(/No open room matches/);
+    } finally {
+      delete process.env.TT_ROOM;
+      for (const dir of registry) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("ensure inside a linked worktree returns a pin that reopens the room declared only there", async () => {
+    const registry: string[] = [];
+    const { project, dataDir } = setupIsolatedCli(registry);
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { stdio: "ignore" });
+    git(project, "init", "-q", "-b", "main");
+    git(project, "config", "user.name", "Test"); git(project, "config", "user.email", "t@example.com");
+    git(project, "add", "-A"); git(project, "commit", "-q", "-m", "init");
+    const linked = path.join(dataDir, "linked");
+    git(project, "worktree", "add", "-q", "-b", "feature", linked);
+    const component = path.join(fs.realpathSync.native(linked), "component");
+    fs.mkdirSync(component);
+    process.env.TT_HARNESS_AGENT_ID = "claude:linked";
+
+    const ensured = JSON.parse(await captureStdout(["room", "ensure", component, "--json"]));
+    // The room is keyed by the main checkout; the pin is where it is declared.
+    expect(ensured).toMatchObject({ status: "created", room_path: path.join(project, "component"), pin: component });
+    expect(fs.existsSync(path.join(project, "component"))).toBe(false);
+    try {
+      process.env.TT_ROOM = ensured.pin;
+      expect(JSON.parse(await captureStdout(["join", project, "--json"])).room_id).toBe(ensured.room_id);
+      expect(JSON.parse(await captureStdout(["state", "--json"])).room.room_id).toBe(ensured.room_id);
+      await captureStdout(["leave", "--json"]);
+      await expect(captureStdout(["state", "--json"])).rejects.toThrow(/`tt join` reopens it/);
+      const rejoined = JSON.parse(await captureStdout(["join", project, "--json"]));
+      expect(rejoined.canonical_path).toBe(ensured.room_path);
+      expect(JSON.parse(await captureStdout(["room", "ensure", component, "--json"])))
+        .toMatchObject({ status: "exists", room_id: rejoined.room_id, pin: component });
     } finally {
       delete process.env.TT_ROOM;
       for (const dir of registry) fs.rmSync(dir, { recursive: true, force: true });

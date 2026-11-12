@@ -81,14 +81,17 @@ declares one. `join` and `chat` then reopen it; other commands say so and change
 Ids and short names never reopen. A launcher pins agents this way:
 
 ```sh
-room=$(tt room ensure "$session_dir" --json)   # {"status":"created"|"exists","room_path":...}
-TT_ROOM="<room_path from that result>" <harness>
+room=$(tt room ensure "$session_dir" --json)   # {"status":"created"|"exists","pin":...,"room_path":...}
+TT_ROOM="<pin from that result>" <harness>
 ```
 
 `tt room ensure` is safe to run on every launch. It declares the directory only if it has no
 `.talking-stick/room.toml`. It never rewrites an existing declaration. A `--name` that
-differs from the declared one is an error. Content tt does not understand comes back as a
-`warning`. Older `tt` versions reject `ensure`, so a launcher can tell them apart. A room
+differs from the declared one is an error, and so is a declaration that cannot be read.
+Content tt does not understand comes back as a `warning`. `pin` is the declared directory,
+the path to set in `TT_ROOM`. `room_path` is the room's identity. In a linked worktree,
+`room_path` is keyed by the main checkout and may not exist on disk, so pin `pin`, not
+`room_path`. Older `tt` versions reject `ensure`, so a launcher can tell them apart. A room
 pinned this way only routes conversation. Its stick is independent of any enclosing
 room's, so neither stops writes the other covers.
 
