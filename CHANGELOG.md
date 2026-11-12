@@ -11,6 +11,11 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- The room header labels the list of other rooms: `other rooms: #api 2 for you` instead of
+  `#api 2@`, so it no longer reads as a topic. Narrow headers keep the compact form.
+
 ### Documentation
 
 - The skill tells agents not to launch another harness as their counterpart, not to stop

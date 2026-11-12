@@ -91,6 +91,21 @@ test("inline panels fit narrow and short terminals with a stable suggestion area
   expect(inlineCursorRow({ lines: ["x".repeat(79), "draft"], cursor: { row: 1, col: 3 } }, 40)).toBe(2);
 });
 
+test("the room header uses the first strip form that fits", () => {
+  const strip = ["other rooms: #rayus-oru2report 50 for you", "#rayus-oru2report 50@"];
+  for (const render of [renderChatScreen, renderInlinePanel]) {
+    const title = (columns: number) => render({
+      room_path: "/Users/wojtek/flux", room_strip: strip, transcript: new ChatTranscript(), format: context,
+      status: { members: [], owner: null, owner_since: null, reserved_for: null, now: new Date() },
+      draft: { line: "", cursor: 0 }, hint: null, columns, rows: 16
+    }).lines.find(line => line.includes("Room ·")) ?? "";
+    expect(title(100)).toContain("│ other rooms: #rayus-oru2report 50 for you");
+    expect(title(56)).toContain("│ #rayus-oru2report 50@");
+    expect(title(56)).not.toContain("other rooms");
+    expect(title(30)).not.toContain("rayus");
+  }
+});
+
 test("inline suggestions do not move the room bar or prompt", () => {
   const base = {
     room_path: "/workspace", transcript: new ChatTranscript(), format: context,

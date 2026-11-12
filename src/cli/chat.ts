@@ -372,7 +372,7 @@ export async function runChatSession(
   }
   let switchTarget: PathRoom | null = null;
   let viewedSeq = 0;
-  let roomStrip = "";
+  let roomStrip: string[] = [];
   let stripOrder: PathRoom[] = [];
   // Room badges count exactly what the attention bar would there: messages to
   // this human, across their consoles, until acknowledged. Other traffic is 0.
@@ -441,11 +441,13 @@ export async function runChatSession(
     }
     stripOrder = listed;
     cycleOrder = rooms;
-    const next = formatRoomStrip(listed.map((room) => ({
+    const entries = listed.map((room) => ({
       name: roomNames.get(room.room_id) ?? roomShortName(room),
       directed: personalUnread(room.room_id)
-    })), formatContext());
-    const changed = next !== roomStrip;
+    }));
+    // The labelled form says what the strip is; the compact one fits narrow headers.
+    const next = [formatRoomStrip(entries, formatContext(), true), formatRoomStrip(entries, formatContext())];
+    const changed = next.join("\n") !== roomStrip.join("\n");
     roomStrip = next;
     return changed;
   };

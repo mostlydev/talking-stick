@@ -783,6 +783,14 @@ describe("tt chat session", () => {
     ], { color: false, name_of: (id: string) => id } as never)).toBe("#api 1@ · #docs · #web");
   });
 
+  test("the room strip says what it is when the header has space, and stays compact when it does not", () => {
+    const context = { color: false, name_of: (id: string) => id } as never;
+    const entries = [{ name: "rayus-oru2report", directed: 50 }];
+    const strip = [formatRoomStrip(entries, context, true), formatRoomStrip(entries, context)];
+    expect(strip).toEqual(["other rooms: #rayus-oru2report 50 for you", "#rayus-oru2report 50@"]);
+    expect(formatRoomStrip([], context, true)).toBe("");
+  });
+
   test("an explicit room declared only on a worktree branch keeps the repository's strip", async () => {
     const { root, service } = setupService();
     const main = path.join(root, "main");
