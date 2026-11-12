@@ -27,7 +27,7 @@ jobs:
             target: bun-linux-arm64
           - runner: macos-15-intel
             target: bun-darwin-x64
-          - runner: macos-14
+          - runner: macos-15
             target: bun-darwin-arm64
           # Executables compiled by Bun 1.3.8 see an empty environment under
           # Codex's Windows sandbox account, so tt cannot identify Codex there.
