@@ -3538,3 +3538,77 @@ test.each([[true, false], [false, false], [true, true], [false, true]])("unread 
     await until(() => screen().some(line => line.startsWith("> ")));
   } finally { input.end(); await session; vt.dispose(); }
 });
+
+test.each(["unread", "review"] as const)("the %s bar leaves the text while browsing native scrollback", async mode => {
+  const dir = fs.mkdtempSync("/tmp/tth-");
+  const socketPath = path.join(dir, "herdr.sock");
+  let herdr: net.Socket | undefined;
+  const server = net.createServer(connection => {
+    connection.once("data", () => {
+      herdr = connection;
+      connection.write('{"id":"tt-chat-scroll","result":{"type":"subscription_started"}}\n');
+    });
+  });
+  await new Promise<void>(resolve => server.listen(socketPath, resolve));
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
+  const input = Object.assign(new PassThrough(), { setRawMode() {} });
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 28 });
+  const vt = new Terminal({ cols: 100, rows: 28, allowProposedApi: true });
+  vt.onData(data => input.write(data));
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); vt.write(chunk.toString()); });
+  const flush = () => new Promise<void>(resolve => vt.write("", resolve));
+  const live = () => Array.from({ length: 28 }, (_, i) => vt.buffer.active.getLine(vt.buffer.active.baseY + i)?.translateToString(true) ?? "");
+  const viewport = () => Array.from({ length: 28 }, (_, i) => vt.buffer.active.getLine(vt.buffer.active.viewportY + i)?.translateToString(true) ?? "");
+  const bar = mode === "unread" ? "1 for you" : "All caught up";
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: true,
+    color: false, history: 0, show_turn_events: false, poll_ms: 5,
+    herdr: { pane_id: "w1:p42", socket_path: socketPath, runner: () => { throw new Error("no plugin"); } } });
+  const scroll = async (offset: number) => {
+    await flush();
+    const before = bytes.length;
+    herdr!.write(`${JSON.stringify({ event: "pane.scroll_changed", data: { pane_id: "w1:p42",
+      scroll: { max_offset_from_bottom: vt.buffer.active.baseY, offset_from_bottom: offset, viewport_rows: 28 } } })}\n`);
+    await until(() => bytes.length > before);
+    await flush();
+  };
+  try {
+    await until(() => bytes.includes("Type to message the room") && herdr !== undefined);
+    service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "Unread target" });
+    await until(() => bytes.includes("Unread target"));
+    for (let i = 0; i < 80; i++) service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: `flow-${String(i).padStart(2, "0")}` });
+    await until(() => live().some(line => line.includes("flow-79")));
+    if (mode === "review") {
+      input.write("\u0007");
+      await until(() => live()[0].includes("All caught up"));
+    }
+    await flush();
+    expect(live()[0]).toContain(bar);
+    const body = live().slice(2);
+    const baseY = vt.buffer.active.baseY;
+
+    vt.scrollLines(-3);
+    const viewportY = vt.buffer.active.viewportY;
+    await scroll(3);
+
+    // The view stays put, with no bar and no blank gap where it was.
+    expect(vt.buffer.active.baseY).toBe(baseY);
+    expect(vt.buffer.active.viewportY).toBe(viewportY);
+    expect(viewport().some(line => line.includes(bar))).toBe(false);
+    expect(live()).toEqual([...body, "", ""]);
+    const painted = bytes.length;
+    service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: "Arrives while away" });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(bytes.length).toBe(painted);
+
+    vt.scrollToBottom();
+    await scroll(0);
+    await until(() => live()[0].includes(bar));
+  } finally {
+    input.end(); await session; vt.dispose();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

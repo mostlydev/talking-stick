@@ -984,6 +984,8 @@ export interface ChatFrame {
   attention?: AttentionHit[];
   inline_top?: boolean;
   history_top?: number;
+  /** Rows the unread bar takes at the top of an inline-top frame. */
+  pin_rows?: number;
   members?: ChatMemberHit[];
   lines: string[];
   cursor: { row: number; col: number };
@@ -1075,7 +1077,27 @@ function renderInlineTopPanelFrame(input: ChatScreenInput): ChatFrame {
     human_messages: input.transcript.humanMessageRows(height, width, context)
       .map(hit => ({ ...hit, row: hit.row + pins.lines.length })),
     inline_top: true,
-    history_top: Math.max(0, top)
+    history_top: Math.max(0, top),
+    pin_rows: pins.lines.length
+  };
+}
+
+/**
+ * The same frame without its unread bar, for while the operator browses native
+ * scrollback. The live screen's top row then sits mid-view, so the bar would
+ * split the text; moving the body up joins it to the history above it. Blank
+ * rows at the bottom keep the row count, so the repaint never scrolls.
+ */
+export function inlineBrowsingFrame(frame: ChatFrame): ChatFrame | null {
+  const rows = frame.pin_rows ?? 0;
+  if (!frame.inline_top || !rows) return null;
+  return {
+    ...frame,
+    lines: [...frame.lines.slice(rows), ...Array.from({ length: rows }, () => "")],
+    cursor: { ...frame.cursor, row: frame.cursor.row - rows },
+    attention: [],
+    human_messages: frame.human_messages?.map(hit => ({ ...hit, row: hit.row - rows })),
+    pin_rows: 0
   };
 }
 
