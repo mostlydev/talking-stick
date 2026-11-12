@@ -11,6 +11,16 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- `tt room ensure <path> [--name NAME]` declares a room unless the directory already
+  declares one, and returns the same room either way (`status: created|exists`, and `pin`,
+  the path to set in `TT_ROOM`).
+  It never rewrites a declaration. Launchers can run it on every session start.
+- `TT_ROOM` or `--in` set to the absolute path of a declared directory reopens that room on
+  `tt join` and `tt chat` after its last member left. Ids and short names still need an open
+  room, and read-only commands never create one.
+
 ## [0.33.1] — 2026-11-12
 
 Full notes: [`docs/releases/0.33.1.md`](docs/releases/0.33.1.md).

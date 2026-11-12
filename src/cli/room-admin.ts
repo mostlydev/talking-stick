@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ROOM_DECLARATION_FILE, insideNestedRepository, isWithinOrSame, resolveContextPath } from "../path-resolution.js";
+import { ROOM_DECLARATION_FILE, insideNestedRepository, isWithinOrSame, readDeclaration, resolveContextPath } from "../path-resolution.js";
 import { HUMAN_CHAT_SESSION_KIND } from "../types.js";
 import type { PathRoom, RoomActivity, RoomMember } from "../types.js";
 import { formatRelativeTime, printResult } from "./output.js";
@@ -19,12 +19,13 @@ export function handleRoomCommand(runtime: Runtime, parsed: ParsedCommand): void
       return askRoom(runtime, parsed, briefTarget(runtime, parsed, target), rest);
     case "replies": return readReplies(runtime, parsed, target);
     case "create": return createRoom(runtime, parsed, target);
+    case "ensure": return ensureRoom(runtime, parsed, target);
     case "list": return hasOption(parsed, "all") ? listHostRooms(runtime, parsed) : listRooms(runtime, parsed, target);
     case "brief": return briefRoom(runtime, parsed, target);
     case "adopt": return adoptRoom(runtime, parsed, target);
     case "remove": return removeRoom(runtime, parsed, target);
     default:
-      throw new Error("Usage: tt room create [path] [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> | replies <request-id> [--timeout S] | adopt [path] | remove [path]");
+      throw new Error("Usage: tt room create [path] [--name NAME] | ensure <path> [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> | replies <request-id> [--timeout S] | adopt [path] | remove [path]");
   }
 }
 
@@ -32,14 +33,32 @@ function declarationFile(directory: string): string {
   return path.join(directory, ROOM_DECLARATION_FILE);
 }
 
-function writeDeclaration(directory: string, name: string | undefined): string {
+class DeclarationExistsError extends Error {}
+
+function validateRoomName(name: string | undefined): void {
   if (name !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
     throw new Error(`Invalid room name ${JSON.stringify(name)}: use letters, digits, '.', '_' or '-'.`);
   }
+}
+
+// The file appears complete or not at all: it is written aside and linked
+// into place, so a concurrent writer or reader never sees a partial file, and
+// an existing declaration is never overwritten.
+function writeDeclaration(directory: string, name: string | undefined): string {
+  validateRoomName(name);
   const file = declarationFile(directory);
-  if (fs.existsSync(file)) throw new Error(`${file} already declares a room.`);
+  if (fs.existsSync(file)) throw new DeclarationExistsError(`${file} already declares a room.`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `# Talking Stick room boundary. Commit this file to share the layout.\n${name ? `name = "${name}"\n` : ""}`);
+  const staged = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(staged, `# Talking Stick room boundary. Commit this file to share the layout.\n${name ? `name = "${name}"\n` : ""}`);
+  try {
+    fs.linkSync(staged, file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new DeclarationExistsError(`${file} already declares a room.`);
+    throw error;
+  } finally {
+    fs.rmSync(staged, { force: true });
+  }
   return file;
 }
 
@@ -71,6 +90,59 @@ function createRoom(runtime: Runtime, parsed: ParsedCommand, target: string | un
     `Declared room ${result.name} at ${directory}.`,
     `Agents that join from inside it now use this room; members of a parent room move only when they join again.`,
     `Commit ${path.relative(resolved.checkout_root ?? directory, file)} to share it.`
+  ].join("\n"));
+}
+
+// Idempotent create for launchers: declares the directory unless it already
+// declares a room, and returns the same room either way. It never rewrites a
+// declaration, joins, or takes a lease. A name that differs from the declared
+// one, or a declaration it cannot read, is an error rather than a guess.
+function ensureRoom(runtime: Runtime, parsed: ParsedCommand, target: string | undefined): void {
+  if (!target) throw new Error("Usage: tt room ensure <path> [--name NAME]");
+  const name = getStringOption(parsed, "name");
+  validateRoomName(name);
+  const directory = resolveContextPath(target).canonical_context_path;
+  if (!fs.statSync(directory, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`${directory} is not a directory.`);
+  }
+  let status: "created" | "exists" = "exists";
+  if (!fs.existsSync(declarationFile(directory))) {
+    try {
+      writeDeclaration(directory, name);
+      status = "created";
+    } catch (error) {
+      // Another ensure declared it first; validate theirs like any other.
+      if (!(error instanceof DeclarationExistsError)) throw error;
+    }
+  }
+  const file = declarationFile(directory);
+  // Content tt does not understand still declares the room, as for a join, so
+  // it is only a warning. A declaration tt cannot read is an error: ensure
+  // must not certify a room it cannot vouch for.
+  if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error(`${file} is not a file.`);
+  try {
+    fs.accessSync(file, fs.constants.R_OK);
+  } catch (error) {
+    throw new Error(`${file} is unreadable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const declared = readDeclaration(file);
+  if (name !== undefined && declared.name !== name) {
+    throw new Error(`${file} already declares ${declared.name ? `the room name ${JSON.stringify(declared.name)}` : "a room without a name"}, not ${JSON.stringify(name)}.`);
+  }
+  const resolved = resolveContextPath(directory);
+  if (resolved.declaration?.directory !== directory) {
+    throw new Error(`${file} does not declare a room for ${directory}.`);
+  }
+  const room = runtime.commands.openRoom({ context_path: directory });
+  // room_path is the room's identity, keyed by the main checkout inside a
+  // linked worktree; pin is the declared directory, which reopens the room.
+  const result = { status, room_id: room.room_id, room_path: room.canonical_path, pin: directory, rel_path: resolved.declaration.rel_path,
+    name: resolved.declaration.name ?? path.basename(directory), declaration: file,
+    ...(declared.problem ? { warning: declared.problem } : {}) };
+  printResult(parsed, result, () => [
+    `${status === "created" ? "Declared" : "Found"} room ${result.name} at ${directory}.`,
+    ...(declared.problem ? [`Warning: ${declared.problem}`] : []),
+    `Pin agents to it with TT_ROOM=${result.pin}; it reopens on join after it empties.`
   ].join("\n"));
 }
 

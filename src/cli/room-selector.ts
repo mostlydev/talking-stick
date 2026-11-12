@@ -54,10 +54,40 @@ export function resolveRoomSelector(rooms: readonly PathRoom[], selector: string
     `${room.canonical_path} (${room.room_id})`).join(", ")}. Use a longer path or the room id.`);
 }
 
-/** The explicitly selected room, or null when the command should resolve its path. */
-export function selectedRoom(runtime: Runtime, parsed: ParsedCommand, env: NodeJS.ProcessEnv = process.env): PathRoom | null {
+/** The explicitly selected room, or null when the command should resolve its path.
+ * An absolute path to a directory that itself declares a room selects that
+ * room, even inside a linked worktree, whose room is keyed by the main
+ * checkout's path. Rooms are deleted once empty, so a launcher pins agents by
+ * that path (`tt room ensure` returns it as `pin`); with `reopen`, the next
+ * join brings the room back. Ids and short names never reopen, and read-only
+ * commands never create a room. */
+export function selectedRoom(runtime: Runtime, parsed: ParsedCommand, env: NodeJS.ProcessEnv = process.env,
+  options: { reopen?: boolean } = {}): PathRoom | null {
   const selector = roomSelectorFrom(parsed, env);
-  return selector
-    ? resolveRoomSelector(runtime.commands.listRooms({}).rooms, selector, getStringOption(parsed, "path") ?? process.cwd())
-    : null;
+  if (!selector) return null;
+  const rooms = runtime.commands.listRooms({}).rooms;
+  try {
+    return resolveRoomSelector(rooms, selector, getStringOption(parsed, "path") ?? process.cwd());
+  } catch (error) {
+    if (!(error instanceof RoomSelectorError) || error.reason !== "not_found") throw error;
+    const declared = path.isAbsolute(selector) ? declaredRoomAt(selector) : null;
+    if (!declared) throw error;
+    const open = rooms.find((room) => room.state !== "closed" && room.canonical_path === declared.room_path);
+    if (open) return open;
+    if (!options.reopen) {
+      throw new RoomSelectorError("not_found", `${error.message} ${selector} declares a room that is empty; \`tt join\` reopens it.`);
+    }
+    return runtime.commands.openRoom({ context_path: declared.directory });
+  }
+}
+
+// When this absolute path is a directory whose own .talking-stick/room.toml
+// declares a room: that directory and the path the room is keyed by.
+export function declaredRoomAt(selector: string): { directory: string; room_path: string } | null {
+  const wanted = path.resolve(selector);
+  if (!fs.statSync(wanted, { throwIfNoEntry: false })?.isDirectory()) return null;
+  const resolved = resolveContextPath(wanted);
+  const declaration = resolved.declaration;
+  if (!declaration || declaration.directory !== resolved.canonical_context_path) return null;
+  return { directory: declaration.directory, room_path: resolved.room_path };
 }
