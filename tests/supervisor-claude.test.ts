@@ -68,6 +68,12 @@ describe("starting a Claude worker", () => {
     expect(f.lines()).toEqual([]);
   });
 
+  test.each(["status-error", "status-killed"])("a failing status command (%s) authorizes nothing, whatever it printed", async (mode) => {
+    const f = fixture(mode);
+    await expect(f.start()).rejects.toMatchObject({ name: "AuthModeError", reason: "wrong_auth_mode" });
+    expect(f.lines()).toEqual([]);
+  });
+
   test("the status check runs in the worker's own directory and environment, and keeps no identity", async () => {
     const calls: Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }> = [];
     const f = fixture("", {}, { readAuthStatus: async (_command, args, env, cwd) => {

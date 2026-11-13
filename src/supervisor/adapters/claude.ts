@@ -37,9 +37,17 @@ export interface ClaudeAdapterOptions {
 export type ClaudeAuthReader = (command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string) => Promise<unknown>;
 
 const readClaudeAuthStatus: ClaudeAuthReader = (command, args, env, cwd) => new Promise((resolve, reject) => {
-  // Signed out exits non-zero with JSON on stdout, so the output decides, not the exit code.
-  execFile(command, args, { env, cwd, encoding: "utf8", timeout: 15_000, maxBuffer: 256 * 1024 }, (_error, stdout) => {
-    try { resolve(JSON.parse(stdout)); } catch { reject(new Error("unreadable auth status")); }
+  execFile(command, args, { env, cwd, encoding: "utf8", timeout: 15_000, maxBuffer: 256 * 1024 }, (error, stdout) => {
+    let status: unknown;
+    try { status = JSON.parse(stdout); } catch { reject(new Error("unreadable auth status")); return; }
+    // A failed command authorizes nothing. The one exception is the signed-out
+    // answer, which exits non-zero by design; a killed, timed-out or
+    // overflowing command fails whatever it printed.
+    if (error && !(typeof error.code === "number" && !error.killed && !error.signal && claudeAuthVerdict(status) === "auth_required")) {
+      reject(new Error("auth status failed"));
+      return;
+    }
+    resolve(status);
   });
 });
 

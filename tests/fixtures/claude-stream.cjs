@@ -15,8 +15,10 @@ if (process.argv[2] === "auth" && process.argv[3] === "status") {
     "new-method": { loggedIn: true, authMethod: "something_new", apiProvider: "firstParty" },
   };
   if (mode === "auth-garbage") process.stdout.write("not json\n");
+  else if (mode === "status-killed") { out(statuses[""] ?? { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" }); process.kill(process.pid, "SIGKILL"); }
   else out(statuses[mode] ?? { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "user@example.com" });
-  process.exit(mode === "logged-out" ? 1 : 0);
+  // A signed-out answer exits 1 by design; status-error prints a subscription and still fails.
+  process.exit(mode === "logged-out" || mode === "status-error" ? 1 : 0);
 }
 trace({ argv: process.argv.slice(2), env: { CLAUDECODE: process.env.CLAUDECODE ?? null, TT_ROOM: process.env.TT_ROOM ?? null,
   TALKING_STICK_DATA_DIR: process.env.TALKING_STICK_DATA_DIR ?? null, TT_SUPERVISOR_ENDPOINT: process.env.TT_SUPERVISOR_ENDPOINT ?? null } });
