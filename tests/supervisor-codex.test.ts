@@ -164,11 +164,11 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     await expect(missing.start()).rejects.toThrow();
     expect(missing.messages().filter(m => m.method === "thread/start")).toHaveLength(0);
   });
-  test("an API-key sign-in is reported as wrong_auth_mode before any turn", async () => {
-    const f = fixture("api-key"); await f.start();
-    expect(f.events).toContainEqual({ type: "state", state: "wrong_auth_mode" });
-    expect(f.events).not.toContainEqual({ type: "state", state: "auth_required" });
-    expect(f.messages().filter(m => m.method === "turn/start")).toHaveLength(0);
+  test.each(["api-key", "external-provider", "unknown-account"])("a start without a ChatGPT login (%s) is refused before any turn", async mode => {
+    const f = fixture(mode);
+    await expect(f.start()).rejects.toMatchObject({ name: "AuthModeError", reason: "wrong_auth_mode" });
+    expect(f.messages().some(m => m.method === "turn/start")).toBe(false);
+    expect(f.spawned).toHaveLength(1);
   });
   test("reports missing auth without a model turn", async () => {
     const f = fixture("no-auth"); await f.start();

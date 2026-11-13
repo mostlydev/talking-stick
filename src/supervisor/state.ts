@@ -16,7 +16,11 @@ export type GenerationState =
 
 export type HoldReason =
   | "crash_loop" | "prior_generation_alive" | "prior_generation_unknown"
-  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed" | "wrong_auth_mode"
+  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed"
+  /** Not on a subscription login: not signed in, or signed in with an API key or another provider. */
+  | "auth_required" | "wrong_auth_mode"
+  /** A permission prompt's denial couldn't be delivered, so the worker may still be waiting on it. */
+  | "deny_undelivered"
   /** Recorded by an earlier version's human gate; a resume clears it like any other hold. */
   | "gate_ineligible";
 

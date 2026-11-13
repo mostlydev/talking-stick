@@ -69,11 +69,19 @@ those references, with protected supervisor values applied last. They never copy
 whole environment, so no inherited `TT_ROOM`, API key or harness identity marker reaches the
 worker. Hooks stay under the harness's own trust, and nothing bypasses it.
 
-**Subscriptions only.** A worker signed in with an API key would spend API funds, so it is
-stopped and held `wrong_auth_mode` instead, and its credentials are left alone:
-- Codex: `account/read` at start reports an `apiKey` account.
-- Claude: a turn's `init` reports an `apiKeySource` other than `none`. Claude reports this only
-  at its first turn, so that turn may already have reached the API before the worker stops.
+**Subscriptions only, checked before any input.** A worker must show a subscription login
+before it can take a prompt, so nothing ever spends API funds. Otherwise it is held, not
+counted as a crash, and its credentials are left alone: `auth_required` when nobody is signed
+in, `wrong_auth_mode` for anything else. An unreadable or unknown answer fails closed.
+- Claude: before the worker's process starts, `claude auth status --json` runs with the same
+  executable, environment and directory. Only `loggedIn` with `authMethod` `claude.ai` (or a
+  `claude setup-token` subscription token, `oauth_token`) and `apiProvider` `firstParty` passes;
+  an API key, an `apiKeyHelper`, Bedrock, Vertex or any other provider doesn't. Only the verdict
+  is kept, never the identity. Each turn's `init` is checked again (`apiKeySource` must be `none`).
+- Codex: `account/read` at start must report a `chatgpt` account. An API key, another provider
+  that needs no OpenAI login, or an unknown account type is refused. No login at all waits as
+  `auth_required` for one. The login is read again after a reload, and when an auth error
+  appears.
 
 ### Codex
 
@@ -258,6 +266,10 @@ another base finds either the old state or the marker, never an empty data direc
   - Input text is not stored.
 - `approvals`: every permission request a worker made, and its denial. Each occurrence has its
   own `approval_id`.
+  - A denial that can't be delivered, or isn't within 10 seconds, holds the worker
+    `deny_undelivered` and stops it, since it may still be waiting on the prompt. Its turn is
+    left uncertain and nothing is resent. A second request under an id whose denial is still on
+    its way is a protocol error, and holds the worker.
   - Each keeps the whole native request as `detail`, with its SHA-256, beside a one-line summary.
     The detail is indented JSON. Every control, format (bidi marks and overrides included),
     separator and default-ignorable character is escaped, in the detail, the summary and the tool

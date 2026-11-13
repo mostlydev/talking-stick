@@ -44,8 +44,9 @@ input.on("line", line => {
       method: "item/tool/requestUserInput", params: { threadId: thread } }), 5);
     return;
   }
-  if (m.method === "account/read") return reply(m.id, { account: mode === "no-auth" ? null
-    : mode === "api-key" ? { type: "apiKey" } : { type: "chatgpt", email: "user@example.com", planType: "pro" }, requiresOpenaiAuth: true });
+  if (m.method === "account/read") return reply(m.id, mode === "external-provider" ? { account: null, requiresOpenaiAuth: false }
+    : { account: mode === "no-auth" ? null : mode === "api-key" ? { type: "apiKey" } : mode === "unknown-account" ? { type: "somethingElse" }
+      : { type: "chatgpt", email: "user@example.com", planType: "pro" }, requiresOpenaiAuth: true });
   if (m.method === "thread/read") return reply(m.id, { thread: { id: thread, status: { type: unloaded ? "notLoaded" : turn ? "active" : "idle" } } });
   if (m.method === "turn/start") {
     if (mode === "no-reply") return;

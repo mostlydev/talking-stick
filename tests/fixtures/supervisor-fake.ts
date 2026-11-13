@@ -57,6 +57,8 @@ export class FakeAdapter implements HarnessAdapter {
   readonly handles: FakeHandle[] = [];
   caps: Capabilities = { prompt: true, resume: true, interrupt: true, approvals: true };
   failStart: ((spec: WorkerSpec) => boolean) | null = null;
+  /** Rejects a start with this error, such as an AuthModeError. */
+  failStartWith: ((spec: WorkerSpec) => Error | null) | null = null;
   /** Resolves a start only when the test releases it. */
   holdStart: Promise<void> | null = null;
   private nextPid = 1000;
@@ -82,6 +84,8 @@ export class FakeAdapter implements HarnessAdapter {
       throw new Error("start aborted");
     }
     if (this.failStart?.(spec)) throw new Error("fake start failure");
+    const failure = this.failStartWith?.(spec);
+    if (failure) throw failure;
     const handle = new FakeHandle(spec, generation, pid);
     this.handles.push(handle);
     return handle;

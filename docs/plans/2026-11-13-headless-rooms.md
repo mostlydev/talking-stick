@@ -56,8 +56,9 @@ There is no new trust mechanism.
 4. **Permissions.** The native deny handlers stay: Claude's `can_use_tool` and Codex's server
    requests are denied at once, with a visible outcome. No approve, deny, interrupt or reconcile
    control, and no control socket.
-5. **Auth.** A worker signed in with an API key is held `wrong_auth_mode` rather than spending
-   API funds, and credentials are never cleared. Whether several app-server processes can share
+5. **Auth.** A worker must show a subscription login before any input (Claude through
+   `claude auth status`, Codex through a ChatGPT `account/read`), or it is held `auth_required`
+   or `wrong_auth_mode`, failing closed on anything unknown. Credentials are never cleared. Whether several app-server processes can share
    one real home needs acceptance evidence before it is claimed.
 6. **Grok.** `--headless` refuses Grok until its adapter reports `prompt: true`.
 7. **TUI.** Spawning stays hidden or disabled until `/rooms` and `/go` show each state: starting,

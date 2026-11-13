@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
 import { Supervisor, acquireOwnerLock, CRASH_LIMIT } from "../src/supervisor/daemon.js";
-import type { WorkerSpec } from "../src/supervisor/adapter.js";
+import { AuthModeError, type WorkerSpec } from "../src/supervisor/adapter.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
 import type { RoomBridge } from "../src/supervisor/room-bridge.js";
 
@@ -25,10 +25,11 @@ function setup(options: { liveness?: (pid: number) => "alive" | "gone" | "unknow
   const store = open();
   const adapter = new FakeAdapter("claude");
   let ids = 0;
-  const make = (s = store, a = adapter, extra: { codex?: FakeAdapter; tickWaitMs?: number } = {}) => new Supervisor({
+  const make = (s = store, a = adapter, extra: { codex?: FakeAdapter; tickWaitMs?: number; answerTimeoutMs?: number } = {}) => new Supervisor({
     store: s, adapters: { claude: a, ...(extra.codex ? { codex: extra.codex } : {}) },
     processLiveness: (pid) => options.liveness?.(pid) ?? "gone", now: () => clock, newId: () => `input-${++ids}`,
-    ...(extra.tickWaitMs ? { tickWaitMs: extra.tickWaitMs } : {}) });
+    ...(extra.tickWaitMs ? { tickWaitMs: extra.tickWaitMs } : {}),
+    ...(extra.answerTimeoutMs ? { answerTimeoutMs: extra.answerTimeoutMs } : {}) });
   const supervisor = make();
   supervisor.reconcileStartup();
   cleanup.push(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -321,6 +322,7 @@ describe("permission requests", () => {
     await supervisor.tick();
     const first = adapter.last;
     first.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first", detail: "first" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
     first.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "second", detail: "second" });
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(first.answers).toEqual([{ id: "0", decision: "deny" }, { id: "0", decision: "deny" }]);
@@ -333,15 +335,55 @@ describe("permission requests", () => {
     expect(adapter.last).not.toBe(first);
   });
 
-  test("a denial stays recorded when its answer can't be delivered", async () => {
+  test.each(["rejected", "never answered"] as const)("a denial that can't be delivered (%s) holds and stops the worker, without a resend", async (how) => {
+    const { store, adapter, spec, make, advance } = setup();
+    store.addWorker(spec, "human:op", "t");
+    const supervisor = make(store, adapter, { answerTimeoutMs: 20 });
+    supervisor.reconcileStartup();
+    await supervisor.tick();
+    const handle = adapter.last;
+    let attempts = 0;
+    handle.answerApproval = how === "rejected"
+      ? async () => { attempts++; throw new Error("EPIPE"); }
+      : () => { attempts++; return new Promise<void>(() => {}); };
+    handle.emit({ type: "turn_started", native_turn_id: "t1" });
+    handle.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x", detail: "x" });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(store.recentApprovals()[0]).toMatchObject({ status: "denied", answer_status: "failed" });
+    expect(store.worker("w1")!.hold_reason).toBe("deny_undelivered");
+    expect(handle.stopped).toBe(true);
+    advance(10 * 60_000);
+    await supervisor.tick();
+    expect(adapter.handles).toHaveLength(1);
+    expect(attempts).toBe(1);
+  });
+
+  test("a second request under an id whose denial is still on its way holds the worker", async () => {
     const { store, adapter, supervisor, spec } = setup();
     store.addWorker(spec, "human:op", "t");
     await supervisor.tick();
-    adapter.last.answerApproval = async () => { throw new Error("EPIPE"); };
-    adapter.last.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x", detail: "x" });
+    const handle = adapter.last;
+    handle.answerApproval = () => new Promise<void>(() => {});
+    handle.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first", detail: "first" });
+    handle.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "second", detail: "second" });
     await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(store.recentApprovals()[0]).toMatchObject({ status: "denied", answer_status: "failed" });
+    expect(store.worker("w1")!.hold_reason).toBe("protocol_error");
+    expect(handle.stopped).toBe(true);
+    expect(store.recentApprovals()).toHaveLength(1);
   });
+});
+
+test.each(["auth_required", "wrong_auth_mode"] as const)("a start refused for its login (%s) is held, not counted as a crash", async (reason) => {
+  const { store, adapter, supervisor, spec, advance } = setup();
+  store.addWorker(spec, "human:op", "t");
+  adapter.failStartWith = () => new AuthModeError(reason, "not a subscription login");
+  await supervisor.tick();
+  expect(store.worker("w1")!.hold_reason).toBe(reason);
+  expect(store.crashesSince("w1", "2000-01-01")).toBe(0);
+  expect(store.auditRows("w1").map((row) => row.action)).toContain(reason);
+  advance(10 * 60_000);
+  await supervisor.tick();
+  expect(store.liveGenerations()).toEqual([]);
 });
 
 test("a worker signed in with an API key is stopped and held, and not restarted", async () => {

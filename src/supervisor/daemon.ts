@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Harness, HarnessAdapter, InputMode, InputOutcome, WorkerEvent, WorkerHandle, WorkerSpec } from "./adapter.js";
+import { AuthModeError, type Harness, type HarnessAdapter, type InputMode, type InputOutcome, type WorkerEvent, type WorkerHandle,
+  type WorkerSpec } from "./adapter.js";
 import type { GenerationState, SupervisorStore, WorkerRow } from "./state.js";
 import type { IntakeAnswer, IntakeMessage } from "./intake.js";
 import type { RoomBridge } from "./room-bridge.js";
@@ -19,6 +20,8 @@ export const CRASH_LIMIT = 5;
 export const DENY_NOTE = "Denied: this headless worker has no one to approve prompts. " +
   "Work within what the harness settings already allow, or ask the operator through the room.";
 export const STOP_GRACE_MS = 10_000;
+/** How long a denial may take to reach the worker before it's held as undelivered. */
+export const ANSWER_TIMEOUT_MS = 10_000;
 /** No one worker's start, probe or stop may hold up a tick longer than this. */
 export const TICK_WAIT_MS = 15_000;
 export const PROBE_TIMEOUT_MS = 5_000;
@@ -42,10 +45,24 @@ export interface SupervisorOptions {
   dataDir?: string;
   /** The root for supervisor-owned state; each worker's process evidence goes under it. */
   stateDir?: string;
+  /** How long a denial may take to reach a worker; ANSWER_TIMEOUT_MS by default. */
+  answerTimeoutMs?: number;
 }
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+/** The promise, or a rejection after ms; the promise keeps running. */
+async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
+    })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Waits for a promise for at most ms; the promise keeps running. */
@@ -78,6 +95,9 @@ export class Supervisor {
   private readonly bootstrap: boolean;
   private readonly dataDir: string | null;
   private readonly stateDir: string | null;
+  private readonly answerTimeoutMs: number;
+  /** Native request ids whose denial is still on its way, per worker and generation. */
+  private readonly denying = new Map<string, Set<string>>();
   /** This daemon's delivery tokens; only hashes are stored. */
   private readonly deliveryTokens = new Map<string, { generation: number; token: string; address: string }>();
   /** Envelope text is kept in memory only, never in the journal. */
@@ -105,6 +125,7 @@ export class Supervisor {
     this.bootstrap = options.bootstrap ?? false;
     this.dataDir = options.dataDir ?? null;
     this.stateDir = options.stateDir ?? null;
+    this.answerTimeoutMs = options.answerTimeoutMs ?? ANSWER_TIMEOUT_MS;
   }
 
   private at(): string {
@@ -235,6 +256,13 @@ export class Supervisor {
         this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "stopped", during: "start" });
         return;
       }
+      // Not on a subscription login: held for the operator, never retried as a crash.
+      if (error instanceof AuthModeError) {
+        this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: error.reason, error: error.message });
+        this.store.hold(worker.worker_id, error.reason, this.at());
+        this.store.audit(this.at(), "supervisor", error.reason, worker.worker_id, { generation, error: error.message });
+        return;
+      }
       this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "start_failed", error: String(error) });
       if (resume) this.store.hold(worker.worker_id, "resume_failed", this.at());
       else this.crashed(worker.worker_id, { reason: "start_failed", error: String(error) });
@@ -335,10 +363,13 @@ export class Supervisor {
         this.drain(workerId);
         break;
       case "approval_requested": {
+        const key = `${workerId}\u0000${generation}`;
+        const inFlight = this.denying.get(key) ?? new Set<string>();
         const approvalId = this.newId();
-        if (!this.store.recordApproval({ approval_id: approvalId, worker_id: workerId, generation,
+        // A second request under an id whose denial is still on its way, or
+        // still pending, is ambiguous: no answer could name it safely.
+        if (inFlight.has(event.native_request_id) || !this.store.recordApproval({ approval_id: approvalId, worker_id: workerId, generation,
           native_request_id: event.native_request_id, tool: displayText(event.tool, 80), summary: displayText(event.summary, 500), detail: safeDetail(event.detail), requested_at: at })) {
-          // A second request under a still-pending id is ambiguous: no answer could name it safely.
           this.store.hold(workerId, "protocol_error", at);
           this.stopHandle(workerId, handle).catch(() => {});
           break;
@@ -347,7 +378,16 @@ export class Supervisor {
         // still asks is denied at once, so a headless worker never waits on a prompt.
         this.store.settleApproval(approvalId, "denied", "supervisor", at);
         this.store.audit(at, "supervisor", "approval_denied", workerId, { generation, approval_id: approvalId, tool: displayText(event.tool, 80) });
-        void this.deliverAnswer(handle, approvalId, event.native_request_id, "deny", DENY_NOTE);
+        inFlight.add(event.native_request_id);
+        this.denying.set(key, inFlight);
+        void this.deliverAnswer(handle, approvalId, event.native_request_id, "deny", DENY_NOTE).then((answer) => {
+          inFlight.delete(event.native_request_id);
+          // Undelivered, the worker may still be waiting on the prompt: it is
+          // held and stopped, its turn left uncertain, and nothing is resent.
+          if (answer === "delivered" || this.handles.get(workerId) !== handle) return;
+          this.store.hold(workerId, "deny_undelivered", this.at());
+          this.stopHandle(workerId, handle).catch(() => {});
+        });
         break;
       }
       case "approval_resolved": {
@@ -393,6 +433,7 @@ export class Supervisor {
   private ended(workerId: string, handle: WorkerHandle, exit: Record<string, unknown>): void {
     if (this.handles.get(workerId) !== handle) return;
     this.handles.delete(workerId);
+    this.denying.delete(`${workerId}\u0000${handle.generation}`);
     if (this.deliveryTokens.get(workerId)?.generation === handle.generation) this.deliveryTokens.delete(workerId);
     const { uncertain } = this.store.endGeneration(workerId, handle.generation, this.at(), exit);
     this.store.audit(this.at(), "supervisor", "exit", workerId, { generation: handle.generation, ...exit, uncertain });
@@ -582,7 +623,7 @@ export class Supervisor {
   private async deliverAnswer(handle: WorkerHandle, approvalId: string, nativeRequestId: string,
     decision: "allow" | "deny", note?: string): Promise<"delivered" | "failed"> {
     try {
-      await handle.answerApproval(nativeRequestId, decision, note);
+      await within(handle.answerApproval(nativeRequestId, decision, note), this.answerTimeoutMs);
       this.store.recordAnswer(approvalId, "delivered");
       return "delivered";
     } catch (error) {

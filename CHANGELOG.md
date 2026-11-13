@@ -29,9 +29,12 @@ changes will be called out under **Breaking changes**.
 - A supervised worker's permission prompt that its settings don't already allow is denied at once
   and recorded, instead of waiting up to 24 hours. `tt supervisor approvals` lists recent requests
   and what became of them, and `status` counts each worker's denials.
-- A worker signed in with an API key instead of a subscription is stopped and held
-  `wrong_auth_mode`. Claude reports its sign-in only at its first turn, so that turn may already
-  have reached the API.
+- A supervised worker must show a subscription login before it takes any input. Claude is checked
+  with `claude auth status` before its process starts, and Codex must report a ChatGPT account.
+  Otherwise the worker is held, as `auth_required` when nobody is signed in or `wrong_auth_mode`
+  for an API key or another provider, and its credentials are left alone.
+- A denial that can't reach a worker within 10 seconds holds it `deny_undelivered` and stops it,
+  so no worker is left waiting on a prompt.
 
 ### Removed
 

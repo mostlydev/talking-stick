@@ -1109,7 +1109,8 @@ terminal agents work the same with or without it.
 
 Workers run as you, on your own harness settings and subscription logins: Claude in your
 settings, Codex in your `CODEX_HOME`, Grok in your `GROK_HOME`. A model API key reference is
-refused, and a worker signed in with an API key is held `wrong_auth_mode`. Any permission prompt
+refused, and a worker must show a subscription login before any input, or it is held
+(`auth_required`, `wrong_auth_mode`). Any permission prompt
 a worker's settings don't already allow is denied at once and recorded, so nothing waits on a
 decision. Codex and Claude are available on macOS/Linux. A Grok worker is attempted, but prompt,
 resume, interrupt and approvals are unavailable.

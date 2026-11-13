@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import { approvalDetail, approvalSummary } from "../approval-detail.js";
-import type { Capabilities, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
+import { AuthModeError, type Capabilities, type HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
 type Json = Record<string, unknown>;
@@ -210,7 +210,9 @@ class CodexHandle implements WorkerHandle {
       capabilities: { experimentalApi: true } }, timeout);
     await this.rpc.send({ method: "initialized", params: {} });
     await this.openThread(this.spec.resume_session_id);
-    await this.checkAuthentication();
+    if (await this.checkAuthentication() === "wrong") {
+      throw new AuthModeError("wrong_auth_mode", "Codex is not signed in with a ChatGPT subscription; headless workers never use an API key or another provider.");
+    }
   }
 
   private async openThread(resume?: string): Promise<void> {
@@ -242,22 +244,25 @@ class CodexHandle implements WorkerHandle {
     this.emit({ type: "session", session_id: this.thread });
   }
 
-  private async checkAuthentication(): Promise<boolean> {
+  /**
+   * Only a ChatGPT login is a subscription. No login at all is missing, and
+   * waits for one. Anything else, an API key, another provider that needs no
+   * OpenAI login, or an account type this doesn't know, is wrong.
+   */
+  private async checkAuthentication(): Promise<"ok" | "missing" | "wrong"> {
     const result = await this.rpc.request("account/read", { refreshToken: false }, 2_000);
-    const missing = result.requiresOpenaiAuth !== false && !result.account;
-    // Signed in with an API key: running would spend API funds, not the subscription.
-    if (object(result.account).type === "apiKey") {
+    const account = result.account === null || result.account === undefined ? null : object(result.account);
+    const verdict = account?.type === "chatgpt" ? "ok" : !account && result.requiresOpenaiAuth !== false ? "missing" : "wrong";
+    if (verdict === "wrong") {
       this.emit({ type: "state", state: "wrong_auth_mode" });
-      return false;
-    }
-    if (missing) {
+    } else if (verdict === "missing") {
       this.authRequired = true;
       this.emit({ type: "state", state: "auth_required" });
     } else if (this.authRequired) {
       this.authRequired = false;
       if (!this.turn && !this.disconnected) this.emit({ type: "state", state: "idle" });
     }
-    return !missing;
+    return verdict;
   }
 
   private notification(message: Json): void {
@@ -389,7 +394,7 @@ class CodexHandle implements WorkerHandle {
     if (!this.thread) return "unknown";
     if (this.resumeFailed) return "unknown";
     try {
-      if (this.authRequired && !await this.checkAuthentication()) return "alive";
+      if (this.authRequired && await this.checkAuthentication() !== "ok") return "alive";
       const result = await this.rpc.request("thread/read", { threadId: this.thread, includeTurns: false }, 2_000);
       const thread = object(result.thread);
       const state = object(thread.status).type;
@@ -418,6 +423,8 @@ class CodexHandle implements WorkerHandle {
       try {
         await this.openThread(session);
         this.disconnected = false;
+        // A reload is checked again: the login may have changed while it was unloaded.
+        if (await this.checkAuthentication() !== "ok") return true;
         this.emit({ type: "state", state: "idle" });
         return true;
       } catch {
