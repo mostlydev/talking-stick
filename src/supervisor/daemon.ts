@@ -6,11 +6,6 @@ import type { IntakeAnswer, IntakeMessage } from "./intake.js";
 import type { RoomBridge } from "./room-bridge.js";
 import { resolveBundledSkillPath } from "../skill-install.js";
 import { displayText, safeDetail } from "./approval-detail.js";
-import { CONTROL_LOCKED_MESSAGE as CONTROL_LOCKED_ERROR } from "../service.js";
-import { handleClosure, startupEnvironmentRisks, workerIneligibility, type ProtectedSet } from "./eligibility.js";
-
-const NO_PROTECTED_SET = "the supervisor has no protected set, so nothing is known to be out of a worker's reach.";
-import { LOCKED_GATE, type GateRequest, type GateResult, type HumanGate } from "./human-gate.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
 // running and acts. Its probes never prompt a worker or touch room presence. The
@@ -20,7 +15,9 @@ export const BACKOFF_BASE_MS = 5_000;
 export const BACKOFF_MAX_MS = 5 * 60_000;
 export const CRASH_WINDOW_MS = 15 * 60_000;
 export const CRASH_LIMIT = 5;
-export const APPROVAL_EXPIRY_MS = 24 * 60 * 60_000;
+/** What a denied worker is told: nobody is at a headless worker's keyboard to approve a prompt. */
+export const DENY_NOTE = "Denied: this headless worker has no one to approve prompts. " +
+  "Work within what the harness settings already allow, or ask the operator through the room.";
 export const STOP_GRACE_MS = 10_000;
 /** No one worker's start, probe or stop may hold up a tick longer than this. */
 export const TICK_WAIT_MS = 15_000;
@@ -43,45 +40,12 @@ export interface SupervisorOptions {
   bootstrap?: boolean;
   /** The supervisor's tt data directory, given to every worker so its tt calls land in this room database. */
   dataDir?: string;
-  /** The protected root for supervisor-owned state; each worker's native home and evidence go under it. */
+  /** The root for supervisor-owned state; each worker's process evidence goes under it. */
   stateDir?: string;
-  /** The human-control gate every control request must pass; locked by default. */
-  gate?: HumanGate;
-  /**
-   * What no worker may be able to write while a gate is in use: the state
-   * root, the supervisor's program, its launch agent. Without it no gate acts.
-   */
-  protectedSet?: ProtectedSet;
-  /** How long a human has to confirm one request; GATE_TIMEOUT_MS by default. */
-  gateTimeoutMs?: number;
 }
-
-export const GATE_TIMEOUT_MS = 120_000;
-
-/** A control request as it arrives, before the gate: the caller names exactly what it means. */
-export interface ControlRequest {
-  action: "approve" | "deny" | "interrupt";
-  actor: string;
-  approval_id?: string;
-  worker_id?: string;
-  /** The detail digest the requester reviewed; an approval needs it, in full or as a 12+ hex prefix. */
-  detail_sha256?: string;
-  note?: string;
-}
-
-export type ControlOutcome =
-  | { ok: true; result: unknown }
-  | { ok: false; error: string; gate?: GateResult | "busy" | "changed" | "ineligible" };
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
-}
-
-/** A decision names the exact request occurrence, not just its native id. */
-export interface ApprovalKey {
-  approval_id: string;
-  worker_id: string;
-  generation: number;
 }
 
 /** Waits for a promise for at most ms; the promise keeps running. */
@@ -113,11 +77,7 @@ export class Supervisor {
   private readonly socketPath: string | null;
   private readonly bootstrap: boolean;
   private readonly dataDir: string | null;
-  private readonly gate: HumanGate;
   private readonly stateDir: string | null;
-  private readonly protectedSet: ProtectedSet | null;
-  private readonly gateTimeoutMs: number;
-  private gateBusy = false;
   /** This daemon's delivery tokens; only hashes are stored. */
   private readonly deliveryTokens = new Map<string, { generation: number; token: string; address: string }>();
   /** Envelope text is kept in memory only, never in the journal. */
@@ -144,10 +104,7 @@ export class Supervisor {
     this.socketPath = options.socketPath ?? null;
     this.bootstrap = options.bootstrap ?? false;
     this.dataDir = options.dataDir ?? null;
-    this.gate = options.gate ?? LOCKED_GATE;
     this.stateDir = options.stateDir ?? null;
-    this.protectedSet = options.protectedSet ?? null;
-    this.gateTimeoutMs = options.gateTimeoutMs ?? GATE_TIMEOUT_MS;
   }
 
   private at(): string {
@@ -192,8 +149,6 @@ export class Supervisor {
   async tick(): Promise<void> {
     if (!this.reconciled) throw new SupervisorError("Reconcile recorded generations before the first tick.");
     await Promise.allSettled(this.store.workers().map((worker) => bounded(this.reconcileWorker(worker), this.tickWaitMs)));
-    // Every tick, every running worker is checked again against everything configured now.
-    this.enforceEligibility();
   }
 
   private async reconcileWorker(worker: WorkerRow): Promise<void> {
@@ -217,7 +172,6 @@ export class Supervisor {
       this.store.updateGeneration(worker.worker_id, handle.generation, { state: liveness === "unknown" ? "unknown" : reported });
       if (liveness === "unknown") this.probeUnknown.add(worker.worker_id);
       else this.probeUnknown.delete(worker.worker_id);
-      this.expireApprovals(worker.worker_id, handle);
       if (liveness === "alive") this.recoverMembership(worker, handle);
       this.bootstrapWorker(handle, worker.worker_id);
       this.drain(worker.worker_id);
@@ -252,25 +206,6 @@ export class Supervisor {
     if (resume && !adapter.capabilities().resume) {
       this.store.hold(worker.worker_id, "resume_failed", this.at());
       return;
-    }
-    // With a gate in use, nothing starts whose executable or startup files a live worker can rewrite.
-    if (this.gate !== LOCKED_GATE) {
-      let reasons: string[];
-      try {
-        const guarded = this.guardedSet();
-        const closure = this.startClosure(spec);
-        reasons = !guarded ? [NO_PROTECTED_SET] : [...closure.unresolved.map((what) => `${worker.worker_id}: ${what} couldn't be resolved.`),
-          ...[...this.handles].flatMap(([id, live]) => workerIneligibility(id, live, { paths: closure.paths, unresolved: [] }))];
-      } catch (error) {
-        reasons = [`${worker.worker_id} couldn't be checked: ${error instanceof Error ? error.message : String(error)}`];
-      }
-      if (reasons.length) {
-        this.store.audit(this.at(), "supervisor", "gate_ineligible", worker.worker_id, { during: "start", reasons });
-        this.store.hold(worker.worker_id, "gate_ineligible", this.at());
-        // The live worker that could write it is a writer now, whatever happens to this one.
-        this.enforceEligibility();
-        return;
-      }
     }
     // The intent is durable before the spawn, and the child the moment it
     // exists, so a crash at any point leaves evidence and never a duplicate.
@@ -323,8 +258,6 @@ export class Supervisor {
     this.probeUnknown.delete(worker.worker_id);
     if (supervised) this.deliveryTokens.set(worker.worker_id, { generation, ...supervised });
     handle.onEvent((event) => this.onEvent(worker.worker_id, generation, event));
-    // With a gate in use, a worker that could reach what the gate rests on never runs.
-    if (!this.enforceEligibility(worker.worker_id, handle)) return;
     // A control change while it started wins: the start was for an older version.
     const current = this.store.worker(worker.worker_id);
     if (!current || current.desired !== "running" || current.desired_version !== worker.desired_version) {
@@ -401,16 +334,22 @@ export class Supervisor {
         }
         this.drain(workerId);
         break;
-      case "approval_requested":
-        if (!this.store.recordApproval({ approval_id: this.newId(), worker_id: workerId, generation,
+      case "approval_requested": {
+        const approvalId = this.newId();
+        if (!this.store.recordApproval({ approval_id: approvalId, worker_id: workerId, generation,
           native_request_id: event.native_request_id, tool: displayText(event.tool, 80), summary: displayText(event.summary, 500), detail: safeDetail(event.detail), requested_at: at })) {
-          // A second request under a still-pending id is ambiguous: no decision could name it safely.
+          // A second request under a still-pending id is ambiguous: no answer could name it safely.
           this.store.hold(workerId, "protocol_error", at);
           this.stopHandle(workerId, handle).catch(() => {});
           break;
         }
-        report("awaiting_approval");
+        // The harness's own settings already allowed what they allow; whatever
+        // still asks is denied at once, so a headless worker never waits on a prompt.
+        this.store.settleApproval(approvalId, "denied", "supervisor", at);
+        this.store.audit(at, "supervisor", "approval_denied", workerId, { generation, approval_id: approvalId, tool: displayText(event.tool, 80) });
+        void this.deliverAnswer(handle, approvalId, event.native_request_id, "deny", DENY_NOTE);
         break;
+      }
       case "approval_resolved": {
         // Settled natively: a decision made afterwards can no longer reach it.
         const pending = this.store.pendingApproval(workerId, generation, event.native_request_id);
@@ -422,14 +361,15 @@ export class Supervisor {
       }
       case "state":
         report(event.state);
+        // Signed in with an API key: it would spend API funds, so it stops and waits for the operator.
+        if (event.state === "wrong_auth_mode") {
+          this.store.hold(workerId, "wrong_auth_mode", at);
+          this.stopHandle(workerId, handle).catch(() => {});
+        }
         break;
       case "resume_failed":
         report("disconnected");
         this.store.hold(workerId, "resume_failed", at);
-        this.enforceEligibility(workerId, handle);
-        break;
-      case "confinement":
-        this.enforceEligibility(workerId, handle);
         break;
       case "request_refused":
         this.store.audit(at, "supervisor", "native_request_refused", workerId, { generation,
@@ -475,17 +415,6 @@ export class Supervisor {
     const delay = Math.min(BACKOFF_BASE_MS * 2 ** (count - 1), BACKOFF_MAX_MS);
     this.store.setNextStart(workerId, new Date(now.getTime() + delay).toISOString());
     this.store.audit(now.toISOString(), "supervisor", "backoff", workerId, { ...detail, crashes: count, delay_ms: delay });
-  }
-
-  private expireApprovals(workerId: string, handle: WorkerHandle): void {
-    const cutoff = this.now().getTime() - APPROVAL_EXPIRY_MS;
-    for (const approval of this.store.pendingApprovals()) {
-      if (approval.worker_id !== workerId || approval.generation !== handle.generation ||
-          Date.parse(approval.requested_at) > cutoff) continue;
-      if (this.store.settleApproval(approval.approval_id, "expired", "supervisor", this.at())) {
-        this.deliverAnswer(handle, approval.approval_id, approval.native_request_id, "deny", "Expired without a decision.");
-      }
-    }
   }
 
   /**
@@ -650,25 +579,6 @@ export class Supervisor {
     return { input_id: inputId, outcome };
   }
 
-  /**
-   * Decides one request occurrence of one live generation; anything else is
-   * refused. The decision is durable even if delivering the answer fails,
-   * and the delivery outcome is recorded separately.
-   */
-  async decideApproval(key: ApprovalKey, decision: "allow" | "deny", actor: string, note?: string): Promise<"delivered" | "failed"> {
-    const handle = this.handles.get(key.worker_id);
-    const approval = this.store.approval(key.approval_id);
-    if (!handle || handle.generation !== key.generation || !approval ||
-        approval.worker_id !== key.worker_id || approval.generation !== key.generation) {
-      throw new SupervisorError(`Generation ${key.generation} of ${key.worker_id} is not running that request.`);
-    }
-    if (!this.store.settleApproval(key.approval_id, decision === "allow" ? "allowed" : "denied", actor, this.at())) {
-      throw new SupervisorError(`Request ${key.approval_id} is not pending.`);
-    }
-    this.store.audit(this.at(), actor, `approval_${decision}`, key.worker_id, key);
-    return this.deliverAnswer(handle, approval.approval_id, approval.native_request_id, decision, note);
-  }
-
   private async deliverAnswer(handle: WorkerHandle, approvalId: string, nativeRequestId: string,
     decision: "allow" | "deny", note?: string): Promise<"delivered" | "failed"> {
     try {
@@ -680,167 +590,6 @@ export class Supervisor {
       this.store.audit(this.at(), "supervisor", "approval_answer_failed", null, { approval_id: approvalId, error: String(error) });
       return "failed";
     }
-  }
-
-  /**
-   * The only way a control request takes effect. The control token admitted
-   * the caller, which proves nothing about a human; the gate must confirm this
-   * exact request. The request is checked before the gate asks and again after
-   * it answers, so a confirmation never applies to anything that changed.
-   */
-  async control(request: ControlRequest): Promise<ControlOutcome> {
-    // Without a verified gate nothing is asked or checked: every request is refused.
-    if (this.gate === LOCKED_GATE) {
-      this.store.audit(this.at(), request.actor, `control_${request.action}_refused`, request.worker_id ?? null,
-        { approval_id: request.approval_id ?? null, reason: "control_locked" });
-      return { ok: false, error: CONTROL_LOCKED_ERROR, gate: "unavailable" };
-    }
-    // The note goes to the worker as typed, so the human must be able to read all of it.
-    if (request.note !== undefined && (request.note.length > 300 || displayText(request.note, 301) !== request.note)) {
-      return { ok: false, error: "A note is plain text of at most 300 characters." };
-    }
-    const target = this.controlTarget(request);
-    if ("error" in target) return { ok: false, error: target.error };
-    const ineligible = this.gateIneligibility();
-    if (ineligible.length) {
-      this.store.audit(this.at(), request.actor, `control_${request.action}_ineligible`, target.gate.worker_id, { reasons: ineligible });
-      return { ok: false, error: `No human gate can act here: ${ineligible.join(" ")}`, gate: "ineligible" };
-    }
-    // One question at a time: a second request can't ride on, or bury, the first.
-    if (this.gateBusy) {
-      this.store.audit(this.at(), request.actor, `control_${request.action}_busy`, target.gate.worker_id, { ...target.gate });
-      return { ok: false, error: "Another control request is waiting for confirmation.", gate: "busy" };
-    }
-    this.gateBusy = true;
-    const signal = AbortSignal.timeout(this.gateTimeoutMs);
-    // A gate that fails or never answers is a refusal, never a pass. The next
-    // question waits until this one has really ended, so no dialog outlives it.
-    const confirming = Promise.resolve().then(() => this.gate.confirm(target.gate, signal)).catch((): GateResult => "refused");
-    void confirming.finally(() => { this.gateBusy = false; });
-    const result = await Promise.race([confirming,
-      new Promise<GateResult>((resolve) => signal.addEventListener("abort", () => resolve("refused"), { once: true }))]);
-    this.store.audit(this.at(), request.actor, `control_${request.action}_${result}`, target.gate.worker_id,
-      { ...target.gate, gate: this.gate.kind });
-    if (result === "unavailable") return { ok: false, error: CONTROL_LOCKED_ERROR, gate: result };
-    if (result !== "confirmed") return { ok: false, error: "The human gate did not confirm this request.", gate: result };
-    // What was confirmed must still be exactly what is there.
-    const again = this.controlTarget(request);
-    if ("error" in again || again.handle !== target.handle || JSON.stringify(again.gate) !== JSON.stringify(target.gate) ||
-        this.gateIneligibility().length) {
-      this.store.audit(this.at(), request.actor, `control_${request.action}_changed`, target.gate.worker_id, { ...target.gate });
-      return { ok: false, error: "The request changed while it waited for confirmation.", gate: "changed" };
-    }
-    if (request.action === "interrupt") {
-      return { ok: true, result: await this.interrupt(target.gate.worker_id, request.actor, target.gate.native_turn_id) };
-    }
-    const decision = request.action === "approve" ? "allow" : "deny";
-    const answer = await this.decideApproval({ approval_id: target.gate.approval_id!, worker_id: target.gate.worker_id,
-      generation: target.gate.generation }, decision, request.actor, request.note);
-    return { ok: true, result: { status: decision === "allow" ? "allowed" : "denied", answer } };
-  }
-
-  /**
-   * Everything no worker may be able to write: the protected set, the state
-   * root, the gate's own files, and the startup closure of every worker, live
-   * or configured to run. One worker rewriting another's executable is as bad
-   * as rewriting its own.
-   */
-  private guardedSet(): ProtectedSet | null {
-    if (!this.protectedSet) return null;
-    const paths = [...this.protectedSet.paths, ...(this.stateDir ? [this.stateDir] : []), ...(this.gate.protectedPaths ?? [])];
-    const unresolved = [...this.protectedSet.unresolved];
-    for (const [workerId, handle] of this.handles) {
-      const closure = handleClosure(handle);
-      paths.push(...closure.paths);
-      unresolved.push(...closure.unresolved.map((what) => `${workerId}: ${what}`));
-    }
-    // Every configured worker's next start, live ones included: a live worker's configuration may
-    // already name something other than what it runs now, and that is what its restart would run.
-    for (const worker of this.store.workers()) {
-      const spec = JSON.parse(worker.spec_json) as WorkerSpec;
-      const closure = this.startClosure(spec);
-      paths.push(...closure.paths);
-      unresolved.push(...closure.unresolved.map((what) => `${worker.worker_id}: ${what}`));
-    }
-    return { paths, unresolved };
-  }
-
-  private startClosure(spec: WorkerSpec): { paths: string[]; unresolved: string[] } {
-    const closure = this.adapters[spec.harness]?.startClosure?.(spec) ?? { paths: [], unresolved: ["what a start would run"] };
-    return { paths: closure.paths, unresolved: [...closure.unresolved, ...startupEnvironmentRisks(spec)] };
-  }
-
-  /**
-   * With a gate in use, every live worker whose own confinement reaches what
-   * the gate rests on is stopped and held, whenever that is found, not only at
-   * its start. Returns whether the named worker is still running.
-   */
-  private enforceEligibility(workerId?: string, handle?: WorkerHandle): boolean {
-    if (this.gate === LOCKED_GATE) return true;
-    let guarded: ProtectedSet | null;
-    try { guarded = this.guardedSet(); }
-    catch (error) { guarded = { paths: [], unresolved: [`the guarded set (${error instanceof Error ? error.message : String(error)})`] }; }
-    for (const [id, live] of [...this.handles]) {
-      if (this.stopping.has(id)) continue;
-      // Its own reasons only: an unresolved closure elsewhere blocks control, but stops no one else.
-      let reasons: string[];
-      try {
-        reasons = guarded ? workerIneligibility(id, live, guarded) : [NO_PROTECTED_SET];
-        // Started with a loader or startup variable, it may already run code its closure doesn't name.
-        const row = this.store.worker(id);
-        if (row) reasons.push(...startupEnvironmentRisks(JSON.parse(row.spec_json) as WorkerSpec).map((what) => `${id}: ${what}`));
-      }
-      catch (error) { reasons = [`${id} couldn't be checked: ${error instanceof Error ? error.message : String(error)}`]; }
-      if (!reasons.length) continue;
-      this.store.audit(this.at(), "supervisor", "gate_ineligible", id, { generation: live.generation, reasons });
-      this.store.hold(id, "gate_ineligible", this.at());
-      this.stopHandle(id, live).catch(() => {});
-    }
-    return workerId === undefined || (this.handles.get(workerId) === handle && !this.stopping.has(workerId));
-  }
-
-  /** Every reason, over every live generation, a gate may not act; checked before asking and again after. */
-  gateIneligibility(): string[] {
-    try {
-      const guarded = this.guardedSet();
-      if (!guarded) return [NO_PROTECTED_SET];
-      return [...new Set([...guarded.unresolved.map((what) => `${what} couldn't be resolved.`),
-        ...[...this.handles].flatMap(([workerId, handle]) => workerIneligibility(workerId, handle, guarded))])];
-    } catch (error) {
-      return [`eligibility couldn't be checked: ${error instanceof Error ? error.message : String(error)}`];
-    }
-  }
-
-  /** The exact live thing a control request names, as the gate will describe it. */
-  private controlTarget(request: ControlRequest): { gate: GateRequest; handle: WorkerHandle } | { error: string } {
-    if (request.action === "interrupt") {
-      const handle = request.worker_id ? this.handles.get(request.worker_id) : undefined;
-      if (!request.worker_id || !handle) return { error: "Name a running worker." };
-      // An interrupt names the turn running now; if another turn runs by the answer, it applies to nothing.
-      const turn = this.activeTurn.get(request.worker_id);
-      if (!turn) return { error: "That worker has no running turn." };
-      return { handle, gate: { action: "interrupt", worker_id: request.worker_id, generation: handle.generation, native_turn_id: turn } };
-    }
-    const approval = request.approval_id ? this.store.approval(request.approval_id) : null;
-    if (!approval || approval.status !== "pending") return { error: "No such pending approval request." };
-    const handle = this.handles.get(approval.worker_id);
-    if (!handle || handle.generation !== approval.generation) return { error: "That request's generation is no longer running." };
-    // A human decides only on a request they could read whole, and names the digest they read.
-    if (!approval.detail || !approval.detail_sha256) return { error: "That request was recorded without its full detail." };
-    const named = (request.detail_sha256 ?? "").toLowerCase();
-    if (!/^[0-9a-f]{12,64}$/.test(named) || !approval.detail_sha256.startsWith(named)) {
-      return { error: "Name the detail digest you reviewed (tt supervisor approvals show)." };
-    }
-    return { handle, gate: { action: request.action, worker_id: approval.worker_id, generation: approval.generation,
-      approval_id: approval.approval_id, tool: approval.tool, summary: approval.summary, detail_sha256: approval.detail_sha256,
-      ...(request.note ? { note: request.note } : {}) } };
-  }
-
-  async interrupt(workerId: string, actor: string, expectedTurnId?: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
-    const handle = this.handles.get(workerId);
-    if (!handle) throw new SupervisorError(`Worker ${workerId} is not running.`);
-    this.store.audit(this.at(), actor, "interrupt", workerId, { generation: handle.generation, native_turn_id: expectedTurnId ?? null });
-    return handle.interrupt(expectedTurnId);
   }
 }
 

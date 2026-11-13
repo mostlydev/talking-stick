@@ -42,18 +42,27 @@ function fixture(mode = "", overrides: Partial<WorkerSpec> = {}) {
 }
 
 describe("starting a Claude worker", () => {
-  test("runs stream-json with the stdio permission tool and its own session id, never a bypass", async () => {
+  test("runs stream-json with the user's own settings, the stdio permission tool and its own session id, never a bypass", async () => {
     const f = fixture();
     const handle = await f.start();
     const argv = f.lines()[0].argv as string[];
     expect(argv).toEqual(expect.arrayContaining(["-p", "--input-format", "stream-json", "--output-format", "stream-json",
-      "--setting-sources", "project,local", "--strict-mcp-config", "--permission-prompt-tool", "stdio"]));
+      "--setting-sources", "user,project,local", "--permission-prompt-tool", "stdio"]));
+    expect(argv).not.toContain("--strict-mcp-config");
     expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("default");
     const session = argv[argv.indexOf("--session-id") + 1];
     expect(session).toMatch(/^[0-9a-f-]{36}$/);
     expect(handle.sessionId()).toBe(session);
     expect(f.events).toContainEqual({ type: "session", session_id: session });
     expect(argv.join(" ")).not.toMatch(/bypassPermissions|dangerously/);
+  });
+
+  test.each([["api-key", true], ["", false]] as const)("an API-key sign-in is reported as wrong_auth_mode at init (%s)", async (mode, wrong) => {
+    const f = fixture(mode);
+    const handle = await f.start();
+    await handle.submit({ input_id: "i1", text: "hi", mode: "start_turn" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(f.events.some((event) => event.type === "state" && event.state === "wrong_auth_mode")).toBe(wrong);
   });
 
   test("resumes the recorded session instead of choosing a new one", async () => {

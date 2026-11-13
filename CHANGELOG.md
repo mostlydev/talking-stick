@@ -21,6 +21,27 @@ changes will be called out under **Breaking changes**.
   `tt join` and `tt chat` after its last member left. Ids and short names still need an open
   room, and read-only commands never create one.
 
+### Changed
+
+- `tt supervisor` workers run as you, on your own harness settings and subscription logins:
+  Claude loads your user settings and MCP servers, Codex runs in your `CODEX_HOME` and Grok in your
+  `GROK_HOME`. Nothing private is created or copied.
+- A supervised worker's permission prompt that its settings don't already allow is denied at once
+  and recorded, instead of waiting up to 24 hours. `tt supervisor approvals` lists recent requests
+  and what became of them, and `status` counts each worker's denials.
+- A worker signed in with an API key instead of a subscription is stopped and held
+  `wrong_auth_mode`. Claude reports its sign-in only at its first turn, so that turn may already
+  have reached the API.
+
+### Removed
+
+- The supervisor's API-key route: `--env NAME=keychain:SERVICE` is gone, and a reference to a
+  model API key or provider override (`XAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and the
+  like) is refused.
+- `tt supervisor approve`, `deny`, `interrupt` and `reconcile`, the control socket and token, the
+  never-accepted Touch ID gate with its eligibility checks, and its acceptance kit
+  (`scripts/attended-gate-acceptance.mjs`). Each removed command explains why.
+
 ## [0.33.1] — 2026-11-12
 
 Full notes: [`docs/releases/0.33.1.md`](docs/releases/0.33.1.md).

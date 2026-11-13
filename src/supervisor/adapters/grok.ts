@@ -1,13 +1,14 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import type { Capabilities, HarnessAdapter, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
-import { spawnManagedProcess, UnsentInputError, workerEnvironment, type KeychainReader, type ManagedProcess } from "./process.js";
+import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
 // Grok headless: `grok agent --no-leader stdio`. Prompt, resume, interrupt and
 // approvals are unproven, so all four stay false on every platform. The child
-// gets a private GROK_HOME and never the user's config, which may always-approve.
+// runs in the user's own GROK_HOME, with their config and subscription login.
 
 type Json = Record<string, unknown>;
 function object(value: unknown): Json {
@@ -72,8 +73,8 @@ export interface GrokAdapterOptions {
   command?: string;
   argsPrefix?: string[];
   startTimeoutMs?: number;
-  /** Test double for a Keychain env ref. Production reads the macOS item. */
-  readKeychain?: KeychainReader;
+  /** The GROK_HOME to run in; the user's own (GROK_HOME, else ~/.grok) by default. */
+  home?: string;
 }
 
 /** The native `grok` executable: an explicit absolute path, or the first on PATH, resolved. */
@@ -105,16 +106,13 @@ export class GrokAdapter implements HarnessAdapter {
     // Resuming would quietly open some other conversation. The daemon also
     // holds resume_failed before it calls start; this rejects a direct call.
     if (spec.resume_session_id) throw new Error("Grok cannot resume a session yet.");
-    const env = await workerEnvironment(spec, process.env, this.options.readKeychain);
+    const env = workerEnvironment(spec);
     if (signal?.aborted) throw new Error("Grok start aborted.");
     const stateDir = spec.state_dir;
     if (!stateDir) throw new Error("A managed Grok worker needs the supervisor's state directory.");
-    // Always this private directory, even when the spec names a GROK_HOME.
-    // Nothing is copied into it: the user's config can set always-approve.
-    const home = path.join(stateDir, "workers", spec.worker_id, "grok");
-    fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-    fs.chmodSync(home, 0o700);
-    env.GROK_HOME = home;
+    // The user's own home, where their subscription login lives, unless the
+    // spec names one; nothing is created or copied.
+    env.GROK_HOME ??= this.options.home ?? process.env.GROK_HOME ?? path.join(env.HOME ?? os.homedir(), ".grok");
     // Prompt is false, so the daemon does not issue an endpoint or token.
     // Evidence is skipped unless both are present.
     const token = spec.supervisor_env?.TT_SUPERVISOR_TOKEN;

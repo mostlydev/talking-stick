@@ -231,10 +231,6 @@ interface NoteRow {
 const MAX_NOTE_BODY_BYTES = 16 * 1024;
 const ENDED_MEMBER_GRACE_MS = 60 * 60 * 1000;
 
-/** Why supervisor control changes are refused until a verified human-control boundary exists. */
-export const CONTROL_LOCKED_MESSAGE = "Supervisor control is unavailable until a verified human-control boundary exists; " +
-  "pending approvals expire as a deny after 24 hours.";
-
 // A recovery notice repeats at most this often while messages keep arriving.
 const LOST_NOTICE_INTERVAL_MS = 30 * 60 * 1000;
 const LIFECYCLE_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -1227,16 +1223,6 @@ export class TalkingStickService {
         input.pid, input.process_started_at.trim())
       .filter((row) => this.getLostMember(row.room_id, row.agent_id))
       .map((row) => ({ ...row, canonical_path: this.requireRoom(row.room_id).canonical_path }));
-  }
-
-  /**
-   * An operator's decision on a fenced managed batch whose effect is unknown.
-   * Locked: no caller can prove it is the human, since any same-user process
-   * can claim a human: id. A possibly delivered message stays fenced until a
-   * verified human-control boundary exists (docs/supervisor.md).
-   */
-  reconcileManagedDelivery(_input: { agent_id: AgentId; batch_token: string; action: "resend" | "drop" }): never {
-    throw new ProtocolError("control_locked", CONTROL_LOCKED_MESSAGE);
   }
 
   leaveRoom(input: LeaveRoomInput): LeaveRoomResult {

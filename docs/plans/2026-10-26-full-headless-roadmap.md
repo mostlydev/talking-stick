@@ -1,6 +1,11 @@
 # Full headless roadmap
 
-Status: proposal for review. Plan owner Claude; independent reviewer Codex; bounded reviewer Grok.
+Status: superseded by [headless rooms](2026-11-13-headless-rooms.md) (2026-11-13). The operator
+chose trusted local use on their own subscription logins: no human gate, no approval redesign, and
+no separate manager agent. Kept for its reasoning; its gate, eligibility and approval milestones
+will not be built.
+
+Original status: proposal for review. Plan owner Claude; independent reviewer Codex; bounded reviewer Grok.
 This extends the canonical design in [`docs/supervisor.md`](../supervisor.md) and does not replace
 it. Anything already built there (adapters, fences, recovery of owned workers, the locked
 `HumanGate`, protected state, eligibility, the attended kit) is reused as-is.

@@ -7,9 +7,10 @@ import { approvalDetail, approvalSummary } from "../approval-detail.js";
 import type { Capabilities, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
-// Claude Code headless: `claude -p` speaking stream-json on stdin and stdout.
-// Permission prompts come back as can_use_tool control requests through the
-// stdio permission tool; nothing bypasses them.
+// Claude Code headless: `claude -p` speaking stream-json on stdin and stdout,
+// with the user's own settings and login. Permission prompts come back as
+// can_use_tool control requests through the stdio permission tool, and the
+// supervisor denies them at once: nobody is at a headless worker's keyboard.
 
 type Json = Record<string, unknown>;
 function object(value: unknown): Json {
@@ -56,7 +57,7 @@ export class ClaudeAdapter implements HarnessAdapter {
 
   async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void, signal?: AbortSignal): Promise<WorkerHandle> {
     if (spec.harness !== "claude" || spec.permissions.harness !== "claude") throw new Error("Claude needs explicit Claude permissions.");
-    const env = await workerEnvironment(spec);
+    const env = workerEnvironment(spec);
     if (signal?.aborted) throw new Error("Claude start aborted.");
     // A fresh conversation is given its id up front, so the supervisor knows
     // the session before the first turn; a resume names the recorded one.
@@ -67,7 +68,7 @@ export class ClaudeAdapter implements HarnessAdapter {
         token: spec.supervisor_env.TT_SUPERVISOR_TOKEN }) : null;
     if (evidence) env.TT_SUPERVISOR_PROCESS_FILE = evidence.file;
     const args = [...(this.options.argsPrefix ?? []), "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-      "--verbose", "--setting-sources", "project,local", "--strict-mcp-config", "--permission-mode", spec.permissions.mode,
+      "--verbose", "--setting-sources", "user,project,local", "--permission-mode", spec.permissions.mode,
       "--permission-prompt-tool", "stdio", ...(spec.model ? ["--model", spec.model] : []),
       ...(spec.resume_session_id ? ["--resume", session] : ["--session-id", session])];
     const handle = new ClaudeHandle(spec, generation, session, this.options);
@@ -175,6 +176,10 @@ class ClaudeHandle implements WorkerHandle {
     if ((init || type === "result") && (message.session_id !== undefined || init) && message.session_id !== this.session) {
       this.fault();
       return;
+    }
+    // "none" is a subscription login; anything else would spend API funds.
+    if (init && typeof message.apiKeySource === "string" && message.apiKeySource !== "none") {
+      this.emit({ type: "state", state: "wrong_auth_mode" });
     }
     if (type === "control_response") {
       const response = object(message.response);

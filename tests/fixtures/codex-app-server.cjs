@@ -11,6 +11,7 @@ const reply = (id, result) => output({ id, result });
 const notify = (method, params) => output({ method, params: { threadId: thread, ...params } });
 const trace = value => { if (process.env.FIXTURE_TRACE) fs.appendFileSync(process.env.FIXTURE_TRACE, JSON.stringify(value) + "\n"); };
 const complete = status => { if (turn) notify("turn/completed", { turn: { id: turn, status } }); turn = null; };
+trace({ startup: { CODEX_HOME: process.env.CODEX_HOME ?? null } });
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", line => {
   const m = JSON.parse(line);
@@ -43,7 +44,8 @@ input.on("line", line => {
       method: "item/tool/requestUserInput", params: { threadId: thread } }), 5);
     return;
   }
-  if (m.method === "account/read") return reply(m.id, { account: mode === "no-auth" ? null : { type: "apiKey" }, requiresOpenaiAuth: true });
+  if (m.method === "account/read") return reply(m.id, { account: mode === "no-auth" ? null
+    : mode === "api-key" ? { type: "apiKey" } : { type: "chatgpt", email: "user@example.com", planType: "pro" }, requiresOpenaiAuth: true });
   if (m.method === "thread/read") return reply(m.id, { thread: { id: thread, status: { type: unloaded ? "notLoaded" : turn ? "active" : "idle" } } });
   if (m.method === "turn/start") {
     if (mode === "no-reply") return;

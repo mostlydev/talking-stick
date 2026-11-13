@@ -12,11 +12,13 @@ export type DesiredState = "running" | "paused" | "stopped";
 
 export type GenerationState =
   | "starting" | "idle" | "busy" | "awaiting_approval" | "awaiting_input"
-  | "disconnected" | "unknown" | "auth_required" | "dead";
+  | "disconnected" | "unknown" | "auth_required" | "wrong_auth_mode" | "dead";
 
 export type HoldReason =
   | "crash_loop" | "prior_generation_alive" | "prior_generation_unknown"
-  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed" | "gate_ineligible";
+  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed" | "wrong_auth_mode"
+  /** Recorded by an earlier version's human gate; a resume clears it like any other hold. */
+  | "gate_ineligible";
 
 export interface WorkerRow {
   worker_id: string;
@@ -429,6 +431,11 @@ export class SupervisorStore {
 
   pendingApprovals(): ApprovalRow[] {
     return this.db.prepare<[], ApprovalRow>("SELECT * FROM approvals WHERE status = 'pending' ORDER BY requested_at").all();
+  }
+
+  /** The most recent requests, newest first: what workers asked for and what became of it. */
+  recentApprovals(limit = 20): ApprovalRow[] {
+    return this.db.prepare<[number], ApprovalRow>("SELECT * FROM approvals ORDER BY requested_at DESC, rowid DESC LIMIT ?").all(limit);
   }
 
   /** Settles one pending request; false when it was not pending. */

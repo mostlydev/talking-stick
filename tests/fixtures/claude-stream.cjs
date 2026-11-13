@@ -41,7 +41,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.type !== "user") return;
   busy = true;
-  out({ type: "system", subtype: "init", session_id: session });
+  out({ type: "system", subtype: "init", session_id: session, apiKeySource: mode === "api-key" ? "ANTHROPIC_API_KEY" : "none" });
   if (mode === "approval" || mode === "cancel" || mode === "long-approval" || mode === "huge-approval") {
     pendingTool = "perm-1";
     // A long command hides its end past any summary; a huge one is too large to review.

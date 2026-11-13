@@ -13,7 +13,7 @@ export interface Capabilities {
   approvals: boolean;
 }
 
-/** Explicit per-harness permissions; nothing is inherited from local defaults. */
+/** Explicit per-harness permissions, applied on top of the user's own harness settings. */
 export type WorkerPermissions =
   | { harness: "claude"; mode: "default" | "plan" }
   | { harness: "codex"; sandbox: "read-only" | "workspace-write"; approval: "on-request" | "untrusted" }
@@ -21,11 +21,11 @@ export type WorkerPermissions =
 
 /**
  * Where a worker's environment value comes from. Specs store references and
- * approved non-secret literals only, never credential values.
+ * non-secret literals only. Workers run on the user's own subscription logins,
+ * so no reference may name a model API key.
  */
 export type EnvReference =
   | { name: string; from: "inherit" }
-  | { name: string; from: "keychain"; service: string }
   | { name: string; from: "literal"; value: string };
 
 export interface WorkerSpec {
@@ -46,8 +46,8 @@ export interface WorkerSpec {
    */
   supervisor_env?: Record<string, string>;
   /**
-   * The supervisor's protected state root, set at spawn: this worker's native
-   * home and process evidence live under it. It never enters the environment.
+   * The supervisor's state root, set at spawn: this worker's process evidence
+   * lives under it. It never enters the environment.
    */
   state_dir?: string;
 }
@@ -70,11 +70,10 @@ export type WorkerEvent =
   | { type: "approval_requested"; native_request_id: string; tool: string; summary: string; detail: string }
   /** The harness settled a pending request itself, such as Codex's serverRequest/resolved after an interrupt. */
   | { type: "approval_resolved"; native_request_id: string }
-  | { type: "state"; state: "idle" | "awaiting_input" | "auth_required" | "disconnected" }
+  /** wrong_auth_mode: the harness is signed in with an API key, not a subscription; the supervisor holds it. */
+  | { type: "state"; state: "idle" | "awaiting_input" | "auth_required" | "wrong_auth_mode" | "disconnected" }
   | { type: "resume_failed" }
   | { type: "request_refused"; method: string }
-  /** The native process reported a new write confinement, such as on a resume; the supervisor checks it at once. */
-  | { type: "confinement" }
   /** The harness broke its protocol, such as naming another session: the supervisor holds the worker. */
   | { type: "protocol_error" }
   /** A protocol queue overflowed: the supervisor holds the worker. */
@@ -102,17 +101,7 @@ export interface WorkerHandle {
   probe(): Promise<"alive" | "gone" | "unknown">;
   /** Stdin EOF, then the process group, then SIGKILL after the grace. */
   stop(graceMs: number): Promise<void>;
-  /** Where the native process can write, as it reported; absent means unconfined. */
-  confinement?(): Confinement;
-  /** What runs this worker at its next start: its executable and anything it loads from a prepared home. */
-  executionClosure?(): { paths: string[]; unresolved: string[] };
 }
-
-/** A worker's write confinement, from the native process's own report of its policy. */
-export type Confinement =
-  | { kind: "read_only" }
-  | { kind: "workspace_write"; writable: string[] }
-  | { kind: "unconfined"; reason: string };
 
 /** The child's exact identity, reported the moment it exists. */
 export interface SpawnedProcess {
@@ -122,11 +111,6 @@ export interface SpawnedProcess {
 }
 
 export interface HarnessAdapter {
-  /**
-   * What a start of this spec would run, resolved before any spawn: its native
-   * executable and anything it loads at start. Absent means it can't be known.
-   */
-  startClosure?(spec: WorkerSpec): { paths: string[]; unresolved: string[] };
   readonly harness: Harness;
   capabilities(): Capabilities;
   /**

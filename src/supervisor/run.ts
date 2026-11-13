@@ -1,37 +1,25 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomBytes, timingSafeEqual } from "node:crypto";
-import { CONTROL_LOCKED_MESSAGE, TalkingStickService } from "../service.js";
+import { TalkingStickService } from "../service.js";
 import { createSystemWakeTransport } from "../wake.js";
 import { createSystemNativeWakeTransport } from "../native-wake.js";
 import { createSystemProcessInspector, getCurrentProcessStartedAt } from "../process-utils.js";
 import type { Harness, HarnessAdapter } from "./adapter.js";
 import { Supervisor, acquireOwnerLock, type ProcessLivenessReader } from "./daemon.js";
-import { startIntakeServer, type ControlAnswer, type ControlMessage } from "./intake.js";
+import { startIntakeServer } from "./intake.js";
 import { createRoomBridge } from "./room-bridge.js";
 import { SupervisorStore, supervisorDatabasePath } from "./state.js";
-import type { HumanGate } from "./human-gate.js";
 import { prepareSupervisorRoot } from "./root.js";
-import { supervisorProgramPaths, type ProtectedSet } from "./eligibility.js";
-import { launchAgentPath } from "./launchd.js";
-import { isStandalone, standaloneRoot } from "../standalone-mode.js";
 
 // The supervisor daemon: one per data directory, in the foreground. launchd
 // keeps it running when installed; tt supervisor run starts it by hand.
 
 export const TICK_INTERVAL_MS = 30_000;
 
-/**
- * Any process of this user, a supervised worker included, can read the
- * control token, so it can't prove a human. Until a verified human-control
- * boundary exists, the control socket changes nothing: no approve, deny or
- * interrupt. Unanswered approvals still expire as a deny.
- */
-export const CONTROL_LOCKED = CONTROL_LOCKED_MESSAGE;
 export const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 export const LOG_KEEP = 3;
 
-/** Every supervisor-owned path, all under its protected state root (see root.ts). */
+/** Every supervisor-owned path, all under its state root (see root.ts). */
 export function supervisorPaths(stateDir: string) {
   const dir = stateDir;
   return {
@@ -39,20 +27,11 @@ export function supervisorPaths(stateDir: string) {
     database: supervisorDatabasePath(stateDir),
     /** Workers are given this one only, for tt deliveries. */
     socket: path.join(dir, "intake.sock"),
-    control: path.join(dir, "control.sock"),
-    controlToken: path.join(dir, "control.token"),
     lock: path.join(dir, "owner.lock"),
     log: path.join(dir, "logs", "daemon.log"),
     /** Only what escapes the daemon's own log, such as a crash; launchd holds it open. */
     launchdLog: path.join(dir, "logs", "launchd.log")
   };
-}
-
-/** The supervisor's program and its launch agent; the daemon adds its state root. */
-export function supervisorProtectedSet(): ProtectedSet {
-  const program = supervisorProgramPaths({ standaloneRoot: isStandalone() ? standaloneRoot() : null });
-  const plist = launchAgentPath();
-  return { paths: [...program.paths, plist, path.dirname(plist)], unresolved: program.unresolved };
 }
 
 /** Exact-process liveness: the pid runs and started when recorded. */
@@ -101,8 +80,6 @@ export interface RunSupervisorOptions {
   log?: (line: string) => void;
   processLiveness?: ProcessLivenessReader;
   service?: TalkingStickService;
-  /** The human-control gate; locked unless a verified one is given (tests inject their own). */
-  gate?: HumanGate;
 }
 
 export async function runSupervisor(options: RunSupervisorOptions): Promise<void> {
@@ -127,11 +104,8 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
     const service = options.service ?? new TalkingStickService({ dataDir: options.dataDir,
       wakeTransport: createSystemWakeTransport(), nativeWakeTransport: createSystemNativeWakeTransport() });
     if (!options.service) cleanups.push(() => service.close());
-    // A fresh control token per daemon, owner-only, never put in a worker's environment.
-    const controlToken = randomBytes(32).toString("base64url");
-    fs.writeFileSync(paths.controlToken, controlToken, { mode: 0o600 });
-    fs.chmodSync(paths.controlToken, 0o600);
-    cleanups.push(() => fs.rmSync(paths.controlToken, { force: true }));
+    // An earlier version's control token is never left behind.
+    fs.rmSync(path.join(root.dir, "control.token"), { force: true });
     let stopRequested: () => void = () => {};
     const stopped = new Promise<void>((resolve) => { stopRequested = resolve; });
     const onSignal = () => stopRequested();
@@ -146,24 +120,10 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
     if (options.signal?.aborted) stopRequested();
     const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
       bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir, bootstrap: true,
-      stateDir: root.dir, gate: options.gate, protectedSet: supervisorProtectedSet() });
+      stateDir: root.dir });
     cleanups.push(() => supervisor.shutdown());
-    const control = async (message: ControlMessage): Promise<ControlAnswer> => {
-      const presented = Buffer.from(message.token);
-      const expected = Buffer.from(controlToken);
-      if (presented.length !== expected.length || !timingSafeEqual(presented, expected)) {
-        return { ok: false, error: "This control request is not authorized." };
-      }
-      // A token anyone of this user can read proves no human: the gate decides, and it is locked by default.
-      const outcome = await supervisor.control({ action: message.action, actor: message.actor, approval_id: message.approval_id,
-        worker_id: message.worker_id, detail_sha256: message.detail_sha256, note: message.note });
-      return outcome.ok ? outcome : { ok: false, error: outcome.error };
-    };
     const server = await startIntakeServer(paths.socket, (message) => supervisor.acceptIntake(message));
     cleanups.push(() => server.close());
-    const controlServer = await startIntakeServer(paths.control,
-      () => ({ outcome: "failed", error: "This socket takes no deliveries." }), control);
-    cleanups.push(() => controlServer.close());
     supervisor.reconcileStartup();
     log(`supervisor running (pid ${process.pid}, ${paths.socket})`);
     // launchd reopens its file at each spawn, so rotating it here applies from the next one.
