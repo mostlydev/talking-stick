@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
 import { Supervisor, acquireOwnerLock, CRASH_LIMIT } from "../src/supervisor/daemon.js";
-import type { WorkerSpec } from "../src/supervisor/adapter.js";
+import { AuthModeError, type WorkerSpec } from "../src/supervisor/adapter.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
 import type { RoomBridge } from "../src/supervisor/room-bridge.js";
 
@@ -25,10 +25,11 @@ function setup(options: { liveness?: (pid: number) => "alive" | "gone" | "unknow
   const store = open();
   const adapter = new FakeAdapter("claude");
   let ids = 0;
-  const make = (s = store, a = adapter, extra: { codex?: FakeAdapter; tickWaitMs?: number } = {}) => new Supervisor({
+  const make = (s = store, a = adapter, extra: { codex?: FakeAdapter; tickWaitMs?: number; answerTimeoutMs?: number } = {}) => new Supervisor({
     store: s, adapters: { claude: a, ...(extra.codex ? { codex: extra.codex } : {}) },
     processLiveness: (pid) => options.liveness?.(pid) ?? "gone", now: () => clock, newId: () => `input-${++ids}`,
-    ...(extra.tickWaitMs ? { tickWaitMs: extra.tickWaitMs } : {}) });
+    ...(extra.tickWaitMs ? { tickWaitMs: extra.tickWaitMs } : {}),
+    ...(extra.answerTimeoutMs ? { answerTimeoutMs: extra.answerTimeoutMs } : {}) });
   const supervisor = make();
   supervisor.reconcileStartup();
   cleanup.push(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -41,9 +42,9 @@ function setup(options: { liveness?: (pid: number) => "alive" | "gone" | "unknow
 describe("the supervisor's store", () => {
   test("is private to the user and keeps env references, not values", () => {
     const { dataDir, store, spec } = setup();
-    store.addWorker({ ...spec, env: [{ name: "API_KEY", from: "keychain", service: "tt-worker" }] }, "human:op", "t");
+    store.addWorker({ ...spec, env: [{ name: "EDITOR", from: "inherit" }] }, "human:op", "t");
     if (process.platform !== "win32") expect(fs.statSync(supervisorDatabasePath(dataDir)).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(store.worker("w1")!.spec_json).env).toEqual([{ name: "API_KEY", from: "keychain", service: "tt-worker" }]);
+    expect(JSON.parse(store.worker("w1")!.spec_json).env).toEqual([{ name: "EDITOR", from: "inherit" }]);
   });
 });
 
@@ -301,98 +302,102 @@ describe("inputs", () => {
   });
 });
 
-describe("approvals", () => {
-  test("are keyed by request: a native id in a new generation, or reused after settling, is a new request", async () => {
+describe("permission requests", () => {
+  test("are denied at once and recorded, so a headless worker never waits on a prompt", async () => {
+    const { store, adapter, supervisor, spec } = setup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x", detail: "touch x" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(adapter.last.answers).toEqual([{ id: "0", decision: "deny" }]);
+    expect(store.recentApprovals()).toEqual([expect.objectContaining({ worker_id: "w1", generation: 1, tool: "Bash",
+      status: "denied", decided_by: "supervisor", answer_status: "delivered" })]);
+    expect(store.latestGeneration("w1")!.state).toBe("idle");
+    expect(store.auditRows("w1").map((row) => row.action)).toContain("approval_denied");
+  });
+
+  test("a native id reused after its denial is a new request, and a dead generation's events are ignored", async () => {
     const { store, adapter, supervisor, spec, advance } = setup();
     store.addWorker(spec, "human:op", "t");
     await supervisor.tick();
     const first = adapter.last;
-    first.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x", detail: "touch x" });
-    expect(store.latestGeneration("w1")!.state).toBe("awaiting_approval");
-    const firstRequest = store.pendingApproval("w1", 1, "0")!;
+    first.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first", detail: "first" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    first.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "second", detail: "second" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(first.answers).toEqual([{ id: "0", decision: "deny" }, { id: "0", decision: "deny" }]);
+    expect(store.worker("w1")!.hold_reason).toBeNull();
     first.emit({ type: "exited", code: 1, signal: null });
-    expect(store.approval(firstRequest.approval_id)!.status).toBe("expired");
     advance(10_000);
     await supervisor.tick();
-    const second = adapter.last;
-    second.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "rm y", detail: "rm y" });
-    const secondRequest = store.pendingApproval("w1", 2, "0")!;
-    await expect(supervisor.decideApproval({ approval_id: firstRequest.approval_id, worker_id: "w1", generation: 1 }, "allow", "human:op"))
-      .rejects.toThrow("is not running");
-    await expect(supervisor.decideApproval({ approval_id: firstRequest.approval_id, worker_id: "w1", generation: 2 }, "allow", "human:op"))
-      .rejects.toThrow("is not running");
-    expect(await supervisor.decideApproval({ approval_id: secondRequest.approval_id, worker_id: "w1", generation: 2 }, "deny", "human:op"))
-      .toBe("delivered");
-    expect(second.answers).toEqual([{ id: "0", decision: "deny" }]);
-    expect(first.answers).toEqual([]);
-    await expect(supervisor.decideApproval({ approval_id: secondRequest.approval_id, worker_id: "w1", generation: 2 }, "allow", "human:op"))
-      .rejects.toThrow("not pending");
-    // Events from the dead generation never reach the live one.
     first.emit({ type: "approval_requested", native_request_id: "7", tool: "Bash", summary: "late", detail: "late" });
-    expect(store.pendingApproval("w1", 1, "7")).toBeNull();
+    expect(store.recentApprovals().filter((row) => row.native_request_id === "7")).toEqual([]);
+    expect(adapter.last).not.toBe(first);
   });
 
-  test("a stale decision cannot approve a native id reused in the same generation", async () => {
+  test.each(["rejected", "never answered"] as const)("a denial that can't be delivered (%s) holds and stops the worker, without a resend", async (how) => {
+    const { store, adapter, spec, make, advance } = setup();
+    store.addWorker(spec, "human:op", "t");
+    const supervisor = make(store, adapter, { answerTimeoutMs: 20 });
+    supervisor.reconcileStartup();
+    await supervisor.tick();
+    const handle = adapter.last;
+    let attempts = 0;
+    handle.answerApproval = how === "rejected"
+      ? async () => { attempts++; throw new Error("EPIPE"); }
+      : () => { attempts++; return new Promise<void>(() => {}); };
+    handle.emit({ type: "turn_started", native_turn_id: "t1" });
+    handle.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x", detail: "x" });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(store.recentApprovals()[0]).toMatchObject({ status: "denied", answer_status: "failed" });
+    expect(store.worker("w1")!.hold_reason).toBe("deny_undelivered");
+    expect(handle.stopped).toBe(true);
+    advance(10 * 60_000);
+    await supervisor.tick();
+    expect(adapter.handles).toHaveLength(1);
+    expect(attempts).toBe(1);
+  });
+
+  test("a second request under an id whose denial is still on its way holds the worker", async () => {
     const { store, adapter, supervisor, spec } = setup();
     store.addWorker(spec, "human:op", "t");
     await supervisor.tick();
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first", detail: "first" });
-    const oldKey = { approval_id: store.pendingApproval("w1", 1, "0")!.approval_id, worker_id: "w1", generation: 1 };
-    await supervisor.decideApproval(oldKey, "deny", "human:op");
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "different request", detail: "different request" });
-    await expect(supervisor.decideApproval(oldKey, "allow", "human:op")).rejects.toThrow();
-    expect(adapter.last.answers).toEqual([{ id: "0", decision: "deny" }]);
-  });
-
-  test("a second request under a still-pending id holds the worker", async () => {
-    const { store, adapter, supervisor, spec } = setup();
-    store.addWorker(spec, "human:op", "t");
-    await supervisor.tick();
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first", detail: "first" });
-    adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "second", detail: "second" });
+    const handle = adapter.last;
+    handle.answerApproval = () => new Promise<void>(() => {});
+    handle.emit({ type: "approval_requested", native_request_id: "0", tool: "read", summary: "first", detail: "first" });
+    handle.emit({ type: "approval_requested", native_request_id: "0", tool: "write", summary: "second", detail: "second" });
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(store.worker("w1")!.hold_reason).toBe("protocol_error");
-    expect(adapter.last.stopped).toBe(true);
-  });
-
-  test("a decision stays made when delivering its answer fails", async () => {
-    const { store, adapter, supervisor, spec } = setup();
-    store.addWorker(spec, "human:op", "t");
-    await supervisor.tick();
-    adapter.last.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x", detail: "x" });
-    adapter.last.answerApproval = async () => { throw new Error("EPIPE"); };
-    const request = store.pendingApproval("w1", 1, "a1")!;
-    expect(await supervisor.decideApproval({ approval_id: request.approval_id, worker_id: "w1", generation: 1 }, "allow", "human:op"))
-      .toBe("failed");
-    expect(store.approval(request.approval_id)).toMatchObject({ status: "allowed", answer_status: "failed" });
-  });
-
-  test("expire after 24 hours as a deny", async () => {
-    const { store, adapter, supervisor, spec, advance } = setup();
-    store.addWorker(spec, "human:op", "t");
-    await supervisor.tick();
-    adapter.last.emit({ type: "approval_requested", native_request_id: "a1", tool: "Bash", summary: "x", detail: "x" });
-    const request = store.pendingApproval("w1", 1, "a1")!;
-    advance(24 * 60 * 60_000 + 1);
-    await supervisor.tick();
-    expect(store.approval(request.approval_id)).toMatchObject({ status: "expired", decided_by: "supervisor", answer_status: "delivered" });
-    expect(adapter.last.answers).toEqual([{ id: "a1", decision: "deny" }]);
+    expect(handle.stopped).toBe(true);
+    expect(store.recentApprovals()).toHaveLength(1);
   });
 });
 
-test("a request the harness settles itself expires, and a later decision is refused", async () => {
-  const { store, adapter, supervisor, spec } = setup();
+test.each(["auth_required", "wrong_auth_mode"] as const)("a start refused for its login (%s) is held, not counted as a crash", async (reason) => {
+  const { store, adapter, supervisor, spec, advance } = setup();
+  store.addWorker(spec, "human:op", "t");
+  adapter.failStartWith = () => new AuthModeError(reason, "not a subscription login");
+  await supervisor.tick();
+  expect(store.worker("w1")!.hold_reason).toBe(reason);
+  expect(store.crashesSince("w1", "2000-01-01")).toBe(0);
+  expect(store.auditRows("w1").map((row) => row.action)).toContain(reason);
+  advance(10 * 60_000);
+  await supervisor.tick();
+  expect(store.liveGenerations()).toEqual([]);
+});
+
+test("a worker signed in with an API key is stopped and held, and not restarted", async () => {
+  const { store, adapter, supervisor, spec, advance } = setup();
   store.addWorker(spec, "human:op", "t");
   await supervisor.tick();
-  adapter.last.emit({ type: "turn_started", native_turn_id: "t1" });
-  adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "x", detail: "x" });
-  const request = store.pendingApproval("w1", 1, "0")!;
-  adapter.last.emit({ type: "approval_resolved", native_request_id: "0" });
-  expect(store.approval(request.approval_id)).toMatchObject({ status: "expired", decided_by: "harness" });
-  expect(store.latestGeneration("w1")!.state).toBe("busy");
-  await expect(supervisor.decideApproval({ approval_id: request.approval_id, worker_id: "w1", generation: 1 }, "allow", "human:op"))
-    .rejects.toThrow("not pending");
-  expect(adapter.last.answers).toEqual([]);
+  const handle = adapter.last;
+  handle.emit({ type: "state", state: "wrong_auth_mode" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(store.worker("w1")!.hold_reason).toBe("wrong_auth_mode");
+  expect(handle.stopped).toBe(true);
+  advance(10 * 60_000);
+  await supervisor.tick();
+  expect(adapter.handles).toHaveLength(1);
 });
 
 test("shutdown cancels a start still in its handshake, so no child outlives the daemon", async () => {
@@ -552,13 +557,13 @@ describe("restart and status", () => {
   });
 });
 
-test("an approval is recorded with its tool, summary and detail escaped, whatever the adapter sent", async () => {
+test("a permission request is recorded with its tool, summary and detail escaped, whatever the adapter sent", async () => {
   const { store, adapter, supervisor, spec } = setup();
   store.addWorker(spec, "human:op", "t");
   await supervisor.tick();
   adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash\u001b[2J\u202e", summary: "rm\u0085\u061c",
     detail: JSON.stringify({ tool_name: "Bash\u202e" }) });
-  const recorded = store.pendingApproval("w1", 1, "0")!;
+  const recorded = store.recentApprovals()[0];
   for (const text of [recorded.tool, recorded.summary, recorded.detail]) expect(text).toMatch(/^[\x20-\x7e\n]*$/);
   expect(JSON.parse(recorded.detail)).toEqual({ tool_name: "Bash\u202e" });
 });

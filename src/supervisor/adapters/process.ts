@@ -1,46 +1,33 @@
-import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import os from "node:os";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import type { SpawnedProcess, WorkerSpec } from "../adapter.js";
 
-/** Resolves one macOS generic-password item. Tests supply a fake; production uses `security`. */
-export type KeychainReader = (service: string) => Promise<string>;
-
 // An empty environment, with just HOME and PATH as native runtimes require
-// them for authentication storage and executable lookup. Everything else is
+// them for their own login storage and executable lookup. Everything else is
 // an explicit reference; supervisor_env wins over those references.
-export async function workerEnvironment(spec: WorkerSpec, source: NodeJS.ProcessEnv = process.env,
-  readKeychain?: KeychainReader): Promise<NodeJS.ProcessEnv> {
+export function workerEnvironment(spec: WorkerSpec, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { HOME: source.HOME ?? os.homedir(), PATH: source.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin" };
   for (const ref of spec.env) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref.name) || isIdentityMarker(ref.name)) {
       throw new Error(`Worker environment cannot set identity marker ${ref.name}.`);
     }
+    if (isModelCredential(ref.name)) throw new Error(MODEL_CREDENTIAL_MESSAGE(ref.name));
     if (ref.from === "inherit") {
       if (source[ref.name] !== undefined) env[ref.name] = source[ref.name];
     } else if (ref.from === "literal") env[ref.name] = ref.value;
-    else {
-      // A fake reader is how tests avoid `security`, which can raise a dialog.
-      if (readKeychain === undefined && process.platform !== "darwin") throw new Error("Keychain environment references require macOS.");
-      try {
-        env[ref.name] = await (readKeychain ?? readMacKeychain)(ref.service);
-      } catch {
-        // Neither the credential nor security's raw error enters logs.
-        throw new Error(`Cannot resolve Keychain environment reference ${ref.name}.`);
-      }
-    }
+    // A spec stored by an earlier version may name a Keychain item; that route is gone.
+    else throw new Error(`Worker environment reference ${(ref as { name: string }).name} uses a source that is no longer supported.`);
   }
   return Object.assign(env, spec.supervisor_env ?? {});
 }
 
-function readMacKeychain(service: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile("/usr/bin/security", ["find-generic-password", "-s", service, "-w"],
-      { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 }, (error, stdout) => {
-        if (error) reject(error);
-        else resolve(stdout.replace(/\r?\n$/, ""));
-      });
-  });
+/** Workers run on the user's subscription logins, never a model API key or provider override. */
+export const MODEL_CREDENTIAL_MESSAGE = (name: string) =>
+  `${name} would run the worker on an API key or another provider; supervised workers use the harness's own subscription login.`;
+
+export function isModelCredential(name: string): boolean {
+  return /^(ANTHROPIC|OPENAI|CODEX|XAI|GROK)_(API_KEY|AUTH_TOKEN|ADMIN_KEY|BASE_URL)$/.test(name);
 }
 
 function isIdentityMarker(name: string): boolean {

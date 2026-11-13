@@ -153,18 +153,14 @@ describe("a supervised member", () => {
     expect(requests).toHaveLength(1);
   });
 
-  // Codex's review of #211 (#32680): no caller-supplied human id unlocks reconcile.
-  test.each(["resend", "drop"] as const)("reconciling a fenced batch is locked, even for a claimed human (%s)", async (action) => {
+  // A batch whose effect is unknown is never resent: nothing can prove it wasn't delivered.
+  test("a fenced batch with an unknown effect stays fenced across a new generation", async () => {
     const { service, requests, register, send, fence, offered } = setup();
     register(1);
     const first = await send("uncertain effect");
     const token = requests[0].delivery_token!;
     fence(1, token, "writing");
     fence(1, token, "written");
-    for (const agent of ["human:forged-by-worker", OP, "claude:w"]) {
-      expect(() => service.reconcileManagedDelivery({ agent_id: agent, batch_token: token, action }))
-        .toThrow(expect.objectContaining({ code: "control_locked" }));
-    }
     register(2);
     await service.flushWakes();
     // Still fenced: never offered again, never marked read.

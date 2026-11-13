@@ -30,7 +30,9 @@ function fixture(mode = "", options: GrokAdapterOptions = {}) {
     env: [{ name: "FIXTURE_MODE", from: "literal", value: mode }, { name: "FIXTURE_TRACE", from: "literal", value: trace }],
     supervisor_env: { TALKING_STICK_DATA_DIR: dataDir }, state_dir: path.join(dataDir, "..", "state") };
   const adapter = new GrokAdapter({ command: process.execPath,
-    argsPrefix: [fileURLToPath(new URL("./fixtures/grok-stdio.cjs", import.meta.url))], startTimeoutMs: 500, ...options });
+    argsPrefix: [fileURLToPath(new URL("./fixtures/grok-stdio.cjs", import.meta.url))], startTimeoutMs: 500,
+    // Never the real ~/.grok in a test.
+    home: path.join(root, "user-grok-default"), ...options });
   const events: WorkerEvent[] = [];
   const spawned: number[] = [];
   const start = async (signal?: AbortSignal): Promise<WorkerHandle> => {
@@ -40,8 +42,7 @@ function fixture(mode = "", options: GrokAdapterOptions = {}) {
     return handle;
   };
   const lines = () => fs.existsSync(trace) ? fs.readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, any>) : [];
-  const privateHome = path.join(spec.state_dir!, "workers", spec.worker_id, "grok");
-  return { root, dataDir, trace, spec, adapter, events, spawned, start, lines, privateHome };
+  return { root, dataDir, trace, spec, adapter, events, spawned, start, lines };
 }
 
 describe("Grok capabilities", () => {
@@ -60,7 +61,7 @@ describe("Grok capabilities", () => {
 });
 
 describe("starting a Grok worker", () => {
-  test("runs agent --no-leader stdio in a private home and never copies user config", async () => {
+  test("runs agent --no-leader stdio in the user's own GROK_HOME, creating and copying nothing", async () => {
     process.env.TT_ROOM = "/somewhere/else";
     process.env.GROK_AGENT = "1";
     process.env.GROK_SESSION_ID = "live-session";
@@ -71,13 +72,14 @@ describe("starting a Grok worker", () => {
       delete process.env.GROK_SESSION_ID;
       delete process.env.TT_SUPERVISOR_TOKEN;
     });
-    const f = fixture();
-    const userHome = path.join(f.root, "user-grok");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-grok-user-"));
+    cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
+    const userHome = path.join(root, "user-grok");
     fs.mkdirSync(userHome, { mode: 0o700 });
-    fs.writeFileSync(path.join(userHome, "config.toml"), 'permission_mode = "always-approve"\n');
+    fs.writeFileSync(path.join(userHome, "config.toml"), 'permission_mode = "default"\n');
     fs.writeFileSync(path.join(userHome, "auth.json"), '{"secret":true}\n', { mode: 0o600 });
+    const f = fixture("", { home: userHome });
     f.spec.model = "grok-4";
-    f.spec.env.push({ name: "GROK_HOME", from: "literal", value: userHome });
     const handle = await f.start();
     const startup = f.lines()[0];
     expect(startup.argv).toEqual(["agent", "--no-leader", "stdio"]);
@@ -85,13 +87,11 @@ describe("starting a Grok worker", () => {
     expect(startup.env).toMatchObject({
       TT_ROOM: null, GROK_AGENT: null, GROK_SESSION_ID: null,
       TT_SUPERVISOR_ENDPOINT: null, TT_SUPERVISOR_TOKEN: null,
-      TALKING_STICK_DATA_DIR: f.dataDir, GROK_HOME: f.privateHome,
+      TALKING_STICK_DATA_DIR: f.dataDir, GROK_HOME: userHome,
     });
-    expect(startup.homeFiles).toEqual([]);
-    expect(startup.configCopied).toBe(false);
-    expect(fs.readdirSync(f.privateHome)).toEqual([]);
-    expect(fs.readFileSync(path.join(userHome, "config.toml"), "utf8")).toContain("always-approve");
-    expect(fs.statSync(f.privateHome).mode & 0o777).toBe(0o700);
+    expect(startup.homeFiles.sort()).toEqual(["auth.json", "config.toml"]);
+    expect(fs.readFileSync(path.join(userHome, "auth.json"), "utf8")).toBe('{"secret":true}\n');
+    expect(fs.existsSync(path.join(f.spec.state_dir!, "workers", "w1", "grok"))).toBe(false);
     expect(fs.existsSync(path.join(f.spec.state_dir!, "workers", "w1", "process-1.json"))).toBe(false);
     expect(fs.existsSync(path.join(f.dataDir, "supervisor"))).toBe(false);
     expect(handle.sessionId()).toBe("grok-session-1");
@@ -105,24 +105,19 @@ describe("starting a Grok worker", () => {
     expect(f.lines().some((line) => line.method === "session/prompt" || line.method === "session/resume" || line.method === "session/load")).toBe(false);
   });
 
-  test("a Keychain XAI_API_KEY reaches the child environment and is not stored", async () => {
-    const secret = "not-a-real-credential";
-    const services: string[] = [];
-    const f = fixture("", { readKeychain: async (service) => { services.push(service); return secret; } });
-    f.spec.env.push({ name: "XAI_API_KEY", from: "keychain", service: "tt-grok-test" });
+  test("a spec's GROK_HOME wins over the user's default", async () => {
+    const f = fixture("", { home: "/nonexistent/default-grok" });
+    const named = path.join(f.root, "named-grok");
+    f.spec.env.push({ name: "GROK_HOME", from: "literal", value: named });
     await f.start();
-    expect(services).toEqual(["tt-grok-test"]);
-    expect(f.lines()[0].env.XAI_API_KEY).toBe("set");
-    expect(fs.readFileSync(f.trace, "utf8")).not.toContain(secret);
-    expect(fs.readdirSync(f.privateHome)).toEqual([]);
-    expect(fs.existsSync(path.join(f.privateHome, "auth.json"))).toBe(false);
-    expect(fs.existsSync(path.join(f.privateHome, "config.toml"))).toBe(false);
+    expect(f.lines()[0].env.GROK_HOME).toBe(named);
+    expect(fs.existsSync(named)).toBe(false);
   });
 
-  test("a missing Keychain item fails before spawn and hides the resolver error", async () => {
-    const f = fixture("", { readKeychain: async () => { throw new Error("security said hunter2"); } });
-    f.spec.env.push({ name: "XAI_API_KEY", from: "keychain", service: "missing" });
-    await expect(f.start()).rejects.toThrow("Cannot resolve Keychain environment reference XAI_API_KEY.");
+  test.each(["XAI_API_KEY", "GROK_API_KEY"])("a %s reference is refused before spawn: workers run on the subscription login", async (name) => {
+    const f = fixture();
+    f.spec.env.push({ name, from: "inherit" });
+    await expect(f.start()).rejects.toThrow(`${name} would run the worker on an API key`);
     expect(f.spawned).toEqual([]);
     expect(fs.existsSync(f.trace)).toBe(false);
   });

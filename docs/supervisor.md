@@ -1,13 +1,20 @@
 # Managed headless supervisor
 
-Status: design agreed (room notes 2824973c, 01cd46da and 4ffa33a6, consolidated here). The core, room bridge, CLI, launchd integration, and the Codex, Claude, and Grok adapters are in `src/supervisor/`.
-The Grok adapter only attempts a fresh session. An `XAI_API_KEY` Keychain reference can name a credential; using that variable to pass `session/new` is not yet shown. The "Slices" table records each slice. The
-[full headless roadmap](plans/2026-10-26-full-headless-roadmap.md) plans what comes next: room templates, tasks, lifecycles and a main manager.
+Status: preview. The core, room bridge, CLI, launchd integration, and the Codex, Claude, and Grok
+adapters are in `src/supervisor/`. The Grok adapter only attempts a fresh session and takes no
+prompt yet. The "Slices" table records each slice. What comes next is
+[headless rooms](plans/2026-11-13-headless-rooms.md): `tt up --headless`, so any agent can start a
+room of headless agents for a task.
 
 The supervisor is optional. It starts Claude, Codex and Grok in their headless modes as
-processes it owns, and keeps them running. It changes nothing for Herdr, tmux or terminal sessions,
-and it never adopts or takes over a session it did not start. Process groups give it lifecycle
-control only. They are not a security sandbox.
+processes it owns, and keeps them running. It changes nothing for `tt up`, Herdr, tmux or
+terminal sessions, which work as before without it, and it never adopts or takes over a session
+it did not start.
+
+It is for trusted local use. Workers run as you, on your own harness logins and settings, the
+same as the agents you start in a terminal: your subscriptions, never an API key. Process groups
+give the supervisor lifecycle control only; they are not a security sandbox, and the local room
+database is the coordination boundary, as it is for every other agent.
 
 ## Adapters
 
@@ -30,11 +37,9 @@ An adapter speaks one harness's headless protocol. The interface is `src/supervi
   - `uncertain`: written but never acknowledged. It is never retried.
 
   A pipe error or EPIPE alone is not proof that nothing was written.
-- `answerApproval(native_request_id, …)` answers on that handle's own generation only.
-  - It refuses an id the harness no longer has pending.
-  - A native cancellation, such as Codex's `serverRequest/resolved` after an interrupt, is
-    reported as `approval_resolved`. The supervisor then expires that exact pending occurrence,
-    and a decision made afterwards is refused.
+- `answerApproval(native_request_id, …)` answers on that handle's own generation only, and
+  refuses an id the harness no longer has pending. The supervisor uses it to deny every
+  permission prompt at once (see "Permission requests").
 - `probe()` checks liveness without the model: the process, and a protocol ping where one exists.
 - `stop(grace)`: stdin EOF, then the process group, then SIGKILL.
 - Adapters drain the child's output continuously and bound their queues. An overflow of protocol
@@ -42,31 +47,41 @@ An adapter speaks one harness's headless protocol. The interface is `src/supervi
 
 ### Permissions and environment
 
-Each worker states its permissions, and nothing is inherited:
+Workers use your own harness settings and logins, with these per-worker options on top:
 
 | Harness | Permissions |
 | --- | --- |
-| Claude | `--permission-mode default` or `plan`, `--permission-prompt-tool stdio`, `--setting-sources project,local`, `--strict-mcp-config`. Never `bypassPermissions` or `--dangerously-*`. |
-| Codex | An explicit sandbox (`read-only` or `workspace-write`) and approval policy (`on-request` or `untrusted`) on each thread. Never `never` or `danger-full-access`. |
-| Grok | `grok agent --no-leader stdio` with a private `GROK_HOME`. The user's config is never copied, since it may set always-approve. No leader attach, no plugin dir. `XAI_API_KEY` may be named with a Keychain env ref and is not copied into the home. |
+| Claude | `--permission-mode default` or `plan`, `--permission-prompt-tool stdio`, and your settings (`--setting-sources user,project,local`). Never `bypassPermissions` or `--dangerously-*`. |
+| Codex | An explicit sandbox (`read-only` or `workspace-write`) and approval policy (`on-request` or `untrusted`) on each thread, in your `CODEX_HOME`. Never `never` or `danger-full-access`. |
+| Grok | `grok agent --no-leader stdio` in your `GROK_HOME`. No leader attach, no plugin dir. |
 
 A worker spec stores environment references only: names passed through from the supervisor's
-own environment, names resolved from the macOS Keychain at spawn, and approved non-secret
-literals. At each start the supervisor adds the runtime `supervisor_env`:
+own environment, and non-secret literals. No reference may name a model API key or provider
+override (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `XAI_API_KEY`, `GROK_API_KEY`,
+their `_AUTH_TOKEN`, `_ADMIN_KEY` and `_BASE_URL` forms): `add` refuses one, and so does every
+start. At each start the supervisor adds the runtime `supervisor_env`:
 - the supervisor's own `TALKING_STICK_DATA_DIR`, for every worker, so its tt calls land in this
   room database;
 - the endpoint and delivery token, for workers that can take a prompt.
 
-Adapters start with only HOME and PATH (needed by native executables), then those references,
-with protected supervisor values applied last. They never copy the daemon's whole environment,
-so no inherited `TT_ROOM` or harness identity marker reaches the worker. Credential values are never stored. Hooks stay under the harness's own trust, and
-nothing bypasses it.
+Adapters start with only HOME and PATH (needed by native executables and their logins), then
+those references, with protected supervisor values applied last. They never copy the daemon's
+whole environment, so no inherited `TT_ROOM`, API key or harness identity marker reaches the
+worker. Hooks stay under the harness's own trust, and nothing bypasses it.
 
-The daemon and workers currently share an OS user. The human-only CLI checks and separate
-control token prevent accidental cross-control; they do not prevent a worker deliberately
-reading `<state>/control.token` and using it. The native workspace-write sandbox restricts writes
-only, so it does not hide that readable file. Strong approval isolation needs a separate OS authority or
-an authenticated human channel; do not treat this preview as that security boundary.
+**Subscriptions only, checked before any input.** A worker must show a subscription login
+before it can take a prompt, so nothing ever spends API funds. Otherwise it is held, not
+counted as a crash, and its credentials are left alone: `auth_required` when nobody is signed
+in, `wrong_auth_mode` for anything else. An unreadable or unknown answer fails closed.
+- Claude: before the worker's process starts, `claude auth status --json` runs with the same
+  executable, environment and directory. Only `loggedIn` with `authMethod` `claude.ai` (or a
+  `claude setup-token` subscription token, `oauth_token`) and `apiProvider` `firstParty` passes;
+  an API key, an `apiKeyHelper`, Bedrock, Vertex or any other provider doesn't. Only the verdict
+  is kept, never the identity. Each turn's `init` is checked again (`apiKeySource` must be `none`).
+- Codex: `account/read` at start must report a `chatgpt` account. An API key, another provider
+  that needs no OpenAI login, or an unknown account type is refused. No login at all waits as
+  `auth_required` for one. The login is read again after a reload, and when an auth error
+  appears.
 
 ### Codex
 
@@ -75,10 +90,11 @@ an official npm wrapper to its native binary rather than recording the wrapper's
 version-manager or launchd environment with a minimal PATH, use explicit non-secret `PATH` and
 `CODEX_EXECUTABLE` environment references; the latter names the absolute native executable.
 
-By default it creates a private CODEX_HOME under `<state>/workers/<worker>/codex`.
-It never copies credentials, user configuration, hooks or plugins there. Authenticate that home
-separately, or explicitly reference a prepared CODEX_HOME. Missing authentication is visible as
-`auth_required`, and the non-model probe detects a later login. Never put credentials in literals.
+It runs in your own CODEX_HOME (`CODEX_HOME`, else `~/.codex`), with your config and your
+ChatGPT subscription login, unless the spec names another with `--env CODEX_HOME=literal:…`.
+Nothing is created or copied there. Missing authentication is visible as `auth_required`, and the
+non-model probe detects a later login. Whether several app-server processes share one home's
+login refresh safely hasn't been shown, so treat a shared home as an acceptance check.
 Workspace-write adds only the configured Talking Stick data directory to the native writable
 roots and keeps network access disabled. Read-only workers may need human approval for their
 room metadata writes. Returned sandbox and approval settings are checked before any prompt.
@@ -89,12 +105,10 @@ session never repeats it. A failed or interrupted enrolment is held as `bootstra
 a fresh restart creates a new conversation rather than replaying uncertain input. The enrolment
 reservation and input journal commit atomically, including before any possible pipe write.
 
-Input uses turn/start while idle and exact-turn turn/steer while busy. Interrupt success requires
-a native interrupted completion, not merely an RPC acknowledgement. Command and file-change
-approvals allow one request only; deny sends `decline`, which refuses that action and lets the
-turn continue (`cancel` would also interrupt). Native resolution expires the pending occurrence,
-including request ID 0. Unsupported tool-input, permission and plugin requests are refused and
-audited, without leaving a synthetic input wait after the refusal.
+Input uses turn/start while idle and exact-turn turn/steer while busy. Command and file-change
+approval requests are denied at once with `decline`, which refuses that action and lets the turn
+continue (`cancel` would also interrupt). Unsupported tool-input, permission and plugin requests
+are refused and audited, without leaving a synthetic input wait after the refusal.
 Output is drained with bounded frames and queues; raw provider diagnostics are not logged.
 When sandboxed `ps` cannot read a process start time, the supervisor writes private process
 evidence before the handshake. The CLI fills only the missing start time of its already selected
@@ -110,11 +124,9 @@ are not implemented yet.
 Example setup from your own terminal (replace the paths):
 
 ```sh
-# Authenticate an isolated prepared home; no credentials are copied by tt.
-CODEX_HOME=/absolute/private/codex-home codex login
+# Uses your own Codex login: run `codex login` once if you haven't.
 tt supervisor add coder --harness codex --cwd /absolute/repository \
   --sandbox workspace-write --approval on-request \
-  --env CODEX_HOME=literal:/absolute/private/codex-home \
   --env CODEX_EXECUTABLE=literal:/absolute/native/codex \
   --env PATH=literal:/absolute/tt-bin:/usr/bin:/bin:/usr/sbin:/sbin
 tt supervisor run
@@ -133,18 +145,11 @@ endpoint. It is reached only through its own `tt` calls.
 
 - **How it runs:** `grok agent --no-leader stdio`. There is no `--always-approve`, `--plugin-dir`,
   `--debug`, or leader attach. A model flag is not passed.
-- **Home:** `GROK_HOME` is always a private directory, mode 0700, at
-  `<state>/workers/<worker>/grok`. A spec or inherited `GROK_HOME` is ignored. Nothing
-  is copied into it, including `~/.grok/config.toml` and credentials, because the user config can
-  set always-approve.
+- **Home:** your own `GROK_HOME` (`GROK_HOME`, else `~/.grok`), where `grok login` keeps your
+  subscription login, unless the spec names another. Nothing is created or copied.
 - **Environment:** the data directory, plus any explicit env refs. No supervisor endpoint or
-  delivery token, and no inherited `TT_ROOM`, `GROK_AGENT`, or `GROK_SESSION_ID`.
-  `--env XAI_API_KEY=keychain:SERVICE` is the supported way to name a credential. At start, tt
-  reads that macOS generic-password item and places the value only in the child environment.
-  A missing or unreadable item throws before the process is spawned. The error names
-  `XAI_API_KEY` and does not include the secret or the Keychain tool's own text. tt does not
-  create the item or answer a Keychain dialog. A resolved value has not been shown to make
-  `session/new` succeed.
+  delivery token, and no inherited `TT_ROOM`, `GROK_AGENT`, or `GROK_SESSION_ID`. An
+  `XAI_API_KEY` or `GROK_API_KEY` reference is refused.
 - **Handshake:** `initialize` (`protocolVersion` 1 and client info only; no file or terminal
   capabilities), then `session/new` with the working directory and an empty MCP server list.
   The session id is `result.sessionId`. A missing id, an authentication error, or any other
@@ -158,26 +163,23 @@ endpoint. It is reached only through its own `tt` calls.
   child.
 - **Liveness:** the process alone is not enough. `probe` is alive only when `session/list`
   names this worker's session id; an empty, other or unreadable list is unknown.
-- **Approvals stay locked.** This adapter does not answer them.
-- **Native evidence (grok 1.0.70, macOS, a disposable probe with an empty private home):**
+- **Native evidence (grok 1.0.70, macOS, a disposable probe with an empty home):**
   - `initialize` answers protocol version 1 with an `authMethods` list. The adapter never calls
     `authenticate`, so nothing starts a login.
   - `session/new` fails with -32000 "Authentication required". Grok writes its own `config.toml`,
     logs and session store into the private home, and no credentials are there.
   - `session/list` answers `{ sessions: [] }`, and EOF exits 0 within 3 seconds.
-- **Without a resolved credential, no Grok worker stays up.** `session/new` fails as above, the
+- **Without a login in its home, no Grok worker stays up.** `session/new` fails as above, the
   child is stopped, and the worker is held `crash_loop` after five failures in 15 minutes. A
-  Keychain reference that cannot be read fails earlier, before spawn, and follows the same
-  crash backoff. Neither path is a proven login.
+  subscription login in your own home hasn't been shown to pass `session/new` yet.
 
 ## State
 
 ### Where it lives
 
-Supervisor-owned state lives in a protected root, `<state>`, outside the tt data directory, since
-workers must be able to write the data directory for their own `tt` calls. That root holds the
-database, control token, sockets, owner lock, logs, worker native homes and process evidence. A
-gate helper, once one is installed, belongs there too.
+Supervisor-owned state lives in a root, `<state>`, outside the tt data directory. That root holds
+the database, the intake socket, the owner lock, logs and process evidence. A `control.token`
+left by an earlier version is removed when the daemon starts.
 - **Location:** `~/Library/Application Support/talking-stick/supervisor/<id>` on macOS, and
   `$XDG_STATE_HOME/talking-stick/supervisor/<id>` elsewhere, falling back to `~/.local/state`. An
   absolute `TT_SUPERVISOR_STATE_DIR` overrides the base, which tests use.
@@ -199,7 +201,7 @@ gate helper, once one is installed, belongs there too.
 ### Migration from the old layout
 
 Older versions kept `<data>/supervisor.sqlite` (with `-wal` and `-shm`) beside the data, and
-`<data>/supervisor/` for homes, evidence, logs, sockets and the token. While that database, or
+`<data>/supervisor/` for homes, evidence, logs, sockets and a token. While that database, or
 `workers/` or `logs/` under that directory, exists,
 every command except `migrate` and `uninstall` refuses and names `tt supervisor migrate`. That
 includes reads, so nothing creates a new empty root that would hide the old state.
@@ -249,8 +251,8 @@ another base finds either the old state or the marker, never an empty data direc
 - `generations`: one row per started process, with its exact pid, start time, process group,
   native session id and observed state. The states are:
   - `starting`, `idle`, `busy`;
-  - `awaiting_approval`, `awaiting_input`;
-  - `disconnected`, `unknown`, `auth_required`;
+  - `awaiting_approval` (from an earlier version), `awaiting_input`;
+  - `disconnected`, `unknown`, `auth_required`, `wrong_auth_mode`;
   - `dead`.
 
   Model activity is kept here as `last_model_activity_at`, and never written to the room.
@@ -262,22 +264,25 @@ another base finds either the old state or the marker, never an empty data direc
   - When a generation ends, anything dispatched but not completed is uncertain, including an
     accepted turn whose completion is unknown. Only input never dispatched is rejected.
   - Input text is not stored.
-- `approvals`: each request occurrence has its own `approval_id`.
+- `approvals`: every permission request a worker made, and its denial. Each occurrence has its
+  own `approval_id`.
+  - A denial that can't be delivered, or isn't within 10 seconds, holds the worker
+    `deny_undelivered` and stops it, since it may still be waiting on the prompt. Its turn is
+    left uncertain and nothing is resent. A second request under an id whose denial is still on
+    its way is a protocol error, and holds the worker.
   - Each keeps the whole native request as `detail`, with its SHA-256, beside a one-line summary.
     The detail is indented JSON. Every control, format (bidi marks and overrides included),
     separator and default-ignorable character is escaped, in the detail, the summary and the tool
-    name alike, and the daemon escapes them again when it records a request. For Claude the detail
-    is the very input an allow sends back. A request over 128 KiB is refused natively and
-    never becomes pending, since no human could review it whole.
+    name alike, and the daemon escapes them again when it records a request. A request over
+    128 KiB is refused natively without a row.
   - A native id may repeat across processes, like Codex's `0`, or within one generation once its
     earlier request settled. Each repeat is a new request.
-  - A second request under an id that's still pending is a protocol error, and holds the worker.
-  - The decision and the delivery of its answer are recorded separately, so a failed pipe write
-    leaves the decision made and `answer_status` failed.
+  - The denial and the delivery of its answer are recorded separately, so a failed pipe write
+    leaves the request denied and `answer_status` failed.
 - `bootstrap_sessions`: the one enrolment input reserved per worker/native session, linked atomically
   to its journal row. Error, interruption or process death before successful completion holds
   `bootstrap_failed`, including after a daemon restart; it never causes automatic replay.
-- `crashes`, and an `audit` log of every control action.
+- `crashes`, and an `audit` log of every operator action and denial.
 
 Supervisor migration 3 only adds the enrolment table; it does not change the room schema.
 For rollback, stop the preview daemon first. Older builds leave the extra table and native
@@ -312,8 +317,8 @@ histories intact but cannot run this new adapter. Preserve CODEX_HOME when retai
   start; after that the latest generation decides.
   An operator's restart stops the running generation and resumes its session. Only a fresh
   restart begins a new conversation.
-- **When a generation ends**, its written inputs become `uncertain`, its pending approvals expire,
-  and nothing carries over to the next generation. A new generation never inherits a writer
+- **When a generation ends**, its written inputs become `uncertain`, any request still pending
+  expires, and nothing carries over to the next generation. A new generation never inherits a writer
   lease: tt's own lease and guardian rules apply to each worker like any member.
 - **Fencing:** every control change increments `desired_version`. A start that completes after a
   newer pause or stop stops the process it spawned.
@@ -321,287 +326,32 @@ histories intact but cannot run this new adapter. Preserve CODEX_HOME when retai
   refuse new input at once, before the next tick. A stop that fails is audited and retried, and
   never crashes the loop.
 
-## Approvals and control
+## Permission requests
 
-**Control is locked for now.** Every process of this user, supervised workers included, can read
-the control token, so the token can't prove that a human sent a request. Until a verified
-human-control boundary exists, the control socket refuses every change: `approve`, `deny` and
-`interrupt`, and audits each refusal. `tt supervisor approve`, `deny`, `interrupt` and `reconcile`
-refuse before connecting. So does the library's `reconcileManagedDelivery`, whatever `human:` id
-its caller claims.
+Nobody sits at a headless worker's keyboard, so the supervisor doesn't redesign approvals. Each
+harness's own settings decide what a worker may do without asking: your Claude settings and
+project allow rules, and the Codex sandbox and approval policy. Anything that still asks is
+denied at once, so a worker never waits on a prompt:
 
-That means:
-- A supervised worker that reads the token and uses it on its own pending request gets nothing.
-- Pending approvals stay visible in `tt supervisor approvals`, each in full with `tt supervisor
-  approvals show <approval-id>`, and expire after 24 hours as a deny.
-- A possibly delivered message stays fenced, never resent.
+- The request is recorded in full (`tt supervisor approvals`, and `approvals show <id>` for the
+  whole request), denied, and audited as `approval_denied`.
+- Claude's worker gets a deny with a note saying nobody can approve prompts here, and to work
+  within what its settings allow or ask the operator through the room. Codex gets `decline`.
+- The denial is visible: `tt supervisor status` counts each worker's denied requests.
 
-### Human control
+There is no approve, deny, interrupt or reconcile command and no control socket. Earlier versions
+locked these behind a human gate that was never accepted; they were removed rather than kept
+locked. To let a worker do more, allow it in that harness's own settings, as you would for a
+terminal session.
 
-The control token only admits a request to the daemon. Whether it takes effect is up to a
-`HumanGate` (`src/supervisor/human-gate.ts`), which the daemon asks to confirm that exact request.
-The built-in gate is locked: it refuses everything and asks nothing. Nothing in the shipped build
-selects another gate.
-
-What the daemon does with a gate (`Supervisor.control`):
-- **Before asking:** the request must name a pending approval of the running generation, or a
-  running worker with a turn in progress for an interrupt, which is bound to that native turn. An approve or deny must also name the detail digest its requester
-  reviewed (`tt supervisor approvals show`), in full or as a 12+ hex prefix. A row recorded without
-  full detail is refused. None of these reach the gate.
-- **The question:** the daemon builds it from its own records: action, tool, summary, worker,
-  generation, approval id and digest, and the native turn for an interrupt, all escaped
-  (`gateReason`). The requester supplies none of that text, except a note to the worker. That must
-  be plain text of at most 300 characters, and it is shown in full before it is sent.
-- **One at a time:** a second request while one waits is refused, not queued, so a worker can't
-  slip its request in behind a human's. "Waits" lasts until the gate has really ended. A timed-out
-  helper is sent SIGTERM, then SIGKILL two seconds later, and no new question starts while its
-  dialog may still be up.
-- **Fail closed:** a gate that throws, or doesn't answer within two minutes, is a refusal. An
-  unavailable gate answers as locked.
-- **After the answer:** the daemon checks the request again, the same pending approval, generation,
-  worker handle and digest. If anything changed while the human was asked, such as the generation
-  exiting or the harness settling the request, the confirmation applies to nothing. Settling is
-  single-use, so a replay finds nothing pending.
-- **Audit:** every outcome is recorded: confirmed, refused, unavailable, busy, or changed.
-
-`reconcileManagedDelivery`, on the room side, stays locked whatever the gate says. A resend or
-drop decision is not wired to a gate yet.
-
-#### The mechanism, and its limits
-
-These limits come from Apple's documentation and this codebase. No dialog was opened to find them.
-
-- **Keychain item ACLs are not a human gate.** The candidate in the earlier design was a control
-  item with an empty trusted-app list.
-  - Apple's ACL documentation: an untrusted caller gets "Deny, Allow, or Always Allow", and Always
-    Allow "adds the app to the list of trusted apps". The app here would be `/usr/bin/security` or
-    the runtime, which a worker can run too, so one Always Allow click opens the item to every later
-    caller, the worker included.
-  - The dialog names the item and the calling app, not the request, so a human can't tell a
-    worker's read from their own.
-  - A token read once can be replayed until it is rotated.
-  - Rotating the token per approval doesn't help either: the click proves that some read happened,
-    not which approval it was for.
-- **LocalAuthentication is the chosen mechanism.** `native/human-gate/main.swift` is a helper the
-  daemon runs itself. It evaluates `deviceOwnerAuthentication` with the daemon's reason text, then
-  exits 0 (confirmed), 3 (refused) or 2 (unavailable).
-  - Each run uses a new `LAContext`, with `touchIDAuthenticationAllowableReuseDuration` set to 0.
-    That is Apple's default: "Touch ID authentication isn't reused".
-  - It invalidates the context afterwards. Apple: once invalidated, a context "cannot be used for
-    policy evaluation".
-  - There is no Always Allow, and the result never leaves the helper except as its exit status to
-    the daemon. So a confirmation can't be carried to a different request, and nothing is replayed.
-  - The dialog shows the daemon's reason, so a human reads what they would allow.
-- **A worker can still ask.** It can send a control request with the token and make the dialog
-  appear for its own pending request. The dialog then describes that request truthfully, and only
-  a human's Touch ID or password confirms it. One question at a time limits how often it can ask.
-  The dialog doesn't say who asked.
-- **The boundary assumes workers can't change the supervisor.** That means its program,
-  `dist/`, the helper, the launch agent plist or its data directory. A same-user process that can
-  write those can replace the gate itself, and an unconfined same-user worker defeats any same-user
-  gate.
-- **Gate eligibility (`src/supervisor/eligibility.ts`).** A gate other than the locked one may
-  act only while every live worker is provably unable to write what the gate rests on.
-  - **Protected set:** the state root, the runtime the supervisor runs on (its real
-    `process.execPath`), and the package it was loaded from, or the standalone root.
-    - Every symlink under that package is followed to its target, since a linked dependency can
-      live anywhere. A linked directory is walked in turn, once by its real path, so a link
-      inside a linked dependency counts too. A tree too large to walk, or a link that can't be
-      read, is unresolved.
-    - It also covers the launch agent plist with its directory, and the gate's own files, such as
-      its helper.
-    - It covers the startup closure of every configured worker, live, stopped or paused: its
-      native executable, that executable's package root, and any explicitly prepared
-      `CODEX_HOME`, whose config and hooks run at the next start outside any tool sandbox. For a
-      live worker, both what it runs now and what its configuration would run at its next start
-      count. One worker that can rewrite another's executable is as bad as one rewriting its own.
-    - Anything unresolvable makes the gate ineligible. That includes a Keychain-held `PATH`,
-      `CODEX_EXECUTABLE` or `CODEX_HOME`, and a harness that can't say what it would run.
-    - A spec naming any loader or startup variable is unresolved, whatever its value: `LD_*`,
-      `DYLD_*`, `BUN_*`, `NODE_OPTIONS`, `NODE_PATH`, `PYTHONPATH`, `PYTHONSTARTUP`, Perl and Ruby
-      library paths, `BASH_ENV`, `ENV`, `ZDOTDIR` and `GIT_EXEC_PATH`. These can load code before
-      any tool sandbox applies, and no binary is assumed to ignore them. Such a worker never
-      starts while a gate is in use, and a running one is held and stopped.
-  - **Confinement comes from the native process, never the spec.** Codex's `thread/start` and
-    `thread/resume` return the effective sandbox. `workspaceWrite` covers the cwd, every
-    `writableRoots` entry, `/tmp` unless `excludeSlashTmp`, and the child's `TMPDIR` unless
-    `excludeTmpdirEnvVar`. `readOnly` writes nothing. `dangerFullAccess`, `externalSandbox`, or an
-    incompletely described policy is unconfined. Claude and Grok report no confinement, so they are
-    always ineligible.
-  - **Conflict:** a writable root conflicts with a protected path when it is that path, an
-    ancestor of it (which could replace it), or inside it. Both are compared as written and as
-    resolved. The protected side is also compared through every symlink its resolution passes, so
-    whoever can replace a link is caught. Containment is by path segment, so a child named
-    `..x` is still inside. A path that can't be resolved, such as a symlink loop, counts as a conflict.
-  - **Enforcement, only with a gate other than the locked one:** a worker found ineligible is
-    stopped and held `gate_ineligible`.
-    - **Before it spawns,** a worker is held if any live worker can write what it would run. That
-      live worker is then held and stopped too, since it could replace that file for as long as it
-      runs.
-    - **Every tick,** each running worker is checked again against everything configured then.
-    - **After it starts,** and whenever it reports a new confinement or a failed resume, it is
-      checked again.
-    - **During a thread open,** a resume included, the adapter counts as unconfined until Codex
-      returns the new sandbox. That placeholder is never reported, so a pending open stops no one,
-      and a control check meanwhile is refused. Every control request checks all live
-    workers before asking and again after the answer, so a worker that becomes ineligible while
-    the human is asked voids the confirmation. With no protected set, nothing is eligible.
-  - **What this leaves out:** an approved escalation runs outside the sandbox, and a human
-    approving one bypasses the boundary for that command. A Codex worker whose writable roots
-    include the tt data directory is eligible only while no protected path lies under it, or
-    under its cwd or `/tmp`. The state root therefore must not be under `/tmp`.
-  - **Native evidence for the Codex command sandbox** comes from a disposable, model-free probe
-    of codex-cli 0.163.0 on macOS, reviewed by Codex and Grok.
-    - **Setup:** one owned `codex app-server`, an empty 0700 `CODEX_HOME`, and throwaway paths
-      under `/private/var/tmp` and `/private/tmp` only. Each command ran through `command/exec`
-      with `{type: workspaceWrite, writableRoots: [<data>], networkAccess: false}`, or `readOnly`.
-      That policy left out the two exclude flags. For the adapter's own request, `thread/start`
-      reported the same writable root, network off, and both exclude flags false.
-    - **Method:** each target first took an unsandboxed control write. Each sandboxed create,
-      overwrite, rename and unlink was then judged by its exit, its error, and the target file's
-      state afterwards.
-    - **Results:**
-      - `workspaceWrite` allowed all four in the writable root and under `/tmp`.
-      - It denied all four, with "Operation not permitted" and the files unchanged, in stand-ins
-        for the state root, the program directory and LaunchAgents.
-      - It denied a write through a symlink in the cwd pointing at the state stand-in, including
-        in the run where that cwd was itself writable.
-      - The writable cwd and temp directory are the app-server process's own, not a command's.
-        That matches how the adapter spawns it, with cwd `spec.cwd` and `TMPDIR` only from an env
-        reference.
-      - `readOnly` denied every tested write and allowed reads.
-    - **Not tested:** writes under `HOME`, `CODEX_HOME` or the host `TMPDIR`, and network
-      enforcement. Turn-time tool calls weren't exercised, so this doesn't establish them. Nor
-      does it cover the app-server's own unsandboxed writes, the dialog, or launchd.
-      The probe's `thread/start` also made one unauthenticated connection attempt to the Codex API,
-      which got 401. Later non-model probes leave `thread/start` out.
-  - **Still needed before enabling anything:** an attended acceptance of the dialog on a
-    confined, eligible fixture. Nothing in the shipped build selects a gate.
-- **An attended acceptance shows only that the dialog works.** It doesn't show confinement, so
-  it runs against a fixture that the eligibility check above passes.
-- **Unproven until attended.** It hasn't been shown that a launchd user agent can present the
-  LocalAuthentication dialog, or how it fails without a console session (`notInteractive` is
-  mapped to unavailable).
-  - **The kit:** `node scripts/attended-gate-acceptance.mjs`, run by the operator from a checkout
-    after `npm run build`, in a plain terminal. It refuses inside a harness session (environment
-    and ancestry), off macOS or without a terminal, before it builds anything. It enables
-    nothing:
-    1. It creates one 0700 temp root under `/tmp`, and from then on a single cleanup owns
-       everything: the compile (bounded at 5 minutes), the helper, the prompt, the store and the
-       supervisor. That cleanup runs on success, failure, or SIGINT or SIGTERM, including Ctrl-C
-       at a prompt. A signal aborts the run. A dialog in flight is aborted through the gate's own
-       signal, so it comes back refused before the supervisor can settle anything. Cleanup waits
-       for that decision, and for the helper's exit, before it stops the fixture. The run is
-       recorded as aborted, along with every request's final status. A second signal exits at
-       once, after removing the temp root.
-    2. It builds the helper into that root and runs an in-process supervisor there with the
-       LocalAuthentication gate. Its only worker is the deterministic Codex app-server fixture,
-       with no model and no credentials.
-    3. It stops unless `gateIneligibility()` is empty.
-    4. Before each dialog it prints the request's stored detail, its full digest and the text the
-       dialog should show, then walks the steps:
-       1. A confirmed approval is allowed and delivered.
-       2. A replay is refused without any dialog.
-       3. Two requests with distinct native ids are pending at once, from the fixture's
-          `two-approvals` mode.
-       4. Cancelling the first must come back as the gate's own `refused`. Unavailable,
-          ineligible or a transport failure doesn't count. Both requests stay pending, and
-          nothing reaches the worker.
-       5. Confirming the second decides and delivers only it.
-       In `--self-test` a sixth step requires `unavailable`, the helper's exit 2, and that it
-       settles nothing.
-    5. It writes a result JSON without secrets to the temp directory.
-  - **Its scope, as stated in its output and result:** the foreground dialog and its binding to
-    exact requests, nothing more. The fixture only reports a read-only sandbox, so an empty
-    `gateIneligibility()` exercises the algorithm, not OS-enforced worker confinement. Whether
-    launchd can present the dialog is also unproven here.
-  - **Self-test:** `--self-test` runs the same steps with a scripted gate and no dialog. CI runs
-    it, along with a real SIGTERM at a prompt, a real SIGTERM while the gate is asking (nothing
-    settles), and the harness refusal.
-  - **The launchd step:** `node scripts/attended-gate-acceptance.mjs --launchd` is the separate,
-    attended launchd check. It starts no supervisor, uses no live data, and decides no request.
-    1. It refuses inside a harness, off macOS or without a terminal, before it builds or loads
-       anything.
-    2. It builds the helper into a 0700 temp root. Each step then loads a throwaway LaunchAgent
-       whose only job is the helper:
-       - its own label, `com.talking-stick.gate-acceptance.<random>`, never the supervisor's
-       - its plist, reason and logs in the temp root, never `~/Library/LaunchAgents`
-       - `RunAtLoad` set, `KeepAlive` off, and `LimitLoadToSessionType` unset, so the domain is
-         the only difference between steps
-    3. Each agent's program is a wrapper shell. It records its own pid first, then starts a
-       shell that records its pid and `exec`s into the helper, so that pid is the helper's and is
-       written before the helper runs. The helper gets the step's validated reason (non-empty, at
-       most 4096 bytes) on stdin. Only after the helper exits does the wrapper write
-       `<label> <raw status>`. Every file is named by the agent's own
-       label, and a record carrying any other label is ignored, so a stale file can't satisfy a
-       step.
-    4. Each step's outcome is one of these kinds:
-       - `confirmed` (0) and `refused` (3)
-       - `unavailable` (any other status)
-       - `timeout` (no record by the deadline)
-       - `aborted` (Ctrl-C)
-       - `infrastructure_error` (launchctl failed to load it), which is never read as a helper
-         result
-    5. The steps:
-       1. In `gui/<uid>`, confirm, expecting `confirmed`.
-       2. In `gui/<uid>`, cancel, expecting `refused`.
-       3. In `user/<uid>`, the background domain, the raw result is recorded as a finding. Only
-          an observed "unavailable" is accepted. A dialog appearing there, confirmed or
-          cancelled, fails the run, and so does a load failure or a timeout, which observed
-          nothing. Either way the result is never "Accepted" and names the finding.
-       4. In `gui/<uid>`, the operator presses Ctrl-C with the dialog up. The agent must be
-          unloaded and the helper's pid gone.
-    6. Every agent goes into a private ledger in the temp root (domain, uid, label and paths)
-       before it loads. Cleanup unloads only those labels. It runs on success, failure, Ctrl-C or
-       a second signal, the second still bounded and owned-only. Nothing counts as gone without
-       proof:
-       - the agent is unloaded only when `launchctl print` answers "could not find service"
-         (113); any other failure is unknown
-       - the wrapper and the helper are each gone only when `kill(pid, 0)` answers ESRCH, or when
-         that pid now belongs to a process whose known start time differs from the one recorded
-         when the process was first seen. A permission error, or an inspection that answers
-         nothing, empty or malformed `ps` output included, is unknown. A live pid is never gone.
-       - no pid record proves a process never ran only for an agent that never loaded (a failed
-         bootstrap) and is proven unloaded. A loaded agent without a record is unknown, and a
-         step waits, bounded, for the helper's record before it says a dialog is up.
-       If anything is unknown or still running, the root (ledger, plist, logs) is kept, the run
-       reports `CLEANUP INCOMPLETE` with the exact labels, and it can't be Accepted, whatever
-       its steps showed.
-  - **The launchd step's scope:** a wrapper shell run as a throwaway LaunchAgent starts the
-    helper, in `gui/<uid>` and `user/<uid>`. It doesn't show the helper as the agent's direct
-    program, or a supervisor LaunchAgent spawning it. It is separate from the foreground run
-    (request binding) and the command/exec evidence (worker confinement).
-  - **The launchd self-test:** `--launchd --self-test` drives the same controller with a
-    stand-in launchctl and helper, loading nothing and running no compiler. CI runs it with
-    these faults: bootstrap failure, a stale record from another label, a timeout, an unload
-    that fails (the evidence is kept and named), unload and inspection both denied (nothing
-    counts as gone), an inspector that answers nothing while the helper still lives (unknown,
-    not gone), a dialog or a timeout in the background domain (not accepted), and a
-    second signal arriving during cleanup. The stand-in keeps its jobs in a registry private to
-    each run, and each test removes only the jobs and files that its own run created. Each step's cleanup targets only its own label, and a
-    signalled helper gets up to two seconds to exit before it counts as still running.
-  - **Until it passes,** the gate stays locked and the CLI refuses control before connecting.
-    Wiring a gate into `run` and unlocking the CLI is a separate, reviewed change after it.
-
-Once control is unlocked: approvals stay pending and visible until a human decides. Unanswered ones expire after 24 hours,
-as a deny. A decision names the full key (worker, generation, native id), and is refused unless
-that exact generation is running and the request is still pending.
-
-An operator harness may use the same audited commands: status, pause, resume, restart, stop,
-interrupt and logs. It may decide approvals only under a human-authored policy file, scoped by
-worker, tool and pattern, with an expiry. A role alone grants nothing.
-
-Plugin installs are never a direct command. A request records the plugin, worker, source, the
-exact command and its rollback, and runs only after a human confirms that exact request. There
-are no permission self-grants. The supervisor restarts the operator harness too, when it is a
-managed worker.
+Plugin installs are never a direct command, and there are no permission self-grants.
 
 ## Room bridge
 
 ### Delivery
 
 Managed workers get a dedicated native wake transport, `supervisor`. The daemon listens on
-`<state>/control.sock` (0600), and each generation gets a random delivery token that
+`<state>/intake.sock` (0600), and each generation gets a random delivery token that
 the daemon stores hashed. A managed worker registers only that endpoint, never `codex_queue` or
 `claude_inbox`, so nothing points the default Codex daemon at an owned server.
 
@@ -629,11 +379,10 @@ change never re-offers that batch as fresh text. The fence is released only when
 
 1. the model acknowledges the original token;
 2. there is evidence from before any write that nothing was written, which clears it to `unsent`
-   so tt may re-offer it once;
-3. a human runs `tt supervisor reconcile <batch> --resend|--drop`. Resending something whose
-   effects are unknown needs explicit, scoped human authority, so this is locked until a verified
-   human-control boundary exists (see "Approvals and control"). Until then a possibly delivered
-   message stays fenced.
+   so tt may re-offer it once.
+
+Otherwise a possibly delivered message stays fenced and is never resent: nothing can prove its
+effect didn't happen.
 
 Fencing for writing also refuses a batch any of whose events is gone, already read, or held by
 another managed batch, since its text would repeat that event. The batch is released unwritten,
@@ -653,8 +402,7 @@ delivery hooks (Codex's UserPromptSubmit and Stop, Grok's tool hooks) return no 
 no room work bypasses the supervisor's journal. Lifecycle hooks are unaffected, and unsupervised
 sessions behave as before.
 
-The delivery token only fences and clears its own generation's batches. Control authority is
-separate, and neither ever grants the other.
+The delivery token only fences and clears its own generation's batches. It grants nothing else.
 
 ### Recovery of owned workers
 
@@ -690,11 +438,7 @@ while the supervisor knows it's running.
 
 `run` starts the daemon in the foreground:
 - It takes the owner lock and reconciles, then ticks every 30 s.
-- It opens two sockets in `<state>/`:
-  - `intake.sock` takes tt deliveries only, and is the one workers are given.
-  - `control.sock` takes control requests only, each with the daemon's control token. The token
-    is new for each daemon, kept in the owner-only file `control.token`, and never put in a
-    worker's environment.
+- It opens one socket, `<state>/intake.sock`, which takes tt deliveries only.
 - It writes its own log, `logs/daemon.log`, appending by path so rotation at 5 MB (three older
   files kept) takes effect at once.
 - On SIGTERM it stops its workers' process groups; that's a stop, not a crash. Starts still in
@@ -709,38 +453,32 @@ release's `<install-dir>/current/tt supervisor run`, which follows self-update.
 `add <worker> --harness … --cwd …`:
 - Codex needs an explicit `--sandbox` and `--approval`. Claude takes `--permission-mode
   default|plan`, and nothing that bypasses approvals.
-- `--env NAME` passes the daemon's value through; `NAME=keychain:SERVICE` and
-  `NAME=literal:VALUE` (for non-secret values) are explicit.
+- `--env NAME` passes the daemon's value through; `NAME=literal:VALUE` is for non-secret values.
+  A model API key or provider override is refused (see "Permissions and environment").
 - There's no `--resume`: nothing here can prove an existing session isn't running elsewhere, so a
   worker resumes only sessions it started itself.
 
-`status`, `approvals` (with `show <approval-id>` for one request's whole detail) and `logs` are
-readable by anyone. Every other command is for a human until
-a scoped operator policy exists:
+`status`, `approvals` (recent permission requests, with `show <approval-id>` for one request's
+whole detail) and `logs` are readable by anyone. Every other command is for a human for now;
+headless rooms will let agents start workers within limits the operator sets:
 - `run`, `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped),
-  `interrupt`, `approve`, `deny`, `reconcile <batch> --resend|--drop`, `install` and `uninstall`.
-  launchd starts `run` with no harness around it.
+  `install` and `uninstall`. launchd starts `run` with no harness around it.
 - They refuse `--agent`, and refuse to run inside a harness session, detected from the environment
   and from process ancestry. Each is audited with its actor.
-- The daemon checks the control token, and while control is locked refuses every change anyway
-  (see "Approvals and control").
+- `approve`, `deny`, `interrupt` and `reconcile` were removed; they answer with why.
 
-These guards keep an agent from acting as the operator through what it's given: its environment,
-its endpoint, and its delivery token. They aren't a boundary against a same-user process that
-deliberately reads the owner-only token file or hides its origin; supervised workers can do both.
-That's why control stays locked until a verified boundary exists.
+These guards keep an agent from acting as the operator by accident. They aren't a security
+boundary against a same-user process, and aren't meant to be.
 
 Codex and Claude are available on macOS and Linux. A Grok worker is attempted there. Without a
-resolved credential, `session/new` fails and the worker is held `crash_loop`. An operator can name
-`XAI_API_KEY` with `--env XAI_API_KEY=keychain:SERVICE`; a missing item fails before spawn, and a
-resolved value is not a proven login (see "Grok").
+login in its home, `session/new` fails and the worker is held `crash_loop` (see "Grok").
 A Grok session that was already recorded is held `resume_failed` until resume is proven. Plugin install requests are not implemented.
 
 ### Claude workers
 
 - **How it runs:** a Claude worker runs `claude -p` in stream-json mode with the stdio
-  permission tool, user settings excluded (`--setting-sources project,local`) and no MCP servers
-  (`--strict-mcp-config`).
+  permission tool and your own settings, MCP servers and login (`--setting-sources
+  user,project,local`).
 - **Session id:** a fresh conversation gets its session id up front (`--session-id`), so the
   supervisor knows it before the first turn; a restart resumes it with `--resume`.
 - **Turns:** a turn starts at the worker's first output after a prompt and ends at its `result`.
@@ -753,11 +491,10 @@ A Grok session that was already recorded is held `resume_failed` until resume is
   session is a protocol error: the supervisor holds the worker and stops it, and the running input
   stays unconfirmed.
 - **Liveness:** the stream has no cheap ping, so liveness is the exact process.
-- **Permissions:** every tool call that needs permission becomes a pending approval, and approvals
-  are locked for now (see "Approvals and control"). So a Claude worker can only do what its
-  project's own `.claude/settings.local.json` allows without asking. For room work, that's at least
-  `Bash(tt:*)` and reading the talking-stick skill, `Read(//<skill dir>/**)`. Claude's rules spell
-  an absolute path with a leading `//`. Grant nothing broader than the work needs.
+- **Permissions:** a tool call your settings don't already allow is denied at once (see
+  "Permission requests"). So a Claude worker can do what your user and project settings allow
+  without asking. For room work, that's at least `Bash(tt:*)` and reading the talking-stick skill,
+  `Read(//<skill dir>/**)`. Claude's rules spell an absolute path with a leading `//`.
 
 ## What the supervisor does not prove
 
@@ -796,3 +533,4 @@ was adopted or interrupted to test this boundary.
 | S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | merged (#219) |
 | S2a6 | Claude | attended gate acceptance kit, with a scripted self-test in CI, and its launchd step; enables nothing | merged (#220, #222) |
 | S2d | Grok | Grok stdio adapter (the proven subset only), Keychain env references | merged (#214, #215) |
+| H1 | Claude | trusted local use: your own homes, settings and subscription logins; prompts denied at once; wrong_auth_mode; the gate, eligibility, control socket and Keychain references removed | this change |

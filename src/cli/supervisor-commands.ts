@@ -6,7 +6,7 @@ import type { EnvReference, Harness, WorkerPermissions, WorkerSpec } from "../su
 import { builtinAdapters } from "../supervisor/adapters/index.js";
 import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent } from "../supervisor/launchd.js";
 import { isStandalone, isInstalledRelease, standaloneRoot } from "../standalone-mode.js";
-import { CONTROL_LOCKED, createFileLog, runSupervisor, supervisorPaths, systemProcessLiveness } from "../supervisor/run.js";
+import { createFileLog, runSupervisor, supervisorPaths, systemProcessLiveness } from "../supervisor/run.js";
 import { acquireOwnerLock } from "../supervisor/daemon.js";
 import { getCurrentProcessStartedAt } from "../process-utils.js";
 import { SupervisorStore } from "../supervisor/state.js";
@@ -16,26 +16,27 @@ import { printResult } from "./output.js";
 import { getStringOption, getStringOptions, hasOption, type ParsedCommand } from "./parser.js";
 import { displayText, safeDetail } from "../supervisor/approval-detail.js";
 import { inspectSupervisorState, migrateSupervisorState, prepareSupervisorRoot } from "../supervisor/root.js";
+import { isModelCredential, MODEL_CREDENTIAL_MESSAGE } from "../supervisor/adapters/process.js";
 
 // tt supervisor: the optional managed headless supervisor (docs/supervisor.md).
 
 export const SUPERVISOR_USAGE = [
   "tt supervisor status",
   "tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [--model M] [--permission-mode default|plan]",
-  "  [--sandbox read-only|workspace-write --approval on-request|untrusted] [--env NAME[=keychain:SERVICE|=literal:VALUE]]",
+  "  [--sandbox read-only|workspace-write --approval on-request|untrusted] [--env NAME[=literal:VALUE]]",
   "tt supervisor pause|resume|stop|remove <worker>",
   "tt supervisor restart <worker> [--fresh]",
-  "tt supervisor interrupt <worker>",
-  "tt supervisor approvals [show <approval-id>] | approve <approval-id> [--note TEXT] | deny <approval-id> [--note TEXT]",
-  "tt supervisor reconcile <batch-token> --resend|--drop",
+  "tt supervisor approvals [show <approval-id>]",
   "tt supervisor run | install | uninstall | migrate | logs [--lines N]"
 ].join("\n");
 
 export class SupervisorCommandError extends Error {}
 
 const WORKER_ID = /^[a-z0-9][a-z0-9._-]{0,47}$/;
-const KNOWN_ACTIONS = new Set(["status", "approvals", "logs", "add", "pause", "resume", "stop", "restart", "remove", "interrupt",
-  "approve", "deny", "reconcile", "run", "install", "uninstall", "migrate"]);
+const KNOWN_ACTIONS = new Set(["status", "approvals", "logs", "add", "pause", "resume", "stop", "restart", "remove",
+  "run", "install", "uninstall", "migrate"]);
+/** Removed with the human gate: a headless worker's prompts are denied at once, and nothing is left to decide. */
+const REMOVED_ACTIONS = new Set(["approve", "deny", "interrupt", "reconcile"]);
 
 function fail(message: string): never {
   throw new SupervisorCommandError(message);
@@ -70,15 +71,15 @@ function parsePermissions(parsed: ParsedCommand, harness: Harness): WorkerPermis
   return { harness };
 }
 
-/** NAME passes the supervisor's own value through; keychain and literal values are named explicitly. */
+/** NAME passes the supervisor's own value through; a literal value is named explicitly and is never a secret. */
 export function parseEnvReference(raw: string): EnvReference {
   const [name, source] = raw.split(/=(.*)/s, 2);
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) fail(`${name} is not an environment variable name.`);
   if (name.startsWith("TT_SUPERVISOR_")) fail(`${name} is set by the supervisor.`);
+  if (isModelCredential(name)) fail(MODEL_CREDENTIAL_MESSAGE(name));
   if (source === undefined) return { name, from: "inherit" };
-  if (source.startsWith("keychain:") && source.length > "keychain:".length) return { name, from: "keychain", service: source.slice(9) };
   if (source.startsWith("literal:")) return { name, from: "literal", value: source.slice(8) };
-  fail(`--env ${name} takes keychain:SERVICE or literal:VALUE (only for values that are not secret).`);
+  fail(`--env ${name} takes literal:VALUE (only for values that are not secret).`);
 }
 
 function describeStatus(store: SupervisorStore) {
@@ -92,11 +93,13 @@ function describeStatus(store: SupervisorStore) {
         generation: generation ? { generation: generation.generation, state: generation.state, pid: generation.pid,
           session_id: generation.session_id, started_at: generation.started_at, ended_at: generation.ended_at } : null,
         uncertain_inputs: (store.db.prepare("SELECT COUNT(*) AS count FROM inputs WHERE worker_id = ? AND state = 'uncertain'")
+          .get(worker.worker_id) as { count: number }).count,
+        denied_requests: (store.db.prepare("SELECT COUNT(*) AS count FROM approvals WHERE worker_id = ? AND status = 'denied'")
           .get(worker.worker_id) as { count: number }).count
       };
     }),
-    pending_approvals: store.pendingApprovals().map((approval) => ({ approval_id: approval.approval_id, worker_id: approval.worker_id,
-      generation: approval.generation, tool: approval.tool, summary: approval.summary, detail_sha256: approval.detail_sha256,
+    recent_requests: store.recentApprovals().map((approval) => ({ approval_id: approval.approval_id, worker_id: approval.worker_id,
+      generation: approval.generation, tool: approval.tool, summary: approval.summary, status: approval.status,
       requested_at: approval.requested_at }))
   };
 }
@@ -114,7 +117,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   const dataDir = resolveDataDir();
   const action = parsed.positionals[0] ?? "status";
   const actor = deriveCliIdentity(parsed).agent_id;
-  // Approvals and reconciling are the operator's own: never through an
+  // Changing the supervisor is the operator's own: never through an
   // identity override, and never from inside a harness session.
   const requireHuman = (what: string) => {
     if (getStringOption(parsed, "agent")) fail(`${what} does not accept --agent.`);
@@ -122,11 +125,13 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     if (harness || !actor.startsWith("human:")) fail(`Only a human can ${what.toLowerCase()}${harness ? `, not a ${harness} session` : ""}.`);
   };
   const now = () => new Date().toISOString();
-  // Unknown and locked actions refuse before anything is resolved or created.
+  // Unknown and removed actions refuse before anything is resolved or created.
+  if (REMOVED_ACTIONS.has(action)) {
+    fail(`tt supervisor ${action} was removed: a supervised worker's permission prompts are denied at once, ` +
+      "so nothing waits on a decision. See `tt supervisor approvals` for what was denied.");
+  }
   if (!KNOWN_ACTIONS.has(action)) fail(`Unknown supervisor action ${action}.\n${SUPERVISOR_USAGE}`);
   if (!["status", "approvals", "logs"].includes(action)) requireHuman(`Change the supervisor (${action})`);
-  // Fail closed until a verified human-control boundary exists (docs/supervisor.md).
-  if (action === "interrupt" || action === "approve" || action === "deny" || action === "reconcile") fail(CONTROL_LOCKED);
   // Reading never creates state; writing prepares the protected root, and both
   // refuse while older state in the data directory still waits to move.
   const readOnly = ["status", "approvals", "logs"].includes(action);
@@ -137,9 +142,9 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   const root = readOnly || action === "migrate" || action === "uninstall" ? state.root : prepareSupervisorRoot(dataDir);
   const paths = supervisorPaths(root.dir);
 
-  // Until a scoped operator policy exists, only a human changes the
-  // supervisor, including starting its daemon by hand; agents may read its
-  // status, approvals and logs. launchd runs it with no harness around it.
+  // Only a human changes the supervisor, including starting its daemon by
+  // hand; agents may read its status, requests and logs. launchd runs it with
+  // no harness around it.
   if (action === "run") {
     await runSupervisor({ dataDir, adapters: builtinAdapters(), log: createFileLog(paths.log) });
     return;
@@ -179,18 +184,18 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   }
   if (state.kind === "none" && readOnly) {
     // No supervisor state yet: an empty answer, without creating any.
-    if (action === "approvals" && parsed.positionals[1] === "show") fail("No such approval request.");
-    const empty = { workers: [], pending_approvals: [] };
-    printResult(parsed, action === "approvals" ? { pending_approvals: [] } : empty,
-      () => action === "approvals" ? "No pending approvals." : "No workers.");
+    if (action === "approvals" && parsed.positionals[1] === "show") fail("No such request.");
+    const empty = { workers: [], recent_requests: [] };
+    printResult(parsed, action === "approvals" ? { recent_requests: [] } : empty,
+      () => action === "approvals" ? "No permission requests." : "No workers.");
     return;
   }
   const store = openStore(root.dir);
   try {
     if (action === "approvals" && parsed.positionals[1] === "show") {
-      // The whole request, read-only: what a human would be deciding.
+      // The whole request, read-only: what the worker asked for.
       const approval = store.approval(parsed.positionals[2] ?? "");
-      if (!approval) fail("No such approval request. Run `tt supervisor approvals` for the pending ones.");
+      if (!approval) fail("No such request. Run `tt supervisor approvals` for the recent ones.");
       printResult(parsed, { approval_id: approval.approval_id, worker_id: approval.worker_id, generation: approval.generation,
         tool: approval.tool, summary: approval.summary, status: approval.status, requested_at: approval.requested_at,
         detail_sha256: approval.detail_sha256, detail: approval.detail },
@@ -200,14 +205,14 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     }
     if (action === "status" || action === "approvals") {
       const status = describeStatus(store);
-      const result = action === "approvals" ? { pending_approvals: status.pending_approvals } : status;
+      const result = action === "approvals" ? { recent_requests: status.recent_requests } : status;
       printResult(parsed, result, () => action === "approvals"
-        ? (status.pending_approvals.map((a) => `${a.approval_id}  ${a.worker_id}#${a.generation}  ${displayText(a.tool, 80)}: ${displayText(a.summary, 500)}`)
-          .join("\n") || "No pending approvals.")
+        ? (status.recent_requests.map((a) => `${a.approval_id}  ${a.worker_id}#${a.generation}  ${a.status}  ${displayText(a.tool, 80)}: ${displayText(a.summary, 500)}`)
+          .join("\n") || "No permission requests.")
         : (status.workers.map((w) => `${w.worker_id}  ${w.harness}  ${w.desired}${w.hold_reason ? ` (held: ${w.hold_reason})` : ""}  ` +
             `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}` +
-            `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}`).join("\n") || "No workers.") +
-          (status.pending_approvals.length ? `\n${status.pending_approvals.length} approval(s) pending.` : ""));
+            `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}` +
+            `${w.denied_requests ? `  ${w.denied_requests} denied` : ""}`).join("\n") || "No workers."));
       return;
     }
     if (action === "add") {

@@ -1,4 +1,4 @@
-import type { Confinement,
+import type {
   Capabilities, Harness, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec
 } from "../../src/supervisor/adapter.js";
 
@@ -16,11 +16,6 @@ export class FakeHandle implements WorkerHandle {
   readonly submitted: Array<{ input_id: string; text: string; mode: InputMode }> = [];
   readonly answers: Array<{ id: string; decision: "allow" | "deny" }> = [];
   readonly interrupts: Array<string | undefined> = [];
-  /** What this fake native process reports about its write confinement. */
-  confined: Confinement = { kind: "read_only" };
-  closure: { paths: string[]; unresolved: string[] } = { paths: [], unresolved: [] };
-  confinement(): Confinement { return this.confined; }
-  executionClosure(): { paths: string[]; unresolved: string[] } { return this.closure; }
   stopped = false;
   private session: string | null;
   private listeners: Array<(event: WorkerEvent) => void> = [];
@@ -62,15 +57,10 @@ export class FakeAdapter implements HarnessAdapter {
   readonly handles: FakeHandle[] = [];
   caps: Capabilities = { prompt: true, resume: true, interrupt: true, approvals: true };
   failStart: ((spec: WorkerSpec) => boolean) | null = null;
+  /** Rejects a start with this error, such as an AuthModeError. */
+  failStartWith: ((spec: WorkerSpec) => Error | null) | null = null;
   /** Resolves a start only when the test releases it. */
   holdStart: Promise<void> | null = null;
-  /** The confinement the next started handle reports. */
-  nextConfinement: Confinement | null = null;
-  /** What a start would run, per worker; a worker not listed has an empty closure. */
-  startClosures: Record<string, { paths: string[]; unresolved: string[] }> = {};
-  startClosure(spec: WorkerSpec): { paths: string[]; unresolved: string[] } {
-    return this.startClosures[spec.worker_id] ?? { paths: [], unresolved: [] };
-  }
   private nextPid = 1000;
 
   constructor(harness: Harness = "claude") {
@@ -94,8 +84,9 @@ export class FakeAdapter implements HarnessAdapter {
       throw new Error("start aborted");
     }
     if (this.failStart?.(spec)) throw new Error("fake start failure");
+    const failure = this.failStartWith?.(spec);
+    if (failure) throw failure;
     const handle = new FakeHandle(spec, generation, pid);
-    if (this.nextConfinement) handle.confined = this.nextConfinement;
     this.handles.push(handle);
     return handle;
   }

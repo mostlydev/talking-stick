@@ -5,6 +5,21 @@ const fs = require("node:fs");
 const mode = process.env.FIXTURE_MODE ?? "";
 const trace = (value) => { if (process.env.FIXTURE_TRACE) fs.appendFileSync(process.env.FIXTURE_TRACE, JSON.stringify(value) + "\n"); };
 const out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+// `claude auth status --json`: answered and exited before anything is traced.
+if (process.argv[2] === "auth" && process.argv[3] === "status") {
+  const statuses = {
+    "api-key": { loggedIn: true, authMethod: "api_key", apiProvider: "firstParty" },
+    "key-helper": { loggedIn: true, authMethod: "api_key_helper", apiProvider: "firstParty" },
+    "bedrock": { loggedIn: true, authMethod: "third_party", apiProvider: "bedrock" },
+    "logged-out": { loggedIn: false, authMethod: "none", apiProvider: "firstParty" },
+    "new-method": { loggedIn: true, authMethod: "something_new", apiProvider: "firstParty" },
+  };
+  if (mode === "auth-garbage") process.stdout.write("not json\n");
+  else if (mode === "status-killed") { out(statuses[""] ?? { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" }); process.kill(process.pid, "SIGKILL"); }
+  else out(statuses[mode] ?? { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "user@example.com" });
+  // A signed-out answer exits 1 by design; status-error prints a subscription and still fails.
+  process.exit(mode === "logged-out" || mode === "status-error" ? 1 : 0);
+}
 trace({ argv: process.argv.slice(2), env: { CLAUDECODE: process.env.CLAUDECODE ?? null, TT_ROOM: process.env.TT_ROOM ?? null,
   TALKING_STICK_DATA_DIR: process.env.TALKING_STICK_DATA_DIR ?? null, TT_SUPERVISOR_ENDPOINT: process.env.TT_SUPERVISOR_ENDPOINT ?? null } });
 const argv = process.argv.slice(2);
@@ -41,7 +56,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.type !== "user") return;
   busy = true;
-  out({ type: "system", subtype: "init", session_id: session });
+  out({ type: "system", subtype: "init", session_id: session, apiKeySource: mode === "init-api-key" ? "ANTHROPIC_API_KEY" : "none" });
   if (mode === "approval" || mode === "cancel" || mode === "long-approval" || mode === "huge-approval") {
     pendingTool = "perm-1";
     // A long command hides its end past any summary; a huge one is too large to review.

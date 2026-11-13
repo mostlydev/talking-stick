@@ -26,8 +26,10 @@ function fixture(mode = "") {
     env: [{ name: "FIXTURE_MODE", from: "literal", value: mode }, { name: "FIXTURE_TRACE", from: "literal", value: trace }],
     supervisor_env: { TALKING_STICK_DATA_DIR: path.join(root, "data"), TT_SUPERVISOR_ENDPOINT: "/tmp/test.sock#w1@1", TT_SUPERVISOR_TOKEN: "delivery" },
     state_dir: path.join(root, "state") };
+  // Never the real ~/.codex in a test.
+  const home = path.join(root, "user-codex");
   const adapter = new CodexAdapter({ command: process.execPath,
-    argsPrefix: [fileURLToPath(new URL("./fixtures/codex-app-server.cjs", import.meta.url))], requestTimeoutMs: 100, startTimeoutMs: 500 });
+    argsPrefix: [fileURLToPath(new URL("./fixtures/codex-app-server.cjs", import.meta.url))], requestTimeoutMs: 100, startTimeoutMs: 500, home });
   const events: WorkerEvent[] = [];
   const spawned: number[] = [];
   const start = async (signal?: AbortSignal): Promise<WorkerHandle> => {
@@ -35,7 +37,7 @@ function fixture(mode = "") {
     cleanup.push(() => handle.stop(100)); handle.onEvent(event => events.push(event)); return handle;
   };
   const messages = () => fs.existsSync(trace) ? fs.readFileSync(trace, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
-  return { root, trace, spec, adapter, events, spawned, start, messages };
+  return { root, trace, spec, adapter, events, spawned, start, messages, home };
 }
 
 describe("worker environments", () => {
@@ -79,7 +81,9 @@ describe("worker environments", () => {
     expect(env).toMatchObject({ HOME: "/safe/home", PATH: "/safe/bin", API_KEY: "private", TALKING_STICK_DATA_DIR: f.spec.supervisor_env!.TALKING_STICK_DATA_DIR });
     expect(env.OTHER_SECRET).toBeUndefined(); expect(env.TT_ROOM).toBeUndefined(); expect(env.CODEX_THREAD_ID).toBeUndefined();
     f.spec.env.push({ name: "CODEX_THREAD_ID", from: "inherit" });
-    await expect(workerEnvironment(f.spec)).rejects.toThrow("identity marker");
+    expect(() => workerEnvironment(f.spec)).toThrow("identity marker");
+    const legacy = { ...f.spec, env: [{ name: "EXTRA", from: "keychain", service: "tt-worker" } as unknown as WorkerSpec["env"][number]] };
+    expect(() => workerEnvironment(legacy)).toThrow("EXTRA uses a source that is no longer supported");
   });
 });
 
@@ -93,8 +97,10 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
       config: { "sandbox_workspace_write.writable_roots": [f.spec.supervisor_env!.TALKING_STICK_DATA_DIR] } });
     expect(f.events).toContainEqual({ type: "session", session_id: "owned-thread" });
     expect(await h.probe()).toBe("alive");
-    // The native home is under the protected state root, not the worker-writable data directory.
-    expect(fs.statSync(path.join(f.spec.state_dir!, "workers/w1/codex")).mode & 0o777).toBe(0o700);
+    // The user's own CODEX_HOME, with their subscription login: nothing private is created.
+    expect(f.messages().find(m => m.startup)?.startup).toEqual({ CODEX_HOME: f.home });
+    expect(fs.existsSync(path.join(f.spec.state_dir!, "workers/w1/codex"))).toBe(false);
+    expect(fs.existsSync(f.home)).toBe(false);
     expect(fs.existsSync(path.join(f.spec.supervisor_env!.TALKING_STICK_DATA_DIR, "supervisor"))).toBe(false);
   });
   test("idle input wakes again and a completion before the RPC reply stays complete", async () => {
@@ -157,6 +163,12 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     const missing = fixture(); missing.spec.resume_session_id = "missing";
     await expect(missing.start()).rejects.toThrow();
     expect(missing.messages().filter(m => m.method === "thread/start")).toHaveLength(0);
+  });
+  test.each(["api-key", "external-provider", "unknown-account"])("a start without a ChatGPT login (%s) is refused before any turn", async mode => {
+    const f = fixture(mode);
+    await expect(f.start()).rejects.toMatchObject({ name: "AuthModeError", reason: "wrong_auth_mode" });
+    expect(f.messages().some(m => m.method === "turn/start")).toBe(false);
+    expect(f.spawned).toHaveLength(1);
   });
   test("reports missing auth without a model turn", async () => {
     const f = fixture("no-auth"); await f.start();

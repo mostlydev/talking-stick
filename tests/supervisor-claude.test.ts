@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { ClaudeAdapter, resolveClaudeExecutable } from "../src/supervisor/adapters/claude.js";
+import { ClaudeAdapter, resolveClaudeExecutable, type ClaudeAdapterOptions } from "../src/supervisor/adapters/claude.js";
 import type { WorkerEvent, WorkerHandle, WorkerSpec } from "../src/supervisor/adapter.js";
 import { Supervisor } from "../src/supervisor/daemon.js";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
@@ -19,7 +19,7 @@ async function until(done: () => boolean): Promise<void> {
   }
 }
 
-function fixture(mode = "", overrides: Partial<WorkerSpec> = {}) {
+function fixture(mode = "", overrides: Partial<WorkerSpec> = {}, options: Partial<ClaudeAdapterOptions> = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-claude-adapter-"));
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const trace = path.join(root, "trace.jsonl");
@@ -29,7 +29,8 @@ function fixture(mode = "", overrides: Partial<WorkerSpec> = {}) {
     state_dir: path.join(root, "state"),
     ...overrides };
   const adapter = new ClaudeAdapter({ command: process.execPath,
-    argsPrefix: [fileURLToPath(new URL("./fixtures/claude-stream.cjs", import.meta.url))], requestTimeoutMs: 300, startTimeoutMs: 500 });
+    argsPrefix: [fileURLToPath(new URL("./fixtures/claude-stream.cjs", import.meta.url))], requestTimeoutMs: 300, startTimeoutMs: 500,
+    ...options });
   const events: WorkerEvent[] = [];
   const start = async (): Promise<WorkerHandle> => {
     const handle = await adapter.start(spec, 1, () => {});
@@ -42,18 +43,57 @@ function fixture(mode = "", overrides: Partial<WorkerSpec> = {}) {
 }
 
 describe("starting a Claude worker", () => {
-  test("runs stream-json with the stdio permission tool and its own session id, never a bypass", async () => {
+  test("runs stream-json with the user's own settings, the stdio permission tool and its own session id, never a bypass", async () => {
     const f = fixture();
     const handle = await f.start();
     const argv = f.lines()[0].argv as string[];
     expect(argv).toEqual(expect.arrayContaining(["-p", "--input-format", "stream-json", "--output-format", "stream-json",
-      "--setting-sources", "project,local", "--strict-mcp-config", "--permission-prompt-tool", "stdio"]));
+      "--setting-sources", "user,project,local", "--permission-prompt-tool", "stdio"]));
+    expect(argv).not.toContain("--strict-mcp-config");
     expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("default");
     const session = argv[argv.indexOf("--session-id") + 1];
     expect(session).toMatch(/^[0-9a-f-]{36}$/);
     expect(handle.sessionId()).toBe(session);
     expect(f.events).toContainEqual({ type: "session", session_id: session });
     expect(argv.join(" ")).not.toMatch(/bypassPermissions|dangerously/);
+  });
+
+  test.each([
+    ["api-key", "wrong_auth_mode"], ["key-helper", "wrong_auth_mode"], ["bedrock", "wrong_auth_mode"], ["new-method", "wrong_auth_mode"],
+    ["auth-garbage", "wrong_auth_mode"], ["logged-out", "auth_required"]
+  ] as const)("a start without a subscription login (%s) is refused before the worker runs", async (mode, reason) => {
+    const f = fixture(mode);
+    await expect(f.start()).rejects.toMatchObject({ name: "AuthModeError", reason });
+    // Only the status command ran: no stream-json worker, so nothing could reach a model.
+    expect(f.lines()).toEqual([]);
+  });
+
+  test.each(["status-error", "status-killed"])("a failing status command (%s) authorizes nothing, whatever it printed", async (mode) => {
+    const f = fixture(mode);
+    await expect(f.start()).rejects.toMatchObject({ name: "AuthModeError", reason: "wrong_auth_mode" });
+    expect(f.lines()).toEqual([]);
+  });
+
+  test("the status check runs in the worker's own directory and environment, and keeps no identity", async () => {
+    const calls: Array<{ args: string[]; cwd: string; env: NodeJS.ProcessEnv }> = [];
+    const f = fixture("", {}, { readAuthStatus: async (_command, args, env, cwd) => {
+      calls.push({ args, cwd, env });
+      return { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "user@example.com" };
+    } });
+    await f.start();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.slice(-3)).toEqual(["auth", "status", "--json"]);
+    expect(calls[0].cwd).toBe(f.spec.cwd);
+    expect(calls[0].env.TALKING_STICK_DATA_DIR).toBe(f.spec.supervisor_env?.TALKING_STICK_DATA_DIR);
+    expect(JSON.stringify(f.events)).not.toContain("user@example.com");
+  });
+
+  test.each([["init-api-key", true], ["", false]] as const)("an API-key source at a turn's init is still reported as wrong_auth_mode (%s)", async (mode, wrong) => {
+    const f = fixture(mode);
+    const handle = await f.start();
+    await handle.submit({ input_id: "i1", text: "hi", mode: "start_turn" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(f.events.some((event) => event.type === "state" && event.state === "wrong_auth_mode")).toBe(wrong);
   });
 
   test("resumes the recorded session instead of choosing a new one", async () => {

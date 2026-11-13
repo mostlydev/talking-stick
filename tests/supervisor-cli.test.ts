@@ -8,12 +8,25 @@ import type { ParsedCommand } from "../src/cli/parser.js";
 import { TalkingStickService } from "../src/index.js";
 import { SupervisorStore } from "../src/supervisor/state.js";
 import { launchAgentPlist, installLaunchAgent, supervisorProgram, uninstallLaunchAgent } from "../src/supervisor/launchd.js";
-import { CONTROL_LOCKED, createFileLog, rotateLog, runSupervisor, supervisorPaths, systemProcessLiveness, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
-import { sendControl } from "../src/supervisor/intake.js";
+import { createFileLog, rotateLog, runSupervisor, supervisorPaths, systemProcessLiveness, LOG_ROTATE_BYTES } from "../src/supervisor/run.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
 import { prepareSupervisorRoot, supervisorRootFor } from "../src/supervisor/root.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
+
+/** One JSON line to a socket and its one-line answer. */
+async function sendLine(socketPath: string, message: unknown): Promise<unknown> {
+  const net = await import("node:net");
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let reply = "";
+    socket.setEncoding("utf8");
+    socket.on("error", reject);
+    socket.on("connect", () => socket.write(`${JSON.stringify(message)}\n`));
+    socket.on("data", (chunk: string) => { reply += chunk; });
+    socket.on("end", () => resolve(JSON.parse(reply.trim())));
+  });
+}
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
 function setup() {
@@ -56,11 +69,10 @@ describe("tt supervisor add", () => {
   test("records explicit permissions and environment references, never values it wasn't given", async () => {
     const { cwd, run, store } = setup();
     expect(await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "on-request",
-      env: "PATH\0API_KEY=keychain:tt-worker\0MODE=literal:fast" })).toMatchObject({ status: "added", worker: "w1", desired: "running" });
+      env: "PATH\0MODE=literal:fast" })).toMatchObject({ status: "added", worker: "w1", desired: "running" });
     const spec = JSON.parse(store().worker("w1")!.spec_json);
     expect(spec.permissions).toEqual({ harness: "codex", sandbox: "workspace-write", approval: "on-request" });
-    expect(spec.env).toEqual([{ name: "PATH", from: "inherit" }, { name: "API_KEY", from: "keychain", service: "tt-worker" },
-      { name: "MODE", from: "literal", value: "fast" }]);
+    expect(spec.env).toEqual([{ name: "PATH", from: "inherit" }, { name: "MODE", from: "literal", value: "fast" }]);
   });
 
   test.each([
@@ -71,7 +83,11 @@ describe("tt supervisor add", () => {
     [{ harness: "codex", sandbox: "danger-full-access", approval: "never" }, "needs --sandbox"],
     [{ harness: "grok", "permission-mode": "plan" }, "takes no permission settings"],
     [{ harness: "claude", env: "TT_SUPERVISOR_TOKEN" }, "set by the supervisor"],
-    [{ harness: "claude", env: "SECRET=hunter2" }, "keychain:SERVICE or literal:VALUE"]
+    [{ harness: "claude", env: "SECRET=hunter2" }, "takes literal:VALUE"],
+    [{ harness: "claude", env: "SECRET=keychain:tt-worker" }, "takes literal:VALUE"],
+    [{ harness: "grok", env: "XAI_API_KEY" }, "would run the worker on an API key"],
+    [{ harness: "codex", sandbox: "workspace-write", approval: "on-request", env: "OPENAI_API_KEY=literal:x" }, "subscription login"],
+    [{ harness: "claude", env: "ANTHROPIC_BASE_URL" }, "another provider"]
   ] as Array<[Record<string, string>, string]>)("refuses %o", async (options, message) => {
     const { cwd, run } = setup();
     await expect(run(["add", "w1"], { cwd, ...options })).rejects.toThrow(message);
@@ -103,17 +119,17 @@ describe("controls", () => {
     expect((await run(["status"])).workers).toEqual([]);
   });
 
-  test("an agent may read the supervisor but change nothing until a scoped operator policy exists", async () => {
+  test("an agent may read the supervisor but change nothing", async () => {
     const { cwd, run } = setup();
     await run(["add", "w1"], { harness: "claude", cwd });
     expect((await run(["status"], {}, "codex")).workers).toHaveLength(1);
-    expect(await run(["approvals"], {}, "codex")).toEqual({ pending_approvals: [] });
-    for (const args of [["pause", "w1"], ["stop", "w1"], ["restart", "w1"], ["add", "w2"], ["install"], ["interrupt", "w1"], ["run"]]) {
+    expect(await run(["approvals"], {}, "codex")).toEqual({ recent_requests: [] });
+    for (const args of [["pause", "w1"], ["stop", "w1"], ["restart", "w1"], ["add", "w2"], ["install"], ["run"]]) {
       await expect(run(args, { harness: "claude", cwd }, "codex")).rejects.toThrow("not a codex session");
     }
   });
 
-  test("anyone can read one approval's whole request, and the list never carries it", async () => {
+  test("anyone can read one request in full, and the list never carries it", async () => {
     const { cwd, run, store } = setup();
     await run(["add", "w1"], { harness: "claude", cwd });
     const detail = JSON.stringify({ tool_name: "Bash", input: { command: `echo ${"x".repeat(1000)}; rm -rf ./build` } }, null, 2);
@@ -123,10 +139,10 @@ describe("controls", () => {
     expect(shown).toMatchObject({ approval_id: "ap1", tool: "Bash", status: "pending", detail,
       detail_sha256: createHash("sha256").update(detail).digest("hex") });
     const listed = await run(["approvals"]);
-    expect(listed.pending_approvals[0]).toMatchObject({ approval_id: "ap1", detail_sha256: shown.detail_sha256 });
-    expect(listed.pending_approvals[0]).not.toHaveProperty("detail");
-    expect((await run(["status"])).pending_approvals[0]).not.toHaveProperty("detail");
-    await expect(run(["approvals", "show", "nope"])).rejects.toThrow("No such approval request");
+    expect(listed.recent_requests[0]).toMatchObject({ approval_id: "ap1", tool: "Bash", status: "pending" });
+    expect(listed.recent_requests[0]).not.toHaveProperty("detail");
+    expect((await run(["status"])).recent_requests[0]).not.toHaveProperty("detail");
+    await expect(run(["approvals", "show", "nope"])).rejects.toThrow("No such request");
   });
 
   test("approvals recorded before full detail was kept read as empty, never as some other request", async () => {
@@ -148,20 +164,18 @@ describe("controls", () => {
     await expect(run(["remove", "w1"])).rejects.toThrow("Stop w1 first");
   });
 
-  test("approvals and reconcile are a human's, never an --agent override or a harness session", async () => {
+  test("approve, deny, interrupt and reconcile are gone, for a human and a harness alike", async () => {
     const { run } = setup();
-    await expect(run(["approve", "a1"], { agent: "human:op" })).rejects.toThrow("does not accept --agent");
-    await expect(run(["approve", "a1"], {}, "claude")).rejects.toThrow("not a claude session");
-    await expect(run(["reconcile", "batch"], { drop: true }, "codex")).rejects.toThrow("not a codex session");
-    // Even a human gets nothing until a verified human-control boundary exists.
     for (const args of [["approve", "a1"], ["deny", "a1"], ["interrupt", "w1"], ["reconcile", "batch"]]) {
-      await expect(run(args, { resend: true }, null)).rejects.toThrow("unavailable until a verified human-control boundary exists");
+      for (const harness of [null, "claude"]) {
+        await expect(run(args, { resend: true }, harness)).rejects.toThrow("was removed: a supervised worker's permission prompts are denied at once");
+      }
     }
   });
 });
 
 describe("the daemon", () => {
-  test("runs one owner, refuses every control change, and stops its workers when it stops", async () => {
+  test("runs one owner with no control socket, denies a prompt at once, and stops its workers when it stops", async () => {
     const { dataDir, cwd, store } = setup();
     const adapter = new FakeAdapter("claude");
     const controller = new AbortController();
@@ -177,36 +191,20 @@ describe("the daemon", () => {
     expect(adapter.handles).toHaveLength(1);
     await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive" })).rejects.toThrow("Another supervisor");
     adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "Bash", summary: "touch x", detail: "touch x" });
-    const approval = opened.pendingApproval("w1", 1, "0")!;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(adapter.last.answers).toEqual([{ id: "0", decision: "deny" }]);
+    expect(opened.recentApprovals()[0]).toMatchObject({ status: "denied", decided_by: "supervisor" });
     const paths = supervisorPaths(supervisorRootFor(dataDir).dir);
-    const token = fs.readFileSync(paths.controlToken, "utf8");
-    if (process.platform !== "win32") expect(fs.statSync(paths.controlToken).mode & 0o777).toBe(0o600);
-    // The intake socket a worker is given takes no control at all.
-    expect(await sendControl(paths.socket, { type: "control", action: "approve", actor: "human:op", token, approval_id: approval.approval_id }))
-      .toEqual({ ok: false, error: "This socket takes no control requests." });
-    // A forged human, or a worker's delivery token, is not control authority.
-    const delivery = adapter.last.spec.supervisor_env?.TT_SUPERVISOR_TOKEN ?? "none";
-    for (const forged of ["", delivery, "x".repeat(token.length)]) {
-      expect(await sendControl(paths.control, { type: "control", action: "approve", actor: "human:op", token: forged, approval_id: approval.approval_id }))
-        .toEqual({ ok: false, error: "This control request is not authorized." });
-    }
-    // A supervised worker can read the owner-only token like any process of
-    // this user; using it on its own pending request changes nothing.
-    for (const actor of ["claude:x", "human:op"]) {
-      for (const action of ["approve", "deny", "interrupt"] as const) {
-        expect(await sendControl(paths.control, { type: "control", action, actor, token, approval_id: approval.approval_id, worker_id: "w1" }))
-          .toEqual({ ok: false, error: CONTROL_LOCKED });
-      }
-    }
-    expect(adapter.last.answers).toEqual([]);
-    expect(opened.approval(approval.approval_id)!.status).toBe("pending");
-    expect(opened.auditRows().filter((row) => row.action === "control_approve_refused")).toHaveLength(2);
+    expect(fs.existsSync(path.join(paths.dir, "control.sock"))).toBe(false);
+    expect(fs.existsSync(path.join(paths.dir, "control.token"))).toBe(false);
+    // The intake socket a worker is given takes deliveries only.
+    expect(await sendLine(paths.socket, { type: "control", action: "approve", actor: "human:op", token: "x", approval_id: "a" }))
+      .toEqual({ outcome: "failed", error: "bad_request" });
     controller.abort();
     await running;
     expect(adapter.last.stopped).toBe(true);
     expect(opened.crashesSince("w1", "2000-01-01")).toBe(0);
     expect(fs.existsSync(supervisorPaths(supervisorRootFor(dataDir).dir).lock)).toBe(false);
-    expect(fs.existsSync(supervisorPaths(supervisorRootFor(dataDir).dir).controlToken)).toBe(false);
     expect(lines.at(-1)).toBe("supervisor stopped");
   });
 
@@ -267,32 +265,6 @@ describe("control authority", () => {
     await expect(run(["stop", "w1"], { agent: "codex:ordinary" }, "codex")).rejects.toThrow();
     expect(store().worker("w1")!.desired).toBe("running");
   });
-
-  test("a forged human actor with only a delivery token cannot approve, on either socket", async () => {
-    const { dataDir, cwd, store } = setup();
-    const opened = store();
-    const adapter = new FakeAdapter("claude");
-    const controller = new AbortController();
-    opened.addWorker({ worker_id: "w1", harness: "claude", cwd, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
-    const running = runSupervisor({ dataDir, adapters: { claude: adapter }, signal: controller.signal, tickIntervalMs: 20,
-      log: () => {}, processLiveness: () => "alive" });
-    try {
-      const deadline = Date.now() + 3_000;
-      while (!adapter.handles.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-      adapter.last.emit({ type: "approval_requested", native_request_id: "0", tool: "shell", summary: "human decision required", detail: "human decision required" });
-      const approval = opened.pendingApproval("w1", 1, "0")!;
-      const paths = supervisorPaths(supervisorRootFor(dataDir).dir);
-      for (const socket of [paths.socket, paths.control]) {
-        const answer = await sendControl(socket, { type: "control", action: "approve", actor: "human:forged",
-          approval_id: approval.approval_id, token: adapter.last.spec.supervisor_env?.TT_SUPERVISOR_TOKEN ?? "" });
-        expect(answer.ok).toBe(false);
-      }
-      expect(adapter.last.answers).toHaveLength(0);
-    } finally {
-      controller.abort();
-      await running;
-    }
-  });
 });
 
 test("a startup failure after taking ownership releases it and closes everything", async () => {
@@ -301,7 +273,6 @@ test("a startup failure after taking ownership releases it and closes everything
   fs.mkdirSync(paths.socket, { recursive: true });
   await expect(runSupervisor({ dataDir, adapters: {}, processLiveness: () => "alive", log: () => {} })).rejects.toThrow();
   expect(fs.existsSync(paths.lock)).toBe(false);
-  expect(fs.existsSync(paths.controlToken)).toBe(false);
   expect(process.listenerCount("SIGTERM")).toBe(0);
 });
 
@@ -337,7 +308,7 @@ test("a database that can't open after taking ownership still releases it", asyn
   expect(fs.existsSync(paths.lock)).toBe(false);
 });
 
-test.each(["socket", "control"] as const)("an idle client on the %s socket can't hold shutdown open", async (which) => {
+test("an idle client on the intake socket can't hold shutdown open", async () => {
   const { dataDir } = setup();
   const controller = new AbortController();
   const net = await import("node:net");
@@ -347,7 +318,7 @@ test.each(["socket", "control"] as const)("an idle client on the %s socket can't
     .then(() => { done = true; });
   try {
     const paths = supervisorPaths(supervisorRootFor(dataDir).dir);
-    const target = which === "socket" ? paths.socket : paths.control;
+    const target = paths.socket;
     const deadline = Date.now() + 3_000;
     while (!fs.existsSync(target) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
     client = net.createConnection(target);

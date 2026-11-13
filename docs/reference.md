@@ -1102,15 +1102,17 @@ the panel stays open. Outside an interactive terminal, `/rooms` lists active hos
 
 ## Managed headless workers (preview)
 
-`tt supervisor status`, `approvals` and `logs` inspect managed workers. A human controls
-`add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove`, `interrupt`, `approve` and `deny`;
-`run` starts the daemon, and `install`/`uninstall` manage its macOS user agent.
+`tt supervisor status`, `approvals` (recent permission requests) and `logs` inspect managed
+workers. A human controls `add`, `pause`, `resume`, `stop`, `restart [--fresh]` and `remove`;
+`run` starts the daemon, and `install`/`uninstall` manage its macOS user agent. `tt up` and
+terminal agents work the same with or without it.
 
-Codex is available on macOS/Linux. It uses its own native app-server, a private CODEX_HOME and
-explicit sandbox/approval settings; credentials are not imported. Claude is available there too.
-A Grok worker is attempted but can't authenticate yet: prompt, resume, interrupt and approvals
-are unavailable, and the user's config is not copied. `--env XAI_API_KEY=keychain:SERVICE` puts
-that Keychain item in the child environment only; a missing item fails before spawn, and the
-reference is not a proven login.
-For authentication, launchd executable paths, recovery fences and known limits, see
+Workers run as you, on your own harness settings and subscription logins: Claude in your
+settings, Codex in your `CODEX_HOME`, Grok in your `GROK_HOME`. A model API key reference is
+refused, and a worker must show a subscription login before any input, or it is held
+(`auth_required`, `wrong_auth_mode`). Any permission prompt
+a worker's settings don't already allow is denied at once and recorded, so nothing waits on a
+decision. Codex and Claude are available on macOS/Linux. A Grok worker is attempted, but prompt,
+resume, interrupt and approvals are unavailable.
+For launchd executable paths, recovery fences and known limits, see
 [the supervisor guide](supervisor.md).

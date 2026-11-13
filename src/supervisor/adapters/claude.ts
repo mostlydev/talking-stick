@@ -1,15 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import { approvalDetail, approvalSummary } from "../approval-detail.js";
-import type { Capabilities, HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
+import { AuthModeError, type Capabilities, type HarnessAdapter, type InputMode, type InputOutcome, type SpawnedProcess,
+  type WorkerEvent, type WorkerHandle, type WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
-// Claude Code headless: `claude -p` speaking stream-json on stdin and stdout.
-// Permission prompts come back as can_use_tool control requests through the
-// stdio permission tool; nothing bypasses them.
+// Claude Code headless: `claude -p` speaking stream-json on stdin and stdout,
+// with the user's own settings and login. Permission prompts come back as
+// can_use_tool control requests through the stdio permission tool, and the
+// supervisor denies them at once: nobody is at a headless worker's keyboard.
 
 type Json = Record<string, unknown>;
 function object(value: unknown): Json {
@@ -26,6 +29,40 @@ export interface ClaudeAdapterOptions {
   argsPrefix?: string[];
   requestTimeoutMs?: number;
   startTimeoutMs?: number;
+  /** Reads `claude auth status --json`; runs the executable by default. */
+  readAuthStatus?: ClaudeAuthReader;
+}
+
+/** Runs a non-model status command and parses its JSON, or rejects. */
+export type ClaudeAuthReader = (command: string, args: string[], env: NodeJS.ProcessEnv, cwd: string) => Promise<unknown>;
+
+const readClaudeAuthStatus: ClaudeAuthReader = (command, args, env, cwd) => new Promise((resolve, reject) => {
+  execFile(command, args, { env, cwd, encoding: "utf8", timeout: 15_000, maxBuffer: 256 * 1024 }, (error, stdout) => {
+    let status: unknown;
+    try { status = JSON.parse(stdout); } catch { reject(new Error("unreadable auth status")); return; }
+    // A failed command authorizes nothing. The one exception is the signed-out
+    // answer, which exits non-zero by design; a killed, timed-out or
+    // overflowing command fails whatever it printed.
+    if (error && !(typeof error.code === "number" && !error.killed && !error.signal && claudeAuthVerdict(status) === "auth_required")) {
+      reject(new Error("auth status failed"));
+      return;
+    }
+    resolve(status);
+  });
+});
+
+/**
+ * Whether `claude auth status` shows a subscription login: claude.ai, or a
+ * subscription token from `claude setup-token`, to Anthropic itself. Anything
+ * else, unknown values included, is not one.
+ */
+export function claudeAuthVerdict(status: unknown): "subscription" | "auth_required" | "wrong_auth_mode" {
+  const s = object(status);
+  if (s.loggedIn === false || s.authMethod === "none") return "auth_required";
+  if (s.loggedIn === true && (s.authMethod === "claude.ai" || s.authMethod === "oauth_token") && s.apiProvider === "firstParty") {
+    return "subscription";
+  }
+  return "wrong_auth_mode";
 }
 
 /** The native Claude Code executable: an explicit absolute path, or the first on PATH, resolved. */
@@ -56,7 +93,20 @@ export class ClaudeAdapter implements HarnessAdapter {
 
   async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void, signal?: AbortSignal): Promise<WorkerHandle> {
     if (spec.harness !== "claude" || spec.permissions.harness !== "claude") throw new Error("Claude needs explicit Claude permissions.");
-    const env = await workerEnvironment(spec);
+    const env = workerEnvironment(spec);
+    if (signal?.aborted) throw new Error("Claude start aborted.");
+    const command = this.options.command ?? resolveClaudeExecutable(env);
+    // Before anything that could reach a model: the same executable, home,
+    // settings and directory the worker would use must show a subscription
+    // login. An unreadable answer fails closed. Only the verdict is kept.
+    const status = await (this.options.readAuthStatus ?? readClaudeAuthStatus)(command,
+      [...(this.options.argsPrefix ?? []), "auth", "status", "--json"], env, spec.cwd).catch(() => undefined);
+    const verdict = status === undefined ? "unknown" : claudeAuthVerdict(status);
+    if (verdict === "auth_required") throw new AuthModeError("auth_required", "Claude is not signed in. Sign in with your subscription (`claude`, then /login).");
+    if (verdict === "wrong_auth_mode") {
+      throw new AuthModeError("wrong_auth_mode", "Claude is not signed in with a subscription; headless workers never use an API key or another provider.");
+    }
+    if (verdict === "unknown") throw new AuthModeError("wrong_auth_mode", "`claude auth status` couldn't confirm a subscription login, so the worker wasn't started.");
     if (signal?.aborted) throw new Error("Claude start aborted.");
     // A fresh conversation is given its id up front, so the supervisor knows
     // the session before the first turn; a resume names the recorded one.
@@ -67,12 +117,12 @@ export class ClaudeAdapter implements HarnessAdapter {
         token: spec.supervisor_env.TT_SUPERVISOR_TOKEN }) : null;
     if (evidence) env.TT_SUPERVISOR_PROCESS_FILE = evidence.file;
     const args = [...(this.options.argsPrefix ?? []), "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-      "--verbose", "--setting-sources", "project,local", "--strict-mcp-config", "--permission-mode", spec.permissions.mode,
+      "--verbose", "--setting-sources", "user,project,local", "--permission-mode", spec.permissions.mode,
       "--permission-prompt-tool", "stdio", ...(spec.model ? ["--model", spec.model] : []),
       ...(spec.resume_session_id ? ["--resume", session] : ["--session-id", session])];
     const handle = new ClaudeHandle(spec, generation, session, this.options);
     try {
-      const child = await spawnManagedProcess({ command: this.options.command ?? resolveClaudeExecutable(env), args, cwd: spec.cwd, env, signal,
+      const child = await spawnManagedProcess({ command, args, cwd: spec.cwd, env, signal,
         onSpawn: (process) => {
           evidence?.record(process);
           onSpawn(process);
@@ -175,6 +225,10 @@ class ClaudeHandle implements WorkerHandle {
     if ((init || type === "result") && (message.session_id !== undefined || init) && message.session_id !== this.session) {
       this.fault();
       return;
+    }
+    // A second check behind the start's: "none" is a subscription login; anything else would spend API funds.
+    if (init && typeof message.apiKeySource === "string" && message.apiKeySource !== "none") {
+      this.emit({ type: "state", state: "wrong_auth_mode" });
     }
     if (type === "control_response") {
       const response = object(message.response);

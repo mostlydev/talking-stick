@@ -97,12 +97,12 @@ a delivery receipt, not proof the model acted on it.
 
 ## Managed headless workers (preview)
 
-The optional `tt supervisor` keeps its own headless workers without terminal panes. Codex and
-Claude run on macOS/Linux. A Grok worker is attempted there but can't authenticate yet, including
-when `XAI_API_KEY` is only named from the Keychain; prompt, resume,
-interrupt and approvals stay unavailable until each is proven. Workers have
-explicit permissions, private native sessions and visible approval waits. Existing terminal
-sessions are never adopted. See [setup, authentication and controls](docs/supervisor.md).
+The optional `tt supervisor` keeps its own headless workers without terminal panes. They run as
+you, on your own harness settings and subscription logins, never an API key. Codex and Claude run
+on macOS/Linux. A Grok worker is attempted there, but prompt, resume, interrupt and approvals stay
+unavailable until each is proven. A permission prompt your settings don't already allow is denied
+at once and recorded, so no worker waits on one. `tt up` and terminal sessions work the same with
+or without it, and are never adopted. See [setup and controls](docs/supervisor.md).
 
 ## Checking on rooms from anywhere
 
