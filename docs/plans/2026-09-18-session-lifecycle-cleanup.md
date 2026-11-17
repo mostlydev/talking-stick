@@ -1,5 +1,7 @@
 # Exact session lifecycle cleanup
 
+Historical verification record for #87. Lifecycle hooks shipped in [0.21.0](../releases/0.21.0.md).
+
 The operator reported duplicate Claude and Codex entries after `/clear` in the
 dicom-capacitor room. Both old/new pairs shared an unchanged harness PID and
 process start time. Process liveness correctly reported the processes alive,
@@ -70,7 +72,7 @@ retirement. It did not exercise resume: its original session was empty, and an
 empty session cannot be resumed at all, so no tombstone can trap one. Lease
 release was not exercised live and rests on the regression suite.
 
-Draft PR #87 is open; nothing has been merged or released. After live verification,
+During the draft PR #87 review, after live verification,
 Codex enabled the lifecycle hooks in the operator's real Claude, Codex, and Grok
 configuration for local validation. These are global harness settings, so they
 apply across projects, not only to this repository. Existing foreign settings
