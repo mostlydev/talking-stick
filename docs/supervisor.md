@@ -9,7 +9,10 @@ from the harness settings.
 ## Start and inspect a worker
 
 1. Sign in to Claude Code or Codex with your subscription. Install its Talking Stick skill
-   with `tt install claude-code` or `tt install codex`.
+   with `tt install claude-code` or `tt install codex`. For a Claude worker, also allow
+   `Bash(tt:*)` and `Read(//<skill dir>/**)` in your Claude settings. The supervisor denies
+   anything your settings don't allow, including the worker's own `tt join`
+   (see [Claude workers](#claude-workers)).
 2. From a regular terminal in the repository, add a worker. Choose one of these examples.
 
    ```sh

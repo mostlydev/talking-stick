@@ -19,7 +19,7 @@ Full notes: [`docs/releases/0.34.0.md`](docs/releases/0.34.0.md).
 
 - Launchers can run `tt room ensure <directory> --json` repeatedly to declare a room and get
   its absolute `pin`. Set `TT_ROOM` to that path. `tt join` and `tt chat` can reopen the room
-  from that path, even when its previous room ID has expired. See [room paths and pins](docs/reference.md#rooms-and-paths).
+  from that path after the room has closed. See [room paths and pins](docs/reference.md#rooms-and-paths).
 
 ### Breaking changes
 
@@ -40,7 +40,8 @@ Full notes: [`docs/releases/0.34.0.md`](docs/releases/0.34.0.md).
   rechecks its login. Unsupported auth modes cause `wrong_auth_mode`. If a permission denial
   cannot reach the worker within 10 seconds, the supervisor holds it as `deny_undelivered` and
   stops it. See worker holds in `tt supervisor status` and permission requests in
-  `tt supervisor approvals`. Workers appear in chat after joining a room.
+  `tt supervisor approvals`. Worker holds are CLI-only in this preview. Workers appear in chat
+  after joining a room.
 - The [README Quickstart](README.md#quickstart) walks through a first room with two agents.
   Separate guides cover [installation and updates](docs/install.md), [command and delivery behavior](docs/reference.md),
   and [releasing](docs/releasing.md).
