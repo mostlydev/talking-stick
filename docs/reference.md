@@ -1,11 +1,14 @@
 # Talking Stick reference
 
 Full command surface, delivery semantics, identity resolution, and install behavior.
-For the introduction and quickstart, see [`README.md`](../README.md).
+Start with the [Quickstart](../README.md#quickstart) or the [installation guide](install.md).
 
 ## Contents
 
 - [Command reference](#command-reference)
+- [Room paths and launchers](#rooms-and-paths)
+- [Observing rooms from outside](#observing-rooms-from-outside)
+- [Room navigator](#room-navigator)
 - [Out-of-band messaging](#out-of-band-messaging)
 - [Waking idle agents](#waking-idle-agents)
 - [Native event delivery](#native-event-delivery)
@@ -27,23 +30,23 @@ tt room create [path] [--name NAME]                       # declare a room bound
 tt room ensure <path> [--name NAME]                       # declare it unless already declared; same room either way (for launchers)
 tt room list [path]                                       # this repository's rooms, live agents in each, current marked
 tt room list --all                                        # every room on this host with live members, most recent room activity first
-tt room brief [room] [--limit N]                          # what a room is doing: holder, members, last handoff, notes, recent messages
-tt room ask <room> --to <agents|room> [--stdin] [--request-key KEY]  # ask a room's agents a question without joining
-tt room replies <request-id> [--after SEQ] [--limit N] [--timeout S] # read the answers, waiting up to 60s
-tt msg reply <request-id> [--stdin]                       # answer a visitor's question (members of its room only)
+tt room brief [room] [--limit N] [--before SEQ]           # room holder, members, last handoff, notes, and messages
+tt room ask <room> --to <agents|room> <body...> [--stdin] [--request-key KEY]
+tt room replies <request-id> [--after SEQ] [--limit N] [--timeout S] # read answers; --timeout waits up to 60s
+tt msg reply <request-id> <body...> [--stdin]             # answer a visitor's question
 tt room adopt [path] [--name NAME]                        # declare an existing nested room, keeping its id
 tt room remove [path]                                     # remove a declaration and delete its agent-free room
 tt join [path] [--in ROOM] [--force-new]                  # join the room for path (--force-new is deprecated)
 tt leave [path]                                           # leave the room for path
 tt wait [path] [--timeout 110s] [--park|--claim] [--after N]  # ownership + events; saved cursor by default
 tt standby [path] [--wake cmux|manual]                    # return immediately; wake later on directed action
-tt try [path] [--park] [--after N]                        # non-blocking claim/event check
+tt try [path] [--park|--claim] [--after N]                # non-blocking claim/event check
 tt state [path] [--all]                                   # compact room state; --all shows older rows
 tt health [path] [--verbose|--all]                        # concise safety/action check
 tt status [path] [--verbose|--all]                        # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
-tt chat [path] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse]   # operator console
-tt up [--agents claude,codex,grok,opencode,antigravity [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab|--new-workspace] [--print] [--forget] [--timeout 120s] # experimental Herdr/tmux launcher
+tt chat [path] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse] [--theme lantern|tide|dusk]
+tt up [--agents claude,codex,grok,opencode,antigravity [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab|--new-workspace] [--print] [--forget] [--timeout 120s] [--json] # experimental Herdr/tmux launcher
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--attach IMAGE]... [--path DIR]
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
 tt ack <delivery-token> [--json]                          # acknowledge a native delivery envelope
@@ -62,6 +65,11 @@ tt notes list [--all] [--after ID] [--limit N] [--path DIR]
 tt install <harness...|herdr> | --all [--print] [--copy] [--link] [--replace] [--no-guard]
 tt uninstall <harness...|agents|herdr> | --all | --shared [--print]
 tt self-update [--print] [--manager npm|pnpm|yarn|bun]
+tt supervisor status | approvals [show <approval-id>] | logs [--lines N]
+tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [options]
+tt supervisor pause|resume|stop|remove <worker>
+tt supervisor restart <worker> [--fresh]
+tt supervisor run | install | uninstall | migrate
 ```
 
 `[path]` defaults to the current working directory. Pass it only when you intentionally
@@ -71,18 +79,21 @@ want a different room.
 `wait`, `try`, `standby`, `take`, `chat`, `state`, `health`, `events`, `msg`, `notes`,
 `release`, `pass`, and `assign`. `ROOM` is a room id, an absolute room path, `root`
 (the repository's root room), a short name (`api` or `#api`), or a path suffix
-(`web/api`). Exactly one open room must match. `--in` wins over `TT_ROOM` for that one
+(`web/api`). Selectors match one open room, with the declared-path exception below.
+`--in` wins over `TT_ROOM` for that one
 command. `tt chat #api` is shorthand for `tt chat --in api` (quote `#api` in shells where
 `#` starts a comment).
 
-A room is deleted when its last member leaves, so a room id does not survive between
-sessions. Only one kind of selector reopens a room: an absolute path whose directory
-declares one. `join` and `chat` then reopen it; other commands say so and change nothing.
-Ids and short names never reopen. A launcher pins agents this way:
+A room closes when the last agent and live chat console leave. A later session may have a
+different room ID. With `TT_ROOM` or `--in`, `tt join` and `tt chat` reopen a closed room
+when the selector is the absolute path of its declaring directory. IDs and short names
+only select open rooms. To launch an agent pinned to a declared directory, set
+`session_dir` to that directory and run the following (requires `jq`).
 
 ```sh
-room=$(tt room ensure "$session_dir" --json)   # {"status":"created"|"exists","pin":...,"room_path":...}
-TT_ROOM="<pin from that result>" <harness>
+room=$(tt room ensure "$session_dir" --json) &&
+  pin=$(printf '%s\n' "$room" | jq -er '.pin') &&
+  TT_ROOM="$pin" codex
 ```
 
 `tt room ensure` is safe to run on every launch. It declares the directory only if it has no
@@ -91,9 +102,9 @@ differs from the declared one is an error, and so is a declaration that cannot b
 Content tt does not understand comes back as a `warning`. `pin` is the declared directory,
 the path to set in `TT_ROOM`. `room_path` is the room's identity. In a linked worktree,
 `room_path` is keyed by the main checkout and may not exist on disk, so pin `pin`, not
-`room_path`. Older `tt` versions reject `ensure`, so a launcher can tell them apart. A room
-pinned this way only routes conversation. Its stick is independent of any enclosing
-room's, so neither stops writes the other covers.
+`room_path`. A room pinned this way has a stick independent of any enclosing room.
+In `tt chat`, use `/rooms` to find it or `/go <dir>` from a room in the same repository
+to open a declared directory, even before the agent joins.
 
 Help flags are always read-only. `--help` and `-h` take precedence over command execution,
 even for stateful commands such as `wait`, `release`, `assign`, `notes add`, or `msg send`;
@@ -103,8 +114,8 @@ Installer-managed standalone releases check for newer stable versions at most ev
 interactive startup (for example `tt chat`), install under a per-install lock, then ask you to restart
 before the command opens the database. Agent RPCs, hooks, JSON/redirected output, `--print`, and
 development checkouts never auto-install. `TT_NO_AUTO_UPDATE=1` disables automatic checks.
-The version check runs through `curl` with a five-second network deadline; installing a newer release then
-takes as long as its download. Failures go to stderr and leave the command usable.
+The version check runs through `curl` with a five-second network deadline. The installer gets
+up to two minutes. Failures go to stderr and leave the command usable.
 Previous release directories remain available for running processes. Explicit and automatic updates
 share the same lock. Automatic installs keep any npm copy without prompting.
 
@@ -146,6 +157,12 @@ Experimental. The invoking pane becomes chat; agent panes split to its right wit
 the side column. `--print` previews the selected agents and where that choice came from;
 `--new-tab` or `--new-workspace` opens a separate tab or workspace.
 
+In Herdr, install its session integrations for the agents you will launch, for example
+`herdr integration install claude` and `herdr integration install codex`. These let Herdr report
+each pane's session ID. `tt up --print` reports missing or unverified integrations. tmux needs
+no Herdr integration. On Windows, join confirmation also needs access to process details through
+PowerShell/CIM. If the shell cannot read a process's creation time, that join stays unconfirmed.
+
 Which agents start, first match wins:
 
 1. `--agents claude,codex`.
@@ -154,8 +171,9 @@ Which agents start, first match wins:
 4. Claude and Codex, whichever have both an executable on `PATH` and an installed Talking Stick
    skill. Antigravity, Grok and OpenCode start only when chosen.
 
-The first plain `tt up` in a terminal, with nothing saved and more than one launchable agent,
-asks which agents to start and whether to remember the answer for every room or only this one.
+The first plain `tt up` in a terminal, with nothing saved, asks which agents to start if
+multiple agents are launchable or if a launchable agent is outside the default pair.
+The prompt lets you save the choice for every room or only this one.
 It never asks under `--json`, `--print`, a redirected terminal, or a shell that looks like an
 agent's (it prints a note instead). `tt up --choose` asks again; `tt up --agents a,b --save`
 saves without asking, and `--save --room` saves for this room only. Saving for every room drops
@@ -286,6 +304,43 @@ a different question under the same key is refused. Questions and answers are ke
 their room: when the room closes, they are deleted with it, and later reads report
 `request_not_found`.
 
+#### Desktop sessions
+
+The `talking-stick-rooms` skill (installed by `tt install`) turns any local agent session into a
+manager for every room on your computer: it reports what each room is doing, asks agents
+questions, passes on your instructions or approvals, and collects their answers. It never joins a
+room. It only needs a session that can run `tt` on this computer, started in any folder:
+
+| App | How |
+|---|---|
+| Claude Code | `/talking-stick-rooms What is the clawdapus pair doing?` |
+| Claude desktop | Switch to **Code** (`</>`), choose **This computer** and a folder (your home folder works), then type `/talking-stick-rooms` and your question |
+| Codex CLI | `$talking-stick-rooms What is the clawdapus pair doing?` |
+| ChatGPT desktop | Start a **Work** conversation that runs on your computer, with any local folder. Select **Talking Stick Rooms** with `@` and ask. |
+
+ChatGPT finds the skill in `~/.agents/skills`, where `tt install codex` puts it. Before relying on a
+new app or mode, check that it reaches your rooms: ask it to run `command -v tt` and
+`tt room list --all --json`. Your home folder or development parent is not required: a dedicated
+local manager folder works too, provided the session can access the host's `tt` and room data.
+See [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work) and
+[skill selection](https://learn.chatgpt.com/docs/build-skills).
+
+In the Claude desktop app, use a [local session in the **Code** tab](https://code.claude.com/docs/en/desktop#use-skills), which loads `~/.claude/skills`
+and runs commands on your computer. `tt install` installs Claude Code's skill files, not your Claude
+account's Skills, so the skill doesn't appear in regular chats or Cowork. You can upload it there
+(zip the `talking-stick-rooms` folder, then
+[Customize > Skills > + > Create skill > Upload a skill](https://support.claude.com/en/articles/12512180-use-skills-in-claude)).
+An uploaded skill supplies instructions, not host command access. Chat/Cowork execution may run
+in the cloud or an isolated local environment; connecting a folder alone does not establish access
+to the host's `tt` and room database. That workflow needs its own host-tool bridge, which Talking
+Stick does not currently install. See [Cowork architecture](https://support.claude.com/en/articles/14479288-claude-cowork-architecture-overview).
+
+Some apps, ChatGPT among them, may not connect to the agents' sockets. The message is still
+stored, and an open `tt chat` in that room delivers it within a minute; otherwise the next `tt`
+command anyone runs does. Answers aren't pushed back to the app: ask it to check for replies.
+Agents treat your relayed instructions as coming from the app's agent, not from you, and say
+so if their rules need you to confirm in that room's console.
+
 ### Non-owner notes
 
 While you wait your turn you may still need to flag something to the current owner. Non-owner
@@ -299,6 +354,8 @@ notes give you a durable channel without interrupting the turn.
   changes still require holding the stick.
 
 ## Out-of-band messaging
+
+Message text is limited to 4,096 bytes. Images attached through chat have separate limits.
 
 The stick establishes single-writer authority over shared workspace state at the protocol level: it
 is an agreement participating agents honor, not a sandbox that prevents writes. It is also **not** a
@@ -521,11 +578,10 @@ from later self waits, while audit and history views retain them.
 The token is bound to the receiving member, harness session, and host. Repeated acknowledgement is
 safe; events arriving behind a pending normal batch are delivered after its acknowledgement.
 Interrupt acknowledgement leaves any unrelated normal batch outstanding. New directed work rearms a
-batch unaccepted for five minutes. A batch whose delivery was never confirmed (`ambiguous`, or its
-sender died first) is also retried after five minutes by the next `tt` command on the host, if its
-events are still unread; a delivered batch keeps waiting for the agent. Nothing retries on its own:
-retries happen only when a `tt` command runs, and an open `tt chat` checks pending wakes at most
-once a minute. The room path plus `#seq`
+batch unaccepted for five minutes. An unconfirmed ordinary delivery can retry after five minutes if its
+events are still unread. An uncertain Codex steer follows the
+[exact-turn recovery rules](#waking-idle-agents). The next `tt` command or a running
+`tt chat` can drive pending delivery. The room path plus `#seq`
 identifies an event for deduplication if an urgent prompt races a running receiver. A handoff
 envelope never substitutes for acquiring a lease and live guardian. Oversized envelopes and cmux use
 the existing body-free pull notification.
@@ -533,9 +589,10 @@ the existing body-free pull notification.
 Normal messages from an operator (a `human:*` sender) use Claude inbox priority `next`, delivering at
 the next tool boundary without cancelling the current tool. This is operator-only: an ordinary
 agent-to-agent message never requests priority steering, so a peer cannot nudge a working session
-mid-turn without an explicit `--interrupt`. Grok receives messages through active-turn hooks. Codex
-native queue delivery waits until the current turn ends. Normal messages still coalesce into an
-unread batch.
+mid-turn without an explicit `--interrupt`. Grok receives messages through active-turn hooks.
+Codex tries to steer a reachable, active daemon-backed turn for operator messages and urgent
+input. Queued delivery waits for the current turn to end. Normal messages still coalesce into
+an unread batch.
 
 ## Operator chat
 
@@ -843,8 +900,8 @@ edit, so installing `tt` does not litter repositories or harness config director
 room use, and `talking-stick-rooms`, for a session that watches rooms from outside (see
 [Observing rooms from outside](#observing-rooms-from-outside)). Both go to the same places, and an
 update adds `talking-stick-rooms` beside any existing `talking-stick` install. Skill directory writes are
-delegated to the `skiller` binary when available; package postinstall bootstraps skiller from the
-published release and verifies `checksums.txt` before installation. If skiller is missing, disabled,
+delegated to the `skiller` binary when available. When setting up a source checkout, npm postinstall
+bootstraps skiller from its published release and verifies `checksums.txt`. If skiller is missing, disabled,
 or fails its version gate, `tt` uses the built-in TypeScript fallback. Set
 `TALKING_STICK_DISABLE_SKILLER_BOOTSTRAP=1` to skip the postinstall bootstrap, or
 `TALKING_STICK_DISABLE_SKILLER=1` to force the TypeScript fallback.
@@ -885,7 +942,7 @@ names a private socket in `/tmp/tt-chat-<uid>` owned by that chat, which visits 
 
 Installing for Claude Code also merges a managed Stop-guard hook into `~/.claude/settings.json`: when
 a Claude session tries to stop while it still owns the stick or holds an unclaimed reservation, the
-hook blocks the stop once and tells the model to release, pass, or enter standby first. It is
+hook blocks the stop once. A holder releases or passes before entering standby. The guard is
 read-only, fails open whenever coordination state is unavailable, never blocks twice in a row, and
 touches only its own settings entry. Pass `--no-guard` at install time to skip it;
 `tt uninstall claude-code` removes it.
@@ -908,10 +965,9 @@ Automatic skill sync records the digest of managed copied skills. A known unedit
 automatically; an unknown or edited copy is preserved and the CLI offers
 `tt install <harness> --replace`. Managed symlinks continue to follow the bundled skill directly.
 
-Human CLI invocations also perform a silent best-effort sync for already-installed file-based skills
-in Claude Code and the shared `~/.agents/skills/talking-stick` target. If the installed skill is a
-copy, it is refreshed from the bundled skill; if it is a stale symlink, it is relinked. Missing skill
-installs are skipped.
+CLI commands with startup maintenance enabled also sync already-installed skills best-effort.
+The sync refreshes tracked unedited copies and repairs managed stale links. Set
+`TALKING_STICK_DISABLE_SKILL_SYNC=1` to skip it.
 
 ## CLI identity
 
@@ -953,7 +1009,9 @@ hook deliveries may retry after one minute at the next hook. Hooks never auto-jo
   unless a nearer directory declares its own room with `.talking-stick/room.toml`. A repository never
   joins a room above its checkout; linked worktrees share the main checkout's rooms.
 - **Structured handoffs.** `tt release` and `tt pass` carry a typed `Handoff` with required `status` /
-  `next_action` and optional `artifacts[]` pointing at specific files and line ranges.
+  `next_action`. With `--stdin`, pass a JSON object with both nonempty strings and optional
+  `artifacts`, `open_questions`, and `do_not` arrays. Without `--stdin`, omitted
+  `--status` or `--next-action` values receive placeholders.
 - **Fair handoff selection.** Normal release prefers a recent waiter that is new or has gone longest
   without holding the stick; if the best-known candidate is between wait polls, a short grace window
   prevents immediate recycling to a less-fair claimant.
@@ -1102,17 +1160,17 @@ the panel stays open. Outside an interactive terminal, `/rooms` lists active hos
 
 ## Managed headless workers (preview)
 
-`tt supervisor status`, `approvals` (recent permission requests) and `logs` inspect managed
-workers. A human controls `add`, `pause`, `resume`, `stop`, `restart [--fresh]` and `remove`;
+The supervisor is a CLI preview. Use `tt supervisor status`, `approvals` (recent permission
+requests), and `logs` to inspect managed workers. Joined workers appear in rooms like other agents.
+Worker holds appear in `tt supervisor status`. A human controls `add`, `pause`, `resume`, `stop`,
+`restart [--fresh]` and `remove`;
 `run` starts the daemon, and `install`/`uninstall` manage its macOS user agent. `tt up` and
 terminal agents work the same with or without it.
 
-Workers run as you, on your own harness settings and subscription logins: Claude in your
-settings, Codex in your `CODEX_HOME`, Grok in your `GROK_HOME`. A model API key reference is
-refused, and a worker must show a subscription login before any input, or it is held
-(`auth_required`, `wrong_auth_mode`). Any permission prompt
-a worker's settings don't already allow is denied at once and recorded, so nothing waits on a
-decision. Codex and Claude are available on macOS/Linux. A Grok worker is attempted, but prompt,
-resume, interrupt and approvals are unavailable.
+Claude and Codex workers are available on macOS and Linux. Both require a supported subscription
+login before taking a prompt. A signed-out Claude worker is held as `auth_required`. Codex waits
+in `auth_required` and rechecks the login. Unsupported auth modes cause `wrong_auth_mode`.
+The supervisor denies and records native permission prompts. Grok support is limited to a
+fresh session handshake.
 For launchd executable paths, recovery fences and known limits, see
 [the supervisor guide](supervisor.md).

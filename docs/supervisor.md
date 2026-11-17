@@ -1,20 +1,59 @@
 # Managed headless supervisor
 
-Status: preview. The core, room bridge, CLI, launchd integration, and the Codex, Claude, and Grok
-adapters are in `src/supervisor/`. The Grok adapter only attempts a fresh session and takes no
-prompt yet. The "Slices" table records each slice. What comes next is
-[headless rooms](plans/2026-11-13-headless-rooms.md): `tt up --headless`, so any agent can start a
-room of headless agents for a task.
+The optional supervisor is a CLI preview for trusted local use on macOS and Linux. It starts
+and keeps its own Claude and Codex workers running under your harness settings and subscription
+logins. Terminal agents and `tt up` use their existing pane workflows. The supervisor owns only
+the processes it starts. Its process groups provide lifecycle control, and permissions come
+from the harness settings.
 
-The supervisor is optional. It starts Claude, Codex and Grok in their headless modes as
-processes it owns, and keeps them running. It changes nothing for `tt up`, Herdr, tmux or
-terminal sessions, which work as before without it, and it never adopts or takes over a session
-it did not start.
+## Start and inspect a worker
 
-It is for trusted local use. Workers run as you, on your own harness logins and settings, the
-same as the agents you start in a terminal: your subscriptions, never an API key. Process groups
-give the supervisor lifecycle control only; they are not a security sandbox, and the local room
-database is the coordination boundary, as it is for every other agent.
+1. Sign in to Claude Code or Codex with your subscription. Install its Talking Stick skill
+   with `tt install claude-code` or `tt install codex`. For a Claude worker, also allow
+   `Bash(tt:*)` in your Claude settings, plus a read of the bundled skill that the worker's start
+   prompt names. For a default install, allow
+   `Read(~/.local/share/talking-stick/**/skills/talking-stick/SKILL.md)`, which covers both the
+   `current` link and its release target. For a source checkout, allow
+   `Read(//<checkout>/skills/talking-stick/**)`. The supervisor denies anything your settings
+   don't allow, including the worker's own `tt join` (see [Claude workers](#claude-workers)).
+2. From a regular terminal in the repository, add a worker. Choose one of these examples.
+
+   ```sh
+   tt supervisor add reviewer --harness claude --cwd "$(pwd -P)" --permission-mode default
+   tt supervisor add coder --harness codex --cwd "$(pwd -P)" \
+     --sandbox workspace-write --approval on-request
+   ```
+
+3. Run `tt supervisor run` and leave it open. From another terminal, use
+   `tt supervisor status` to check startup and `tt chat` in the repository to see the worker
+   after it joins. On macOS, see [Commands](#commands) for the optional user service.
+4. Use `tt supervisor stop <worker>` when you are done. A normal restart uses the same
+   conversation. Use `tt supervisor restart <worker> --fresh` to start a new one.
+
+Check `tt supervisor status` when a worker is waiting or held.
+
+| Status | What to do |
+|---|---|
+| `auth_required` | Sign in with your subscription. For a held Claude worker, run `tt supervisor resume <worker>`. A waiting Codex worker rechecks the login itself. |
+| `wrong_auth_mode` | Check the harness home and sign in with a supported subscription. Then resume the worker. |
+| `deny_undelivered` | Check `tt supervisor approvals` and `tt supervisor logs`, then resume the worker. |
+| `crash_loop` | Check `tt supervisor logs`, fix the cause, then resume the worker. |
+| `resume_failed` or `bootstrap_failed` | Use `tt supervisor restart <worker> --fresh` if you want to start a new conversation. |
+
+Permission prompts are denied automatically and recorded. See
+[Permissions and environment](#permissions-and-environment) for worker settings, and
+[Codex](#codex) for explicit paths when using a version manager or launchd.
+
+The Grok adapter can attempt a fresh session handshake. Its prompt, resume, interrupt, and
+approval capabilities are unavailable. [Headless rooms](plans/2026-11-13-headless-rooms.md)
+tracks planned room launch and chat status.
+
+## Upgrade workers from 0.33
+
+For a worker with a Keychain environment reference or model API credentials, record its options.
+Stop it, remove its worker entry, then add it again with the supported subscription and environment
+settings. Codex and Grok workers previously used private harness homes. If a conversation cannot
+resume from your current home, `restart --fresh` starts a new one.
 
 ## Adapters
 
@@ -69,10 +108,11 @@ those references, with protected supervisor values applied last. They never copy
 whole environment, so no inherited `TT_ROOM`, API key or harness identity marker reaches the
 worker. Hooks stay under the harness's own trust, and nothing bypasses it.
 
-**Subscriptions only, checked before any input.** A worker must show a subscription login
-before it can take a prompt, so nothing ever spends API funds. Otherwise it is held, not
-counted as a crash, and its credentials are left alone: `auth_required` when nobody is signed
-in, `wrong_auth_mode` for anything else. An unreadable or unknown answer fails closed.
+**Subscriptions only, checked before any input.** A worker must show a supported subscription
+login before it can take a prompt. An unsigned-in Claude worker is held as `auth_required`.
+A Codex worker without a login waits in `auth_required` and rechecks the login before accepting
+input. Unsupported auth modes are held as `wrong_auth_mode`. An unreadable Claude auth status
+also produces `wrong_auth_mode`. The supervisor leaves the worker's credentials in place.
 - Claude: before the worker's process starts, `claude auth status --json` runs with the same
   executable, environment and directory. Only `loggedIn` with `authMethod` `claude.ai` (or a
   `claude setup-token` subscription token, `oauth_token`) and `apiProvider` `firstParty` passes;
@@ -96,8 +136,8 @@ Nothing is created or copied there. Missing authentication is visible as `auth_r
 non-model probe detects a later login. Whether several app-server processes share one home's
 login refresh safely hasn't been shown, so treat a shared home as an acceptance check.
 Workspace-write adds only the configured Talking Stick data directory to the native writable
-roots and keeps network access disabled. Read-only workers may need human approval for their
-room metadata writes. Returned sandbox and approval settings are checked before any prompt.
+roots and keeps network access disabled. Use workspace-write for workers that need to update
+room metadata. Returned sandbox and approval settings are checked before any prompt.
 
 After registration the supervisor journals one enrolment prompt per native session: read the
 skill, join the room, and wait without claiming work. It is not a keepalive. Resuming the same
@@ -220,8 +260,8 @@ Then it:
 1. Copies the database as one consistent snapshot with `VACUUM INTO`, which includes rows still
    in the WAL. It runs SQLite's integrity check and compares every table's row count with the old
    database.
-2. Copies `workers/` and `logs/` with their modes and timestamps, skipping sockets. The token,
-   sockets and locks are made afresh by the next daemon.
+2. Copies `workers/` and `logs/` with their modes and timestamps, skipping sockets. The next
+   daemon initializes its own sockets and locks.
 3. Commits by writing `root.json`.
 4. Moves the old files into `<data>/supervisor-legacy-<time>/`, keeping them rather than
    deleting them, and writes the owner marker with where they went. The old
@@ -374,15 +414,9 @@ operation, `fenceManagedDelivery`. That operation checks the agent, session, the
 endpoint of that exact generation, and the hashed delivery token. It then marks the original tt
 batch `managed_writing`, committed before the write, and `managed_written` after it.
 
-Both modes join tt's existing steering fences, so a new endpoint registration or a generation
-change never re-offers that batch as fresh text. The fence is released only when:
-
-1. the model acknowledges the original token;
-2. there is evidence from before any write that nothing was written, which clears it to `unsent`
-   so tt may re-offer it once.
-
-Otherwise a possibly delivered message stays fenced and is never resent: nothing can prove its
-effect didn't happen.
+Both modes join tt's existing steering fences. After the writing fence is recorded, the batch
+stays fenced until the worker acknowledges the original token with `tt ack`. A new endpoint
+registration or generation does not re-offer that batch as fresh text.
 
 Fencing for writing also refuses a batch any of whose events is gone, already read, or held by
 another managed batch, since its text would repeat that event. The batch is released unwritten,
@@ -421,16 +455,13 @@ A resumed generation of a session also re-binds memberships still bound to an ea
   reservation is released (`release`, reason `process_replaced`), never moved. The same process
   whose endpoint was lost keeps its turn.
 - A membership lost before the crash is recovered through the room's rules. The supervisor first
-  records the session start it observed through the protocol on that exact process, since a
-  headless worker loads no user hooks.
+  records the session start it observed through the protocol on that exact process.
 
 Recovery necessarily records presence through that join, but it renews no lease, sends no prompt
 and fabricates no model activity. It stops at `member_revoked`, and never acts for a session it
 didn't start.
 
-The daemon writes nothing while a worker waits for an approval or input, reads unknown,
-disconnected or unauthenticated, or has a turn it didn't see start. A Codex turn is steered only
-while the supervisor knows it's running.
+The daemon starts a turn only for an idle worker. It steers only a Codex turn it knows is running.
 
 ## Commands
 
@@ -446,8 +477,8 @@ while the supervisor knows it's running.
   opened and releases the lock.
 
 `install` and `uninstall` add and remove a macOS user agent that keeps `run` going, with a 077
-umask. Only crash output that escapes the daemon goes to `logs/launchd.log`, rotated at each
-start. The agent runs `node <package>/dist/cli.js supervisor run` under Node, or an installed
+umask. Crash output that escapes the daemon goes to `logs/launchd.log`. The daemon rotates this
+log on startup once it reaches 5 MB. The agent runs `node <package>/dist/cli.js supervisor run` under Node, or an installed
 release's `<install-dir>/current/tt supervisor run`, which follows self-update.
 
 `add <worker> --harness … --cwd …`:
@@ -462,7 +493,7 @@ release's `<install-dir>/current/tt supervisor run`, which follows self-update.
 whole detail) and `logs` are readable by anyone. Every other command is for a human for now;
 headless rooms will let agents start workers within limits the operator sets:
 - `run`, `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped),
-  `install` and `uninstall`. launchd starts `run` with no harness around it.
+  `install`, `uninstall`, and `migrate`. launchd starts `run` with no harness around it.
 - They refuse `--agent`, and refuse to run inside a harness session, detected from the environment
   and from process ancestry. Each is audited with its actor.
 - `approve`, `deny`, `interrupt` and `reconcile` were removed; they answer with why.
@@ -484,9 +515,7 @@ A Grok session that was already recorded is held `resume_failed` until resume is
 - **Turns:** a turn starts at the worker's first output after a prompt and ends at its `result`.
   Claude takes no input mid-turn, so the supervisor never steers it and waits for the turn to
   end. A prompt whose write may have reached Claude keeps the turn until that result or the
-  process's exit, so no second prompt can take its output. A turn counts as interrupted only when
-  an interrupt was asked for and Claude ends it as an aborted stream; any other failure is an
-  error.
+  process's exit, so no second prompt can take its output.
 - **Session check:** each turn's `init` and `result` name the session. One naming any other
   session is a protocol error: the supervisor holds the worker and stops it, and the running input
   stays unconfirmed.
@@ -533,4 +562,7 @@ was adopted or interrupted to test this boundary.
 | S2a5b | Claude | gate eligibility: effective native sandbox and roots, execution closure, canonical protected paths | merged (#219) |
 | S2a6 | Claude | attended gate acceptance kit, with a scripted self-test in CI, and its launchd step; enables nothing | merged (#220, #222) |
 | S2d | Grok | Grok stdio adapter (the proven subset only), Keychain env references | merged (#214, #215) |
-| H1 | Claude | trusted local use: your own homes, settings and subscription logins; prompts denied at once; wrong_auth_mode; the gate, eligibility, control socket and Keychain references removed | this change |
+| H1 | Claude | trusted local use: your own homes, settings and subscription logins; prompts denied at once; wrong_auth_mode; the gate, eligibility, control socket and Keychain references removed | merged (#233) |
+
+H1 removed the gate and related checks and acceptance kit (S2a4–S2a6), along with the Keychain
+environment references from S2d.

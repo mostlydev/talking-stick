@@ -1,6 +1,7 @@
 # Native harness wake
 
-Status: implemented on branch `native-wake` (unreleased). Tracks #69. See "Implementation notes" for deviations from this design.
+Historical design for #69, first shipped in [0.16.0](../releases/0.16.0.md).
+See the [current wake reference](../reference.md#waking-idle-agents) for operating instructions.
 
 ## Problem
 

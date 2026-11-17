@@ -11,39 +11,40 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.34.0] — 2026-11-17
+
+Full notes: [`docs/releases/0.34.0.md`](docs/releases/0.34.0.md).
+
 ### Added
 
-- `tt room ensure <path> [--name NAME]` declares a room unless the directory already
-  declares one, and returns the same room either way (`status: created|exists`, and `pin`,
-  the path to set in `TT_ROOM`).
-  It never rewrites a declaration. Launchers can run it on every session start.
-- `TT_ROOM` or `--in` set to the absolute path of a declared directory reopens that room on
-  `tt join` and `tt chat` after its last member left. Ids and short names still need an open
-  room, and read-only commands never create one.
+- Launchers can run `tt room ensure <directory> --json` repeatedly to declare a room and get
+  its absolute `pin`. Set `TT_ROOM` to that path. `tt join` and `tt chat` can reopen the room
+  from that path after the room has closed. See [room paths and pins](docs/reference.md#rooms-and-paths).
+
+### Breaking changes
+
+- The preview supervisor uses your harness settings and supported subscription logins. For
+  an existing worker that used `--env NAME=keychain:SERVICE`, a model API key, or a provider
+  override, record its options, stop and remove its worker entry, then add it again after signing
+  in with a supported subscription. Older Codex and Grok workers used private harness homes.
+  If the current home cannot resume an old session, `tt supervisor restart <worker> --fresh`
+  starts a new one. See [upgrading workers](docs/supervisor.md#upgrade-workers-from-033).
+- The supervisor denies and records permission prompts automatically. Use the harness's own
+  settings to grant the access a worker needs. Scripts should stop calling `tt supervisor approve`,
+  `deny`, `interrupt`, or `reconcile`. The control socket, control token, Touch ID gate, and
+  attended acceptance script have been removed.
 
 ### Changed
 
-- `tt supervisor` workers run as you, on your own harness settings and subscription logins:
-  Claude loads your user settings and MCP servers, Codex runs in your `CODEX_HOME` and Grok in your
-  `GROK_HOME`. Nothing private is created or copied.
-- A supervised worker's permission prompt that its settings don't already allow is denied at once
-  and recorded, instead of waiting up to 24 hours. `tt supervisor approvals` lists recent requests
-  and what became of them, and `status` counts each worker's denials.
-- A supervised worker must show a subscription login before it takes any input. Claude is checked
-  with `claude auth status` before its process starts, and Codex must report a ChatGPT account.
-  Otherwise the worker is held, as `auth_required` when nobody is signed in or `wrong_auth_mode`
-  for an API key or another provider, and its credentials are left alone.
-- A denial that can't reach a worker within 10 seconds holds it `deny_undelivered` and stops it,
-  so no worker is left waiting on a prompt.
-
-### Removed
-
-- The supervisor's API-key route: `--env NAME=keychain:SERVICE` is gone, and a reference to a
-  model API key or provider override (`XAI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and the
-  like) is refused.
-- `tt supervisor approve`, `deny`, `interrupt` and `reconcile`, the control socket and token, the
-  never-accepted Touch ID gate with its eligibility checks, and its acceptance kit
-  (`scripts/attended-gate-acceptance.mjs`). Each removed command explains why.
+- A signed-out Claude worker is held as `auth_required`. Codex waits in `auth_required` and
+  rechecks its login. Unsupported auth modes cause `wrong_auth_mode`. If a permission denial
+  cannot reach the worker within 10 seconds, the supervisor holds it as `deny_undelivered` and
+  stops it. See worker holds in `tt supervisor status` and permission requests in
+  `tt supervisor approvals`. Worker holds are CLI-only in this preview. Workers appear in chat
+  after joining a room.
+- The [README Quickstart](README.md#quickstart) walks through a first room with two agents.
+  Separate guides cover [installation and updates](docs/install.md), [command and delivery behavior](docs/reference.md),
+  and [releasing](docs/releasing.md).
 
 ## [0.33.1] — 2026-11-12
 
@@ -1114,6 +1115,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.34.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.34.0
 [0.33.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.1
 [0.33.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.0
 [0.32.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.32.0

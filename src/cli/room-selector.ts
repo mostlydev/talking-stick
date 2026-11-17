@@ -13,7 +13,7 @@ export class RoomSelectorError extends Error {
 }
 
 // `--in` wins over TT_ROOM; both name a room explicitly, bypassing path
-// resolution. A launcher pins agents with TT_ROOM=<room_id>. (`--room` is
+// resolution. A launcher can pin agents to a declared directory. (`--room` is
 // already the msg flag for addressing the whole room.)
 export function roomSelectorFrom(parsed: ParsedCommand, env: NodeJS.ProcessEnv = process.env): string | null {
   const selector = getStringOption(parsed, "in") ?? env.TT_ROOM;

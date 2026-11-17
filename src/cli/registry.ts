@@ -136,7 +136,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: UP_USAGE,
-    description: "Launch agents and a chat console in Herdr panes (--print previews).",
+    description: "Launch agents and a chat console in Herdr or tmux (--print previews).",
     handler: ({ parsed, runtime }) => handleUpCommand(runtime!, parsed)
   },
   {
@@ -208,7 +208,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: true,
     internal: false,
     usage: "tt room create [path] [--name NAME] | ensure <path> [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> [--stdin] [--request-key KEY] | replies <request-id> [--after SEQ] [--limit N] [--timeout S] | adopt [path] [--name NAME] | remove [path]",
-    description: "Declare, list, adopt, or remove rooms inside a repository (remove deletes an agent-free room and its history). ensure declares a room unless that directory already declares it, and returns the same room either way, for launchers that pin agents with TT_ROOM=<room_path>. list --all shows every room on this host with live members; brief shows what one room is doing, without joining it; ask puts a question to its agents and replies reads their answers.",
+    description: "Declare, list, adopt, or remove rooms inside a repository (remove deletes an agent-free room and its history). ensure returns the declaring directory as pin for launchers to set TT_ROOM=<pin>. list --all shows every room on this host with live members; brief shows what one room is doing, without joining it; ask puts a question to its agents and replies reads their answers.",
     handler: ({ runtime, parsed }) => handleRoomCommand(requireRuntime(runtime), parsed)
   },
   {
@@ -217,7 +217,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: SUPERVISOR_USAGE,
-    description: "Run and control the optional headless supervisor, which starts and keeps harness workers running (docs/supervisor.md). Approvals and reconciling deliveries are for a human.",
+    description: "Manage optional headless workers (preview). Operators control workers. Agents can read status, approvals, and logs. The supervisor denies permission prompts.",
     handler: ({ parsed }) => handleSupervisorCommand(parsed)
   },
   {
@@ -309,7 +309,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt try [path] [--park|--claim] [--after N] [--target self|any|agent]",
+    usage: "tt try [path] [--park|--claim] [--after N]",
     description: "Check turn and event availability without waiting.",
     handler: ({ runtime, parsed, cliEntryUrl }) =>
       handleWaitCommand(requireRuntime(runtime), parsed, true, cliEntryUrl)

@@ -1,7 +1,7 @@
 # Headless rooms
 
 Status: design agreed (Codex and Grok, room events #37712, #37716–#37719, room note b163f41b).
-Slice H1 is built; the rest is planned. It supersedes the
+Slice H1 merged in #233. The rest is planned. This design supersedes the
 [full headless roadmap](2026-10-26-full-headless-roadmap.md).
 
 ## Goal
@@ -57,8 +57,9 @@ There is no new trust mechanism.
    requests are denied at once, with a visible outcome. No approve, deny, interrupt or reconcile
    control, and no control socket.
 5. **Auth.** A worker must show a subscription login before any input (Claude through
-   `claude auth status`, Codex through a ChatGPT `account/read`), or it is held `auth_required`
-   or `wrong_auth_mode`, failing closed on anything unknown. Credentials are never cleared. Whether several app-server processes can share
+   `claude auth status`, Codex through a ChatGPT `account/read`). Claude holds a signed-out worker
+   as `auth_required`. Codex waits in `auth_required` and rechecks its login. Unsupported auth
+   modes hold the worker as `wrong_auth_mode`. Credentials are never cleared. Whether several app-server processes can share
    one real home needs acceptance evidence before it is claimed.
 6. **Grok.** `--headless` refuses Grok until its adapter reports `prompt: true`.
 7. **TUI.** Spawning stays hidden or disabled until `/rooms` and `/go` show each state: starting,
@@ -81,7 +82,7 @@ architect by default.
 
 | Slice | Contents | State |
 | --- | --- | --- |
-| H1 | Supervisor for trusted local use: real homes and settings, subscription logins only, `wrong_auth_mode`, prompts denied at once, with the gate, eligibility, control socket and Keychain references removed | built |
+| H1 | Supervisor for trusted local use: real homes and settings, subscription logins only, `wrong_auth_mode`, prompts denied at once, with the gate, eligibility, control socket and Keychain references removed | merged (#233) |
 | H2 | `tt up --headless` and `tt down --headless`, the task start prompt and topology, launch identity and capacity, hidden until H3 | planned |
 | H3 | Chat: the settings screen and headless state in `/rooms` and `/go`, which enables H2 | planned |
 | H4 | Rooms skill: coordinating | planned |

@@ -290,7 +290,7 @@ export function printHelp(usages: readonly string[], notice?: string): void {
   process.stdout.write(`Usage: tt <command> [options]
 
 Commands:
-${usages.map((usage) => `  ${usage}`).join("\n")}
+${usages.map((usage) => indent(usage)).join("\n")}
 
 Run \`tt <command> --help\` for a command's details.
 
