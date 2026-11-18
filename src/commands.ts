@@ -214,6 +214,14 @@ export class TalkingStickCommands {
     return this.service.listRooms(input);
   }
 
+  peekRoomForPath(input: { context_path: string }): { room_path: string; room: PathRoom | null } {
+    return this.service.peekRoomForPath(input);
+  }
+
+  findMembersForSession(input: { harness_name: string; harness_session_id: string }) {
+    return this.service.findMembersForSession(input);
+  }
+
   getRoomActivity(input: { room_id: string }): RoomActivity {
     return this.service.getRoomActivity(input);
   }

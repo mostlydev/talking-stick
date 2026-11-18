@@ -11,6 +11,18 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- `tt chat` shows supervisor workers, read-only:
+  - `/who` lists the current room's workers, joined or not, each with its state and the command
+    that unblocks it.
+  - `/rooms` counts headless and blocked workers in each room. A worker whose room isn't open yet
+    gets a row, and Enter opens that room from the worker's directory.
+  - The header shows a short marker while a worker in the room is blocked, and chat prints one
+    line when a worker becomes blocked or recovers.
+
+  Chat never creates, migrates or changes supervisor state.
+
 ## [0.34.0] — 2026-11-17
 
 Full notes: [`docs/releases/0.34.0.md`](docs/releases/0.34.0.md).

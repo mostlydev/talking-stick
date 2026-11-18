@@ -83,6 +83,7 @@ architect by default.
 | Slice | Contents | State |
 | --- | --- | --- |
 | H1 | Supervisor for trusted local use: real homes and settings, subscription logins only, `wrong_auth_mode`, prompts denied at once, with the gate, eligibility, control socket and Keychain references removed | merged (#233) |
+| H3a | Chat shows existing supervisor workers read-only: states, holds and remedies in `/who`, counts and not-open rooms in `/rooms`, and a header marker | in review |
 | H2 | `tt up --headless` and `tt down --headless`, the task start prompt and topology, launch identity and capacity, hidden until H3 | planned |
 | H3 | Chat: the settings screen and headless state in `/rooms` and `/go`, which enables H2 | planned |
 | H4 | Rooms skill: coordinating | planned |

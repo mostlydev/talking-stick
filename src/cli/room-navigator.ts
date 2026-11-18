@@ -14,6 +14,13 @@ export interface NavigatorRoom extends TreeRoom {
   consoles: number;
   active: boolean;
   last_activity_at: string;
+  /** Supervisor workers in this room, and how many of them are blocked. */
+  headless?: number;
+  blocked?: number;
+  /** False for a headless worker's room that isn't open yet; Enter opens it from `open_path`. */
+  open?: boolean;
+  /** An existing directory that resolves to this room, when `path` itself may not exist. */
+  open_path?: string;
 }
 export type NavigatorAction = TreeAction | { kind: "room"; id: string };
 const SORTS = ["name", "path", "activity", "members"] as const;
@@ -25,6 +32,8 @@ export class RoomNavigator {
   searching = false;
   allOpen = false;
   sort: typeof SORTS[number] = "name";
+  /** A supervisor-wide condition, shown as one muted line. */
+  supervisorNotice: string | null = null;
   private selectedPath: string;
   private entries: NavigatorRoom[];
   private readonly expandedRooms = new Set<string>();
@@ -123,7 +132,10 @@ export class RoomNavigator {
       } else if (key === "right") this.selectedPath = selected.children[0] ?? selected.path;
       else { this.expandedRooms.delete(selected.path); this.collapsedRooms.add(selected.path); }
     }
-    if (key === "enter" && selected?.room) return { kind: "room", id: selected.room.id };
+    if (key === "enter" && selected?.room) {
+      return selected.room.open === false ? { kind: "go", path: selected.room.open_path ?? selected.room.path }
+        : { kind: "room", id: selected.room.id };
+    }
     return { kind: "none" };
   }
 
@@ -137,7 +149,8 @@ export class RoomNavigator {
     const list = this.list();
     const rows = this.rows(list);
     const selected = this.selection(rows);
-    const capacity = Math.max(1, maxLines - 3);
+    const notice = this.supervisorNotice ? paintStyle(color, themeStyle("muted"), safe(this.supervisorNotice)) : null;
+    const capacity = Math.max(1, maxLines - 3 - (notice ? 1 : 0));
     const index = Math.max(0, rows.findIndex(row => row.path === selected?.path));
     const start = Math.max(0, index - capacity + 1);
     const lines = rows.slice(start, start + capacity).map(row => {
@@ -148,15 +161,20 @@ export class RoomNavigator {
       const name = safe(directory) + (room && room.name !== path.basename(row.path) ? ` #${safe(room.name)}` : "");
       const hidden = row.hiddenRoom ? row.hiddenRoom.active ? " (room outside filter)" : " (inactive room)" : "";
       const label = room ? accent(name) : paintStyle(color, themeStyle("muted"), name + hidden);
-      const counts = room ? `${row.path === this.current ? " *" : ""} · ${room.agents} agents · ${room.consoles} consoles${room.unread ? ` · ${room.unread} for you` : ""}${fs.existsSync(room.path) ? "" : " (unavailable)"}${room.last_activity_at ? ` · ${formatRelativeTime(room.last_activity_at)}` : " · no events"}` : "";
+      const warn = (text: string) => paintStyle(color, themeStyle("warn"), text);
+      const headless = room?.headless ? ` · ${room.headless} headless${room.blocked ? warn(` · ${room.blocked} blocked`) : ""}` : "";
+      const counts = !room ? ""
+        : room.open === false ? ` · not open${headless}${fs.existsSync(room.open_path ?? room.path) ? "" : " (unavailable)"}`
+        : `${row.path === this.current ? " *" : ""} · ${room.agents} agents · ${room.consoles} consoles${headless}${room.unread ? ` · ${room.unread} for you` : ""}${fs.existsSync(room.path) ? "" : " (unavailable)"}${room.last_activity_at ? ` · ${formatRelativeTime(room.last_activity_at)}` : " · no events"}`;
+      const blockedBelow = row.blocked - (room?.blocked ?? 0);
       const rollup = !row.expanded && row.children.length
-        ? ` · +${row.agents - (room?.agents ?? 0)} agents · ${row.consoles - (room?.consoles ?? 0)} consoles${row.unread - (room?.unread ?? 0) ? ` · ${row.unread - (room?.unread ?? 0)} for you` : ""} below` : "";
+        ? ` · +${row.agents - (room?.agents ?? 0)} agents · ${row.consoles - (room?.consoles ?? 0)} consoles${row.unread - (room?.unread ?? 0) ? ` · ${row.unread - (room?.unread ?? 0)} for you` : ""}${blockedBelow ? warn(` · ${blockedBelow} blocked`) : ""} below` : "";
       return `${row.path === selected?.path ? accent("›") : " "} ${"  ".repeat(row.depth)}${row.children.length ? row.expanded ? "▾" : "▸" : "·"} ${label}${counts}${rollup}`;
     });
     if (!lines.length) lines.push("No matching rooms.");
     return [`Rooms · ${this.allOpen ? "All open" : "Active"} · sort: ${this.sort} · ${list.length} rooms`,
       `${this.searching ? "Filter ›" : "Filter:"} ${safe(this.query) || "—"}`,
-      ...lines, this.notice ?? "↑↓ select · ←→ branches · Enter open · / filter · s sort · a active/all · Tab folders · Esc close"].slice(0, maxLines);
+      ...lines, ...(notice ? [notice] : []), this.notice ?? "↑↓ select · ←→ branches · Enter open · / filter · s sort · a active/all · Tab folders · Esc close"].slice(0, maxLines);
   }
 }
 

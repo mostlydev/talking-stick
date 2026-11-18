@@ -106,6 +106,26 @@ test("the room header uses the first strip form that fits", () => {
   }
 });
 
+test("the headless marker leads the header and gives way before the room path", () => {
+  // The forms chat composes: marker plus other rooms, then the marker alone.
+  const strip = ["1 headless blocked · /who · other rooms: #api", "1 headless blocked · /who · #api", "1 blocked · #api",
+    "1 headless blocked · /who", "1 blocked"];
+  for (const render of [renderChatScreen, renderInlinePanel]) {
+    const frame = (columns: number) => render({
+      room_path: "/Users/wojtek/flux", room_strip: strip, transcript: new ChatTranscript(), format: context,
+      status: { members: [], owner: null, owner_since: null, reserved_for: null, now: new Date() },
+      draft: { line: "/", cursor: 1 }, hint: null, columns, rows: 16, completions: getChatCompletions({ line: "/", cursor: 1 }, [])
+    });
+    const title = (columns: number) => frame(columns).lines.find(line => line.includes("Room ·")) ?? "";
+    expect(title(100)).toContain("│ 1 headless blocked · /who · other rooms: #api");
+    expect(title(60)).toContain("│ 1 headless blocked · /who · #api");
+    expect(title(40)).toContain("│ 1 blocked");
+    expect(title(24)).not.toContain("blocked");
+    expect(title(24)).toContain("Room ·");
+    for (const columns of [100, 40, 24]) expect(frame(columns).lines.every(line => textWidth(line) < columns)).toBe(true);
+  }
+});
+
 test("inline suggestions do not move the room bar or prompt", () => {
   const base = {
     room_path: "/workspace", transcript: new ChatTranscript(), format: context,

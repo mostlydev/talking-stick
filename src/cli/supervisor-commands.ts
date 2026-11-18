@@ -10,6 +10,7 @@ import { createFileLog, runSupervisor, supervisorPaths, systemProcessLiveness } 
 import { acquireOwnerLock } from "../supervisor/daemon.js";
 import { getCurrentProcessStartedAt } from "../process-utils.js";
 import { SupervisorStore } from "../supervisor/state.js";
+import { readSupervisorWorkers } from "../supervisor/snapshot.js";
 import { runningInsideHarness } from "../identity.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
@@ -84,20 +85,7 @@ export function parseEnvReference(raw: string): EnvReference {
 
 function describeStatus(store: SupervisorStore) {
   return {
-    workers: store.workers().map((worker) => {
-      const spec = JSON.parse(worker.spec_json) as WorkerSpec;
-      const generation = store.latestGeneration(worker.worker_id);
-      return {
-        worker_id: worker.worker_id, harness: spec.harness, cwd: spec.cwd, desired: worker.desired,
-        desired_version: worker.desired_version, hold_reason: worker.hold_reason, next_start_at: worker.next_start_at,
-        generation: generation ? { generation: generation.generation, state: generation.state, pid: generation.pid,
-          session_id: generation.session_id, started_at: generation.started_at, ended_at: generation.ended_at } : null,
-        uncertain_inputs: (store.db.prepare("SELECT COUNT(*) AS count FROM inputs WHERE worker_id = ? AND state = 'uncertain'")
-          .get(worker.worker_id) as { count: number }).count,
-        denied_requests: (store.db.prepare("SELECT COUNT(*) AS count FROM approvals WHERE worker_id = ? AND status = 'denied'")
-          .get(worker.worker_id) as { count: number }).count
-      };
-    }),
+    workers: readSupervisorWorkers(store.db).map(({ generation_process_started_at: _startedAt, ...worker }) => worker),
     recent_requests: store.recentApprovals().map((approval) => ({ approval_id: approval.approval_id, worker_id: approval.worker_id,
       generation: approval.generation, tool: approval.tool, summary: approval.summary, status: approval.status,
       requested_at: approval.requested_at }))
