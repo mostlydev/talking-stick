@@ -45,7 +45,7 @@ tt state [path] [--all]                                   # compact room state; 
 tt health [path] [--verbose|--all]                        # concise safety/action check
 tt status [path] [--verbose|--all]                        # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
-tt chat [path] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse] [--theme lantern|tide|dusk]
+tt chat [path] [--in ROOM] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse] [--theme lantern|tide|dusk]
 tt up [--agents claude,codex,grok,opencode,antigravity [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab|--new-workspace] [--print] [--forget] [--timeout 120s] [--json] # experimental Herdr/tmux launcher
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--attach IMAGE]... [--path DIR]
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
@@ -105,6 +105,8 @@ the path to set in `TT_ROOM`. `room_path` is the room's identity. In a linked wo
 `room_path`. A room pinned this way has a stick independent of any enclosing room.
 In `tt chat`, use `/rooms` to find it or `/go <dir>` from a room in the same repository
 to open a declared directory, even before the agent joins.
+To open a console directly on the launcher's pin, run `tt chat --in "$pin"`. An inherited
+`TT_ROOM` takes precedence over a positional path. `--in` overrides the inherited pin.
 
 Help flags are always read-only. `--help` and `-h` take precedence over command execution,
 even for stateful commands such as `wait`, `release`, `assign`, `notes add`, or `msg send`;

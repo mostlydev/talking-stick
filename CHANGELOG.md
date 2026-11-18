@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.35.0] — 2026-11-18
+
+Full notes: [`docs/releases/0.35.0.md`](docs/releases/0.35.0.md).
+
 ### Added
 
 - `tt chat` shows supervisor workers, read-only:
@@ -18,10 +22,16 @@ changes will be called out under **Breaking changes**.
     that unblocks it.
   - `/rooms` counts headless and blocked workers in each room. A worker whose room isn't open yet
     gets a row, and Enter opens that room from the worker's directory.
+  - `/go` shows headless and blocked counts for open rooms.
   - The header shows a short marker while a worker in the room is blocked, and chat prints one
     line when a worker becomes blocked or recovers.
 
-  Chat never creates, migrates or changes supervisor state.
+  Chat reads existing supervisor state. Use `tt supervisor` to manage workers.
+
+### Changed
+
+- `tt chat --help` lists `--in ROOM`. To open a launcher's session room, pass its pin with
+  `tt chat --in "$pin"`. This also works when the shell already has a different `TT_ROOM`.
 
 ## [0.34.0] — 2026-11-17
 
@@ -1127,6 +1137,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.35.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.35.0
 [0.34.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.34.0
 [0.33.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.1
 [0.33.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.0
