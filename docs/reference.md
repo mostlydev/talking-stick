@@ -607,7 +607,7 @@ it. Scrolling, selection, and copying stay with the terminal.
 | Plain text or `/all <message>` | Broadcast to the room |
 | `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case. Mention several agents anywhere in the text: `@claude @codex, review this`. `@everyone` (or `@all`) addresses every agent in the room. Leading mentions are stripped from the message; an unknown `@name` blocks the whole send; email addresses and `` `code` `` spans are not mentions |
 | `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Steer an agent now. A busy Claude Code session gets the prompt at its next tool step and changes course without stopping; Codex steers its active daemon-backed turn, or queues when steering is definitely unavailable. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
-| `/who` | Show members and the current stick holder |
+| `/who` | Show members, the current stick holder, and this room's headless workers with their state and fix |
 | `/members` | Choose an exact member with ↑↓ and Enter, then message or remove it. Removal requires confirmation and does not stop the harness |
 | `/kick [--force] <agent> [reason]` | Remove one exact ID or unique prefix from the room. Live or unconfirmed processes require `--force`; consoles cannot be kicked. Kicking only removes room membership: the harness keeps running, and its next `tt wait` can rejoin it |
 | `/events` | Toggle turn and handoff events, hidden by default |
@@ -1150,7 +1150,9 @@ keeps your draft. Explicit host navigation reanchors the strip to the chosen rep
 `/go` and Alt+←/→ keep their repository-scoped behavior. Visited memberships, drafts and
 per-room clear markers survive switching; exiting chat leaves its visited/subscribed rooms.
 
-A room row shows `● N` agents, unread messages, and `*` for the current room. Collapsed folders show the total agents below them. The footer identifies the room a plain folder resolves to. Press `n` on a folder without its own room, then `y` to declare and open one (`n` or Escape cancels). This writes `.talking-stick/room.toml`, the same as `tt room create`.
+A room row shows `● N` agents, unread messages, and `*` for the current room. Collapsed folders show the total agents below them.
+Rows also count supervisor workers as `N headless` and `N blocked`; collapsed folders roll up the blocked ones. A worker whose
+room isn't open yet gets a `not open` row, and Enter opens that room from the worker's directory. The footer identifies the room a plain folder resolves to. Press `n` on a folder without its own room, then `y` to declare and open one (`n` or Escape cancels). This writes `.talking-stick/room.toml`, the same as `tt room create`.
 
 Folders load one level at a time and are cached while the tree is open. Empty and untracked
 folders are included; hidden or Git-ignored folders are omitted unless they contain a known
@@ -1160,9 +1162,11 @@ the panel stays open. Outside an interactive terminal, `/rooms` lists active hos
 
 ## Managed headless workers (preview)
 
-The supervisor is a CLI preview. Use `tt supervisor status`, `approvals` (recent permission
+The supervisor is a preview. Use `tt supervisor status`, `approvals` (recent permission
 requests), and `logs` to inspect managed workers. Joined workers appear in rooms like other agents.
-Worker holds appear in `tt supervisor status`. A human controls `add`, `pause`, `resume`, `stop`,
+`tt chat` shows worker states and holds read-only: `/who` lists the room's workers with the command
+that unblocks each, `/rooms` counts headless and blocked workers per room, and the header marks a
+blocked worker in the current room. A human controls `add`, `pause`, `resume`, `stop`,
 `restart [--fresh]` and `remove`;
 `run` starts the daemon, and `install`/`uninstall` manage its macOS user agent. `tt up` and
 terminal agents work the same with or without it.

@@ -31,6 +31,11 @@ import { resolveRoomSelector, roomShortName, selectedRoom } from "./room-selecto
 import { insideNestedRepository, isWithinOrSame, resolveContextPath } from "../path-resolution.js";
 import { createMemberMenu, memberMenuKey, renderMemberMenu, type MemberMenu } from "./member-menu.js";
 import { RoomNavigator, type NavigatorRoom } from "./room-navigator.js";
+import { readSupervisorSnapshot, type SupervisorSnapshot } from "../supervisor/snapshot.js";
+import {
+  EMPTY_HEADLESS_VIEW, createHeadlessLookups, headlessCounts, headlessMarker, headlessTransitions, headlessWhoLines,
+  routeHeadlessWorkers, unopenedHeadlessRooms, workersInRoom, type HeadlessView, type HeadlessWorker
+} from "./chat-supervisor.js";
 import { createDeclaredRoom } from "./room-admin.js";
 import { resolveChatKick } from "./chat-kick.js";
 import {
@@ -101,6 +106,10 @@ const DEFAULT_POLL_MS = 250;
 const PRESENCE_REFRESH_MS = 30_000;
 const STATUS_REFRESH_MS = 10_000;
 const STRIP_REFRESH_MS = 2_000;
+// Supervisor worker state is read at most this often, and a worker's room
+// path is resolved again after the route expires.
+const HEADLESS_REFRESH_MS = 2_000;
+const HEADLESS_ROUTE_TTL_MS = 10_000;
 // A running console delivers wakes that a restricted sender (a desktop app
 // denied the agents' sockets) left pending, and retries unconfirmed ones.
 const WAKE_RELAY_MS = 60_000;
@@ -372,6 +381,8 @@ export async function runChatSession(
   }
   let switchTarget: PathRoom | null = null;
   let viewedSeq = 0;
+  // The other-rooms strip, and the header forms that also carry the headless marker.
+  let baseStrip: string[] = [];
   let roomStrip: string[] = [];
   let stripOrder: PathRoom[] = [];
   // Room badges count exactly what the attention bar would there: messages to
@@ -382,6 +393,31 @@ export async function runChatSession(
     catch { return 0; }
   };
   let cycleOrder: PathRoom[] = [];
+  // Supervisor workers, read-only: chat never creates, migrates or changes
+  // supervisor state, and never starts or resumes a worker.
+  let headless: HeadlessView = EMPTY_HEADLESS_VIEW;
+  let headlessHere: Map<string, HeadlessWorker> | null = null;
+  let headlessMarkerForms: string[] = [];
+  let lastHeadlessRefresh = 0;
+  const headlessLookups = createHeadlessLookups(runtime.commands, HEADLESS_ROUTE_TTL_MS);
+  const headlessInRoom = (room: { room_id: string; canonical_path: string }) =>
+    workersInRoom(headless, { room_id: room.room_id, room_path: room.canonical_path });
+  // Blocked workers in this console's repository, outside the current room.
+  const blockedElsewhere = (here: readonly HeadlessWorker[]): number => {
+    const anchor = consoleState?.anchor;
+    if (!anchor) return 0;
+    const hereIds = new Set(here.map((worker) => worker.worker_id));
+    return headless.workers.filter((worker) => worker.blocked && !hereIds.has(worker.worker_id) &&
+      isWithinOrSame(worker.room_path, anchor)).length;
+  };
+  // The marker leads the header strip, so it survives when the other rooms don't fit.
+  const composeStrip = () => {
+    const [long, short] = headlessMarkerForms;
+    if (!long) { roomStrip = baseStrip; return; }
+    const dot = paintStyle(options.color, "2", " · ");
+    const join = (marker: string, strip: string | undefined) => strip ? `${marker}${dot}${strip}` : marker;
+    roomStrip = [join(long, baseStrip[0]), join(long, baseStrip[1]), join(short, baseStrip[1]), long, short];
+  };
   let roomNames = new Map<string, string>();
   // Every open room in this repository except the current one, for /go completion.
   let goRooms: ChatRoomCompletion[] = [];
@@ -422,7 +458,9 @@ export async function runChatSession(
     goRooms = rooms.map((room) => {
       const agents = activity.get(room.room_id)?.agent_members ?? 0;
       const where = path.relative(consoleState.anchor, room.canonical_path) || ".";
-      return { name: allNames.get(room.room_id) ?? roomShortName(room), description: `${where} · ${agents} agent${agents === 1 ? "" : "s"}` };
+      const counts = headlessCounts(headlessInRoom(room));
+      const extra = `${counts.headless ? ` · ${counts.headless} headless` : ""}${counts.blocked ? ` · ${counts.blocked} blocked` : ""}`;
+      return { name: allNames.get(room.room_id) ?? roomShortName(room), description: `${where} · ${agents} agent${agents === 1 ? "" : "s"}${extra}` };
     }).sort((left, right) => left.name.localeCompare(right.name));
     for (const room of listed) {
       // A visit already showed everything up to last_seen; never replay it.
@@ -447,8 +485,9 @@ export async function runChatSession(
     }));
     // The labelled form says what the strip is; the compact one fits narrow headers.
     const next = [formatRoomStrip(entries, formatContext(), true), formatRoomStrip(entries, formatContext())];
-    const changed = next.join("\n") !== roomStrip.join("\n");
-    roomStrip = next;
+    const changed = next.join("\n") !== baseStrip.join("\n");
+    baseStrip = next;
+    composeStrip();
     return changed;
   };
   const openRoomAtPath = (target: string, crossRepository = false): PathRoom | null => {
@@ -470,19 +509,26 @@ export async function runChatSession(
   const treeResolvedCache = new Map<string, string>();
   const treeRooms = (): NavigatorRoom[] => {
     const rooms = runtime.commands.listRooms({}).rooms.filter(room => room.state !== "closed");
-    return rooms.map(room => {
+    const entries: NavigatorRoom[] = rooms.map(room => {
       // Agentless reads never join or refresh presence in another room.
       const members = runtime.commands.getRoomState({ room_id: room.room_id }).members.filter(member =>
         member.process_liveness !== "gone" && (member.status === "active" || member.process_liveness === "alive"));
       const agents = members.filter(member => member.session_kind !== HUMAN_CHAT_SESSION_KIND).length;
       const consoles = members.length - agents;
+      const counts = headlessCounts(headlessInRoom(room));
       return { id: room.room_id, path: room.canonical_path, name: roomShortName(room), agents, consoles,
-        active: members.length > 0,
+        active: members.length > 0 || counts.headless > 0, ...counts,
         last_activity_at: runtime.commands.getRoomActivity({ room_id: room.room_id }).last_event_at ?? "",
         unread: room.room_id === roomId ? 0 : personalUnread(room.room_id) };
     });
+    // A headless worker's room that isn't open still gets a row; Enter opens it from the worker's directory.
+    return [...entries, ...unopenedHeadlessRooms(new Set(rooms.map(room => room.canonical_path)), headless)];
   };
-  const refreshTree = () => { if (roomTree) roomTree.rooms = treeRooms(); };
+  const refreshTree = () => {
+    if (!roomTree) return;
+    roomTree.rooms = treeRooms();
+    roomTree.supervisorNotice = headless.notice;
+  };
   const closeRoomTree = () => { roomTree = null; editor?.setModal(null); redraw(); };
   const resolvedTreeRoom = () => {
     if (!roomTree) return "";
@@ -518,7 +564,9 @@ export async function runChatSession(
     if (!consoleState || !editor) { print("Use /go <directory> to open a room."); return; }
     if (rolesPanel || memberMenu) { print("Close the current editor before opening rooms."); return; }
     treeResolvedCache.clear();
+    refreshHeadless(true);
     roomTree = new RoomNavigator(consoleState.anchor, treeRooms(), joined.canonical_path);
+    roomTree.supervisorNotice = headless.notice;
     editor.setModal(onRoomTreeKey, text => roomTree?.text(text) ?? false);
     redraw();
   };
@@ -1300,9 +1348,10 @@ export async function runChatSession(
     const others = members.filter((member) => member.agent_id !== selfId);
     const present = others.filter((member) => member.process_liveness !== "gone");
     const ended = others.filter((member) => member.process_liveness === "gone");
+    const joinedHeadless = new Set(headless.workers.map((worker) => worker.agent_id).filter(Boolean));
     const who =
       present.length > 0
-        ? present.map((member) => coloredName(member.agent_id)).join(", ")
+        ? present.map((member) => coloredName(member.agent_id) + (joinedHeadless.has(member.agent_id) ? " (headless)" : "")).join(", ")
         : "no agents yet";
     const stick = owner
       ? `${coloredName(owner)} has the stick`
@@ -1312,6 +1361,39 @@ export async function runChatSession(
         ? ` · ended: ${ended.map((member) => coloredName(member.agent_id)).join(", ")}`
         : "";
     return `In the room: ${who} · ${stick}${endedNote}`;
+  };
+
+  // This room's supervisor workers, joined or not, each with its state and the
+  // command that unblocks it.
+  const describeHeadless = (): string[] => {
+    const here = headlessInRoom(joined);
+    const elsewhere = blockedElsewhere(here);
+    return [
+      ...(here.length ? ["Headless workers here (tt supervisor):",
+        ...headlessWhoLines(here, (id) => nameOf(id)).map((line) => `  ${sanitizeChatText(line)}`)] : []),
+      ...(elsewhere ? [`${elsewhere} headless blocked in other rooms · /rooms`] : []),
+      ...(headless.notice ? [sanitizeChatText(headless.notice)] : [])
+    ];
+  };
+
+  const refreshHeadless = (force = false): boolean => {
+    if (!force && Date.now() - lastHeadlessRefresh < HEADLESS_REFRESH_MS) return false;
+    lastHeadlessRefresh = Date.now();
+    let snapshot: SupervisorSnapshot;
+    try { snapshot = readSupervisorSnapshot(resolveDataDir()); }
+    catch { snapshot = { kind: "unavailable", reason: "state" }; }
+    headless = routeHeadlessWorkers(snapshot, headlessLookups);
+    const here = headlessInRoom(joined);
+    for (const line of headlessTransitions(headlessHere, here)) print(sanitizeChatText(line));
+    headlessHere = new Map(here.map((worker) => [worker.worker_id, worker]));
+    const elsewhere = blockedElsewhere(here);
+    const warn = themeStyle("warn", terminalColorMode());
+    const next = headlessMarker(headlessCounts(here).blocked, elsewhere)
+      .map((form) => paintStyle(options.color, warn, sanitizeChatText(form)));
+    const changed = next.join("\n") !== headlessMarkerForms.join("\n");
+    headlessMarkerForms = next;
+    if (changed) composeStrip();
+    return changed;
   };
 
   const send = (to: string[], body: string, interrupt: boolean) => {
@@ -1590,10 +1672,12 @@ export async function runChatSession(
         print(`── Earlier saved messages ──\n${lines}\n── End of earlier page · /older for more ──`);
         return;
       }
-      case "who":
+      case "who": {
         refreshMembers();
-        print(describeRoom());
+        refreshHeadless(true);
+        print([describeRoom(), ...describeHeadless()].join("\n"));
         return;
+      }
       case "roles": {
         const [action, target, ...rest] = args.trim().split(/\s+/).filter(Boolean);
         try {
@@ -1633,8 +1717,13 @@ export async function runChatSession(
         }
         if (editor) { openRoomTree(); return; }
         if (!consoleState) { print("This console shows one room."); return; }
-        print(["Active rooms on this host:", ...treeRooms().filter(room => room.active).map(room =>
-          `${room.id === roomId ? "*" : " "} #${sanitizeChatText(room.name)}  ${sanitizeChatText(room.path)}  ${room.agents} agents · ${room.consoles} consoles${room.unread ? ` · ${room.unread} for you` : ""} · ${room.id}`),
+        refreshHeadless(true);
+        print(["Active rooms on this host:", ...treeRooms().filter(room => room.active).map(room => {
+          const headlessNote = room.headless ? ` · ${room.headless} headless${room.blocked ? ` · ${room.blocked} blocked` : ""}` : "";
+          return room.open === false
+            ? `  #${sanitizeChatText(room.name)}  ${sanitizeChatText(room.path)}  not open${headlessNote} · /go ${sanitizeChatText(room.open_path ?? room.path)}`
+            : `${room.id === roomId ? "*" : " "} #${sanitizeChatText(room.name)}  ${sanitizeChatText(room.path)}  ${room.agents} agents · ${room.consoles} consoles${headlessNote}${room.unread ? ` · ${room.unread} for you` : ""} · ${room.id}`;
+        }), ...(headless.notice ? [sanitizeChatText(headless.notice)] : []),
           "Open with /rooms <room-id>. /go stays within this repository."].join("\n"));
         return;
       }
@@ -2165,7 +2254,8 @@ export async function runChatSession(
     viewedSeq = head;
     const savedDraft = consoleState?.drafts.get(roomId);
     if (savedDraft) editor?.setDraft(savedDraft);
-    if (refreshStrip()) redraw();
+    refreshHeadless(true);
+    if (refreshStrip() || headlessMarkerForms.length) redraw();
     let busyAttempts = 0;
     let lastWakeRelay = Date.now();
     while (!closed) {
@@ -2199,11 +2289,12 @@ export async function runChatSession(
         ) {
           refreshMembers();
         }
+        const headlessChanged = refreshHeadless();
         if (consoleState && Date.now() - lastStripRefresh >= STRIP_REFRESH_MS) {
           const changed = refreshStrip();
           refreshTree();
-          if (changed || roomTree) redraw();
-        }
+          if (changed || headlessChanged || roomTree) redraw();
+        } else if (headlessChanged) redraw();
         hydrateReceipts(result.events);
         for (const event of result.events) {
           if (OWNERSHIP_EVENTS.includes(event.event_type)) {

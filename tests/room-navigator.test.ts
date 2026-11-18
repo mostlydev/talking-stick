@@ -145,3 +145,42 @@ test("search selects the first matching room in tree order rather than alias ord
   for (const char of path.basename(root)) nav.text(char);
   expect(nav.selected).toBe(path.join(root, "aaa"));
 });
+
+test("headless workers show in room rows, and a room that isn't open opens by path", () => {
+  const { root, rooms } = fixture();
+  const pending = path.join(root, "pkg");
+  fs.mkdirSync(pending);
+  const withWorkers: NavigatorRoom[] = [
+    { ...rooms[0], headless: 2, blocked: 1 },
+    rooms[1],
+    { id: "", path: pending, name: "pkg", agents: 0, consoles: 0, unread: 0, active: true, last_activity_at: "",
+      open: false, headless: 1, blocked: 1 }
+  ];
+  const nav = new RoomNavigator(root, withWorkers, rooms[0].path);
+  nav.key("tab");
+  const lines = nav.render(12, "", false);
+  expect(lines.find(line => line.includes("one"))).toContain("1 agents · 0 consoles · 2 headless · 1 blocked · 2 for you");
+  expect(lines.find(line => line.includes("pkg"))).toMatch(/pkg · not open · 1 headless · 1 blocked$/);
+  expect(nav.list().map(room => room.path)).toContain(pending);
+  while (nav.selected !== pending) nav.key("down");
+  expect(nav.key("enter")).toEqual({ kind: "go", path: pending });
+});
+
+test("the supervisor notice takes one row without displacing the key help", () => {
+  const { rooms } = fixture();
+  const nav = new RoomNavigator(rooms[0].path, rooms, rooms[0].path);
+  nav.key("tab");
+  nav.supervisorNotice = "Supervisor database is unreadable; see tt supervisor status.";
+  const lines = nav.render(5, "", false);
+  expect(lines).toHaveLength(5);
+  expect(lines[3]).toBe("Supervisor database is unreadable; see tt supervisor status.");
+  expect(lines[4]).toContain("Esc close");
+});
+
+test("a collapsed branch rolls up blocked headless workers below it", () => {
+  const rows = roomHierarchyRows([
+    { id: "a", path: "/r/a", name: "a", agents: 1, consoles: 0, unread: 0, active: true, last_activity_at: "" },
+    { id: "b", path: "/r/a/b", name: "b", agents: 0, consoles: 0, unread: 0, active: true, last_activity_at: "", headless: 1, blocked: 1 }
+  ], "name", new Set(), new Set(["/r/a"]), false);
+  expect(rows.find(row => row.path === "/r/a")).toMatchObject({ expanded: false, blocked: 1 });
+});

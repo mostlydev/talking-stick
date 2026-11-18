@@ -13,6 +13,8 @@ export interface RoomHierarchyRow {
   agents: number;
   consoles: number;
   unread: number;
+  /** Blocked headless workers here and below. */
+  blocked: number;
 }
 interface Node {
   path: string;
@@ -24,6 +26,7 @@ interface Node {
   agents: number;
   consoles: number;
   unread: number;
+  blocked: number;
 }
 
 /** Virtual folders come only from room paths, never a filesystem walk. */
@@ -39,7 +42,7 @@ export function roomHierarchyRows(rooms: NavigatorRoom[], sort: "activity" | "na
     const found = nodes.get(directory);
     if (found) return found;
     const node: Node = { path: directory, children: [], activity: "", members: 0,
-      boundary: boundaries.has(directory), agents: 0, consoles: 0, unread: 0 };
+      boundary: boundaries.has(directory), agents: 0, consoles: 0, unread: 0, blocked: 0 };
     nodes.set(directory, node);
     if (directory !== common) ensure(path.dirname(directory)).children.push(node);
     return node;
@@ -52,6 +55,7 @@ export function roomHierarchyRows(rooms: NavigatorRoom[], sort: "activity" | "na
     node.agents = node.room?.agents ?? 0;
     node.consoles = node.room?.consoles ?? 0;
     node.unread = node.room?.unread ?? 0;
+    node.blocked = node.room?.blocked ?? 0;
     node.children = node.children.map(prepare);
     for (const child of node.children) {
       if (child.activity > node.activity) node.activity = child.activity;
@@ -59,6 +63,7 @@ export function roomHierarchyRows(rooms: NavigatorRoom[], sort: "activity" | "na
       node.agents += child.agents;
       node.consoles += child.consoles;
       node.unread += child.unread;
+      node.blocked += child.blocked;
     }
     node.children.sort((a, b) => {
       const order = sort === "activity" ? b.activity.localeCompare(a.activity)
@@ -74,7 +79,7 @@ export function roomHierarchyRows(rooms: NavigatorRoom[], sort: "activity" | "na
   const visit = (node: Node, depth: number, parent?: string) => {
     const open = !collapsed.has(node.path) && (rooms.length <= 30 || filtered || expanded.has(node.path));
     rows.push({ path: node.path, parent, depth, room: node.room, hiddenRoom: node.room ? undefined : knownByPath.get(node.path), children: node.children.map(child => child.path), expanded: open,
-      agents: node.agents, consoles: node.consoles, unread: node.unread });
+      agents: node.agents, consoles: node.consoles, unread: node.unread, blocked: node.blocked });
     if (open) for (const child of node.children) visit(child, depth + 1, node.path);
   };
   const prepared = prepare(root);

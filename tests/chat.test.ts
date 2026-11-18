@@ -29,6 +29,12 @@ import { chatInlineEnabled, chatTerminalCapable, createChatIdentity, runChatCons
 import { formatRoomStrip } from "../src/cli/chat-format.js";
 import { chatThemeName, setChatTheme } from "../src/cli/theme.js";
 import { parseCommand } from "../src/cli/parser.js";
+import { prepareSupervisorRoot, supervisorRootFor } from "../src/supervisor/root.js";
+import { supervisorPaths } from "../src/supervisor/run.js";
+import { SupervisorStore } from "../src/supervisor/state.js";
+import { getCurrentProcessStartedAt } from "../src/process-utils.js";
+import { createHeadlessLookups, routeHeadlessWorkers, unopenedHeadlessRooms } from "../src/cli/chat-supervisor.js";
+import { RoomNavigator } from "../src/cli/room-navigator.js";
 
 const cleanups: Array<() => void> = [];
 
@@ -1405,6 +1411,130 @@ test("chat remains responsive while a slow recipient wakes and reports each reci
     input.write("/quit\n");
     await session;
   }
+});
+
+describe("headless workers in chat", () => {
+  /** Private supervisor and room state, so no other suite's workers appear. */
+  function supervisorFixture() {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-chat-sv-data-"));
+    const stateDir = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "tt-chat-sv-"));
+    vi.stubEnv("TALKING_STICK_DATA_DIR", dataDir);
+    vi.stubEnv("TT_SUPERVISOR_STATE_DIR", stateDir);
+    cleanups.push(() => {
+      vi.unstubAllEnvs();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    });
+    return { dataDir, stateDir };
+  }
+
+  function startChat(service: TalkingStickService, root: string) {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const state = { transcript: "" };
+    output.on("data", (chunk) => { state.transcript += chunk.toString(); });
+    const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+      identity: observerIdentity(), context_path: root, input, output, terminal: false, color: false, history: 0,
+      show_turn_events: false, poll_ms: 5 });
+    return { input, state, session };
+  }
+
+  test("/who lists this room's workers with state and remedy, and a new hold prints once", async () => {
+    const { dataDir } = supervisorFixture();
+    const { root, service } = setupService({ processLivenessChecker: () => "alive" });
+    const cwd = path.join(root, "pkg dir");
+    fs.mkdirSync(cwd);
+    const paths = supervisorPaths(prepareSupervisorRoot(dataDir).dir);
+    const store = new SupervisorStore(paths.database);
+    cleanups.push(() => store.close());
+    // A live owner, so running workers aren't reported as a stopped supervisor.
+    fs.writeFileSync(paths.lock, JSON.stringify({ pid: process.pid, process_started_at: getCurrentProcessStartedAt() }));
+    store.addWorker({ worker_id: "held1", harness: "claude", cwd, permissions: { harness: "claude", mode: "default" }, env: [] }, "human:op", "t");
+    store.hold("held1", "auth_required", "t");
+    store.addWorker({ worker_id: "coder", harness: "codex", cwd, permissions: { harness: "codex", sandbox: "read-only", approval: "on-request" },
+      env: [] }, "human:op", "t");
+    store.recordGeneration({ worker_id: "coder", generation: 1, pid: 4242, process_started_at: "coder start", pgid: 4242,
+      session_id: "sess-1", state: "idle", started_at: "t" });
+    // The worker's own process joined; a terminal peer reusing its session id from another process did not count.
+    service.joinPath({ agent_id: "codex:coder1", context_path: cwd, process_metadata: { harness_name: "codex",
+      harness_session_id: "harness:sess-1", harness_pid: 4242, harness_process_started_at: "coder start",
+      harness_host_id: os.hostname(), pid: 4242, process_started_at: "coder start", host_id: os.hostname() } });
+    service.joinPath({ agent_id: "codex:peer", context_path: cwd, process_metadata: { harness_name: "codex",
+      harness_session_id: "harness:sess-1", harness_pid: 777, harness_process_started_at: "peer start",
+      harness_host_id: os.hostname(), pid: 777, process_started_at: "peer start", host_id: os.hostname() } });
+
+    // The workers' directory is its own room; the console opens there.
+    const { input, state, session } = startChat(service, cwd);
+    try {
+      await until(() => state.transcript.includes("Talking Stick chat"));
+      input.write("/who\n");
+      await until(() => state.transcript.includes("Headless workers here"));
+      expect(state.transcript).toContain("held1 (claude) · held: auth_required · not joined → tt supervisor resume held1");
+      expect(state.transcript).toMatch(/coder \(codex\) · ready · joined as \S+/);
+      expect(state.transcript.match(/\(headless\)/g)).toHaveLength(1);
+      expect(state.transcript).not.toMatch(/peer[^,\n]*\(headless\)/);
+      store.hold("coder", "crash_loop", "later");
+      await until(() => state.transcript.includes("Headless coder is blocked: held: crash_loop. /who shows the fix."), 6_000);
+    } finally {
+      input.write("/quit\n");
+      await session;
+    }
+  });
+
+  test("a worker in a worktree-only room keeps the keyed room and opens from its own directory", () => {
+    const { root, service } = setupService();
+    const main = path.join(root, "main");
+    fs.mkdirSync(main);
+    const git = (...args: string[]) => execFileSync("git", ["-C", main, ...args], { stdio: "ignore" });
+    execFileSync("git", ["init", "-q", "-b", "main", main]);
+    git("config", "user.name", "Test"); git("config", "user.email", "t@example.com");
+    fs.writeFileSync(path.join(main, "README"), "x\n");
+    git("add", "-A"); git("commit", "-q", "-m", "init");
+    const wt = path.join(root, "wt space");
+    git("worktree", "add", "-q", "-b", "feat", wt);
+    const cwd = path.join(wt, "pkg");
+    fs.mkdirSync(path.join(cwd, ".talking-stick"), { recursive: true });
+    fs.writeFileSync(path.join(cwd, ".talking-stick", "room.toml"), "");
+    const keyed = path.join(main, "pkg");
+    const commands = new TalkingStickCommands(service);
+    const status = (worker_id: string, dir: string) => ({ worker_id, harness: "claude" as const, cwd: dir, desired: "running" as const,
+      desired_version: 1, hold_reason: null, next_start_at: null, generation: null, generation_process_started_at: null,
+      uncertain_inputs: 0, denied_requests: 0 });
+
+    const view = routeHeadlessWorkers({ kind: "ready", daemon: "running", workers: [status("w1", cwd)] },
+      createHeadlessLookups(commands, 10_000));
+    expect(view.workers[0]).toMatchObject({ room_path: keyed, room_id: null, open_path: cwd });
+    expect(fs.existsSync(keyed)).toBe(false);
+    // Peeking never opened the room.
+    expect(commands.listRooms({}).rooms.some((room) => room.canonical_path === keyed)).toBe(false);
+
+    // Workers sharing the keyed room open it from a directory that still exists.
+    const [row] = unopenedHeadlessRooms(new Set(), { notice: null, workers: [
+      { ...view.workers[0], worker_id: "gone", open_path: path.join(wt, "pkg", "removed") }, view.workers[0]
+    ] });
+    expect(row).toMatchObject({ path: keyed, open: false, open_path: cwd, headless: 2 });
+    const nav = new RoomNavigator(root, [row], root);
+    nav.key("tab");
+    expect(nav.render(6, "", false).join("\n")).not.toContain("(unavailable)");
+    expect(nav.key("enter")).toEqual({ kind: "go", path: cwd });
+    expect(commands.openRoom({ context_path: cwd }).canonical_path).toBe(keyed);
+  });
+
+  test("chat with no supervisor state creates none and lists no workers", async () => {
+    const { dataDir } = supervisorFixture();
+    const { root, service } = setupService();
+    const { input, state, session } = startChat(service, root);
+    try {
+      await until(() => state.transcript.includes("Talking Stick chat"));
+      input.write("/who\n");
+      await until(() => state.transcript.includes("In the room:"));
+      expect(state.transcript).not.toContain("Headless");
+      expect(fs.existsSync(supervisorRootFor(dataDir).dir)).toBe(false);
+    } finally {
+      input.write("/quit\n");
+      await session;
+    }
+  });
 });
 
 describe("message receipts", () => {

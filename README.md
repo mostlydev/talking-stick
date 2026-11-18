@@ -59,7 +59,7 @@ Look for the agents' replies in the transcript. The marks next to each recipient
 | `/members` or `/roles` | Manage members or assign roles |
 | Ctrl+V or `/attach <file>` | Attach an image |
 | Ctrl-G | Jump to the next unread message for you. Typing returns to your draft |
-| `/who` or `/help` | See the stick holder and members, or get more commands |
+| `/who` or `/help` | See the stick holder, members and headless workers, or get more commands |
 
 ## Working in rooms
 
@@ -85,7 +85,7 @@ It can report on rooms and ask their agents questions without joining. [Visitor 
 - [Install, update, or uninstall](docs/install.md)
 - [Operator chat, room commands, and troubleshooting](docs/reference.md)
 - [Customize collaboration instructions and roles](docs/reference.md#editable-collaboration-instructions)
-- [Managed headless workers (CLI preview)](docs/supervisor.md)
+- [Managed headless workers (preview)](docs/supervisor.md)
 - [Changes and release notes](CHANGELOG.md)
 
 ## Development

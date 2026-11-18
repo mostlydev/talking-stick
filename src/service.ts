@@ -511,6 +511,21 @@ export class TalkingStickService {
     };
   }
 
+  /**
+   * The room `tt join` from this directory would use, without creating,
+   * reopening or joining anything: the deepest existing room on its path, else
+   * the room path a join would create. `room` is null unless that room is open.
+   */
+  peekRoomForPath(input: { context_path: string }): { room_path: string; room: PathRoom | null } {
+    assertNonEmpty(input.context_path, "context_path");
+    const resolved = resolveContextPath(input.context_path);
+    const existing = this.findDeepestRoom(roomCandidatePaths(resolved));
+    return {
+      room_path: existing?.canonical_path ?? resolved.room_path,
+      room: existing && existing.state !== "closed" ? this.mapRoomForList(existing, this.now()) : null
+    };
+  }
+
   // Read-only, and never touches membership, so host-wide listings can call
   // it for every room without refreshing anyone's presence.
   getRoomActivity(input: { room_id: string }): RoomActivity {

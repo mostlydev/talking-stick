@@ -30,7 +30,16 @@ from the harness settings.
 4. Use `tt supervisor stop <worker>` when you are done. A normal restart uses the same
    conversation. Use `tt supervisor restart <worker> --fresh` to start a new one.
 
-Check `tt supervisor status` when a worker is waiting or held.
+`tt chat` shows each worker's state; it never changes it:
+
+- `/who` lists the current room's workers, joined or not, each with its state and the command
+  that unblocks it.
+- `/rooms` counts headless and blocked workers in each room. A worker whose room isn't open yet
+  gets a row of its own, and Enter opens that room.
+- The header shows a short marker while a worker in the room is blocked.
+
+`tt supervisor status` shows the same states with process detail. When a worker is waiting or
+held:
 
 | Status | What to do |
 |---|---|
@@ -46,7 +55,7 @@ Permission prompts are denied automatically and recorded. See
 
 The Grok adapter can attempt a fresh session handshake. Its prompt, resume, interrupt, and
 approval capabilities are unavailable. [Headless rooms](plans/2026-11-13-headless-rooms.md)
-tracks planned room launch and chat status.
+tracks planned room launch.
 
 ## Upgrade workers from 0.33
 
