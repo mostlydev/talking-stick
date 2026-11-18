@@ -634,6 +634,24 @@ export class Supervisor {
   }
 }
 
+interface SupervisorOwner {
+  pid: number;
+  process_started_at: string;
+}
+
+export function readSupervisorOwnerLock(lockPath: string): SupervisorOwner | "missing" | "unknown" {
+  try {
+    const owner = JSON.parse(fs.readFileSync(lockPath, "utf8")) as Partial<SupervisorOwner> | null;
+    if (typeof owner?.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 &&
+        typeof owner.process_started_at === "string" && owner.process_started_at.trim()) {
+      return { pid: owner.pid, process_started_at: owner.process_started_at };
+    }
+    return "unknown";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unknown";
+  }
+}
+
 /**
  * One supervisor per data directory. The lock file names the owner's exact
  * process. A lock whose owner is gone is taken over, never one that may live,
@@ -641,7 +659,7 @@ export class Supervisor {
  */
 export function acquireOwnerLock(
   lockPath: string,
-  self: { pid: number; process_started_at: string },
+  self: SupervisorOwner,
   liveness: ProcessLivenessReader
 ): () => void {
   const content = JSON.stringify(self);
@@ -666,11 +684,9 @@ export function acquireOwnerLock(
       throw error;
     }
     try {
-      let owner: { pid: number; process_started_at: string } | null = null;
-      try { owner = JSON.parse(fs.readFileSync(lockPath, "utf8")) as { pid: number; process_started_at: string }; }
-      catch { /* Unreadable owner evidence is uncertain; never break the lock. */ }
-      if (!owner || liveness(owner.pid, owner.process_started_at) !== "gone") {
-        throw new SupervisorError(`Another supervisor owns ${lockPath}${owner ? ` (pid ${owner.pid})` : ""}.`);
+      const owner = readSupervisorOwnerLock(lockPath);
+      if (typeof owner === "string" || liveness(owner.pid, owner.process_started_at) !== "gone") {
+        throw new SupervisorError(`Another supervisor owns ${lockPath}${typeof owner === "string" ? "" : ` (pid ${owner.pid})`}.`);
       }
       // Only a reaper removes a lock, and only one reaper runs, so this is the dead owner's.
       fs.unlinkSync(lockPath);

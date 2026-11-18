@@ -6,6 +6,8 @@ import { openSqlite } from "../src/sqlite.js";
 import { canonicalPath, inspectSupervisorState, legacyPaths, migrateSupervisorState, prepareSupervisorRoot,
   supervisorRootFor, supervisorStateBase } from "../src/supervisor/root.js";
 import { SupervisorStore } from "../src/supervisor/state.js";
+import { supervisorPaths } from "../src/supervisor/run.js";
+import { readSupervisorSnapshot } from "../src/supervisor/snapshot.js";
 import { LAUNCHD_LABEL, launchAgentPlist } from "../src/supervisor/launchd.js";
 import { handleSupervisorCommand } from "../src/cli/supervisor-commands.js";
 import type { ParsedCommand } from "../src/cli/parser.js";
@@ -339,6 +341,88 @@ describe("older state in the data directory", () => {
     expect(() => inspectSupervisorState(dataDir, env)).toThrow("both");
     expect(() => migrateSupervisorState(dataDir, noLock, env)).toThrow("both");
     expect(fs.existsSync(legacy.database)).toBe(true);
+  });
+});
+
+describe("read-only supervisor snapshots", () => {
+  test("absent, incomplete and legacy roots do not initialize or migrate", () => {
+    const fresh = dirs();
+    expect(readSupervisorSnapshot(fresh.dataDir, { env: fresh.env })).toEqual({ kind: "none" });
+    expect(fs.existsSync(supervisorRootFor(fresh.dataDir, fresh.env).dir)).toBe(false);
+    const incomplete = prepareSupervisorRoot(fresh.dataDir, fresh.env);
+    expect(readSupervisorSnapshot(fresh.dataDir, { env: fresh.env })).toEqual({ kind: "unavailable", reason: "database" });
+    expect(fs.existsSync(supervisorPaths(incomplete.dir).database)).toBe(false);
+
+    const old = dirs();
+    legacyState(old.dataDir);
+    expect(readSupervisorSnapshot(old.dataDir, { env: old.env })).toEqual({ kind: "needs_migration" });
+    expect(fs.existsSync(supervisorRootFor(old.dataDir, old.env).dir)).toBe(false);
+  });
+
+  test("reads committed WAL changes, projects only status fields, and sees a removed worker", () => {
+    const { base, dataDir, env } = dirs();
+    const paths = supervisorPaths(prepareSupervisorRoot(dataDir, env).dir);
+    const store = new SupervisorStore(paths.database);
+    cleanup.push(() => store.close());
+    store.db.pragma("wal_autocheckpoint = 0");
+    const cwd = path.join(base, "room with spaces");
+    store.addWorker({ worker_id: "w1", harness: "claude", cwd, permissions: { harness: "claude", mode: "default" },
+      env: [{ name: "CUSTOM", from: "literal", value: "not-a-status-field" }] }, "human:op", "created");
+    store.recordGeneration({ worker_id: "w1", generation: 1, pid: 10, process_started_at: "old process", pgid: 10,
+      session_id: "old", state: "idle", started_at: "first generation" });
+    store.endGeneration("w1", 1, "ended", {});
+    store.recordGeneration({ worker_id: "w1", generation: 2, pid: 11, process_started_at: "process start", pgid: 11,
+      session_id: "latest", state: "busy", started_at: "generation start" });
+    store.journalInput({ input_id: "input1", worker_id: "w1", generation: 2, mode: "start_turn", source: "test", created_at: "time" });
+    store.updateInput("input1", "w1", 2, "uncertain", "time");
+    store.recordApproval({ approval_id: "approval1", worker_id: "w1", generation: 2, native_request_id: "native", tool: "Bash",
+      summary: "private request", detail: "private detail", requested_at: "time" });
+    store.settleApproval("approval1", "denied", "supervisor", "time");
+    store.hold("w1", "deny_undelivered", "time");
+    expect(fs.existsSync(`${paths.database}-wal`)).toBe(true);
+    expect(readSupervisorSnapshot(dataDir, { env })).toEqual({
+      kind: "ready", daemon: "stopped", workers: [{
+        worker_id: "w1", harness: "claude", cwd, desired: "running", desired_version: 1, hold_reason: "deny_undelivered",
+        next_start_at: null, generation: { generation: 2, state: "busy", pid: 11, session_id: "latest",
+          started_at: "generation start", ended_at: null },
+        generation_process_started_at: "process start", uncertain_inputs: 1, denied_requests: 1
+      }]
+    });
+    store.db.prepare("DELETE FROM workers WHERE worker_id = ?").run("w1");
+    expect(readSupervisorSnapshot(dataDir, { env })).toEqual({ kind: "ready", daemon: "stopped", workers: [] });
+  });
+
+  test("uses exact owner liveness and distinguishes an unconfirmed owner", () => {
+    const { dataDir, env } = dirs();
+    const paths = supervisorPaths(prepareSupervisorRoot(dataDir, env).dir);
+    new SupervisorStore(paths.database).close();
+    fs.writeFileSync(paths.lock, '{"pid":513,"process_started_at":"original start"}');
+    const liveness = vi.fn(() => "alive" as const);
+    expect(readSupervisorSnapshot(dataDir, { env, liveness })).toMatchObject({ daemon: "running" });
+    expect(liveness).toHaveBeenCalledWith(513, "original start");
+    expect(readSupervisorSnapshot(dataDir, { env, liveness: () => "gone" })).toMatchObject({ daemon: "stopped" });
+    expect(readSupervisorSnapshot(dataDir, { env, liveness: () => "unknown" })).toMatchObject({ daemon: "unknown" });
+    fs.writeFileSync(paths.lock, '{"pid":513}');
+    liveness.mockClear();
+    expect(readSupervisorSnapshot(dataDir, { env, liveness })).toMatchObject({ daemon: "unknown" });
+    expect(liveness).not.toHaveBeenCalled();
+  });
+
+  test("reads a checkpointed database and degrades when SQLite is exclusively locked", () => {
+    const { dataDir, env } = dirs();
+    const paths = supervisorPaths(prepareSupervisorRoot(dataDir, env).dir);
+    new SupervisorStore(paths.database).close();
+    expect(readSupervisorSnapshot(dataDir, { env })).toEqual({ kind: "ready", daemon: "stopped", workers: [] });
+    const writer = openSqlite(paths.database);
+    cleanup.push(() => writer.close());
+    writer.pragma("journal_mode = DELETE");
+    writer.exec("BEGIN EXCLUSIVE");
+    try {
+      expect(readSupervisorSnapshot(dataDir, { env })).toEqual({ kind: "unavailable", reason: "database" });
+    } finally {
+      writer.exec("ROLLBACK");
+    }
+    expect(readSupervisorSnapshot(dataDir, { env })).toMatchObject({ kind: "ready" });
   });
 });
 

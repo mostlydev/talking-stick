@@ -8,6 +8,8 @@ import type BetterSqlite3 from "better-sqlite3";
 export type SqliteDatabase = BetterSqlite3.Database;
 
 export interface OpenSqliteOptions {
+  /** Open an existing database without write access. */
+  readonly?: boolean;
   /** Fail instead of creating the file when it does not exist. */
   fileMustExist?: boolean;
   /** Busy timeout in milliseconds applied when the database opens. */
@@ -24,14 +26,17 @@ export function openSqlite(file: string, options: OpenSqliteOptions = {}): Sqlit
   if (!isBunRuntime()) {
     const Database = requireModule("better-sqlite3") as typeof BetterSqlite3;
     // better-sqlite3 rejects options that are present but undefined.
+    const access = options.readonly ? { readonly: true, fileMustExist: true }
+      : options.fileMustExist === undefined ? {} : { fileMustExist: options.fileMustExist };
     return new Database(file, {
-      ...(options.fileMustExist !== undefined ? { fileMustExist: options.fileMustExist } : {}),
+      ...access,
       ...(options.timeout !== undefined ? { timeout: options.timeout } : {})
     });
   }
   const { Database } = requireModule("bun:sqlite") as { Database: BunDatabaseConstructor };
   // strict: a missing bind throws, as in better-sqlite3, instead of binding NULL.
-  const db = new Database(file, { strict: true, readwrite: true, create: !options.fileMustExist });
+  const access = options.readonly ? { readonly: true } : { readwrite: true, create: !options.fileMustExist };
+  const db = new Database(file, { strict: true, ...access });
   if (options.timeout !== undefined) db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(options.timeout))}`);
   return wrapBunDatabase(db);
 }
@@ -50,7 +55,9 @@ interface BunDatabase {
   close(): void;
 }
 
-type BunDatabaseConstructor = new (file: string, options?: { strict?: boolean; readwrite?: boolean; create?: boolean }) => BunDatabase;
+type BunDatabaseConstructor = new (file: string, options?: {
+  strict?: boolean; readonly?: boolean; readwrite?: boolean; create?: boolean;
+}) => BunDatabase;
 
 // bun:sqlite returns null for a missing row where better-sqlite3 returns
 // undefined, and takes `PRAGMA` through exec/query rather than pragma().

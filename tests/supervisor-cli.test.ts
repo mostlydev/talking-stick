@@ -129,6 +129,21 @@ describe("controls", () => {
     }
   });
 
+  test("status keeps its worker JSON shape and omits the chat process binding", async () => {
+    const { cwd, run, store } = setup();
+    await run(["add", "w1"], { harness: "claude", cwd });
+    store().recordGeneration({ worker_id: "w1", generation: 1, pid: 12, process_started_at: "process start",
+      pgid: 12, session_id: "session", state: "idle", started_at: "started" });
+    expect(await run(["status"])).toEqual({
+      workers: [{
+        worker_id: "w1", harness: "claude", cwd, desired: "running", desired_version: 1,
+        hold_reason: null, next_start_at: null, uncertain_inputs: 0, denied_requests: 0,
+        generation: { generation: 1, state: "idle", pid: 12, session_id: "session", started_at: "started", ended_at: null }
+      }],
+      recent_requests: []
+    });
+  });
+
   test("anyone can read one request in full, and the list never carries it", async () => {
     const { cwd, run, store } = setup();
     await run(["add", "w1"], { harness: "claude", cwd });

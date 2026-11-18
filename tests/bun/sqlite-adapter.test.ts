@@ -44,6 +44,28 @@ test("fileMustExist refuses to create a database", () => {
   expect(() => openSqlite(tempFile("missing.sqlite"), { fileMustExist: true })).toThrow();
 });
 
+test("a read-only connection sees committed WAL rows and cannot write or create a database", () => {
+  const missing = tempFile("missing.sqlite");
+  expect(() => openSqlite(missing, { readonly: true })).toThrow();
+  expect(fs.existsSync(missing)).toBe(false);
+
+  const file = tempFile("read-only.sqlite");
+  const writer = openSqlite(file);
+  writer.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;");
+  writer.exec("CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1);");
+  try {
+    const reader = openSqlite(file, { readonly: true, timeout: 25 });
+    try {
+      expect(reader.prepare("SELECT * FROM t").all()).toEqual([{ n: 1 }]);
+      expect(() => reader.prepare("DELETE FROM t").run()).toThrow();
+    } finally {
+      reader.close();
+    }
+  } finally {
+    writer.close();
+  }
+});
+
 test("busy timeout waits for a writer instead of failing at once", () => {
   const file = tempFile("busy.sqlite");
   const writer = openSqlite(file);
