@@ -136,7 +136,11 @@ describe("controls", () => {
     expect(JSON.parse(db.worker("w2")!.spec_json).permissions).toEqual({
       harness: "codex", sandbox: "danger-full-access", approval: "never"
     });
-    expect((await run(["status"], {}, "codex")).workers[0]).toMatchObject({ unrestricted: true });
+    await run(["add", "w3"], { harness: "codex", cwd, sandbox: "danger-full-access", approval: "on-request" }, "codex");
+    const { workers } = await run(["status"], {}, "codex");
+    expect(workers[0]).toMatchObject({ unrestricted: true });
+    expect(workers[1]).toMatchObject({ unrestricted: true });
+    expect(workers[2]).not.toHaveProperty("unrestricted");
     await run(["pause", "w1"], {}, "codex");
     await run(["resume", "w1"], {}, "codex");
     await run(["restart", "w1"], {}, "codex");

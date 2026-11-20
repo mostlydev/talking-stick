@@ -58,7 +58,7 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
       worker_id: row.worker_id,
       harness: spec.harness,
       ...((spec.permissions?.harness === "claude" && spec.permissions.mode === "bypassPermissions") ||
-        (spec.permissions?.harness === "codex" && spec.permissions.sandbox === "danger-full-access")
+        (spec.permissions?.harness === "codex" && spec.permissions.sandbox === "danger-full-access" && spec.permissions.approval === "never")
         ? { unrestricted: true as const } : {}),
       cwd: spec.cwd,
       desired: row.desired,

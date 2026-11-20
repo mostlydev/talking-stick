@@ -91,6 +91,7 @@ describe("starting a Claude worker", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].args.slice(-3)).toEqual(["auth", "status", "--json"]);
     expect(calls[0].cwd).toBe(f.spec.cwd);
+    expect(calls[0].env.USER).toBe(os.userInfo().username);
     expect(calls[0].env.TALKING_STICK_DATA_DIR).toBe(f.spec.supervisor_env?.TALKING_STICK_DATA_DIR);
     expect(JSON.stringify(f.events)).not.toContain("user@example.com");
   });
@@ -99,7 +100,7 @@ describe("starting a Claude worker", () => {
     const f = fixture(mode);
     const handle = await f.start();
     await handle.submit({ input_id: "i1", text: "hi", mode: "start_turn" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await until(() => f.events.some((event) => event.type === "turn_completed"));
     expect(f.events.some((event) => event.type === "state" && event.state === "wrong_auth_mode")).toBe(wrong);
   });
 

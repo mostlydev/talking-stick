@@ -52,12 +52,6 @@ export interface WorkerSpec {
   state_dir?: string;
 }
 
-/**
- * A start refused because the harness isn't on a subscription login: not
- * signed in (auth_required), or signed in some other way, such as an API key
- * or another provider (wrong_auth_mode). The supervisor holds the worker
- * instead of counting a crash. The message never carries identity or secrets.
- */
 export class WorkerExecutableError extends Error {
   constructor(readonly envName: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE", message: string) {
     super(message);
@@ -65,6 +59,12 @@ export class WorkerExecutableError extends Error {
   }
 }
 
+/**
+ * A start refused because the harness isn't on a subscription login: not
+ * signed in (auth_required), or signed in some other way, such as an API key
+ * or another provider (wrong_auth_mode). The supervisor holds the worker
+ * instead of counting a crash. The message never carries identity or secrets.
+ */
 export class AuthModeError extends Error {
   constructor(readonly reason: "auth_required" | "wrong_auth_mode", message: string) {
     super(message);

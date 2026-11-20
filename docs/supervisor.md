@@ -126,10 +126,11 @@ start. At each start the supervisor adds the runtime `supervisor_env`:
   room database;
 - the endpoint and delivery token, for workers that can take a prompt.
 
-Adapters start with only HOME and PATH (needed by native executables and their logins), then
+Adapters start with HOME and PATH (needed by native executables and their logins), then
 those references, with protected supervisor values applied last. They never copy the daemon's
 whole environment, so no inherited `TT_ROOM`, API key or harness identity marker reaches the
-worker. Hooks stay under the harness's own trust rules.
+worker. Claude also receives the local username for its subscription login. Hooks stay under the
+harness's own trust rules.
 
 `add` saves the caller's PATH for the worker unless you pass `--env PATH` or
 `--env PATH=literal:…`. On macOS, `install` also saves the caller's PATH for the user

@@ -1,3 +1,4 @@
+import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -94,6 +95,8 @@ export class ClaudeAdapter implements HarnessAdapter {
   async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void, signal?: AbortSignal): Promise<WorkerHandle> {
     if (spec.harness !== "claude" || spec.permissions.harness !== "claude") throw new Error("Claude needs explicit Claude permissions.");
     const env = workerEnvironment(spec);
+    // Claude looks up its subscription credentials using the local username.
+    env.USER ??= os.userInfo().username;
     if (signal?.aborted) throw new Error("Claude start aborted.");
     const command = this.options.command ?? resolveClaudeExecutable(env);
     // Before anything that could reach a model: the same executable, home,
