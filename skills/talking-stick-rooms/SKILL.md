@@ -18,6 +18,10 @@ tt room replies <request-id> --timeout 30 --json   # answers, plus each recipien
 
 Do not run `tt join`, `tt wait`, `tt standby`, `tt take`, `tt release`, or `tt msg send` for this work, and never edit files in another room's checkout. If `tt` is not available, say so; do not guess at a room's state.
 
+## Launch a room when the operator asks
+
+Use `tt supervisor add <worker> --harness <harness> --cwd <absolute-dir>` for each headless worker, or `tt up --path <dir> --agents <list>` for visible agents. Use the worker permissions the operator requested. The launcher supplies the Talking Stick skill prompt. Check `tt supervisor status` for headless startup and `tt room list --all --json` for room joins. You can do this from your existing session without joining the new room yourself.
+
 ## Status: what is a room doing?
 
 1. `tt room list --all --json`. Match what the user said against each room's `name` or the end of its `canonical_path`; if several match, ask which. A room only appears while an agent or console is in it.

@@ -191,7 +191,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
           .join("\n") || "No permission requests.")
         : (status.workers.map((w) => `${w.worker_id}  ${w.harness}  ${w.desired}${w.hold_reason ? ` (held: ${w.hold_reason})` : ""}  ` +
             `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}` +
-            `${w.start_error ? ` · ${w.start_error}` : ""}` +
+            `${w.start_error ? ` · ${w.start_error} ${w.start_remedy}` : ""}` +
             `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}` +
             `${w.denied_requests ? `  ${w.denied_requests} denied` : ""}`).join("\n") || "No workers."));
       return;

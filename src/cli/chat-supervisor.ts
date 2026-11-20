@@ -178,6 +178,7 @@ export function routeHeadlessWorkers(snapshot: SupervisorSnapshot, lookups: Head
       agent_id: member?.agent_id ?? null,
       ...workerState(worker, snapshot.daemon),
       start_error: worker.start_error,
+      ...(worker.start_remedy ? { remedy: worker.start_remedy } : {}),
       unrestricted: worker.unrestricted,
       denied_requests: worker.denied_requests,
       uncertain_inputs: worker.uncertain_inputs
@@ -208,7 +209,7 @@ export function headlessWhoLines(workers: readonly HeadlessWorker[], nameOf: (ag
       worker.uncertain_inputs ? `${worker.uncertain_inputs} uncertain` : ""
     ].filter(Boolean);
     return [`${worker.worker_id} (${worker.harness})`, worker.state, where, ...extras].join(" · ") +
-      (worker.remedy && !worker.start_error ? ` → ${worker.remedy}` : "");
+      (worker.remedy ? ` → ${worker.remedy}` : "");
   });
 }
 

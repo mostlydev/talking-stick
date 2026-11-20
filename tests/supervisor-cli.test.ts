@@ -165,16 +165,20 @@ describe("controls", () => {
     });
   });
 
-  test("status surfaces an executable failure recorded by an older supervisor", async () => {
+  test.each([
+    ["PATH", "tt supervisor resume w1"],
+    ["PATH=literal:/usr/bin:/bin", "--env CODEX_EXECUTABLE=literal:/absolute/executable"]
+  ])("status shows the right recovery for missing Codex with %s", async (env, remedy) => {
     const { cwd, run, store } = setup();
-    await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "never" });
+    await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "never", env });
     const db = store();
     db.recordGeneration({ worker_id: "w1", generation: 1, pid: null, process_started_at: null,
       pgid: null, session_id: null, state: "starting", started_at: "started" });
     db.endGeneration("w1", 1, "ended", { reason: "start_failed", error: "Error: Cannot find a native Codex executable." });
     db.hold("w1", "crash_loop", "ended");
     expect((await run(["status"])).workers[0]).toMatchObject({
-      hold_reason: "crash_loop", start_error: expect.stringContaining("CODEX_EXECUTABLE")
+      hold_reason: "crash_loop", start_error: expect.stringContaining("CODEX_EXECUTABLE"),
+      start_remedy: expect.stringContaining(remedy)
     });
   });
 

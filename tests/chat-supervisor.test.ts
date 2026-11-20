@@ -50,10 +50,11 @@ describe("headless worker state", () => {
 
   test("shows the executable failure and explicit permission mode in /who", () => {
     const view = routeHeadlessWorkers({ kind: "ready", daemon: "running", workers: [
-      worker({ hold_reason: "start_failed", unrestricted: true, start_error: "Set CLAUDE_EXECUTABLE to its absolute path." })
+      worker({ hold_reason: "start_failed", unrestricted: true, start_error: "Cannot resolve the claude executable.",
+        start_remedy: "Run tt supervisor install, then tt supervisor resume w1." })
     ] }, lookups());
     expect(headlessWhoLines(view.workers, id => id)).toEqual([
-      "w1 (claude) · held: start_failed · not joined · unrestricted · Set CLAUDE_EXECUTABLE to its absolute path."
+      "w1 (claude) · held: start_failed · not joined · unrestricted · Cannot resolve the claude executable. → Run tt supervisor install, then tt supervisor resume w1."
     ]);
   });
 

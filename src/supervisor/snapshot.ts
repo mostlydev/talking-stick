@@ -54,6 +54,9 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
   `).all();
   return rows.map((row) => {
     const spec = JSON.parse(row.spec_json) as WorkerSpec;
+    const executableEnv = row.executable_error;
+    const pinnedPath = executableEnv && spec.env?.some(ref =>
+      ref.name === executableEnv || (ref.name === "PATH" && ref.from === "literal"));
     return {
       worker_id: row.worker_id,
       harness: spec.harness,
@@ -73,7 +76,12 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
         started_at: row.started_at!,
         ended_at: row.ended_at
       },
-      ...(row.executable_error ? { start_error: `Cannot resolve the ${spec.harness} executable. Check PATH or set ${row.executable_error} to its absolute path.` } : {}),
+      ...(executableEnv ? {
+        start_error: `Cannot resolve the ${spec.harness} executable (${executableEnv}).`,
+        start_remedy: pinnedPath
+          ? `Run tt supervisor stop ${row.worker_id}, then tt supervisor remove ${row.worker_id}. Re-add it with --env ${executableEnv}=literal:/absolute/executable.`
+          : `Run tt supervisor install (macOS) or tt supervisor run from a shell with ${spec.harness} on PATH, then tt supervisor resume ${row.worker_id}.`
+      } : {}),
       generation_process_started_at: row.process_started_at,
       uncertain_inputs: row.uncertain_inputs,
       denied_requests: row.denied_requests
