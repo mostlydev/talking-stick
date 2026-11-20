@@ -15,8 +15,8 @@ export interface Capabilities {
 
 /** Explicit per-harness permissions, applied on top of the user's own harness settings. */
 export type WorkerPermissions =
-  | { harness: "claude"; mode: "default" | "plan" }
-  | { harness: "codex"; sandbox: "read-only" | "workspace-write"; approval: "on-request" | "untrusted" }
+  | { harness: "claude"; mode: "default" | "plan" | "bypassPermissions" }
+  | { harness: "codex"; sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "untrusted" | "never" }
   | { harness: "grok" };
 
 /**
@@ -50,6 +50,13 @@ export interface WorkerSpec {
    * lives under it. It never enters the environment.
    */
   state_dir?: string;
+}
+
+export class WorkerExecutableError extends Error {
+  constructor(readonly envName: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE", message: string) {
+    super(message);
+    this.name = "WorkerExecutableError";
+  }
 }
 
 /**

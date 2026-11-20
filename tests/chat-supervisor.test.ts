@@ -48,6 +48,16 @@ describe("headless worker state", () => {
     }
   });
 
+  test("shows the executable failure and explicit permission mode in /who", () => {
+    const view = routeHeadlessWorkers({ kind: "ready", daemon: "running", workers: [
+      worker({ hold_reason: "start_failed", unrestricted: true, start_error: "Cannot resolve the claude executable.",
+        start_remedy: "Run tt supervisor install, then tt supervisor resume w1." })
+    ] }, lookups());
+    expect(headlessWhoLines(view.workers, id => id)).toEqual([
+      "w1 (claude) · held: start_failed · not joined · unrestricted · Cannot resolve the claude executable. → Run tt supervisor install, then tt supervisor resume w1."
+    ]);
+  });
+
   test("a hold outranks the desired state, which outranks the daemon and the generation", () => {
     expect(workerState(worker({ hold_reason: "crash_loop", desired: "paused" }), "stopped").state).toBe("held: crash_loop");
     expect(workerState(worker({ desired: "paused" }), "stopped")).toMatchObject({ state: "paused", blocked: false });

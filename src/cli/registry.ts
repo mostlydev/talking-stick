@@ -217,7 +217,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: SUPERVISOR_USAGE,
-    description: "Manage optional headless workers (preview). Operators control workers. Agents can read status, approvals, and logs. The supervisor denies permission prompts.",
+    description: "Manage optional headless workers (preview). Start and manage workers from a terminal or harness. The supervisor denies any permission prompts it receives.",
     handler: ({ parsed }) => handleSupervisorCommand(parsed)
   },
   {

@@ -58,6 +58,13 @@ describe("starting a Claude worker", () => {
     expect(argv.join(" ")).not.toMatch(/bypassPermissions|dangerously/);
   });
 
+  test("passes an explicitly requested bypass mode to the stream worker", async () => {
+    const f = fixture("", { permissions: { harness: "claude", mode: "bypassPermissions" } });
+    await f.start();
+    const argv = f.lines()[0].argv as string[];
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+  });
+
   test.each([
     ["api-key", "wrong_auth_mode"], ["key-helper", "wrong_auth_mode"], ["bedrock", "wrong_auth_mode"], ["new-method", "wrong_auth_mode"],
     ["auth-garbage", "wrong_auth_mode"], ["logged-out", "auth_required"]
@@ -84,6 +91,7 @@ describe("starting a Claude worker", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].args.slice(-3)).toEqual(["auth", "status", "--json"]);
     expect(calls[0].cwd).toBe(f.spec.cwd);
+    expect(calls[0].env.USER).toBe(os.userInfo().username);
     expect(calls[0].env.TALKING_STICK_DATA_DIR).toBe(f.spec.supervisor_env?.TALKING_STICK_DATA_DIR);
     expect(JSON.stringify(f.events)).not.toContain("user@example.com");
   });
@@ -92,7 +100,7 @@ describe("starting a Claude worker", () => {
     const f = fixture(mode);
     const handle = await f.start();
     await handle.submit({ input_id: "i1", text: "hi", mode: "start_turn" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await until(() => f.events.some((event) => event.type === "turn_completed"));
     expect(f.events.some((event) => event.type === "state" && event.state === "wrong_auth_mode")).toBe(wrong);
   });
 

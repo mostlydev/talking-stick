@@ -54,7 +54,12 @@ function setup() {
     const parsed: ParsedCommand = { name: "supervisor", positionals: args,
       options: new Map<string, string | true>([["json", true], ...Object.entries(options)]) };
     output.length = 0;
-    await handleSupervisorCommand(parsed, { insideHarness: () => inside });
+    const previous = process.env.TT_HARNESS_AGENT_ID;
+    if (inside) process.env.TT_HARNESS_AGENT_ID = `${inside}:test`;
+    try { await handleSupervisorCommand(parsed); } finally {
+      if (previous === undefined) delete process.env.TT_HARNESS_AGENT_ID;
+      else process.env.TT_HARNESS_AGENT_ID = previous;
+    }
     return output.length ? JSON.parse(output.join("")) : null;
   };
   const store = () => {
@@ -78,9 +83,9 @@ describe("tt supervisor add", () => {
   test.each([
     [{ harness: "gemini" }, "--harness must be"],
     [{ harness: "claude", cwd: "relative" }, "--cwd must be"],
-    [{ harness: "claude", "permission-mode": "bypassPermissions" }, "never bypasses"],
+    [{ harness: "claude", "permission-mode": "bogus" }, "must be default"],
     [{ harness: "codex" }, "needs --sandbox"],
-    [{ harness: "codex", sandbox: "danger-full-access", approval: "never" }, "needs --sandbox"],
+    [{ harness: "codex", sandbox: "bogus", approval: "never" }, "needs --sandbox"],
     [{ harness: "grok", "permission-mode": "plan" }, "takes no permission settings"],
     [{ harness: "claude", env: "TT_SUPERVISOR_TOKEN" }, "set by the supervisor"],
     [{ harness: "claude", env: "SECRET=hunter2" }, "takes literal:VALUE"],
@@ -119,14 +124,30 @@ describe("controls", () => {
     expect((await run(["status"])).workers).toEqual([]);
   });
 
-  test("an agent may read the supervisor but change nothing", async () => {
-    const { cwd, run } = setup();
-    await run(["add", "w1"], { harness: "claude", cwd });
-    expect((await run(["status"], {}, "codex")).workers).toHaveLength(1);
-    expect(await run(["approvals"], {}, "codex")).toEqual({ recent_requests: [] });
-    for (const args of [["pause", "w1"], ["stop", "w1"], ["restart", "w1"], ["add", "w2"], ["install"], ["run"]]) {
-      await expect(run(args, { harness: "claude", cwd }, "codex")).rejects.toThrow("not a codex session");
-    }
+  test("a harness can add unrestricted workers and control their lifecycle under its own identity", async () => {
+    const { cwd, run, store } = setup();
+    await run(["add", "w1"], { harness: "claude", cwd, "permission-mode": "bypassPermissions" }, "codex");
+    await run(["add", "w2"], { harness: "codex", cwd, sandbox: "danger-full-access", approval: "never" }, "codex");
+    const db = store();
+    expect(JSON.parse(db.worker("w1")!.spec_json)).toMatchObject({
+      permissions: { harness: "claude", mode: "bypassPermissions" },
+      env: [{ name: "PATH", from: "literal", value: process.env.PATH }]
+    });
+    expect(JSON.parse(db.worker("w2")!.spec_json).permissions).toEqual({
+      harness: "codex", sandbox: "danger-full-access", approval: "never"
+    });
+    await run(["add", "w3"], { harness: "codex", cwd, sandbox: "danger-full-access", approval: "on-request" }, "codex");
+    const { workers } = await run(["status"], {}, "codex");
+    expect(workers[0]).toMatchObject({ unrestricted: true });
+    expect(workers[1]).toMatchObject({ unrestricted: true });
+    expect(workers[2]).not.toHaveProperty("unrestricted");
+    await run(["pause", "w1"], {}, "codex");
+    await run(["resume", "w1"], {}, "codex");
+    await run(["restart", "w1"], {}, "codex");
+    await run(["stop", "w1"], {}, "codex");
+    expect(db.auditRows("w1").map(row => row.actor)).toEqual(Array(5).fill("codex:test"));
+    expect(await run(["remove", "w1"], {}, "codex")).toMatchObject({ status: "removed" });
+    await expect(run(["stop", "w2"], { agent: "human:someone" }, "codex")).rejects.toThrow("does not accept --agent");
   });
 
   test("status keeps its worker JSON shape and omits the chat process binding", async () => {
@@ -141,6 +162,23 @@ describe("controls", () => {
         generation: { generation: 1, state: "idle", pid: 12, session_id: "session", started_at: "started", ended_at: null }
       }],
       recent_requests: []
+    });
+  });
+
+  test.each([
+    ["PATH", "tt supervisor resume w1"],
+    ["PATH=literal:/usr/bin:/bin", "--env CODEX_EXECUTABLE=literal:/absolute/executable"]
+  ])("status shows the right recovery for missing Codex with %s", async (env, remedy) => {
+    const { cwd, run, store } = setup();
+    await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "never", env });
+    const db = store();
+    db.recordGeneration({ worker_id: "w1", generation: 1, pid: null, process_started_at: null,
+      pgid: null, session_id: null, state: "starting", started_at: "started" });
+    db.endGeneration("w1", 1, "ended", { reason: "start_failed", error: "Error: Cannot find a native Codex executable." });
+    db.hold("w1", "crash_loop", "ended");
+    expect((await run(["status"])).workers[0]).toMatchObject({
+      hold_reason: "crash_loop", start_error: expect.stringContaining("CODEX_EXECUTABLE"),
+      start_remedy: expect.stringContaining(remedy)
     });
   });
 
@@ -251,7 +289,8 @@ describe("launchd", () => {
 
   test("installs an owner-only user agent for one data directory, and uninstalls it", () => {
     const { root, dataDir } = setup();
-    const plist = launchAgentPlist({ program: ["/usr/bin/node", "/opt/tt/cli.js", "supervisor", "run"], dataDir, logPath: "/tmp/d<1>.log" });
+    const plist = launchAgentPlist({ program: ["/usr/bin/node", "/opt/tt/cli.js", "supervisor", "run"], dataDir, logPath: "/tmp/d<1>.log", searchPath: "/usr/bin:/bin&tools" });
+    expect(plist).toContain("<key>PATH</key>\n    <string>/usr/bin:/bin&amp;tools</string>");
     expect(plist).toContain("<string>supervisor</string>");
     expect(plist).toContain(`<string>${dataDir}</string>`);
     expect(plist).toContain("<key>Umask</key>\n  <integer>63</integer>");
@@ -363,7 +402,7 @@ test("review: plaintext approval headers cannot execute controls from the native
   const spy = vi.spyOn(process.stdout, "write").mockImplementation(chunk => { text += String(chunk); return true; });
   try {
     await handleSupervisorCommand({ name: "supervisor", positionals: ["approvals", "show", "display-test"],
-      options: new Map([["text", true]]) }, { insideHarness: () => null });
+      options: new Map([["text", true]]) });
     expect(text).not.toContain("\u001b"); expect(text).not.toContain("\u202e");
   } finally { spy.mockRestore(); }
 });

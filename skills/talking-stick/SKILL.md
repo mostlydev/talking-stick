@@ -157,7 +157,9 @@ tt room replies <request-id> --timeout 30 --json
 
 ## Peers
 
-Peers are sessions the operator starts. Don't launch another harness, such as a headless CLI run, to act as your counterpart; use your own harness's subagents if you need help. Don't take a turn assigned to another member.
+When the operator asks you to launch agents in a workspace, use `tt supervisor add <worker> --harness <harness> --cwd <absolute-dir>` for headless workers, or `tt up --path <dir> --agents <list>` for visible agents. Use the worker permissions the operator requested. The launcher supplies the Talking Stick skill prompt.
+
+Don't start another harness to act as your counterpart on your own initiative. Don't take a turn assigned to another member.
 
 ## Handoff
 

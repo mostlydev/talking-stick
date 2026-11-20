@@ -434,15 +434,15 @@ describe("tt supervisor migrate", () => {
     const output: string[] = [];
     const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => { output.push(String(chunk)); return true; });
     cleanup.push(() => write.mockRestore());
-    return async (args: string[], inside: string | null = null) => {
+    return async (args: string[]) => {
       output.length = 0;
       const parsed: ParsedCommand = { name: "supervisor", positionals: args, options: new Map<string, string | true>([["json", true]]) };
-      await handleSupervisorCommand(parsed, { insideHarness: () => inside });
+      await handleSupervisorCommand(parsed);
       return output.length ? JSON.parse(output.join("")) : null;
     };
   }
 
-  test("reading or adding before migration is refused and creates nothing; a human migrates, then it works", async () => {
+  test("reading or adding before migration is refused and creates nothing; migration restores access", async () => {
     const { base, dataDir, env } = dirs();
     vi.stubEnv("HOME", base);
     legacyState(dataDir);
@@ -450,7 +450,7 @@ describe("tt supervisor migrate", () => {
     await expect(run(["status"])).rejects.toThrow("tt supervisor migrate");
     await expect(run(["add", "w3"])).rejects.toThrow("tt supervisor migrate");
     expect(fs.existsSync(supervisorRootFor(dataDir, env).dir)).toBe(false);
-    await expect(run(["migrate"], "codex")).rejects.toThrow("not a codex session");
+    vi.stubEnv("TT_HARNESS_AGENT_ID", "codex:test");
     expect(await run(["migrate"])).toMatchObject({ status: "migrated" });
     expect((await run(["status"])).workers.map((w: { worker_id: string }) => w.worker_id).sort()).toEqual(["w1", "w2"]);
   });

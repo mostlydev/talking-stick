@@ -16,7 +16,7 @@ from the harness settings.
    `current` link and its release target. For a source checkout, allow
    `Read(//<checkout>/skills/talking-stick/**)`. The supervisor denies anything your settings
    don't allow, including the worker's own `tt join` (see [Claude workers](#claude-workers)).
-2. From a regular terminal in the repository, add a worker. Choose one of these examples.
+2. From a terminal or harness, add a worker with the absolute path of its workspace. Choose one of these examples.
 
    ```sh
    tt supervisor add reviewer --harness claude --cwd "$(pwd -P)" --permission-mode default
@@ -30,10 +30,23 @@ from the harness settings.
 4. Use `tt supervisor stop <worker>` when you are done. A normal restart uses the same
    conversation. Use `tt supervisor restart <worker> --fresh` to start a new one.
 
-`tt chat` shows each worker's state; it never changes it:
+To let one bot launch workers without a console step, give its process access to the supervisor
+state and run the same commands through that process. For explicit unattended operation:
 
-- `/who` lists the current room's workers, joined or not, each with its state and the command
-  that unblocks it.
+```sh
+tt supervisor add reviewer --harness claude --cwd /absolute/workspace --permission-mode bypassPermissions
+tt supervisor add coder --harness codex --cwd /absolute/workspace \
+  --sandbox danger-full-access --approval never
+```
+
+These settings let the workers run tools with the OS access of the account that starts them.
+Keep `workspace-write` and use `--approval never` if Codex should run unattended within its sandbox.
+Each worker gets the Talking Stick skill bootstrap for the room resolved from its workspace.
+
+`tt chat` shows each worker's state:
+
+- `/who` lists the current room's workers, joined or not, with its state, unrestricted permission mode when set,
+  and the action that unblocks it.
 - `/rooms` counts headless and blocked workers in each room. A worker whose room isn't open yet
   gets a row of its own, and Enter opens that room.
 - The header shows a short marker while a worker in the room is blocked.
@@ -46,6 +59,7 @@ held:
 | `auth_required` | Sign in with your subscription. For a held Claude worker, run `tt supervisor resume <worker>`. A waiting Codex worker rechecks the login itself. |
 | `wrong_auth_mode` | Check the harness home and sign in with a supported subscription. Then resume the worker. |
 | `deny_undelivered` | Check `tt supervisor approvals` and `tt supervisor logs`, then resume the worker. |
+| `start_failed` | If the executable could not be found, correct PATH or re-add the worker with an explicit executable (see below). |
 | `crash_loop` | Check `tt supervisor logs`, fix the cause, then resume the worker. |
 | `resume_failed` or `bootstrap_failed` | Use `tt supervisor restart <worker> --fresh` if you want to start a new conversation. |
 
@@ -99,8 +113,8 @@ Workers use your own harness settings and logins, with these per-worker options 
 
 | Harness | Permissions |
 | --- | --- |
-| Claude | `--permission-mode default` or `plan`, `--permission-prompt-tool stdio`, and your settings (`--setting-sources user,project,local`). Never `bypassPermissions` or `--dangerously-*`. |
-| Codex | An explicit sandbox (`read-only` or `workspace-write`) and approval policy (`on-request` or `untrusted`) on each thread, in your `CODEX_HOME`. Never `never` or `danger-full-access`. |
+| Claude | `--permission-mode default` or `plan`, `--permission-prompt-tool stdio`, and your settings (`--setting-sources user,project,local`). Choose `bypassPermissions` explicitly for unrestricted tool use. |
+| Codex | An explicit sandbox (`read-only`, `workspace-write`, or `danger-full-access`) and an approval policy (`on-request`, `untrusted` or `never`) on each thread, in your `CODEX_HOME`. |
 | Grok | `grok agent --no-leader stdio` in your `GROK_HOME`. No leader attach, no plugin dir. |
 
 A worker spec stores environment references only: names passed through from the supervisor's
@@ -112,10 +126,21 @@ start. At each start the supervisor adds the runtime `supervisor_env`:
   room database;
 - the endpoint and delivery token, for workers that can take a prompt.
 
-Adapters start with only HOME and PATH (needed by native executables and their logins), then
+Adapters start with HOME and PATH (needed by native executables and their logins), then
 those references, with protected supervisor values applied last. They never copy the daemon's
 whole environment, so no inherited `TT_ROOM`, API key or harness identity marker reaches the
-worker. Hooks stay under the harness's own trust, and nothing bypasses it.
+worker. Claude also receives the local username for its subscription login. Hooks stay under the
+harness's own trust rules.
+
+`add` saves the caller's PATH for the worker unless you pass `--env PATH` or
+`--env PATH=literal:…`. On macOS, `install` also saves the caller's PATH for the user
+service. If the executable still can't be found, `status` and chat `/who` name the
+setting to use. Pass `--env CODEX_EXECUTABLE=literal:/absolute/path/to/codex` or
+`--env CLAUDE_EXECUTABLE=literal:/absolute/path/to/claude` when adding the worker.
+For Codex, use the native binary rather than a version-manager shim. To repair an
+existing worker with no PATH override, reinstall the service from a terminal where
+the executable is discoverable and then resume the worker. A worker with a saved
+PATH needs to be re-added with the corrected setting.
 
 **Subscriptions only, checked before any input.** A worker must show a supported subscription
 login before it can take a prompt. An unsigned-in Claude worker is held as `auth_required`.
@@ -255,7 +280,7 @@ Older versions kept `<data>/supervisor.sqlite` (with `-wal` and `-shm`) beside t
 every command except `migrate` and `uninstall` refuses and names `tt supervisor migrate`. That
 includes reads, so nothing creates a new empty root that would hide the old state.
 
-`tt supervisor migrate` is human-only. It refuses while the launchd agent is installed, because
+`tt supervisor migrate` refuses while the launchd agent is installed, because
 launchd would restart a daemon on the old paths, and it takes both the old and the new owner
 locks. Every attempt, a rerun after a crash included, refuses and moves nothing in two cases:
 - Any recorded generation hasn't ended and its exact process is alive or unknown. A start intent
@@ -492,23 +517,17 @@ release's `<install-dir>/current/tt supervisor run`, which follows self-update.
 
 `add <worker> --harness … --cwd …`:
 - Codex needs an explicit `--sandbox` and `--approval`. Claude takes `--permission-mode
-  default|plan`, and nothing that bypasses approvals.
+  default|plan|bypassPermissions`.
 - `--env NAME` passes the daemon's value through; `NAME=literal:VALUE` is for non-secret values.
   A model API key or provider override is refused (see "Permissions and environment").
 - There's no `--resume`: nothing here can prove an existing session isn't running elsewhere, so a
   worker resumes only sessions it started itself.
 
-`status`, `approvals` (recent permission requests, with `show <approval-id>` for one request's
-whole detail) and `logs` are readable by anyone. Every other command is for a human for now;
-headless rooms will let agents start workers within limits the operator sets:
-- `run`, `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when stopped),
-  `install`, `uninstall`, and `migrate`. launchd starts `run` with no harness around it.
-- They refuse `--agent`, and refuse to run inside a harness session, detected from the environment
-  and from process ancestry. Each is audited with its actor.
-- `approve`, `deny`, `interrupt` and `reconcile` were removed; they answer with why.
-
-These guards keep an agent from acting as the operator by accident. They aren't a security
-boundary against a same-user process, and aren't meant to be.
+`run`, `add`, `pause`, `resume`, `stop`, `restart [--fresh]`, `remove` (only when
+stopped), `install`, `uninstall`, and `migrate` work from a terminal or a harness with
+the required OS access. Mutations are audited under the caller's detected identity and
+refuse `--agent`. Use `status`, `approvals`, and `logs` to inspect the supervisor.
+`approve`, `deny`, `interrupt`, and `reconcile` were removed.
 
 Codex and Claude are available on macOS and Linux. A Grok worker is attempted there. Without a
 login in its home, `session/new` fails and the worker is held `crash_loop` (see "Grok").

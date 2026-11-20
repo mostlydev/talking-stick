@@ -19,6 +19,7 @@ interface WorkerStatusRow {
   session_id: string | null;
   started_at: string | null;
   ended_at: string | null;
+  executable_error: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE" | null;
   uncertain_inputs: number;
   denied_requests: number;
 }
@@ -30,6 +31,16 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
     SELECT w.worker_id, w.spec_json, w.desired, w.desired_version, w.hold_reason, w.next_start_at,
            g.generation, g.state AS generation_state, g.pid, g.process_started_at, g.session_id,
            g.started_at, g.ended_at,
+           CASE WHEN json_valid(g.exit_json) THEN
+             CASE
+               WHEN json_extract(g.exit_json, '$.executable_env') = 'CODEX_EXECUTABLE' OR
+                    json_extract(g.exit_json, '$.error') LIKE 'Error: Cannot find a native Codex executable.%'
+                 THEN 'CODEX_EXECUTABLE'
+               WHEN json_extract(g.exit_json, '$.executable_env') = 'CLAUDE_EXECUTABLE' OR
+                    json_extract(g.exit_json, '$.error') LIKE 'Error: Cannot find the Claude Code executable.%'
+                 THEN 'CLAUDE_EXECUTABLE'
+             END
+           END AS executable_error,
            COALESCE(i.count, 0) AS uncertain_inputs, COALESCE(a.count, 0) AS denied_requests
     FROM workers w
     LEFT JOIN generations g ON g.worker_id = w.worker_id AND g.generation = (
@@ -43,9 +54,15 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
   `).all();
   return rows.map((row) => {
     const spec = JSON.parse(row.spec_json) as WorkerSpec;
+    const executableEnv = row.executable_error;
+    const pinnedPath = executableEnv && spec.env?.some(ref =>
+      ref.name === executableEnv || (ref.name === "PATH" && ref.from === "literal"));
     return {
       worker_id: row.worker_id,
       harness: spec.harness,
+      ...((spec.permissions?.harness === "claude" && spec.permissions.mode === "bypassPermissions") ||
+        (spec.permissions?.harness === "codex" && spec.permissions.sandbox === "danger-full-access" && spec.permissions.approval === "never")
+        ? { unrestricted: true as const } : {}),
       cwd: spec.cwd,
       desired: row.desired,
       desired_version: row.desired_version,
@@ -59,6 +76,12 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
         started_at: row.started_at!,
         ended_at: row.ended_at
       },
+      ...(executableEnv ? {
+        start_error: `Cannot resolve the ${spec.harness} executable (${executableEnv}).`,
+        start_remedy: pinnedPath
+          ? `Run tt supervisor stop ${row.worker_id}, then tt supervisor remove ${row.worker_id}. Re-add it with --env ${executableEnv}=literal:/absolute/executable.`
+          : `Run tt supervisor install (macOS) or tt supervisor run from a shell with ${spec.harness} on PATH, then tt supervisor resume ${row.worker_id}.`
+      } : {}),
       generation_process_started_at: row.process_started_at,
       uncertain_inputs: row.uncertain_inputs,
       denied_requests: row.denied_requests
