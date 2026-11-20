@@ -48,6 +48,15 @@ describe("headless worker state", () => {
     }
   });
 
+  test("shows the executable failure and explicit permission mode in /who", () => {
+    const view = routeHeadlessWorkers({ kind: "ready", daemon: "running", workers: [
+      worker({ hold_reason: "start_failed", unrestricted: true, start_error: "Set CLAUDE_EXECUTABLE to its absolute path." })
+    ] }, lookups());
+    expect(headlessWhoLines(view.workers, id => id)).toEqual([
+      "w1 (claude) · held: start_failed · not joined · unrestricted · Set CLAUDE_EXECUTABLE to its absolute path."
+    ]);
+  });
+
   test("a hold outranks the desired state, which outranks the daemon and the generation", () => {
     expect(workerState(worker({ hold_reason: "crash_loop", desired: "paused" }), "stopped").state).toBe("held: crash_loop");
     expect(workerState(worker({ desired: "paused" }), "stopped")).toMatchObject({ state: "paused", blocked: false });

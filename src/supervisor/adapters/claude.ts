@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import { approvalDetail, approvalSummary } from "../approval-detail.js";
-import { AuthModeError, type Capabilities, type HarnessAdapter, type InputMode, type InputOutcome, type SpawnedProcess,
+import { AuthModeError, WorkerExecutableError, type Capabilities, type HarnessAdapter, type InputMode, type InputOutcome, type SpawnedProcess,
   type WorkerEvent, type WorkerHandle, type WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
@@ -68,7 +68,7 @@ export function claudeAuthVerdict(status: unknown): "subscription" | "auth_requi
 /** The native Claude Code executable: an explicit absolute path, or the first on PATH, resolved. */
 export function resolveClaudeExecutable(env: NodeJS.ProcessEnv): string {
   const explicit = env.CLAUDE_EXECUTABLE;
-  if (explicit && !path.isAbsolute(explicit)) throw new Error("CLAUDE_EXECUTABLE must be an absolute executable path.");
+  if (explicit && !path.isAbsolute(explicit)) throw new WorkerExecutableError("CLAUDE_EXECUTABLE", "CLAUDE_EXECUTABLE must be an absolute executable path.");
   const candidates = explicit ? [explicit] : (env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, "claude"));
   for (const candidate of candidates) {
     try {
@@ -79,7 +79,7 @@ export function resolveClaudeExecutable(env: NodeJS.ProcessEnv): string {
       return real;
     } catch { /* Try the next PATH entry. */ }
   }
-  throw new Error("Cannot find the Claude Code executable. Set an explicit CLAUDE_EXECUTABLE environment reference to its absolute path.");
+  throw new WorkerExecutableError("CLAUDE_EXECUTABLE", "Cannot find the Claude Code executable. Set an explicit CLAUDE_EXECUTABLE environment reference to its absolute path.");
 }
 
 export class ClaudeAdapter implements HarnessAdapter {

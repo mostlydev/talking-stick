@@ -103,6 +103,30 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     expect(fs.existsSync(f.home)).toBe(false);
     expect(fs.existsSync(path.join(f.spec.supervisor_env!.TALKING_STICK_DATA_DIR, "supervisor"))).toBe(false);
   });
+  test("accepts an explicitly unrestricted thread with approvals disabled", async () => {
+    const f = fixture();
+    f.spec.permissions = { harness: "codex", sandbox: "danger-full-access", approval: "never" };
+    await f.start();
+    expect(f.messages().find(m => m.method === "thread/start").params).toMatchObject({
+      sandbox: "danger-full-access", approvalPolicy: "never"
+    });
+  });
+
+  test("a missing executable holds the worker after the first failed attempt", async () => {
+    const { root, spec } = fixture();
+    spec.env = [{ name: "CODEX_EXECUTABLE", from: "literal", value: path.join(root, "missing") }];
+    const store = new SupervisorStore(supervisorDatabasePath(root));
+    cleanup.push(() => store.close());
+    store.addWorker(spec, "codex:test", "t");
+    const supervisor = new Supervisor({ store, adapters: { codex: new CodexAdapter() }, processLiveness: () => "gone" });
+    cleanup.push(() => supervisor.shutdown());
+    supervisor.reconcileStartup();
+    await supervisor.tick();
+    await supervisor.tick();
+    expect(store.worker("w1")?.hold_reason).toBe("start_failed");
+    expect(store.latestGeneration("w1")).toMatchObject({ generation: 1, pid: null, state: "dead" });
+  });
+
   test("idle input wakes again and a completion before the RPC reply stays complete", async () => {
     const f = fixture(); const h = await f.start();
     expect(await h.submit({ input_id: "a", text: "fast", mode: "start_turn" })).toBe("accepted");

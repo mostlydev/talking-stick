@@ -38,7 +38,7 @@ input.on("line", line => {
     thread = m.params.threadId || thread;
     unloaded = false;
     reply(m.id, { thread: { id: thread, status: { type: m.method === "thread/resume" && mode === "unload-stays-unloaded" ? "notLoaded" : "idle" } }, approvalPolicy: mode === "unsafe" ? "never" : m.params.approvalPolicy,
-      sandbox: { type: m.params.sandbox === "read-only" ? "readOnly" : "workspaceWrite", networkAccess: false,
+      sandbox: { type: ({ "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess" })[m.params.sandbox], networkAccess: false,
         writableRoots: m.params.config["sandbox_workspace_write.writable_roots"] || [] } });
     if (m.method === "thread/start" && mode === "unsupported") setTimeout(() => output({ id: 9,
       method: "item/tool/requestUserInput", params: { threadId: thread } }), 5);

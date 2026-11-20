@@ -11,7 +11,6 @@ import { acquireOwnerLock } from "../supervisor/daemon.js";
 import { getCurrentProcessStartedAt } from "../process-utils.js";
 import { SupervisorStore } from "../supervisor/state.js";
 import { readSupervisorWorkers } from "../supervisor/snapshot.js";
-import { runningInsideHarness } from "../identity.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
 import { getStringOption, getStringOptions, hasOption, type ParsedCommand } from "./parser.js";
@@ -23,8 +22,8 @@ import { isModelCredential, MODEL_CREDENTIAL_MESSAGE } from "../supervisor/adapt
 
 export const SUPERVISOR_USAGE = [
   "tt supervisor status",
-  "tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [--model M] [--permission-mode default|plan]",
-  "  [--sandbox read-only|workspace-write --approval on-request|untrusted] [--env NAME[=literal:VALUE]]",
+  "tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [--model M] [--permission-mode default|plan|bypassPermissions]",
+  "  [--sandbox read-only|workspace-write|danger-full-access --approval on-request|untrusted|never] [--env NAME[=literal:VALUE]]",
   "tt supervisor pause|resume|stop|remove <worker>",
   "tt supervisor restart <worker> [--fresh]",
   "tt supervisor approvals [show <approval-id>]",
@@ -59,13 +58,19 @@ function parsePermissions(parsed: ParsedCommand, harness: Harness): WorkerPermis
   const approval = getStringOption(parsed, "approval");
   if (harness === "claude") {
     if (sandbox || approval) fail("--sandbox and --approval are Codex settings.");
-    if (mode && mode !== "default" && mode !== "plan") fail("--permission-mode must be default or plan; the supervisor never bypasses approvals.");
-    return { harness, mode: (mode ?? "default") as "default" | "plan" };
+    if (mode !== undefined && mode !== "default" && mode !== "plan" && mode !== "bypassPermissions") {
+      fail("--permission-mode must be default, plan or bypassPermissions.");
+    }
+    return { harness, mode: mode ?? "default" };
   }
   if (harness === "codex") {
     if (mode) fail("--permission-mode is a Claude setting.");
-    if (sandbox !== "read-only" && sandbox !== "workspace-write") fail("A Codex worker needs --sandbox read-only or workspace-write.");
-    if (approval !== "on-request" && approval !== "untrusted") fail("A Codex worker needs --approval on-request or untrusted.");
+    if (sandbox !== "read-only" && sandbox !== "workspace-write" && sandbox !== "danger-full-access") {
+      fail("A Codex worker needs --sandbox read-only, workspace-write or danger-full-access.");
+    }
+    if (approval !== "on-request" && approval !== "untrusted" && approval !== "never") {
+      fail("A Codex worker needs --approval on-request, untrusted or never.");
+    }
     return { harness, sandbox, approval };
   }
   if (mode || sandbox || approval) fail("A Grok worker takes no permission settings.");
@@ -96,22 +101,10 @@ function cliEntry(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
 }
 
-export interface SupervisorCommandOptions {
-  /** Which harness, if any, this command runs inside; the system check by default. */
-  insideHarness?: () => string | null;
-}
-
-export async function handleSupervisorCommand(parsed: ParsedCommand, options: SupervisorCommandOptions = {}): Promise<void> {
+export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<void> {
   const dataDir = resolveDataDir();
   const action = parsed.positionals[0] ?? "status";
   const actor = deriveCliIdentity(parsed).agent_id;
-  // Changing the supervisor is the operator's own: never through an
-  // identity override, and never from inside a harness session.
-  const requireHuman = (what: string) => {
-    if (getStringOption(parsed, "agent")) fail(`${what} does not accept --agent.`);
-    const harness = (options.insideHarness ?? runningInsideHarness)();
-    if (harness || !actor.startsWith("human:")) fail(`Only a human can ${what.toLowerCase()}${harness ? `, not a ${harness} session` : ""}.`);
-  };
   const now = () => new Date().toISOString();
   // Unknown and removed actions refuse before anything is resolved or created.
   if (REMOVED_ACTIONS.has(action)) {
@@ -119,7 +112,9 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
       "so nothing waits on a decision. See `tt supervisor approvals` for what was denied.");
   }
   if (!KNOWN_ACTIONS.has(action)) fail(`Unknown supervisor action ${action}.\n${SUPERVISOR_USAGE}`);
-  if (!["status", "approvals", "logs"].includes(action)) requireHuman(`Change the supervisor (${action})`);
+  if (!["status", "approvals", "logs"].includes(action) && getStringOption(parsed, "agent")) {
+    fail(`Change the supervisor (${action}) does not accept --agent.`);
+  }
   // Reading never creates state; writing prepares the protected root, and both
   // refuse while older state in the data directory still waits to move.
   const readOnly = ["status", "approvals", "logs"].includes(action);
@@ -130,9 +125,6 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
   const root = readOnly || action === "migrate" || action === "uninstall" ? state.root : prepareSupervisorRoot(dataDir);
   const paths = supervisorPaths(root.dir);
 
-  // Only a human changes the supervisor, including starting its daemon by
-  // hand; agents may read its status, requests and logs. launchd runs it with
-  // no harness around it.
   if (action === "run") {
     await runSupervisor({ dataDir, adapters: builtinAdapters(), log: createFileLog(paths.log) });
     return;
@@ -141,7 +133,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
     const program = supervisorProgram({ standalone: isStandalone(), execPath: process.execPath, cliEntry: cliEntry(),
       releaseRoot: isStandalone() && isInstalledRelease() ? standaloneRoot() : null });
     // The agent resolves the very root installed here, whatever its HOME or default base would be.
-    const file = installLaunchAgent({ program, dataDir, logPath: paths.launchdLog, stateBase: path.dirname(root.dir) });
+    const file = installLaunchAgent({ program, dataDir, logPath: paths.launchdLog, stateBase: path.dirname(root.dir), searchPath: process.env.PATH });
     printResult(parsed, { status: "installed", plist: file, log: paths.log }, () => `Installed ${file}; the supervisor now runs as a user agent.`);
     return;
   }
@@ -199,6 +191,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
           .join("\n") || "No permission requests.")
         : (status.workers.map((w) => `${w.worker_id}  ${w.harness}  ${w.desired}${w.hold_reason ? ` (held: ${w.hold_reason})` : ""}  ` +
             `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}` +
+            `${w.start_error ? ` · ${w.start_error}` : ""}` +
             `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}` +
             `${w.denied_requests ? `  ${w.denied_requests} denied` : ""}`).join("\n") || "No workers."));
       return;
@@ -214,9 +207,13 @@ export async function handleSupervisorCommand(parsed: ParsedCommand, options: Su
       // An existing native session is never imported: nothing here can prove
       // it isn't running elsewhere. A worker resumes only sessions it started.
       if (getStringOption(parsed, "resume")) fail("--resume is not supported: a worker resumes only sessions it started itself.");
+      const env = getStringOptions(parsed, "env").map(parseEnvReference);
+      if (process.env.PATH && !env.some(ref => ref.name === "PATH")) {
+        env.push({ name: "PATH", from: "literal", value: process.env.PATH });
+      }
       const spec: WorkerSpec = { worker_id: workerId, harness, cwd, permissions: parsePermissions(parsed, harness),
         ...(getStringOption(parsed, "model") ? { model: getStringOption(parsed, "model") } : {}),
-        env: getStringOptions(parsed, "env").map(parseEnvReference) };
+        env };
       const row = store.addWorker(spec, actor, now());
       printResult(parsed, { status: "added", worker: row.worker_id, desired: row.desired },
         () => `Added ${row.worker_id}; the supervisor starts it on its next tick.`);

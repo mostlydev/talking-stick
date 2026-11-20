@@ -58,6 +58,13 @@ describe("starting a Claude worker", () => {
     expect(argv.join(" ")).not.toMatch(/bypassPermissions|dangerously/);
   });
 
+  test("passes an explicitly requested bypass mode to the stream worker", async () => {
+    const f = fixture("", { permissions: { harness: "claude", mode: "bypassPermissions" } });
+    await f.start();
+    const argv = f.lines()[0].argv as string[];
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+  });
+
   test.each([
     ["api-key", "wrong_auth_mode"], ["key-helper", "wrong_auth_mode"], ["bedrock", "wrong_auth_mode"], ["new-method", "wrong_auth_mode"],
     ["auth-garbage", "wrong_auth_mode"], ["logged-out", "auth_required"]

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import { approvalDetail, approvalSummary } from "../approval-detail.js";
-import { AuthModeError, type Capabilities, type HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
+import { AuthModeError, WorkerExecutableError, type Capabilities, type HarnessAdapter, InputMode, InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle, WorkerSpec } from "../adapter.js";
 import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedProcess } from "./process.js";
 
 type Json = Record<string, unknown>;
@@ -82,7 +82,7 @@ export interface CodexAdapterOptions {
 /** Resolve the official npm shim to the native executable, never own its Node wrapper. */
 export function resolveCodexExecutable(env: NodeJS.ProcessEnv): string {
   const explicit = env.CODEX_EXECUTABLE;
-  if (explicit && !path.isAbsolute(explicit)) throw new Error("CODEX_EXECUTABLE must be an absolute native executable path.");
+  if (explicit && !path.isAbsolute(explicit)) throw new WorkerExecutableError("CODEX_EXECUTABLE", "CODEX_EXECUTABLE must be an absolute native executable path.");
   const candidates = explicit ? [explicit] : (env.PATH ?? "").split(path.delimiter).filter(Boolean).map(dir => path.join(dir, "codex"));
   const triple = process.platform === "darwin" ? `${process.arch === "arm64" ? "aarch64" : "x86_64"}-apple-darwin`
     : `${process.arch === "arm64" ? "aarch64" : "x86_64"}-unknown-linux-musl`;
@@ -109,7 +109,7 @@ export function resolveCodexExecutable(env: NodeJS.ProcessEnv): string {
       return fs.realpathSync(native);
     } catch { /* Try the next PATH entry, without executing an arbitrary shim. */ }
   }
-  throw new Error("Cannot find a native Codex executable. Set an explicit CODEX_EXECUTABLE environment reference to its absolute path.");
+  throw new WorkerExecutableError("CODEX_EXECUTABLE", "Cannot find a native Codex executable. Set an explicit CODEX_EXECUTABLE environment reference to its absolute path.");
 }
 
 export class CodexAdapter implements HarnessAdapter {
@@ -230,9 +230,12 @@ class CodexHandle implements WorkerHandle {
         "Never change approval or permission settings, adopt another session, or repeat unconfirmed side effects after a crash." }, timeout);
     const thread = object(result.thread);
     const sandbox = object(result.sandbox);
-    const expected = permissions.sandbox === "read-only" ? "readOnly" : "workspaceWrite";
+    const expected = {
+      "read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess"
+    }[permissions.sandbox];
     if (typeof thread.id !== "string" || (resume && thread.id !== resume) ||
-        result.approvalPolicy !== permissions.approval || sandbox.type !== expected || sandbox.networkAccess === true) {
+        result.approvalPolicy !== permissions.approval || sandbox.type !== expected ||
+        (expected !== "dangerFullAccess" && sandbox.networkAccess === true)) {
       throw new Error("Codex did not establish the requested session and permissions.");
     }
     if (expected === "workspaceWrite" && dataDir &&

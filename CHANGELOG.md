@@ -11,6 +11,11 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- Harness sessions with access to the supervisor can manage workers. Claude workers can opt in to `bypassPermissions`, and Codex workers can opt in to `danger-full-access` and `never` approvals.
+- The supervisor keeps the caller's executable search path on worker registration and service installation. Missing executables hold the worker immediately and show the cause in `tt supervisor status` and chat `/who`.
+
 ## [0.35.0] — 2026-11-18
 
 Full notes: [`docs/releases/0.35.0.md`](docs/releases/0.35.0.md).

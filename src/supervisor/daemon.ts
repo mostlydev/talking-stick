@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { AuthModeError, type Harness, type HarnessAdapter, type InputMode, type InputOutcome, type WorkerEvent, type WorkerHandle,
+import { AuthModeError, WorkerExecutableError, type Harness, type HarnessAdapter, type InputMode, type InputOutcome, type WorkerEvent, type WorkerHandle,
   type WorkerSpec } from "./adapter.js";
 import type { GenerationState, SupervisorStore, WorkerRow } from "./state.js";
 import type { IntakeAnswer, IntakeMessage } from "./intake.js";
@@ -261,6 +261,13 @@ export class Supervisor {
         this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: error.reason, error: error.message });
         this.store.hold(worker.worker_id, error.reason, this.at());
         this.store.audit(this.at(), "supervisor", error.reason, worker.worker_id, { generation, error: error.message });
+        return;
+      }
+      if (error instanceof WorkerExecutableError) {
+        this.store.endGeneration(worker.worker_id, generation, this.at(), {
+          reason: "start_failed", error: error.message, executable_env: error.envName
+        });
+        this.store.hold(worker.worker_id, "start_failed", this.at());
         return;
       }
       this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "start_failed", error: String(error) });

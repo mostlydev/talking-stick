@@ -31,7 +31,7 @@ export function launchAgentPath(homeDir = os.homedir()): string {
 }
 
 /** The agent runs tt supervisor run for one data directory, with owner-only files. */
-export function launchAgentPlist(input: { program: string[]; dataDir: string; logPath: string; stateBase?: string }): string {
+export function launchAgentPlist(input: { program: string[]; dataDir: string; logPath: string; stateBase?: string; searchPath?: string }): string {
   const args = input.program.map((arg) => `    <string>${xml(arg)}</string>`).join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -48,7 +48,9 @@ ${args}
     <key>TALKING_STICK_DATA_DIR</key>
     <string>${xml(input.dataDir)}</string>${input.stateBase ? `
     <key>TT_SUPERVISOR_STATE_DIR</key>
-    <string>${xml(input.stateBase)}</string>` : ""}
+    <string>${xml(input.stateBase)}</string>` : ""}${input.searchPath ? `
+    <key>PATH</key>
+    <string>${xml(input.searchPath)}</string>` : ""}
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -69,7 +71,7 @@ export type LaunchctlRunner = (args: string[]) => void;
 
 const systemLaunchctl: LaunchctlRunner = (args) => { execFileSync("launchctl", args, { stdio: "ignore" }); };
 
-export function installLaunchAgent(input: { program: string[]; dataDir: string; logPath: string; stateBase?: string; homeDir?: string;
+export function installLaunchAgent(input: { program: string[]; dataDir: string; logPath: string; stateBase?: string; searchPath?: string; homeDir?: string;
   launchctl?: LaunchctlRunner }): string {
   if (process.platform !== "darwin" && !input.launchctl) throw new Error("tt supervisor install supports macOS launchd only.");
   // The agent must run something that exists, not report installed and fail at login.

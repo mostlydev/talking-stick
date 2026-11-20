@@ -15,8 +15,8 @@ export interface Capabilities {
 
 /** Explicit per-harness permissions, applied on top of the user's own harness settings. */
 export type WorkerPermissions =
-  | { harness: "claude"; mode: "default" | "plan" }
-  | { harness: "codex"; sandbox: "read-only" | "workspace-write"; approval: "on-request" | "untrusted" }
+  | { harness: "claude"; mode: "default" | "plan" | "bypassPermissions" }
+  | { harness: "codex"; sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "untrusted" | "never" }
   | { harness: "grok" };
 
 /**
@@ -58,6 +58,13 @@ export interface WorkerSpec {
  * or another provider (wrong_auth_mode). The supervisor holds the worker
  * instead of counting a crash. The message never carries identity or secrets.
  */
+export class WorkerExecutableError extends Error {
+  constructor(readonly envName: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE", message: string) {
+    super(message);
+    this.name = "WorkerExecutableError";
+  }
+}
+
 export class AuthModeError extends Error {
   constructor(readonly reason: "auth_required" | "wrong_auth_mode", message: string) {
     super(message);
