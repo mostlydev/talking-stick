@@ -102,7 +102,7 @@ async function handleMsgSendCommand(
     const hint = hasOption(parsed, "interrupt") ? " interrupt" : "";
     const delivery = result.delivery_status
       ? ` Delivery to ${result.delivery_target ?? target}: ${result.delivery_status}${
-          result.delivery_error ? ` (${result.delivery_error})` : ""
+          result.delivery_error ? ` (${[result.delivery_error, result.delivery_error_detail].filter(Boolean).join(" ")})` : ""
         }.`
       : "";
     return `Sent${hint} message ${shortEventId(result.event_id)} to ${target}.${delivery}`;

@@ -208,6 +208,11 @@ export function chatTerminalCapable(
 // transport failure; an agent with nothing to wake it yet, such as a Grok that
 // will pick the message up at its next tool call, is only "not acknowledged yet".
 export function describeChatDelivery(delivery: MessageDelivery): string {
+  if (delivery.error === "codex_queue_rejected") return "Codex queue rejected by the CLI";
+  if (delivery.transport === "codex_queue" && delivery.error &&
+      (delivery.state === "ambiguous" || delivery.state === "queued")) {
+    return delivery.error_detail ? `Codex wake unconfirmed (${delivery.error_detail})` : "Codex wake unconfirmed";
+  }
   if (delivery.state === "failed") return "unreachable";
   if (delivery.status === "receiver") return "queued";
   if (delivery.error === "manual_standby") return "waiting for resume";

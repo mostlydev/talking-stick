@@ -525,14 +525,19 @@ describe("system native wake transport", () => {
     const executable = path.join(root, "codex");
     const capture = path.join(root, "args.json");
     const thread = "00000000-0000-0000-0000-000000000001";
-    const transport = createSystemNativeWakeTransport({ env: { ...process.env, PATH: root, CAPTURE: capture }, timeout_ms: 500 });
+    const transport = createSystemNativeWakeTransport({ env: { ...process.env, PATH: root, CAPTURE: capture, CMUX_CODEX_HOOKS_DISABLED: "0" }, timeout_ms: 500 });
     const request = { transport: "codex_queue" as const, address: thread, secret: null, text: 'fixed `text` $(literal) "quote"' };
     const script = (source: string) => fs.writeFileSync(executable, `#!${process.execPath}\n${source}`, { mode: 0o700 });
-    script("require('node:fs').writeFileSync(process.env.CAPTURE, JSON.stringify(process.argv.slice(2))); console.log('Queued message');");
+    script(`if (process.env.CMUX_CODEX_HOOKS_DISABLED !== "1") process.exit(2);
+      require("node:fs").writeFileSync(process.env.CAPTURE, JSON.stringify(process.argv.slice(2))); console.log("Queued message");`);
     expect(await transport.deliver(request)).toEqual({ outcome: "queued" });
     expect(JSON.parse(fs.readFileSync(capture, "utf8"))).toEqual(["queue", "--thread", thread, "--message", request.text]);
     script(`console.error('Error: failed to queue session message: thread/queue/add failed: failed to read thread: invalid thread-store request: no rollout found for thread id ${thread} (code -32603)');process.exit(1);`);
     expect(await transport.deliver(request)).toEqual({ outcome: "failed", error: "codex_thread_not_found", detail: "exit:1 rpc:-32603" });
+    script("console.error('error: `codex queue` does not support `--dangerously-bypass-hook-trust`'); process.exit(2);");
+    expect(await transport.deliver(request)).toEqual({ outcome: "failed", error: "codex_queue_rejected", detail: "exit:2" });
+    script("process.exit(2);");
+    expect(await transport.deliver(request)).toEqual({ outcome: "ambiguous", error: "codex_queue_failed", detail: "exit:2" });
     // Stderr never reaches the result, even when it looks like a denial.
     script("console.error('EACCES private token /private/inbox.sock permission denied'); process.exit(1);");
     expect(await transport.deliver(request)).toEqual({ outcome: "ambiguous", error: "codex_queue_failed", detail: "exit:1" });
@@ -801,6 +806,19 @@ test("wake failure detail is shown only from known codes", async () => {
     if (shown) expect(health).toContain(`"last_error_detail":"${shown}"`);
     for (const secret of ["supersecret", "token", "SIGSECRET"]) expect(health).not.toContain(secret);
   }
+});
+
+test("health shows the sanitized detail for an uncertain Codex queue attempt stored as queued", () => {
+  const { service, project } = harness();
+  const roomId = joinPair(service, project);
+  service.joinPath({ agent_id: "codex:bb", context_path: project, process_metadata: metadata("codex", "thread-b") });
+  service.registerNativeWakeEndpoint({ room_id: roomId, agent_id: "codex:bb", transport: "codex_queue",
+    address: "thread-b", secret: null, harness_session_id: "thread-b", host_id: HOST });
+  const db = (service as unknown as { db: { prepare(sql: string): { run(...args: unknown[]): unknown } } }).db;
+  db.prepare("UPDATE member_wake_endpoints SET last_status = 'queued', last_error = 'codex_queue_failed', last_error_detail = 'exit:2' WHERE agent_id = 'codex:bb'").run();
+  const health = service.getRoomHealth({ context_path: project, agent_id: "codex:bb" }).wake_endpoints
+    .find((row) => row.agent_id === "codex:bb");
+  expect(health).toMatchObject({ last_status: "queued", last_error: "codex_queue_failed", last_error_detail: "exit:2" });
 });
 
 test("a stale failure detail from an older process never explains a later delivery", async () => {

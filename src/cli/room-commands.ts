@@ -376,6 +376,7 @@ interface HealthSummaryResult {
     transport: string;
     last_status: string | null;
     last_error: string | null;
+    last_error_detail?: string;
   }>;
   git: {
     dirty: boolean;
@@ -474,7 +475,8 @@ function buildHealthSummary(
       .map((endpoint) => ({
         transport: endpoint.transport,
         last_status: endpoint.last_status,
-        last_error: endpoint.last_error
+        last_error: endpoint.last_error,
+        ...(endpoint.last_error_detail ? { last_error_detail: endpoint.last_error_detail } : {})
       })),
     git: {
       dirty:
@@ -524,7 +526,7 @@ function renderHealthSummaryText(summary: HealthSummaryResult): string {
       `Wake:     ${summary.wake
         .map((endpoint) =>
           endpoint.last_status
-            ? `${endpoint.transport} (last ${endpoint.last_status}${endpoint.last_error ? `: ${endpoint.last_error}` : ""})`
+            ? `${endpoint.transport} (last ${endpoint.last_status}${endpoint.last_error ? `: ${[endpoint.last_error, endpoint.last_error_detail].filter(Boolean).join(" ")}` : ""})`
             : endpoint.transport
         )
         .join(", ")}`

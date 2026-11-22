@@ -2079,6 +2079,28 @@ describe("tt notes", () => {
     expect(status.coordination_prompt).toBeUndefined();
   });
 
+  test("tt health shows the safe error detail on an unconfirmed Codex wake", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const service = new TalkingStickService();
+    const agentId = "codex:health-test";
+    try {
+      const { room_id } = service.joinPath({ agent_id: agentId, context_path: project,
+        process_metadata: { host_id: os.hostname(), harness_name: "codex", harness_session_id: "health-session" } });
+      service.registerNativeWakeEndpoint({ agent_id: agentId, room_id, transport: "codex_queue",
+        address: "health-session", secret: null, harness_session_id: "health-session", host_id: os.hostname() });
+      service.db.prepare(`UPDATE member_wake_endpoints
+        SET last_status = 'queued', last_error = 'codex_queue_failed', last_error_detail = 'exit:2'
+        WHERE room_id = ? AND agent_id = ?`).run(room_id, agentId);
+    } finally {
+      service.close();
+    }
+    const args = ["health", project, "--agent", agentId];
+    expect(JSON.parse(await captureStdout([...args, "--json"])).wake).toEqual([
+      { transport: "codex_queue", last_status: "queued", last_error: "codex_queue_failed", last_error_detail: "exit:2" }
+    ]);
+    expect(await captureStdout([...args, "--text"])).toContain("codex_queue_failed exit:2");
+  });
+
   test("TT_HARNESS_EXPORT auto-switches state to JSON; --text overrides", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     await captureStdout(["join", project, "--agent", "human:auto-test"]);

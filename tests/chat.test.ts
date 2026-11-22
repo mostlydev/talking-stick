@@ -25,7 +25,7 @@ import {
   resolveChatRecipients,
   sanitizeChatText
 } from "../src/cli/chat-format.js";
-import { chatInlineEnabled, chatTerminalCapable, createChatIdentity, runChatConsole, runChatSession, uniqueRoomNames } from "../src/cli/chat.js";
+import { chatInlineEnabled, chatTerminalCapable, createChatIdentity, describeChatDelivery, runChatConsole, runChatSession, uniqueRoomNames } from "../src/cli/chat.js";
 import { formatRoomStrip } from "../src/cli/chat-format.js";
 import { chatThemeName, setChatTheme } from "../src/cli/theme.js";
 import { parseCommand } from "../src/cli/parser.js";
@@ -3749,4 +3749,14 @@ test.each(["unread", "review"] as const)("the %s bar leaves the text while brows
     await new Promise<void>(resolve => server.close(() => resolve()));
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test("chat distinguishes a rejected Codex queue call from an unconfirmed wake", () => {
+  const target = { agent_id: "codex:bb", transport: "codex_queue" } as const;
+  expect(describeChatDelivery({ ...target, status: "unreachable", state: "failed", error: "codex_queue_rejected" }))
+    .toBe("Codex queue rejected by the CLI");
+  expect(describeChatDelivery({ ...target, status: "endpoint", state: "queued", error: "codex_queue_failed", error_detail: "exit:2" }))
+    .toBe("Codex wake unconfirmed (exit:2)");
+  expect(describeChatDelivery({ ...target, status: "endpoint", state: "queued" })).toBe("queued");
 });
