@@ -322,7 +322,9 @@ export async function deliverCodexQueue(request: NativeWakeRequest, options: Nat
     const child = execFile("codex", ["queue", ...(options.codex_socket ? ["--remote", `unix://${options.codex_socket}`] : []), "--thread", request.address, "--message", request.text], {
       encoding: "utf8", timeout: options.timeout_ms ?? CODEX_QUEUE_TIMEOUT_MS,
       killSignal: "SIGKILL", maxBuffer: 64 * 1024, windowsHide: true,
-      env: withoutClaudeInboxCredentials(options.env ?? process.env)
+      // The cmux shim can mistake queue for an interactive session and inject
+      // flags that Codex rejects. Leave cmux hooks enabled in the parent.
+      env: { ...withoutClaudeInboxCredentials(options.env ?? process.env), CMUX_CODEX_HOOKS_DISABLED: "1" }
     }, (error, _stdout, stderr) => {
       if (!error) {
         if (!request.start_queued) { resolve({ outcome: "queued" }); return; }
@@ -338,6 +340,12 @@ export async function deliverCodexQueue(request: NativeWakeRequest, options: Nat
       const rpc = /\(code (-?\d{1,6})\)/.exec(stderr)?.[1];
       const detail = error.killed || error.signal ? `signal:${error.signal ?? "SIGKILL"}`
         : `exit:${String(error.code)}${rpc ? ` rpc:${rpc}` : ""}`;
+      // This exact CLI rejection occurs before the queue RPC. Other exit 2
+      // results may come from a wrapper after calling Codex, so stay cautious.
+      if (!error.killed && !error.signal && error.code === 2 &&
+          /^(?:error: )?`?codex queue`? does not support `?--dangerously-bypass-hook-trust`?$/i.test(stderr.trim())) {
+        resolve({ outcome: "failed", error: "codex_queue_rejected", detail }); return;
+      }
       if (!error.killed && !error.signal && typeof error.code === "number" &&
         /thread\/queue\/add failed: failed to read thread: (?:invalid thread-store request: )?no rollout found for thread id [0-9a-f-]{36}(?:\s|$)/i.test(stderr)) {
         resolve({ outcome: "failed", error: "codex_thread_not_found", detail }); return;

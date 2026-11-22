@@ -17,6 +17,10 @@ changes will be called out under **Breaking changes**.
 - The supervisor keeps the caller's executable search path on worker registration and service installation. Missing executables hold the worker immediately and show the cause in `tt supervisor status` and chat `/who`.
 - Claude workers use the local username to locate the existing subscription login.
 
+### Fixed
+
+- Codex wake calls run without cmux session hook injection. Chat and health report queue failures, and an explicit hook-flag rejection is treated as unsent.
+
 ## [0.35.0] — 2026-11-18
 
 Full notes: [`docs/releases/0.35.0.md`](docs/releases/0.35.0.md).

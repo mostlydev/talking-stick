@@ -302,8 +302,9 @@ const WAKE_DETAIL_SIGNALS = new Set(["SIGKILL", "SIGTERM", "SIGINT", "SIGHUP", "
 
 // Older tt processes record outcomes without touching last_error_detail, so a
 // detail counts only beside the failure it explains.
-function currentWakeDetail(row: { last_status: string | null; last_error_detail: string | null }): boolean {
-  return Boolean(row.last_error_detail) && (row.last_status === "ambiguous" || row.last_status === "failed");
+function currentWakeDetail(row: { last_status: string | null; last_error: string | null; last_error_detail: string | null }): boolean {
+  return Boolean(row.last_error_detail) && (row.last_status === "ambiguous" || row.last_status === "failed" ||
+    (row.last_status === "queued" && Boolean(row.last_error)));
 }
 
 function safeWakeDetail(detail: string | undefined): string | undefined {
@@ -3060,7 +3061,8 @@ export class TalkingStickService {
         FROM attempts
       )
       SELECT agent_id, transport, recorded_at, last_attempt_at, last_status, last_error,
-        CASE WHEN last_status IN ('ambiguous', 'failed') THEN last_error_detail END AS last_error_detail
+        CASE WHEN last_status IN ('ambiguous', 'failed') OR (last_status = 'queued' AND last_error IS NOT NULL)
+          THEN last_error_detail END AS last_error_detail
       FROM ranked WHERE rank = 1 ORDER BY agent_id, transport
     `).all(roomId, roomId);
   }
@@ -3782,7 +3784,7 @@ export class TalkingStickService {
     // Even injected transports must not leak raw errors through public JSON.
     const safeError = result.error && [
       "claude_inbox_timeout", "claude_inbox_unreachable", "claude_inbox_write_failed", "claude_inbox_closed",
-      "codex_steer_unconfirmed", "invalid_codex_thread", "codex_unavailable", "codex_thread_not_found", "codex_queue_timeout", "codex_queue_failed",
+      "codex_steer_unconfirmed", "invalid_codex_thread", "codex_unavailable", "codex_thread_not_found", "codex_queue_timeout", "codex_queue_failed", "codex_queue_rejected",
       "cmux_wake_failed", "native_wake_unavailable", "wake_delivery_unconfirmed"
     ].includes(result.error)
       ? result.error : result.error ? "wake_delivery_failed" : null;
