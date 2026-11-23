@@ -564,6 +564,9 @@ function deriveCommandLabel(command: string | null): string {
   }
 
   const token = process.platform === "win32" ? commandExecutable(command) : command.trim().split(/\s+/)[0] ?? "";
+  // The native installer's claude symlink resolves to a version-named binary.
+  // Process inspection sees that path when the supervisor runs it directly.
+  if (/^\/[^\s]+\/claude\/versions\/\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(token)) return "claude";
   const basename = executableName(token).replace(/\.(exe|cmd|bat)$/i, "");
   const sanitized = sanitizeIdentityComponent(basename);
   return sanitized || "harness";

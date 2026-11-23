@@ -194,10 +194,13 @@ describe("deriveHarnessCliIdentity", () => {
     expect(identity).toBeNull();
   });
 
-  test("anchors a Claude started by another Claude session to its own process", () => {
+  test.each([
+    "claude",
+    "/Users/alice/.local/share/claude/versions/2.1.330 -p --input-format stream-json"
+  ])("anchors a nested Claude to its own process with command %s", (command) => {
     const nested = fakeInspector({
       9100: { startTime: "Thu Apr 23 14:10:00 2026", command: "bash", ppid: 9050 },
-      9050: { startTime: "Thu Apr 23 14:05:00 2026", command: "claude", ppid: 9020 },
+      9050: { startTime: "Thu Apr 23 14:05:00 2026", command, ppid: 9020 },
       9020: { startTime: "Thu Apr 23 14:00:00 2026", command: "bash", ppid: 8000 },
       8000: { startTime: "Thu Apr 23 13:50:00 2026", command: "claude", ppid: 1 }
     });
