@@ -4,7 +4,6 @@ import {
   SUPPORTED_HARNESSES,
   planSessionHooks,
   detectHarness,
-  isDeprecatedHarness,
   parseHarnessList,
   planClaudeStopGuardInstall,
   planClaudeStopGuardUninstall,
@@ -79,7 +78,6 @@ export async function runInstallCommand(parsed: ParsedCommand, cliEntryUrl: stri
   };
 
   if (dryRun) {
-    printDeprecatedHarnessNotices(harnesses);
     const skillerLines = installOptions.replace
       ? null
       : await runSkillerDryRun("install", {
@@ -123,7 +121,6 @@ export async function runInstallCommand(parsed: ParsedCommand, cliEntryUrl: stri
     return;
   }
 
-  printDeprecatedHarnessNotices(harnesses);
   reportLegacySkillMigration();
   const skillerResults = installOptions.replace
     ? null
@@ -181,7 +178,6 @@ export async function runUninstallCommand(
   ];
 
   if (dryRun) {
-    printDeprecatedHarnessNotices(harnesses);
     const skillerLines = await runSkillerDryRun("uninstall", {
       harnesses,
       removeShared,
@@ -308,7 +304,6 @@ export async function runInstallSkillCommand(
     return;
   }
 
-  printDeprecatedHarnessNotices(harnesses);
   reportLegacySkillMigration();
   const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
   reportInstallResults(results, "install");
@@ -597,7 +592,7 @@ export function runHerdrPluginCommand(
 function selectHarnesses(parsed: ParsedCommand): HarnessId[] {
   if (hasOption(parsed, "all")) {
     const detected = SUPPORTED_HARNESSES.filter(
-      (harness) => !isDeprecatedHarness(harness) && detectHarness(harness).detected
+      (harness) => detectHarness(harness).detected
     );
     return [...detected];
   }
@@ -636,13 +631,6 @@ function selectUninstallTargets(parsed: ParsedCommand): {
   };
 }
 
-function printDeprecatedHarnessNotices(harnesses: HarnessId[]): void {
-  if (!harnesses.includes("gemini")) return;
-  process.stdout.write(
-    "[gemini] deprecated: Gemini CLI skill install is deprecated; use `tt install antigravity`.\n"
-  );
-}
-
 function printSharedSkillLeftHint(
   harnesses: HarnessId[],
   removeShared: boolean
@@ -652,8 +640,7 @@ function printSharedSkillLeftHint(
     !harnesses.some((harness) =>
       harness === "codex" ||
       harness === "grok" ||
-      harness === "opencode" ||
-      harness === "antigravity"
+      harness === "opencode"
     )
   ) {
     return;

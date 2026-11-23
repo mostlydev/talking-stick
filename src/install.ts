@@ -5,13 +5,11 @@ import path from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import {
   SUPPORTED_HARNESSES,
-  isDeprecatedHarness,
   type HarnessId
 } from "./harness-model.js";
 
 export {
   SUPPORTED_HARNESSES,
-  isDeprecatedHarness,
   type HarnessId
 } from "./harness-model.js";
 
@@ -274,9 +272,7 @@ function resolveHarnessConfigDirFromResolved(
     case "codex":
       return path.join(resolved.homeDir, ".codex");
     case "antigravity":
-      return path.join(resolved.homeDir, ".agents");
-    case "gemini":
-      return path.join(resolved.homeDir, ".gemini");
+      return path.join(resolved.homeDir, ".gemini", "config");
     case "grok":
       return resolveGrokConfigDirFromResolved(resolved);
     case "opencode":
@@ -401,13 +397,12 @@ export function planSessionHooks(harness: HarnessId, operation: "install" | "uni
   const resolved = resolveOptions(options);
   const configDir = harness === "codex" && resolved.env.CODEX_HOME?.trim()
     ? resolved.env.CODEX_HOME.trim() : resolveHarnessConfigDirFromResolved(harness, resolved);
-  const hookDir = harness === "antigravity" ? path.join(resolved.homeDir, ".gemini", "config") : configDir;
-  if (resolved.skipMissing && !resolved.hooks.pathExists(hookDir) &&
+  if (resolved.skipMissing && !resolved.hooks.pathExists(configDir) &&
       !(harness === "antigravity" && resolved.hooks.which("agy"))) {
-    return [skipAction(harness, `config directory not found: ${hookDir}`)];
+    return [skipAction(harness, `config directory not found: ${configDir}`)];
   }
   const filePath = harness === "claude-code" ? resolveClaudeSettingsPath(resolved)
-    : path.join(hookDir, ...(harness === "grok" ? ["hooks", "talking-stick-lifecycle.json"] : ["hooks.json"]));
+    : path.join(configDir, ...(harness === "grok" ? ["hooks", "talking-stick-lifecycle.json"] : ["hooks.json"]));
   const name = harness === "claude-code" ? "claude" : harness;
   return [{ kind: "file-patch", harness, filePath, operation, dedupeKey: `${filePath}:lifecycle`,
     description: `${operation} session lifecycle${harness === "claude-code" ? " and interrupt" : ""} hooks in ${filePath}${harness === "codex" && operation === "install" ? " (review and trust in /hooks)" : ""}`,
@@ -768,13 +763,6 @@ export function detectHarness(harness: HarnessId, options: InstallOptions = {}):
       if (bin) return { harness, detected: true, evidence: bin };
       return { harness, detected: false, evidence: "agy not on PATH" };
     }
-    case "gemini": {
-      const bin = resolved.hooks.which("gemini");
-      if (bin) return { harness, detected: true, evidence: bin };
-      const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
-      if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
-      return { harness, detected: false, evidence: "gemini not on PATH and no config directory" };
-    }
     case "grok": {
       const bin = resolved.hooks.which("grok");
       if (bin) return { harness, detected: true, evidence: bin };
@@ -1033,10 +1021,10 @@ function isAlreadyAbsentMessage(message: string): boolean {
 export function parseHarnessList(values: string[]): HarnessId[] {
   const result: HarnessId[] = [];
   for (const value of values) {
-    const normalized = value === "claude" ? "claude-code" : value;
+    const normalized = value === "claude" ? "claude-code" : value === "agy" ? "antigravity" : value;
     if (!(SUPPORTED_HARNESSES as readonly string[]).includes(normalized)) {
       throw new Error(
-        `Unknown harness: ${value}. Supported: ${SUPPORTED_HARNESSES.join(", ")} (claude aliases claude-code)`
+        `Unknown harness: ${value}. Supported: ${SUPPORTED_HARNESSES.join(", ")} (claude aliases claude-code, agy aliases antigravity)`
       );
     }
     if (!result.includes(normalized as HarnessId)) {

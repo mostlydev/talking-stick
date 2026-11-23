@@ -12,7 +12,7 @@ export const CHAT_THEME = {
     selection: ["343640", 237], selectionText: ["f0e4d0", 223]
   },
   agents: {
-    claude: ["e8a180", 209], codex: ["91c9a1", 78], gemini: ["86b5dc", 75],
+    claude: ["e8a180", 209], codex: ["91c9a1", 78],
     antigravity: ["b8a6df", 141], agy: ["b8a6df", 141], grok: ["d49fc7", 177], opencode: ["83c9c7", 44],
     human: ["e3c578", 220]
   },

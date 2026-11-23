@@ -430,7 +430,7 @@ describe("tt supervisor migrate", () => {
   function cli(dataDir: string, env: NodeJS.ProcessEnv) {
     vi.stubEnv("TALKING_STICK_DATA_DIR", dataDir);
     vi.stubEnv("TT_SUPERVISOR_STATE_DIR", env.TT_SUPERVISOR_STATE_DIR!);
-    for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "GEMINI_CLI", "OPENCODE", "TT_HARNESS_AGENT_ID"]) vi.stubEnv(key, "");
+    for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "OPENCODE", "TT_HARNESS_AGENT_ID"]) vi.stubEnv(key, "");
     const output: string[] = [];
     const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => { output.push(String(chunk)); return true; });
     cleanup.push(() => write.mockRestore());

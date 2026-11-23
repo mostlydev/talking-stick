@@ -384,10 +384,10 @@ describe("out-of-band signaling substrate", () => {
       body: "from codex"
     });
     harness.service.sendMessage({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       room_id: room.room_id,
       to_agent_id: "claude:test",
-      body: "from gemini"
+      body: "from agy"
     });
 
     const result = await harness.service.waitForEvents({
@@ -395,11 +395,11 @@ describe("out-of-band signaling substrate", () => {
       room_id: room.room_id,
       event_type: "message_sent",
       target_agent_id: "self",
-      from_agent_id: "gemini:test",
+      from_agent_id: "agy:test",
       max_wait_ms: 0
     });
 
-    expect(messageBodies(result.events)).toEqual(["from gemini"]);
+    expect(messageBodies(result.events)).toEqual(["from agy"]);
     expect(result.cursor_event_seq).toBe(result.events[0].event_seq);
   });
 
@@ -988,7 +988,7 @@ function joinPair(harness: ReturnType<typeof createHarness>) {
 function joinTrio(harness: ReturnType<typeof createHarness>) {
   const room = joinPair(harness);
   harness.service.joinPath({
-    agent_id: "gemini:test",
+    agent_id: "agy:test",
     context_path: room.canonical_path
   });
   return room;

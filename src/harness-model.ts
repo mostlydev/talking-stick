@@ -1,14 +1,12 @@
 export type SkillLoadingModel =
   | "proprietary"
   | "shared"
-  | "shared+proprietary"
-  | "deprecated";
+  | "shared+proprietary";
 
 export interface HarnessSkillModel {
   identity: HarnessCliHarness;
   commandLabels: readonly string[];
   skillLoadingModel: SkillLoadingModel;
-  deprecated?: boolean;
 }
 
 export const HARNESS_SKILL_MODELS = {
@@ -25,7 +23,8 @@ export const HARNESS_SKILL_MODELS = {
   antigravity: {
     identity: "antigravity",
     commandLabels: ["agy", "antigravity"],
-    skillLoadingModel: "shared"
+    // agy reads global skills only from its own config folder, not ~/.agents/skills.
+    skillLoadingModel: "proprietary"
   },
   grok: {
     identity: "grok",
@@ -36,12 +35,6 @@ export const HARNESS_SKILL_MODELS = {
     identity: "opencode",
     commandLabels: ["opencode"],
     skillLoadingModel: "shared+proprietary"
-  },
-  gemini: {
-    identity: "gemini",
-    commandLabels: ["gemini"],
-    skillLoadingModel: "deprecated",
-    deprecated: true
   }
 } as const;
 
@@ -49,16 +42,9 @@ export type HarnessId = keyof typeof HARNESS_SKILL_MODELS;
 export type HarnessCliHarness =
   (typeof HARNESS_SKILL_MODELS)[HarnessId]["identity"];
 
-export type FileSkillHarness = Exclude<HarnessId, "gemini">;
-
 export const SUPPORTED_HARNESSES = Object.keys(
   HARNESS_SKILL_MODELS
 ) as HarnessId[];
-
-export const FILE_SKILL_HARNESSES = SUPPORTED_HARNESSES.filter(
-  (harness): harness is FileSkillHarness =>
-    HARNESS_SKILL_MODELS[harness].skillLoadingModel !== "deprecated"
-);
 
 export const HARNESS_CLI_HARNESSES = Array.from(
   new Set(
@@ -74,8 +60,3 @@ export const HARNESS_COMMAND_MAPPING = Object.fromEntries(
     ])
   )
 ) as Record<string, HarnessCliHarness>;
-
-export function isDeprecatedHarness(harness: HarnessId): boolean {
-  const model = HARNESS_SKILL_MODELS[harness] as HarnessSkillModel;
-  return model.deprecated === true;
-}

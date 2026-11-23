@@ -33,7 +33,7 @@ function setup() {
     // A Windows host only runs a bare command through a PATHEXT extension.
     fs.writeFileSync(path.join(bin, process.platform === "win32" ? `${name}.cmd` : name), "#!/bin/sh\n", { mode: 0o755 });
   }
-  for (const dir of [[".claude", "skills"], [".agents", "skills"]]) {
+  for (const dir of [[".claude", "skills"], [".agents", "skills"], [".gemini", "config", "skills"]]) {
     const skill = path.join(home, ...dir, "rooms");
     fs.mkdirSync(skill, { recursive: true });
     fs.writeFileSync(path.join(skill, "SKILL.md"), "# skill\n");

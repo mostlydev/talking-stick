@@ -419,9 +419,6 @@ function detectHarnessSignal(env: NodeJS.ProcessEnv): HarnessSignal | null {
       pidHint: null
     };
   }
-  if (env.GEMINI_CLI === "1") {
-    return { harness: "gemini", sessionId: null, pidHint: null };
-  }
   if (env.OPENCODE === "1") {
     return {
       harness: "opencode",

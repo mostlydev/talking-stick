@@ -32,7 +32,12 @@ describe("moving skills to their new names", () => {
   test("the bundle ships redirect stubs under the old names, and the new skills beside them", () => {
     expect(LEGACY_SKILL_RENAMES).toEqual([["talking-stick", "rooms"], ["talking-stick-rooms", "rooms-oversee"]]);
     for (const [legacy, current] of LEGACY_SKILL_RENAMES) {
-      expect(fs.readFileSync(path.join(bundled(legacy), "SKILL.md"), "utf8")).toContain(`../${current}/SKILL.md`);
+      const stub = fs.readFileSync(path.join(bundled(legacy), "SKILL.md"), "utf8");
+      expect(stub).toMatch(new RegExp(`^---\nname: ${legacy}\n`));
+      expect(stub).toContain(`../${current}/SKILL.md`);
+      expect(stub).toContain("resolve the link first");
+      expect(stub).toContain("tt install --all");
+      if (legacy === "talking-stick") expect(stub).toContain("Keep one `tt wait --park --json` running");
       expect(fs.readFileSync(path.join(bundled(current), "SKILL.md"), "utf8")).toMatch(new RegExp(`^---\nname: ${current}\n`));
     }
   });
@@ -51,6 +56,19 @@ describe("moving skills to their new names", () => {
     expect(fs.existsSync(shared("talking-stick-rooms"))).toBe(false);
     expect(fs.realpathSync(shared("rooms-oversee"))).toBe(fs.realpathSync(bundled("rooms-oversee")));
     expect(run(options)).toEqual([]);
+  });
+
+  test("an old agy link in ~/.gemini/skills moves to agy's config skills folder", () => {
+    const { root, options, shared } = home();
+    const legacy = path.join(root, ".gemini", "skills", "talking-stick");
+    const target = path.join(root, ".gemini", "config", "skills", "rooms");
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.symlinkSync(bundled("talking-stick"), legacy, "dir");
+    expect(run(options)).toMatchObject([{ status: "renamed", legacyPath: legacy, newPath: target }]);
+    expect(fs.lstatSync(legacy, { throwIfNoEntry: false })).toBeUndefined();
+    expect(fs.realpathSync(target)).toBe(fs.realpathSync(bundled("rooms")));
+    // agy does not read the shared folder, so nothing is added there.
+    expect(fs.existsSync(shared("rooms"))).toBe(false);
   });
 
   test("a link left dangling by a removed release still moves", () => {

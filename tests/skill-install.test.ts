@@ -79,18 +79,19 @@ describe("talking-stick skill install", () => {
       "/custom/config/opencode/skills/rooms"
     );
     expect(resolveSkillTargetPath("antigravity", { homeDir: "/home/u" })).toBe(
-      "/home/u/.agents/skills/rooms"
+      "/home/u/.gemini/config/skills/rooms"
+    );
+    expect(resolvePrimarySkillTargetPath("antigravity", { homeDir: "/home/u" })).toBe(
+      "/home/u/.gemini/config/skills/rooms"
     );
   });
 
   test("declares the converged skill loading model per harness", () => {
     expect(skillLoadingModel("claude-code")).toBe("proprietary");
     expect(skillLoadingModel("codex")).toBe("shared+proprietary");
-    expect(skillLoadingModel("antigravity")).toBe("shared");
+    expect(skillLoadingModel("antigravity")).toBe("proprietary");
     expect(skillLoadingModel("grok")).toBe("shared+proprietary");
     expect(skillLoadingModel("opencode")).toBe("shared+proprietary");
-    expect(skillLoadingModel("gemini")).toBe("deprecated");
-    expect(HARNESS_SKILL_MODELS.gemini.deprecated).toBe(true);
   });
 
   test("resolves proprietary duplicate cleanup targets", () => {
@@ -106,40 +107,10 @@ describe("talking-stick skill install", () => {
       "/home/u/.config/opencode/skills/rooms",
       "/home/u/.opencode/skills/rooms"
     ]);
-    expect(resolveDuplicateSkillTargetPaths("antigravity", { homeDir: "/home/u" })).toEqual([]);
-  });
-
-  test("gemini skill install is deprecated and cleanup-only", () => {
-    const linkAction = planSkillInstall("gemini", {
-      homeDir: "/home/u"
-    });
-    expect(linkAction.kind).toBe("skip");
-    expect(linkAction.description).toContain("Gemini CLI skill install is deprecated");
-    expect(linkAction.description).toContain("/home/u/.gemini/skills/rooms");
-  });
-
-  test("gemini install does not spawn the deprecated skills CLI", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
-    tempRoots.push(tempRoot);
-
-    const sourcePath = path.join(tempRoot, "source-skill");
-    fs.mkdirSync(sourcePath, { recursive: true });
-    fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "source\n");
-    const geminiTarget = path.join(tempRoot, ".gemini", "skills", "rooms");
-    fs.mkdirSync(path.dirname(geminiTarget), { recursive: true });
-    fs.symlinkSync(sourcePath, geminiTarget);
-
-    const run = vi.fn();
-    const options = {
-      homeDir: tempRoot,
-      which: () => "/usr/local/bin/gemini",
-      run
-    };
-
-    const result = await runAction(planSkillInstall("gemini", options), options);
-
-    expect(result.status).toBe("skipped");
-    expect(run).not.toHaveBeenCalled();
+    expect(resolveDuplicateSkillTargetPaths("antigravity", { homeDir: "/home/u" })).toEqual([
+      "/home/u/.gemini/skills/rooms",
+      "/home/u/.gemini/antigravity-cli/skills/rooms"
+    ]);
   });
 
   test("default install symlinks the skill into the shared agents skill directory for Codex", () => {
@@ -368,19 +339,19 @@ describe("talking-stick skill install", () => {
     tempRoots.push(tempRoot);
     const mainSource = resolveBundledSkillPath();
     const roomsSource = resolveBundledSkillPath({ skillName: "rooms-oversee" });
-    // Claude Code and the shared folder have rooms; Gemini's folder exists without it.
+    // Claude Code and the shared folder have rooms; agy's folder exists without it.
     for (const dir of [".claude/skills", ".agents/skills"]) {
       fs.mkdirSync(path.join(tempRoot, dir), { recursive: true });
       fs.symlinkSync(mainSource, path.join(tempRoot, dir, "rooms"), "dir");
     }
-    fs.mkdirSync(path.join(tempRoot, ".gemini", "skills"), { recursive: true });
+    fs.mkdirSync(path.join(tempRoot, ".gemini", "config", "skills"), { recursive: true });
     const sync = () => syncInstalledSkills({ homeDir: tempRoot, skillName: "rooms-oversee", installBesideDefault: true });
 
     const first = sync();
     for (const dir of [".claude/skills", ".agents/skills"]) {
       expect(fs.readlinkSync(path.join(tempRoot, dir, "rooms-oversee"))).toBe(roomsSource);
     }
-    expect(fs.existsSync(path.join(tempRoot, ".gemini", "skills", "rooms-oversee"))).toBe(false);
+    expect(fs.existsSync(path.join(tempRoot, ".gemini", "config", "skills", "rooms-oversee"))).toBe(false);
     expect(first.targets.filter((target) => target.status === "updated").map((target) => target.targetPath).sort())
       .toEqual([path.join(tempRoot, ".agents/skills/rooms-oversee"), path.join(tempRoot, ".claude/skills/rooms-oversee")]);
     expect(sync().targets.filter((target) => target.status === "updated")).toEqual([]);
@@ -529,6 +500,56 @@ describe("talking-stick skill install", () => {
     expect(fs.existsSync(path.join(tempRoot, ".agents", "skills"))).toBe(true);
   });
 
+  test("a fresh agy install creates agy's config folder when agy is on PATH", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const target = path.join(tempRoot, ".gemini", "config", "skills", "rooms");
+
+    // No agy and no folder: nothing to install for.
+    expect(planSkillInstall("antigravity", { homeDir: tempRoot, skipMissing: true, which: () => null }).kind).toBe("skip");
+
+    // agy installed but never run, so ~/.gemini/config does not exist yet.
+    const action = planSkillInstall("antigravity", {
+      homeDir: tempRoot, skipMissing: true, which: (binary: string) => (binary === "agy" ? "/usr/local/bin/agy" : null)
+    });
+    expect(action.kind).toBe("file-patch");
+    if (action.kind !== "file-patch") throw new Error("unreachable");
+    action.apply();
+    expect(fs.realpathSync(target)).toBe(fs.realpathSync(resolveBundledSkillPath()));
+  });
+
+  test("duplicate cleanup keeps agy's old link until agy's own folder holds the skill", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const sourcePath = resolveBundledSkillPath();
+    const old = path.join(tempRoot, ".gemini", "skills", "rooms");
+    const primary = path.join(tempRoot, ".gemini", "config", "skills", "rooms");
+    fs.mkdirSync(path.dirname(old), { recursive: true });
+    fs.symlinkSync(sourcePath, old, "dir");
+    const cleanup = () => removeDuplicateSkillInstalls({
+      harnesses: ["antigravity"], reason: "manual", homeDir: tempRoot, sourcePath, audit: { append: () => {} }
+    });
+
+    // Nothing installed in agy's folder: the old link is agy's only copy.
+    expect(cleanup()).toEqual([
+      expect.objectContaining({ harness: "antigravity", action: "preserved", message: expect.stringContaining("does not hold the skill") }),
+      expect.objectContaining({ harness: "antigravity", action: "absent" })
+    ]);
+    expect(fs.lstatSync(old).isSymbolicLink()).toBe(true);
+
+    // Something else occupies agy's folder: still kept.
+    fs.mkdirSync(primary, { recursive: true });
+    fs.writeFileSync(path.join(primary, "SKILL.md"), "someone else's\n");
+    expect(cleanup()[0]).toMatchObject({ action: "preserved" });
+    expect(fs.lstatSync(old).isSymbolicLink()).toBe(true);
+
+    // Once agy's folder holds the skill, the old link goes.
+    fs.rmSync(primary, { recursive: true });
+    fs.symlinkSync(sourcePath, primary, "dir");
+    expect(cleanup()[0]).toMatchObject({ action: "removed" });
+    expect(fs.lstatSync(old, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
   test("duplicate cleanup removes only symlinks pointing at the bundled skill", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
@@ -553,6 +574,10 @@ describe("talking-stick skill install", () => {
     );
     fs.mkdirSync(path.dirname(legacyOpencodeDuplicate), { recursive: true });
     fs.symlinkSync(sourcePath, legacyOpencodeDuplicate, "dir");
+    // Codex and OpenCode already read the skill from the shared folder.
+    const shared = path.join(tempRoot, ".agents", "skills", "rooms");
+    fs.mkdirSync(path.dirname(shared), { recursive: true });
+    fs.symlinkSync(sourcePath, shared, "dir");
 
     const audit: unknown[] = [];
     const results = removeDuplicateSkillInstalls({

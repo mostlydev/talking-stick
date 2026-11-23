@@ -104,7 +104,7 @@ printf '${"a".repeat(64)}  talking-stick_${version}_darwin_arm64.tar.gz\\n'
 `, { mode: 0o755 });
     const humanEnv = { ...env(), TT_NO_AUTO_UPDATE: "", PATH: `${fakeBin}${path.delimiter}${process.env.PATH}`, TT_TEST_CURL_CALLED: called };
     for (const key of Object.keys(humanEnv)) {
-      if (/^(TT_HARNESS_|CODEX_|CLAUDE|CMUX_|GROK_|OPENCODE|ANTIGRAVITY|GEMINI_)/.test(key)) {
+      if (/^(TT_HARNESS_|CODEX_|CLAUDE|CMUX_|GROK_|OPENCODE|ANTIGRAVITY)/.test(key)) {
         delete (humanEnv as NodeJS.ProcessEnv)[key];
       }
     }

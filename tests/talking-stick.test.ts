@@ -1206,7 +1206,7 @@ describe("talking-stick vertical slice", () => {
       context_path: project
     });
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: project
     });
 
@@ -1239,7 +1239,7 @@ describe("talking-stick vertical slice", () => {
 
     expect(() =>
       harness.service.takeoverStick({
-        agent_id: "gemini:test",
+        agent_id: "agy:test",
         room_id: codexJoin.room_id,
         expected_turn_id: codexTurn.turn_id,
         reason: "claim timeout expired"
@@ -1265,7 +1265,7 @@ describe("talking-stick vertical slice", () => {
       context_path: project
     });
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: project
     });
 
@@ -1289,7 +1289,7 @@ describe("talking-stick vertical slice", () => {
 
     const result = asYourTurn(
       await harness.service.waitForTurn({
-        agent_id: "gemini:test",
+        agent_id: "agy:test",
         room_id: codexJoin.room_id,
         max_wait_ms: 0
       })
@@ -1298,7 +1298,7 @@ describe("talking-stick vertical slice", () => {
     expect(result.status).toBe("your_turn");
     const events = harness.service.getRoomEvents({
       room_id: codexJoin.room_id,
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       limit: 20
     });
     const expirationEvents = events.filter(
@@ -1306,7 +1306,7 @@ describe("talking-stick vertical slice", () => {
     );
     expect(expirationEvents).toHaveLength(1);
     expect(expirationEvents[0]).toMatchObject({
-      from_agent_id: "gemini:test",
+      from_agent_id: "agy:test",
       to_agent_id: "claude:test",
       reason: "claim_expired"
     });
@@ -1806,9 +1806,9 @@ describe("talking-stick vertical slice", () => {
       process_metadata: harness.processRegistry.create("claude")
     });
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: secondProject,
-      process_metadata: harness.processRegistry.create("gemini")
+      process_metadata: harness.processRegistry.create("agy")
     });
 
     asYourTurn(
@@ -1855,7 +1855,7 @@ describe("talking-stick vertical slice", () => {
     const project = createProject(harness.tempRoot);
     const codexProcess = harness.processRegistry.create("codex");
     const claudeProcess = harness.processRegistry.create("claude");
-    const geminiProcess = harness.processRegistry.create("gemini");
+    const agyProcess = harness.processRegistry.create("agy");
 
     const codexJoin = harness.service.joinPath({
       agent_id: "codex:test",
@@ -1868,9 +1868,9 @@ describe("talking-stick vertical slice", () => {
       process_metadata: claudeProcess
     });
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: project,
-      process_metadata: geminiProcess
+      process_metadata: agyProcess
     });
 
     const codexTurn = asYourTurn(
@@ -1896,12 +1896,12 @@ describe("talking-stick vertical slice", () => {
     });
     expect(immediateState.room.state).toBe("reserved");
 
-    const geminiBeforeExpiry = await harness.service.waitForTurn({
-      agent_id: "gemini:test",
+    const agyBeforeExpiry = await harness.service.waitForTurn({
+      agent_id: "agy:test",
       room_id: codexJoin.room_id,
       max_wait_ms: 0
     });
-    expect(geminiBeforeExpiry.status).toBe("not_yet");
+    expect(agyBeforeExpiry.status).toBe("not_yet");
 
     harness.clock.advance(1_001);
 
@@ -1910,24 +1910,24 @@ describe("talking-stick vertical slice", () => {
     });
     expect(afterClaimExpiry.room.state).toBe("reserved");
 
-    const geminiDuringGoneGrace = asYourTurn(
+    const agyDuringGoneGrace = asYourTurn(
       await harness.service.waitForTurn({
-        agent_id: "gemini:test",
+        agent_id: "agy:test",
         room_id: codexJoin.room_id,
         max_wait_ms: 0
       })
     );
-    expect(geminiDuringGoneGrace.status).toBe("your_turn");
+    expect(agyDuringGoneGrace.status).toBe("your_turn");
     const events = harness.service.getRoomEvents({
       room_id: codexJoin.room_id,
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       limit: 20
     });
     expect(
       events.some(
         (event) =>
           event.event_type === "reservation_expired" &&
-          event.from_agent_id === "gemini:test" &&
+          event.from_agent_id === "agy:test" &&
           event.to_agent_id === "claude:test"
       )
     ).toBe(true);
@@ -2009,7 +2009,7 @@ describe("talking-stick vertical slice", () => {
       }
     });
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: project
     });
 
@@ -2033,12 +2033,12 @@ describe("talking-stick vertical slice", () => {
     expect(state.room.state).toBe("reserved");
     expect(state.room.reserved_for).toBe("human:alice");
 
-    const geminiView = await harness.service.waitForTurn({
-      agent_id: "gemini:test",
+    const agyView = await harness.service.waitForTurn({
+      agent_id: "agy:test",
       room_id: codexJoin.room_id,
       max_wait_ms: 0
     });
-    expect(geminiView.status).toBe("not_yet");
+    expect(agyView.status).toBe("not_yet");
   });
 
   test("a returning human CLI can reclaim a reserved turn after a stale guardian exits", async () => {
@@ -2115,7 +2115,7 @@ describe("talking-stick vertical slice", () => {
     const project = createProject(harness.tempRoot);
     const codexProcess = harness.processRegistry.create("codex");
     const claudeProcess = harness.processRegistry.create("claude");
-    const geminiProcess = harness.processRegistry.create("gemini");
+    const agyProcess = harness.processRegistry.create("agy");
 
     const codexJoin = harness.service.joinPath({
       agent_id: "codex:test",
@@ -2137,20 +2137,20 @@ describe("talking-stick vertical slice", () => {
     expect(dormantState.room.state).toBe("dormant");
 
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: project,
-      process_metadata: geminiProcess
+      process_metadata: agyProcess
     });
 
-    const geminiTurn = asYourTurn(
+    const agyTurn = asYourTurn(
       await harness.service.waitForTurn({
-        agent_id: "gemini:test",
+        agent_id: "agy:test",
         room_id: codexJoin.room_id,
         max_wait_ms: 0
       })
     );
 
-    expect(geminiTurn.reason).toBe("open_claim");
+    expect(agyTurn.reason).toBe("open_claim");
   });
 
   test("only one process can claim an idle room under contention", async () => {
@@ -2344,7 +2344,7 @@ describe("talking-stick vertical slice", () => {
       context_path: project
     });
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: project
     });
 
@@ -2364,22 +2364,22 @@ describe("talking-stick vertical slice", () => {
       handoff: validHandoff()
     });
 
-    // gemini is not the reserved recipient (claude is), so gemini should see
+    // agy is not the reserved recipient (claude is), so agy should see
     // a not_yet payload that names the reserved recipient and claim expiry.
-    const geminiWait = await harness.service.waitForTurn({
-      agent_id: "gemini:test",
+    const agyWait = await harness.service.waitForTurn({
+      agent_id: "agy:test",
       room_id: codexJoin.room_id,
       max_wait_ms: 0
     });
 
-    expect(geminiWait.status).toBe("not_yet");
-    if (geminiWait.status !== "not_yet") return;
+    expect(agyWait.status).toBe("not_yet");
+    if (agyWait.status !== "not_yet") return;
 
-    expect(geminiWait.current_owner).toBeUndefined();
-    expect(geminiWait.reserved_for).toBe("claude:test");
-    expect(geminiWait.claim_expires_at).toBeDefined();
-    expect(geminiWait.lease_expires_at).toBeUndefined();
-    expect(geminiWait.room_state).toBe("reserved");
+    expect(agyWait.current_owner).toBeUndefined();
+    expect(agyWait.reserved_for).toBe("claude:test");
+    expect(agyWait.claim_expires_at).toBeDefined();
+    expect(agyWait.lease_expires_at).toBeUndefined();
+    expect(agyWait.room_state).toBe("reserved");
   });
 
   test("wait_for_turn does not short-circuit to already_owner when the owner lease has expired", async () => {
@@ -3284,20 +3284,20 @@ describe("talking-stick vertical slice", () => {
     expect(codexHint.reason).toBe("auto_claim_disabled");
 
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: project
     });
 
-    const geminiHint = await harness.service.waitForTurn({
-      agent_id: "gemini:test",
+    const agyHint = await harness.service.waitForTurn({
+      agent_id: "agy:test",
       room_id: codexJoin.room_id,
       max_wait_ms: 0,
       auto_claim: false
     });
-    expect(geminiHint.status).toBe("not_yet");
-    if (geminiHint.status !== "not_yet") return;
-    expect(geminiHint.reason).toBe("auto_claim_disabled");
-    expect(geminiHint.hint).toContain("pending handoff");
+    expect(agyHint.status).toBe("not_yet");
+    if (agyHint.status !== "not_yet") return;
+    expect(agyHint.reason).toBe("auto_claim_disabled");
+    expect(agyHint.hint).toContain("pending handoff");
   });
 
   test("wait_for_turn with auto_claim default still claims idle rooms", async () => {
@@ -3448,7 +3448,7 @@ describe("talking-stick vertical slice", () => {
       context_path: project
     });
     harness.service.joinPath({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       context_path: project
     });
 
@@ -3471,7 +3471,7 @@ describe("talking-stick vertical slice", () => {
     harness.clock.advance(1_001);
 
     const result = await harness.service.waitForTurn({
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       room_id: codexJoin.room_id,
       max_wait_ms: 0,
       auto_claim: false
@@ -3481,7 +3481,7 @@ describe("talking-stick vertical slice", () => {
     expect(result).not.toMatchObject({ status: "takeover_available" });
     const events = harness.service.getRoomEvents({
       room_id: codexJoin.room_id,
-      agent_id: "gemini:test",
+      agent_id: "agy:test",
       limit: 20
     });
     expect(events.some((event) => event.event_type === "reservation_expired")).toBe(

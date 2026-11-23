@@ -59,7 +59,6 @@ const ENV_KEYS = [
   "CMUX_AGENT_LAUNCH_EXECUTABLE",
   "CODEX_MANAGED_BY_NPM",
   "CODEX_THREAD_ID",
-  "GEMINI_CLI",
   "GROK_AGENT",
   "GROK_HOME",
   "GROK_SESSION_ID",
@@ -2313,6 +2312,70 @@ describe("tt notes", () => {
     );
   });
 
+  async function installWithHome(home: string, argv: string[]): Promise<string> {
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      return await captureStdout(argv);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  }
+
+  test("tt install agy puts the skill in agy's config folder and drops the old link", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
+    tempDirs.push(home);
+    const bundled = path.resolve("skills", "rooms");
+    const old = path.join(home, ".gemini", "skills", "rooms");
+    fs.mkdirSync(path.join(home, ".gemini", "config"), { recursive: true });
+    fs.mkdirSync(path.dirname(old), { recursive: true });
+    fs.symlinkSync(bundled, old, "dir");
+
+    await installWithHome(home, ["install", "agy"]);
+
+    expect(fs.realpathSync(path.join(home, ".gemini", "config", "skills", "rooms"))).toBe(fs.realpathSync(bundled));
+    expect(fs.lstatSync(old, { throwIfNoEntry: false })).toBeUndefined();
+    expect(fs.existsSync(path.join(home, ".agents", "skills", "rooms"))).toBe(false);
+  });
+
+  test("tt install agy in a fresh home installs the skill and the hooks", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
+    tempDirs.push(home);
+    const bin = path.join(home, "bin");
+    fs.mkdirSync(bin);
+    const agy = path.join(bin, process.platform === "win32" ? "agy.cmd" : "agy");
+    fs.writeFileSync(agy, "#!/bin/sh\n", { mode: 0o755 });
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+    try {
+      await installWithHome(home, ["install", "agy", "--link"]);
+    } finally {
+      process.env.PATH = previousPath;
+    }
+
+    expect(fs.realpathSync(path.join(home, ".gemini", "config", "skills", "rooms"))).toBe(fs.realpathSync(path.resolve("skills", "rooms")));
+    expect(fs.readFileSync(path.join(home, ".gemini", "config", "hooks.json"), "utf8")).toContain("tt antigravity-hook");
+  });
+
+  test("tt install agy keeps the old link when agy's folder holds something else", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
+    tempDirs.push(home);
+    const bundled = path.resolve("skills", "rooms");
+    const old = path.join(home, ".gemini", "skills", "rooms");
+    const occupied = path.join(home, ".gemini", "config", "skills", "rooms");
+    fs.mkdirSync(occupied, { recursive: true });
+    fs.writeFileSync(path.join(occupied, "SKILL.md"), "someone else's\n");
+    fs.mkdirSync(path.dirname(old), { recursive: true });
+    fs.symlinkSync(bundled, old, "dir");
+
+    // The install itself may report the occupied folder; either way the old link stays.
+    await installWithHome(home, ["install", "agy"]).catch(() => "");
+
+    expect(fs.readFileSync(path.join(occupied, "SKILL.md"), "utf8")).toBe("someone else's\n");
+    expect(fs.realpathSync(old)).toBe(fs.realpathSync(bundled));
+  });
+
   test("tt install --print includes skill actions", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
     tempDirs.push(home);
@@ -2384,14 +2447,8 @@ describe("tt notes", () => {
     expect(noGuard).not.toContain(".grok/hooks/talking-stick-stop.json");
   });
 
-  test("tt install gemini --print is cleanup-only and points to Antigravity", async () => {
-    const out = await captureStdout(["install", "gemini", "--print"]);
-
-    expect(out).toContain("Gemini CLI skill install is deprecated");
-    expect(out).toContain("tt install antigravity");
-    expect(out).not.toContain("gemini skills link");
-    expect(out).not.toContain("gemini skills install");
-    expect(out).toContain(".gemini/skills/rooms");
+  test("tt install rejects gemini as an unknown harness", async () => {
+    await expect(captureStdout(["install", "gemini", "--print"])).rejects.toThrow(/Unknown harness: gemini/);
   });
 
   test("tt install rejects conflicting skill link modes", async () => {
@@ -2478,11 +2535,12 @@ describe("tt notes", () => {
     expect(out).toContain(".agents/skills/rooms");
   });
 
-  test("tt uninstall antigravity --print leaves the shared skill", async () => {
+  test("tt uninstall antigravity --print never touches the shared skill", async () => {
     const out = await captureStdout(["uninstall", "antigravity", "--print"]);
 
+    // agy has its own skill folder, so the shared one is neither removed nor mentioned.
     expect(out).not.toContain("remove shared agents skill");
-    expect(out).toContain("Left ~/.agents/skills/rooms");
+    expect(out).not.toContain(".agents/skills/rooms");
   });
 
   test("tt notes with unknown subcommand surfaces an error", async () => {
@@ -2723,14 +2781,14 @@ describe("tt msg", () => {
       captureStdout([
         "msg",
         "send",
-        "gemini",
+        "agy",
         "hello",
         "--agent",
         "human:sender",
         "--path",
         project
       ])
-    ).rejects.toThrow(/No active room member matches 'gemini'/);
+    ).rejects.toThrow(/No active room member matches 'agy'/);
 
     await expect(
       captureStdout([
@@ -2936,7 +2994,7 @@ describe("tt msg", () => {
     const roomId = seedCliRoomMembers(project, [
       { agent_id: "human:receiver", display_name: "receiver" },
       { agent_id: "codex:sender", display_name: "codex" },
-      { agent_id: "gemini:sender", display_name: "gemini" }
+      { agent_id: "agy:sender", display_name: "agy" }
     ]);
 
     const recvPromise = captureStdout([
@@ -2954,7 +3012,7 @@ describe("tt msg", () => {
       "--json"
     ]);
     setTimeout(() => {
-      sendCliTestMessage(roomId, "gemini:sender", "human:receiver", "ignore");
+      sendCliTestMessage(roomId, "agy:sender", "human:receiver", "ignore");
       sendCliTestMessage(roomId, "codex:sender", "human:receiver", "include");
     }, 25);
 

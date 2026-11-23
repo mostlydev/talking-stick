@@ -1,6 +1,5 @@
 import { describe, expect, test } from "vitest";
 import {
-  FILE_SKILL_HARNESSES,
   HARNESS_ALIASES,
   HARNESS_CLI_HARNESSES,
   HARNESS_COMMAND_MAPPING,
@@ -14,14 +13,6 @@ import {
 describe("harness model drift guard", () => {
   test("SUPPORTED_HARNESSES is derived from the skill model map", () => {
     expect(SUPPORTED_HARNESSES).toEqual(Object.keys(HARNESS_SKILL_MODELS));
-  });
-
-  test("file skill harnesses match non-deprecated models", () => {
-    const expected = SUPPORTED_HARNESSES.filter(
-      (harness) => skillLoadingModel(harness) !== "deprecated"
-    );
-
-    expect(FILE_SKILL_HARNESSES).toEqual(expected);
   });
 
   test("command mapping covers every declared command label", () => {

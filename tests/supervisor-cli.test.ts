@@ -42,7 +42,7 @@ function setup() {
     fs.rmSync(root, { recursive: true, force: true });
   });
   // Run as a plain shell would: no harness in the environment, so the actor is human:<user>.
-  for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "GEMINI_CLI", "OPENCODE", "TT_HARNESS_AGENT_ID"]) vi.stubEnv(key, "");
+  for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "OPENCODE", "TT_HARNESS_AGENT_ID"]) vi.stubEnv(key, "");
   cleanup.push(() => { vi.unstubAllEnvs(); });
   const output: string[] = [];
   const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
@@ -81,7 +81,7 @@ describe("tt supervisor add", () => {
   });
 
   test.each([
-    [{ harness: "gemini" }, "--harness must be"],
+    [{ harness: "aider" }, "--harness must be"],
     [{ harness: "claude", cwd: "relative" }, "--cwd must be"],
     [{ harness: "claude", "permission-mode": "bogus" }, "must be default"],
     [{ harness: "codex" }, "needs --sandbox"],

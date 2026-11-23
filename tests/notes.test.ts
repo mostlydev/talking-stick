@@ -66,7 +66,7 @@ describe("addNote", () => {
 
     expect(() =>
       harness.service.addNote({
-        agent_id: "gemini:intruder",
+        agent_id: "agy:intruder",
         room_id: join.room_id,
         body: "I should not be able to post."
       })

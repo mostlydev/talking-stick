@@ -2,10 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  FILE_SKILL_HARNESSES,
   HARNESS_SKILL_MODELS,
   SUPPORTED_HARNESSES,
-  type FileSkillHarness,
   type HarnessId,
   type SkillLoadingModel
 } from "./harness-model.js";
@@ -20,6 +18,7 @@ import {
 } from "./managed-content.js";
 import {
   MissingHarnessError,
+  detectHarness,
   resolveHarnessConfigDir,
   skipAction,
   type InstallAction,
@@ -42,8 +41,6 @@ export const LEGACY_SKILL_RENAMES: ReadonlyArray<readonly [legacy: string, curre
   ["talking-stick-rooms", "rooms-oversee"]
 ];
 export const LEGACY_SKILL_NAMES: readonly string[] = LEGACY_SKILL_RENAMES.map(([legacy]) => legacy);
-export { FILE_SKILL_HARNESSES } from "./harness-model.js";
-export type { FileSkillHarness } from "./harness-model.js";
 
 export interface SkillInstallOptions extends InstallOptions {
   skillName?: string;
@@ -56,7 +53,7 @@ export interface SkillInstallOptions extends InstallOptions {
 }
 
 export interface SkillSyncTargetResult {
-  harness: FileSkillHarness;
+  harness: HarnessId;
   targetPath: string;
   status: "missing" | "current" | "updated" | "update_available" | "failed";
   message: string;
@@ -88,6 +85,19 @@ export function resolveSharedAgentsSkillsDir(
   return path.join(homeDir, ".agents", "skills");
 }
 
+/**
+ * agy creates ~/.gemini/config only when it first needs it, so a fresh install
+ * with agy on PATH may create it, as its hooks install does.
+ */
+function mayCreateConfigDir(harness: HarnessId, options: SkillInstallOptions): boolean {
+  return harness === "antigravity" && detectHarness(harness, options).detected;
+}
+
+/** ~/.gemini, where agy keeps its config folder and its older skill folders. */
+function resolveAgyLegacyHome(options: SkillInstallOptions): string {
+  return path.dirname(resolveHarnessConfigDir("antigravity", options));
+}
+
 export function resolveSharedSkillTargetPath(
   options: SkillInstallOptions = {}
 ): string {
@@ -102,7 +112,7 @@ export function skillLoadingModel(harness: HarnessId): SkillLoadingModel {
 }
 
 export function resolvePrimarySkillTargetPath(
-  harness: FileSkillHarness,
+  harness: HarnessId,
   options: SkillInstallOptions = {}
 ): string {
   const model = skillLoadingModel(harness);
@@ -131,8 +141,13 @@ export function resolveDuplicateSkillTargetPaths(
   const skillName = options.skillName ?? DEFAULT_SKILL_NAME;
   switch (harness) {
     case "claude-code":
-    case "antigravity":
       return [];
+    case "antigravity":
+      // Older agy releases read these; a managed link left there shows the skill twice.
+      return [
+        path.join(resolveAgyLegacyHome(options), "skills", skillName),
+        path.join(resolveAgyLegacyHome(options), "antigravity-cli", "skills", skillName)
+      ];
     case "codex":
       return [resolveSkillTargetPath("codex", options)];
     case "grok":
@@ -142,15 +157,13 @@ export function resolveDuplicateSkillTargetPaths(
         resolveSkillTargetPath("opencode", options),
         resolveLegacyOpencodeSkillTargetPath(options)
       ];
-    case "gemini":
-      return [path.join(resolveHarnessConfigDir("gemini", options), "skills", skillName)];
     default:
       throw new Error(`Unknown duplicate skill cleanup harness: ${harness satisfies never}`);
   }
 }
 
 export function resolveSkillTargetPath(
-  harness: Exclude<HarnessId, "gemini">,
+  harness: HarnessId,
   options: SkillInstallOptions = {}
 ): string {
   const homeDir = options.homeDir ?? process.env.HOME ?? "";
@@ -161,7 +174,11 @@ export function resolveSkillTargetPath(
     case "codex":
       return path.join(homeDir, ".codex", "skills", options.skillName ?? DEFAULT_SKILL_NAME);
     case "antigravity":
-      return resolveSharedSkillTargetPath(options);
+      return path.join(
+        resolveHarnessConfigDir("antigravity", options),
+        "skills",
+        options.skillName ?? DEFAULT_SKILL_NAME
+      );
     case "grok":
       return path.join(
         resolveHarnessConfigDir("grok", options),
@@ -189,21 +206,11 @@ export function planSkillInstall(
 
   ensureSkillSourceExists(sourcePath);
 
-  if (harness === "gemini") {
-    return skipAction(
-      harness,
-      `Gemini CLI skill install is deprecated; use tt install antigravity. Cleanup will remove ${path.join(
-        resolveHarnessConfigDir("gemini", options),
-        "skills",
-        skillName
-      )} when it is a Talking Stick-managed symlink.`
-    );
-  }
-
   const targetPath = resolvePrimarySkillTargetPath(harness, options);
   const harnessRootPath =
     skillLoadingModel(harness) === "shared" ||
-    skillLoadingModel(harness) === "shared+proprietary"
+    skillLoadingModel(harness) === "shared+proprietary" ||
+    mayCreateConfigDir(harness, options)
       ? undefined
       : resolveHarnessConfigDir(harness, options);
   const pathExists = options.pathExists ?? fs.existsSync;
@@ -238,23 +245,6 @@ export function planSkillUninstall(
 ): InstallAction {
   const skillName = options.skillName ?? DEFAULT_SKILL_NAME;
 
-  if (harness === "antigravity") {
-    return skipAction(
-      harness,
-      `shared skill left installed: ${resolveSharedSkillTargetPath(options)}`
-    );
-  }
-
-  if (harness === "gemini") {
-    return {
-      kind: "exec",
-      harness,
-      command: "gemini",
-      args: ["skills", "uninstall", skillName, "--scope", "user"],
-      description: `gemini skills uninstall ${skillName} --scope user`
-    };
-  }
-
   const targetPath = resolveSkillTargetPath(harness, options);
   const harnessRootPath = resolveHarnessConfigDir(harness, options);
   const pathExists = options.pathExists ?? fs.existsSync;
@@ -277,7 +267,7 @@ export function planSharedSkillUninstall(
   const targetPath = resolveSharedSkillTargetPath(options);
   return {
     kind: "file-patch",
-    harness: "antigravity",
+    harness: "codex",
     filePath: targetPath,
     description: `remove shared agents skill ${targetPath}`,
     operation: "uninstall",
@@ -340,7 +330,7 @@ export function migrateLegacySkillInstalls(options: LegacySkillMigrationOptions 
     // harness's primary location, so an install that only exists in a
     // harness's own folder keeps working after the rename.
     const locations = new Map<string, string>();
-    for (const harness of FILE_SKILL_HARNESSES) {
+    for (const harness of SUPPORTED_HARNESSES) {
       const newPath = path.resolve(resolvePrimarySkillTargetPath(harness, { ...options, skillName: newName }));
       const legacyPaths = [
         resolvePrimarySkillTargetPath(harness, { ...options, skillName: legacyName }),
@@ -516,8 +506,12 @@ export function removeDuplicateSkillInstalls(
       continue;
     }
 
+    // A duplicate is the only copy a harness has until its own location holds
+    // the skill, so it stays when that install was skipped, refused, or failed.
+    const primaryPath = resolvePrimarySkillTargetPath(harness, options);
+    const primary = { path: primaryPath, holdsSkill: holdsBundledSkill(primaryPath, sourcePath, options) };
     for (const targetPath of targets) {
-      const result = cleanupDuplicateSkillTarget(harness, targetPath, sourcePath);
+      const result = cleanupDuplicateSkillTarget(harness, targetPath, sourcePath, primary);
       results.push(result);
       appendSkillCleanupAudit(options, result, targetPath);
     }
@@ -538,10 +532,25 @@ function dedupePaths(paths: string[]): string[] {
   return result;
 }
 
+/** Whether a location holds this skill: a link to it, or a copy of it or of what was recorded there. */
+function holdsBundledSkill(targetPath: string, sourcePath: string, options: SkillInstallOptions): boolean {
+  try {
+    const stat = fs.lstatSync(targetPath, { throwIfNoEntry: false });
+    if (!stat) return false;
+    if (stat.isSymbolicLink()) return fs.realpathSync(targetPath) === fs.realpathSync(sourcePath);
+    if (!stat.isDirectory()) return false;
+    const digest = digestDirectory(targetPath);
+    return digest === digestDirectory(sourcePath) || digest === getManagedContent(targetPath, options)?.digest;
+  } catch {
+    return false;
+  }
+}
+
 function cleanupDuplicateSkillTarget(
   harness: HarnessId,
   targetPath: string,
-  sourcePath: string
+  sourcePath: string,
+  primary: { path: string; holdsSkill: boolean }
 ): CleanupResult {
   try {
     const stat = fs.lstatSync(targetPath);
@@ -561,6 +570,15 @@ function cleanupDuplicateSkillTarget(
         harness,
         action: "preserved",
         message: `${targetPath} points at ${resolvedCurrentTarget}; left in place.`,
+        target_type: "skill"
+      };
+    }
+
+    if (!primary.holdsSkill) {
+      return {
+        harness,
+        action: "preserved",
+        message: `${targetPath} left in place: ${primary.path} does not hold the skill yet.`,
         target_type: "skill"
       };
     }
@@ -608,10 +626,10 @@ function appendSkillCleanupAudit(
   });
 }
 
-function dedupeSyncTargets(options: SkillInstallOptions): FileSkillHarness[] {
+function dedupeSyncTargets(options: SkillInstallOptions): HarnessId[] {
   const seen = new Set<string>();
-  const targets: FileSkillHarness[] = [];
-  for (const harness of FILE_SKILL_HARNESSES) {
+  const targets: HarnessId[] = [];
+  for (const harness of SUPPORTED_HARNESSES) {
     const targetPath = resolvePrimarySkillTargetPath(harness, options);
     const key = path.resolve(targetPath);
     if (seen.has(key)) continue;
@@ -663,7 +681,7 @@ function installSkillDirectory(
 }
 
 function syncInstalledFileSkill(
-  harness: FileSkillHarness,
+  harness: HarnessId,
   sourcePath: string,
   sourceDigest: string,
   options: SkillInstallOptions
@@ -781,7 +799,7 @@ const LEGACY_BUNDLED_SKILL_DIGEST =
   "7a89a8f72ef8377ddfc3eb67fb274af237275515e576f24272e6178c163591ed";
 
 function skillUpdateAvailable(
-  harness: FileSkillHarness,
+  harness: HarnessId,
   targetPath: string,
   sourceDigest: string,
   options: SkillInstallOptions
