@@ -178,6 +178,34 @@ describe("moving skills to their new names", () => {
     expect(fs.realpathSync(claude("talking-stick"))).toBe(fs.realpathSync(bundled("talking-stick")));
   });
 
+  test("even an old dangling link of ours at the new name is left alone, with the old install kept", () => {
+    const { root, options, claude } = home();
+    fs.symlinkSync(bundled("talking-stick"), claude("talking-stick"), "dir");
+    const staleRelease = path.join(root, ".local", "share", "talking-stick", "releases", "0.39.0-gone", "skills", "rooms");
+    fs.symlinkSync(staleRelease, claude("rooms"), "dir");
+    expect(run(options)).toMatchObject([{ status: "kept_occupied" }]);
+    expect(fs.readlinkSync(claude("rooms"))).toBe(staleRelease);
+    expect(fs.realpathSync(claude("talking-stick"))).toBe(fs.realpathSync(bundled("talking-stick")));
+  });
+
+  test("a copy reserves its folder exclusively, so an empty folder that appears first wins", () => {
+    const { options, claude } = home();
+    fs.cpSync(bundled("talking-stick"), claude("talking-stick"), { recursive: true });
+    recordManagedContent(claude("talking-stick"), "skill-copy", digestDirectory(claude("talking-stick")), options);
+    const real = fs.mkdirSync;
+    const spy = vi.spyOn(fs, "mkdirSync").mockImplementation(((target: fs.PathLike, mode?: fs.MakeDirectoryOptions) => {
+      if (String(target) === claude("rooms") && !mode) real(claude("rooms"));
+      return real(target, mode);
+    }) as typeof fs.mkdirSync);
+    try {
+      expect(run(options)).toMatchObject([{ status: "kept_occupied" }]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.readdirSync(claude("rooms"))).toEqual([]);
+    expect(fs.existsSync(path.join(claude("talking-stick"), "SKILL.md"))).toBe(true);
+  });
+
   test("a new link can point through the installer's current release", () => {
     const { root, options, claude } = home();
     const current = path.join(root, "share", "current", "skills");

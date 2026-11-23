@@ -379,11 +379,11 @@ function migrateLegacySkillPath(input: {
     if (!legacyIsOurs(legacyPath, legacy, legacyName, input.known, recorded, input.roots)) {
       return kept("kept_customized", `${legacyPath} is customized or not from Shrooms; left in place. The skill is now ${newName}.`);
     }
-    const state = newSkillState(newPath, input.newBundled, input.linkSource, newName, input.roots, options);
+    const state = newSkillState(newPath, input.newBundled, input.linkSource, options);
     if (state === "occupied") {
       return kept("kept_occupied", `${newPath} already holds something else; left ${legacyPath} in place.`);
     }
-    if (state !== "ours" && !createNewSkill(newPath, state, legacy.isSymbolicLink(), input.newBundled, input.linkSource, options)) {
+    if (state === "absent" && !createNewSkill(newPath, legacy.isSymbolicLink(), input.newBundled, input.linkSource, options)) {
       return kept("kept_occupied", `${newPath} appeared while moving ${legacyPath}; left the old install in place.`);
     }
     removeInstalledSkill(legacyPath);
@@ -443,17 +443,14 @@ function isShroomsSkillLocation(destination: string, skillName: string, roots: s
 }
 
 function newSkillState(
-  newPath: string, newBundled: string, linkSource: string, newName: string, roots: string[], options: SkillInstallOptions
-): "absent" | "ours" | "stale" | "occupied" {
+  newPath: string, newBundled: string, linkSource: string, options: SkillInstallOptions
+): "absent" | "ours" | "occupied" {
   const stat = fs.lstatSync(newPath, { throwIfNoEntry: false });
   if (!stat) return "absent";
   if (stat.isSymbolicLink()) {
     const destination = path.resolve(path.dirname(newPath), fs.readlinkSync(newPath));
-    if (sameRealPath(destination, linkSource) || sameRealPath(destination, newBundled)) return "ours";
-    if (!isShroomsSkillLocation(destination, newName, roots)) return "occupied";
-    // A known location that's gone or unedited since it was recorded is ours to refresh.
-    return !fs.existsSync(destination) || getManagedContent(newPath, options)?.digest === digestDirectory(destination)
-      ? "stale" : "occupied";
+    // Anything else there, even an old link of ours, is left for the person to sort out.
+    return sameRealPath(destination, linkSource) || sameRealPath(destination, newBundled) ? "ours" : "occupied";
   }
   if (stat.isDirectory()) {
     const digest = digestDirectory(newPath);
@@ -463,36 +460,26 @@ function newSkillState(
 }
 
 /**
- * Creates the new skill without replacing anything that appeared since the
- * check. A missing path gets a link (which fails if the path now exists) or a
- * copy renamed into place; our own stale link is swapped for a fresh one only
- * while it is still a link. Returns false when something else got there first.
+ * Creates the new skill only where nothing exists yet. A link is made in
+ * place, and a copy first reserves its directory with an exclusive mkdir; both
+ * fail if anything appeared at the path since the check. Returns false then.
  */
 function createNewSkill(
-  newPath: string, state: "absent" | "stale", asLink: boolean, newBundled: string, linkSource: string, options: SkillInstallOptions
+  newPath: string, asLink: boolean, newBundled: string, linkSource: string, options: SkillInstallOptions
 ): boolean {
   fs.mkdirSync(path.dirname(newPath), { recursive: true });
-  const linkType = process.platform === "win32" ? "junction" : "dir";
-  const link = asLink || state === "stale";
-  const temporary = `${newPath}.tt-${process.pid}.tmp`;
   try {
-    if (state === "absent" && link) {
-      fs.symlinkSync(linkSource, newPath, linkType);
+    if (asLink) {
+      fs.symlinkSync(linkSource, newPath, process.platform === "win32" ? "junction" : "dir");
     } else {
-      fs.rmSync(temporary, { recursive: true, force: true });
-      if (link) fs.symlinkSync(linkSource, temporary, linkType);
-      else fs.cpSync(newBundled, temporary, { recursive: true });
-      const current = fs.lstatSync(newPath, { throwIfNoEntry: false });
-      if (state === "absent" ? current !== undefined : !current?.isSymbolicLink()) return false;
-      fs.renameSync(temporary, newPath);
+      fs.mkdirSync(newPath);
+      fs.cpSync(newBundled, newPath, { recursive: true });
     }
   } catch (error) {
-    if (["EEXIST", "ENOTEMPTY", "EISDIR", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
   }
-  recordManagedContent(newPath, "skill-copy", digestDirectory(link ? linkSource : newBundled), options);
+  recordManagedContent(newPath, "skill-copy", digestDirectory(asLink ? linkSource : newBundled), options);
   return true;
 }
 
