@@ -1,14 +1,14 @@
 # Managed headless supervisor
 
 The optional supervisor is a CLI preview for trusted local use on macOS and Linux. It starts
-and keeps its own Claude and Codex workers running under your harness settings and subscription
+and keeps its own Claude, Codex, and Antigravity workers running under your harness settings and subscription
 logins. Terminal agents and `tt up` use their existing pane workflows. The supervisor owns only
 the processes it starts. Its process groups provide lifecycle control, and permissions come
 from the harness settings.
 
 ## Start and inspect a worker
 
-1. Sign in to Claude Code or Codex with your subscription. Install its Talking Stick skill
+1. Sign in to your harness with your account. Install its `rooms` skill
    with `tt install claude-code` or `tt install codex`. For a Claude worker, also allow
    `Bash(tt:*)` in your Claude settings, plus a read of the bundled skill that the worker's start
    prompt names. For a default install, allow
@@ -61,7 +61,8 @@ held:
 | `deny_undelivered` | Check `tt supervisor approvals` and `tt supervisor logs`, then resume the worker. |
 | `start_failed` | If the executable could not be found, correct PATH or re-add the worker with an explicit executable (see below). |
 | `crash_loop` | Check `tt supervisor logs`, fix the cause, then resume the worker. |
-| `resume_failed` or `bootstrap_failed` | Use `tt supervisor restart <worker> --fresh` if you want to start a new conversation. |
+| `resume_failed` | Use `tt supervisor restart <worker> --fresh` to start a new conversation. |
+| `bootstrap_failed` | Check `tt supervisor approvals` and the worker’s permission settings. Once the worker can join, run `tt supervisor restart <worker> --fresh`. |
 
 Permission prompts are denied automatically and recorded. See
 [Permissions and environment](#permissions-and-environment) for worker settings, and
@@ -115,6 +116,7 @@ Workers use your own harness settings and logins, with these per-worker options 
 | --- | --- |
 | Claude | `--permission-mode default` or `plan`, `--permission-prompt-tool stdio`, and your settings (`--setting-sources user,project,local`). Choose `bypassPermissions` explicitly for unrestricted tool use. |
 | Codex | An explicit sandbox (`read-only`, `workspace-write`, or `danger-full-access`) and an approval policy (`on-request`, `untrusted` or `never`) on each thread, in your `CODEX_HOME`. |
+| Antigravity | `agy acp --stdio` with your Antigravity settings. Choose `--permission-mode bypassPermissions` explicitly to auto-approve tools. |
 | Grok | `grok agent --no-leader stdio` in your `GROK_HOME`. No leader attach, no plugin dir. |
 
 A worker spec stores environment references only: names passed through from the supervisor's
@@ -209,6 +211,31 @@ tt supervisor run
 
 The PATH must include `tt` and any tools the worker needs. A Node-linked development install
 also needs Node; a standalone tt binary does not. No shell profile is sourced by launchd.
+
+### Antigravity
+
+Install Antigravity CLI 1.5.0 or newer and sign in with your Google account in `agy`.
+Run `tt install agy` for the skill and hooks. Add a worker with:
+
+```sh
+tt supervisor add agy-worker --harness agy --cwd "$PWD"
+```
+
+The supervisor starts `agy acp --stdio`, prompts a local conversation, and resumes that
+same conversation on restart. The worker appears in `tt chat` under `/who` and in `/rooms`.
+If `agy` is outside the service's PATH, add the worker with
+`--env AGY_EXECUTABLE=literal:/absolute/path/to/agy`.
+
+By default, Antigravity's own permission rules apply. Add a `command(tt)` allow rule
+in Antigravity's CLI settings so the worker can join, read room instructions, and
+reply. Allow reads of the bundled `rooms/SKILL.md` if Antigravity asks for them.
+The supervisor declines any remaining prompt. Use
+`tt supervisor approvals` to see what was declined. For a worker you want to run
+with unrestricted tool use, add `--permission-mode bypassPermissions` explicitly.
+
+The worker uses your cached Google login. API-key or Google Cloud provider
+settings are refused. See [Antigravity ACP](https://antigravity.google/docs/cli/acp)
+and [Antigravity permissions](https://antigravity.google/docs/permissions?tab=cli).
 
 ### Grok
 
@@ -529,7 +556,7 @@ the required OS access. Mutations are audited under the caller's detected identi
 refuse `--agent`. Use `status`, `approvals`, and `logs` to inspect the supervisor.
 `approve`, `deny`, `interrupt`, and `reconcile` were removed.
 
-Codex and Claude are available on macOS and Linux. A Grok worker is attempted there. Without a
+Codex, Claude, and Antigravity workers are available on macOS and Linux. A Grok worker is attempted there. Without a
 login in its home, `session/new` fails and the worker is held `crash_loop` (see "Grok").
 A Grok session that was already recorded is held `resume_failed` until resume is proven. Plugin install requests are not implemented.
 

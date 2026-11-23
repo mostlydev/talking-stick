@@ -311,7 +311,7 @@ export class Supervisor {
     const inputId = this.newId();
     if (!this.store.claimBootstrap(workerId, session, inputId, handle.generation, this.at())) return;
     const text = `Use the rooms skill (${resolveBundledSkillPath()}/SKILL.md). ` +
-      "Join the room for your current working directory with `tt join --json` and read `tt instructions show --json`. " +
+      "Run these as separate commands: `tt join --json`, then `tt instructions show --json`. " +
       "You have no task yet: use `tt standby --json`, or one `tt wait --park --json` if it cannot self-wake. " +
       "Do not claim the stick or start work; wait for the operator in tt chat.";
     void this.dispatchInput(handle, workerId, inputId, text, "start_turn").then((result) => {
@@ -320,6 +320,16 @@ export class Supervisor {
       // Never turn a failed bootstrap into an unjournalled retry.
       if (this.store.db.open) this.store.hold(workerId, "bootstrap_failed", this.at());
     });
+  }
+
+  private hasEnrolled(workerId: string, handle: WorkerHandle): boolean {
+    const session = handle.sessionId();
+    const token = this.deliveryTokens.get(workerId);
+    const worker = this.store.worker(workerId);
+    if (!this.bridge || !session || !token || !worker) return false;
+    const spec = JSON.parse(worker.spec_json) as WorkerSpec;
+    return this.bridge.isEnrolled({ harness: spec.harness, session_id: session, pid: handle.pid,
+      process_started_at: handle.processStartedAt, endpoint_address: token.address });
   }
 
   /** Stops a generation; a failed stop is audited and the handle kept, never a daemon crash. */
@@ -362,9 +372,10 @@ export class Supervisor {
         this.store.completeTurn(workerId, generation, event.native_turn_id, event.outcome, at);
         if (this.activeTurn.get(workerId) === event.native_turn_id) this.activeTurn.delete(workerId);
         report("idle", { last_model_activity_at: at });
-        if (event.outcome !== "success" && this.store.db.prepare(`SELECT 1 FROM inputs
+        if (this.store.db.prepare(`SELECT 1 FROM inputs
           WHERE worker_id = ? AND generation = ? AND native_turn_id = ? AND source = 'bootstrap'`)
-          .get(workerId, generation, event.native_turn_id)) {
+          .get(workerId, generation, event.native_turn_id) &&
+          (event.outcome !== "success" || !this.hasEnrolled(workerId, handle))) {
           this.store.hold(workerId, "bootstrap_failed", at);
         }
         this.drain(workerId);
