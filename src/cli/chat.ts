@@ -159,6 +159,11 @@ export interface ChatConsoleState {
   subscribed: Set<string>;
   /** Highest seq of messages addressed to this console already shown inline. */
   directed_seen: Map<string, number>;
+  /**
+   * When this console opened. It sets the history-dimming day for every room
+   * the console visits, so a room switch after midnight changes nothing.
+   */
+  opened_at?: Date;
 }
 
 export type ChatSessionExit = { kind: "quit" } | { kind: "switch"; room: PathRoom };
@@ -280,7 +285,8 @@ export async function runChatConsole(options: Omit<ChatSessionOptions, "console"
     start_seq: options.runtime.commands.globalEventSeq(),
     drafts: new Map(),
     subscribed: new Set(),
-    directed_seen: new Map()
+    directed_seen: new Map(),
+    opened_at: new Date()
   };
   let target: { context_path: string; room_id?: string } = { context_path: options.context_path, room_id: options.room_id };
   try {
@@ -845,6 +851,9 @@ export async function runChatSession(
   let closed = false;
   let lastPresenceRefresh = 0;
   let namesSignature = "";
+  // Fixed for this console's life, across room switches, so midnight never
+  // greys the live conversation. A standalone session anchors to its own start.
+  const consoleOpenedAt = consoleState?.opened_at ?? new Date();
   let historyBefore: string | undefined;
   let historyCursor = 0;
   let historyExhausted = false;
@@ -920,6 +929,7 @@ export async function runChatSession(
     color_mode: terminalColorMode(),
     show_turn_events: showTurnEvents,
     now: new Date(),
+    opened_at: consoleOpenedAt,
     history_before: historyBefore,
     delivery_icon: deliveryIcon,
     pin_link: chatLinks?.url,

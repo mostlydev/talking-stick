@@ -238,6 +238,20 @@ describe("transcript scrolling", () => {
     expect(next).not.toContain("── Today ──");
   });
 
+  test("a console that stays open past midnight keeps the live conversation bright", () => {
+    const transcript = new ChatTranscript();
+    transcript.appendEvent({ ...message("loaded from the day before"), created_at: new Date(2026, 8, 14, 12).toISOString() });
+    transcript.appendEvent({ ...message("live before midnight"), created_at: new Date(2026, 8, 15, 23, 50).toISOString() });
+    transcript.appendEvent({ ...message("live after midnight"), created_at: new Date(2026, 8, 16, 0, 10).toISOString() });
+    const rows = transcript.viewport(30, 100, { ...context, color: true,
+      opened_at: new Date(2026, 8, 15, 14), now: new Date(2026, 8, 16, 0, 20) });
+    const dim = "\u001b[2;38;5;244m";
+    expect(rows.find((row) => row.includes("loaded from the day before"))).toContain(dim);
+    expect(rows.find((row) => row.includes("live before midnight"))).not.toContain(dim);
+    expect(rows.find((row) => row.includes("live after midnight"))).not.toContain(dim);
+    expect(rows.join("\n")).not.toContain("Earlier activity · Yesterday");
+  });
+
   function filled(count: number) {
     const transcript = new ChatTranscript();
     for (let index = 1; index <= count; index++) {

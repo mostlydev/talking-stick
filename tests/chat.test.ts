@@ -25,7 +25,7 @@ import {
   resolveChatRecipients,
   sanitizeChatText
 } from "../src/cli/chat-format.js";
-import { chatInlineEnabled, chatTerminalCapable, createChatIdentity, describeChatDelivery, runChatConsole, runChatSession, uniqueRoomNames } from "../src/cli/chat.js";
+import { chatInlineEnabled, chatTerminalCapable, createChatIdentity, describeChatDelivery, runChatConsole, runChatSession, uniqueRoomNames, type ChatConsoleState } from "../src/cli/chat.js";
 import { formatRoomStrip } from "../src/cli/chat-format.js";
 import { chatThemeName, setChatTheme } from "../src/cli/theme.js";
 import { parseCommand } from "../src/cli/parser.js";
@@ -2289,6 +2289,41 @@ test.each([40, 80])("chat opens a blocker and sends the selected answer at %s co
     const message = service.getRecentRoomEvents({ room_id, limit: 20 })
       .find(event => event.payload?.resolves === blocker.blocker_id);
     expect(message?.payload?.body).toBe("Ship the reviewed build.");
+  } finally {
+    input.write("/quit\r");
+    await session;
+  }
+});
+
+test("a room the console revisits after midnight keeps the console's own history cutoff", async () => {
+  // The console opened four days ago and has been running since. A message from
+  // three days ago is part of its live conversation, so it must not be dimmed
+  // when a later room switch starts a new session.
+  const day = 24 * 60 * 60 * 1000;
+  let clock = new Date(Date.now() - 3 * day);
+  const { root, service } = setupService({ now: () => clock });
+  const agent_id = "codex:worker";
+  const { room_id } = service.joinPath({ agent_id, context_path: root });
+  service.sendMessage({ room_id, agent_id, body: "Said before midnight, still live." });
+  clock = new Date();
+  const input = new PassThrough();
+  let output = "";
+  const stream = Object.assign(new PassThrough(), { columns: 100, rows: 24 });
+  stream.on("data", (chunk) => { output += chunk.toString(); });
+  const console: ChatConsoleState = {
+    anchor: "", visited: new Set(), last_seen: new Map(), start_seq: 0, drafts: new Map(),
+    subscribed: new Set(), directed_seen: new Map(), opened_at: new Date(Date.now() - 4 * day)
+  };
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output: stream, terminal: true, inline: true,
+    color: true, history: 10, show_turn_events: false, poll_ms: 5, console
+  });
+  try {
+    await until(() => output.includes("Said before midnight, still live."));
+    const line = output.split("\n").find((row) => row.includes("Said before midnight, still live."))!;
+    // Dimmed history starts with the faint attribute, in any color mode.
+    expect(line).not.toContain("\u001b[2;");
   } finally {
     input.write("/quit\r");
     await session;
