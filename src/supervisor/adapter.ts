@@ -17,7 +17,7 @@ export interface Capabilities {
 export type WorkerPermissions =
   | { harness: "claude"; mode: "default" | "plan" | "bypassPermissions" }
   | { harness: "codex"; sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "untrusted" | "never" }
-  | { harness: "grok" }
+  | { harness: "grok"; mode?: "default" | "bypassPermissions" }
   | { harness: "antigravity"; mode: "default" | "bypassPermissions" };
 
 /**

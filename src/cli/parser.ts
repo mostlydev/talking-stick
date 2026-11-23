@@ -35,6 +35,7 @@ const BOOLEAN_FLAGS = new Set([
   "project",
   "quiet",
   "replace",
+  "restricted",
   "save",
   "room",
   "shared",

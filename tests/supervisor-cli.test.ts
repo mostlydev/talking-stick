@@ -81,19 +81,40 @@ describe("tt supervisor add", () => {
   });
 
   test.each([
+    ["claude", { harness: "claude", mode: "bypassPermissions" }, { harness: "claude", mode: "default" }],
+    ["codex", { harness: "codex", sandbox: "danger-full-access", approval: "never" },
+      { harness: "codex", sandbox: "workspace-write", approval: "on-request" }],
+    ["grok", { harness: "grok", mode: "bypassPermissions" }, { harness: "grok", mode: "default" }],
+    ["agy", { harness: "antigravity", mode: "bypassPermissions" }, { harness: "antigravity", mode: "default" }]
+  ] as const)("defaults new %s workers to bypass and supports --restricted", async (harness, bypass, restricted) => {
+    const { cwd, run, store } = setup();
+    const added = await run(["add", "bypass"], { harness, cwd });
+    expect(added).toMatchObject({ unrestricted: true });
+    expect(await run(["add", "restricted"], { harness, cwd, restricted: true })).not.toHaveProperty("unrestricted");
+    expect(JSON.parse(store().worker("bypass")!.spec_json).permissions).toEqual(bypass);
+    expect(JSON.parse(store().worker("restricted")!.spec_json).permissions).toEqual(restricted);
+    expect((await run(["status"])).workers.find((worker: { worker_id: string }) => worker.worker_id === "bypass"))
+      .toMatchObject({ unrestricted: true });
+  });
+
+  test.each([
     [{ harness: "aider" }, "--harness must be"],
     [{ harness: "claude", cwd: "relative" }, "--cwd must be"],
     [{ harness: "claude", "permission-mode": "bogus" }, "must be default"],
-    [{ harness: "codex" }, "needs --sandbox"],
+    [{ harness: "claude", "permission-mode": true }, "--permission-mode needs a value"],
+    [{ harness: "codex", sandbox: true }, "--sandbox needs a value"],
+    [{ harness: "codex", approval: true }, "--approval needs a value"],
+    [{ harness: "codex", approval: "never" }, "needs --sandbox"],
     [{ harness: "codex", sandbox: "bogus", approval: "never" }, "needs --sandbox"],
-    [{ harness: "grok", "permission-mode": "plan" }, "takes no permission settings"],
+    [{ harness: "grok", "permission-mode": "plan" }, "takes --permission-mode"],
+    [{ harness: "agy", restricted: true, "permission-mode": "bypassPermissions" }, "cannot be combined"],
     [{ harness: "claude", env: "TT_SUPERVISOR_TOKEN" }, "set by the supervisor"],
     [{ harness: "claude", env: "SECRET=hunter2" }, "takes literal:VALUE"],
     [{ harness: "claude", env: "SECRET=keychain:tt-worker" }, "takes literal:VALUE"],
     [{ harness: "grok", env: "XAI_API_KEY" }, "would run the worker on an API key"],
     [{ harness: "codex", sandbox: "workspace-write", approval: "on-request", env: "OPENAI_API_KEY=literal:x" }, "subscription login"],
     [{ harness: "claude", env: "ANTHROPIC_BASE_URL" }, "another provider"]
-  ] as Array<[Record<string, string>, string]>)("refuses %o", async (options, message) => {
+  ] as Array<[Record<string, string | true>, string]>)("refuses %o", async (options, message) => {
     const { cwd, run } = setup();
     await expect(run(["add", "w1"], { cwd, ...options })).rejects.toThrow(message);
   });
@@ -152,10 +173,11 @@ describe("controls", () => {
 
   test("status keeps its worker JSON shape and omits the chat process binding", async () => {
     const { cwd, run, store } = setup();
-    await run(["add", "w1"], { harness: "claude", cwd });
+    await run(["add", "w1"], { harness: "claude", cwd, restricted: true });
     store().recordGeneration({ worker_id: "w1", generation: 1, pid: 12, process_started_at: "process start",
       pgid: 12, session_id: "session", state: "idle", started_at: "started" });
     expect(await run(["status"])).toEqual({
+      daemon: "stopped",
       workers: [{
         worker_id: "w1", harness: "claude", cwd, desired: "running", desired_version: 1,
         hold_reason: null, next_start_at: null, uncertain_inputs: 0, denied_requests: 0,

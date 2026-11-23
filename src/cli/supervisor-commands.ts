@@ -10,7 +10,7 @@ import { createFileLog, runSupervisor, supervisorPaths, systemProcessLiveness } 
 import { acquireOwnerLock } from "../supervisor/daemon.js";
 import { getCurrentProcessStartedAt } from "../process-utils.js";
 import { SupervisorStore } from "../supervisor/state.js";
-import { readSupervisorWorkers } from "../supervisor/snapshot.js";
+import { hasUnrestrictedPermissions, readSupervisorDaemonStatus, readSupervisorWorkers } from "../supervisor/snapshot.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
 import { getStringOption, getStringOptions, hasOption, type ParsedCommand } from "./parser.js";
@@ -22,8 +22,9 @@ import { isModelCredential, MODEL_CREDENTIAL_MESSAGE } from "../supervisor/adapt
 
 export const SUPERVISOR_USAGE = [
   "tt supervisor status",
-  "tt supervisor add <worker> --harness claude|codex|grok|agy --cwd PATH [--model M] [--permission-mode default|plan|bypassPermissions]",
+  "tt supervisor add <worker> --harness claude|codex|grok|agy --cwd PATH [--model M] [--restricted | --permission-mode default|plan|bypassPermissions]",
   "  [--sandbox read-only|workspace-write|danger-full-access --approval on-request|untrusted|never] [--env NAME[=literal:VALUE]]",
+  "  Headless workers bypass tool prompts by default. Use --restricted for standard harness permissions.",
   "tt supervisor pause|resume|stop|remove <worker>",
   "tt supervisor restart <worker> [--fresh]",
   "tt supervisor approvals [show <approval-id>]",
@@ -52,19 +53,44 @@ function workerArg(parsed: ParsedCommand): string {
   return worker;
 }
 
+export function defaultWorkerPermissions(harness: Harness, { restricted = false } = {}): WorkerPermissions {
+  if (harness === "codex") {
+    return restricted ? { harness, sandbox: "workspace-write", approval: "on-request" }
+      : { harness, sandbox: "danger-full-access", approval: "never" };
+  }
+  return { harness, mode: restricted ? "default" : "bypassPermissions" };
+}
+
 function parsePermissions(parsed: ParsedCommand, harness: Harness): WorkerPermissions {
-  const mode = getStringOption(parsed, "permission-mode");
+  for (const option of ["permission-mode", "sandbox", "approval"]) {
+    if (hasOption(parsed, option) && !getStringOption(parsed, option)) fail(`--${option} needs a value.`);
+  }
+  const requestedMode = getStringOption(parsed, "permission-mode");
   const sandbox = getStringOption(parsed, "sandbox");
   const approval = getStringOption(parsed, "approval");
+  const restricted = hasOption(parsed, "restricted");
+  if (restricted && (requestedMode !== undefined || sandbox !== undefined || approval !== undefined)) {
+    fail("--restricted cannot be combined with explicit permission options.");
+  }
+  if (requestedMode === undefined && sandbox === undefined && approval === undefined) {
+    return defaultWorkerPermissions(harness, { restricted });
+  }
+  const mode = requestedMode;
   if (harness === "claude") {
     if (sandbox || approval) fail("--sandbox and --approval are Codex settings.");
     if (mode !== undefined && mode !== "default" && mode !== "plan" && mode !== "bypassPermissions") {
       fail("--permission-mode must be default, plan or bypassPermissions.");
     }
-    return { harness, mode: mode ?? "default" };
+    return { harness, mode: mode ?? "bypassPermissions" };
   }
   if (harness === "codex") {
-    if (mode) fail("--permission-mode is a Claude setting.");
+    if (mode && (sandbox || approval)) fail("Choose --permission-mode or the --sandbox and --approval pair.");
+    if (!sandbox && !approval) {
+      if (mode === "default" || mode === "bypassPermissions") {
+        return defaultWorkerPermissions(harness, { restricted: mode === "default" });
+      }
+      fail("A Codex worker takes --permission-mode default or bypassPermissions.");
+    }
     if (sandbox !== "read-only" && sandbox !== "workspace-write" && sandbox !== "danger-full-access") {
       fail("A Codex worker needs --sandbox read-only, workspace-write or danger-full-access.");
     }
@@ -78,10 +104,13 @@ function parsePermissions(parsed: ParsedCommand, harness: Harness): WorkerPermis
     if (mode !== undefined && mode !== "default" && mode !== "bypassPermissions") {
       fail("An Antigravity worker needs --permission-mode default or bypassPermissions.");
     }
-    return { harness, mode: mode ?? "default" };
+    return { harness, mode: mode ?? "bypassPermissions" };
   }
-  if (mode || sandbox || approval) fail("A Grok worker takes no permission settings.");
-  return { harness };
+  if (sandbox || approval) fail("--sandbox and --approval are Codex settings.");
+  if (mode !== undefined && mode !== "default" && mode !== "bypassPermissions") {
+    fail("A Grok worker takes --permission-mode default or bypassPermissions.");
+  }
+  return { harness, mode: mode ?? "bypassPermissions" };
 }
 
 /** NAME passes the supervisor's own value through; a literal value is named explicitly and is never a secret. */
@@ -172,7 +201,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
   if (state.kind === "none" && readOnly) {
     // No supervisor state yet: an empty answer, without creating any.
     if (action === "approvals" && parsed.positionals[1] === "show") fail("No such request.");
-    const empty = { workers: [], recent_requests: [] };
+    const empty = { daemon: "stopped", workers: [], recent_requests: [] };
     printResult(parsed, action === "approvals" ? { recent_requests: [] } : empty,
       () => action === "approvals" ? "No permission requests." : "No workers.");
     return;
@@ -192,13 +221,14 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
     }
     if (action === "status" || action === "approvals") {
       const status = describeStatus(store);
-      const result = action === "approvals" ? { recent_requests: status.recent_requests } : status;
+      const result = action === "approvals" ? { recent_requests: status.recent_requests }
+        : { daemon: readSupervisorDaemonStatus(paths.lock), ...status };
       printResult(parsed, result, () => action === "approvals"
         ? (status.recent_requests.map((a) => `${a.approval_id}  ${a.worker_id}#${a.generation}  ${a.status}  ${displayText(a.tool, 80)}: ${displayText(a.summary, 500)}`)
           .join("\n") || "No permission requests.")
         : (status.workers.map((w) => `${w.worker_id}  ${w.harness}  ${w.desired}${w.hold_reason ? ` (held: ${w.hold_reason})` : ""}  ` +
             `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}` +
-            `${w.start_error ? ` · ${w.start_error} ${w.start_remedy}` : ""}` +
+            `${w.unrestricted ? " · unrestricted" : ""}${w.start_error ? ` · ${w.start_error} ${w.start_remedy}` : ""}` +
             `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}` +
             `${w.denied_requests ? `  ${w.denied_requests} denied` : ""}`).join("\n") || "No workers."));
       return;
@@ -224,8 +254,11 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
         ...(getStringOption(parsed, "model") ? { model: getStringOption(parsed, "model") } : {}),
         env };
       const row = store.addWorker(spec, actor, now());
-      printResult(parsed, { status: "added", worker: row.worker_id, desired: row.desired },
-        () => `Added ${row.worker_id}; the supervisor starts it on its next tick.`);
+      const unrestricted = hasUnrestrictedPermissions(spec.permissions);
+      printResult(parsed, { status: "added", worker: row.worker_id, desired: row.desired,
+        ...(unrestricted ? { unrestricted: true } : {}) },
+        () => `Added ${row.worker_id}; the supervisor starts it on its next tick.` +
+          (unrestricted ? " It auto-approves tools with your account's access." : ""));
       return;
     }
     if (action === "pause" || action === "resume" || action === "stop") {

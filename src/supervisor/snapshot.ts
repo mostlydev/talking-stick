@@ -1,5 +1,5 @@
 import { openSqlite, type SqliteDatabase } from "../sqlite.js";
-import type { WorkerSpec } from "./adapter.js";
+import type { WorkerPermissions, WorkerSpec } from "./adapter.js";
 import { readSupervisorOwnerLock, type ProcessLivenessReader } from "./daemon.js";
 import { inspectSupervisorState } from "./root.js";
 import { supervisorPaths, systemProcessLiveness } from "./run.js";
@@ -22,6 +22,14 @@ interface WorkerStatusRow {
   executable_error: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE" | null;
   uncertain_inputs: number;
   denied_requests: number;
+}
+
+export function hasUnrestrictedPermissions(permissions?: WorkerPermissions): boolean {
+  if (!permissions) return false;
+  if (permissions.harness === "codex") {
+    return permissions.sandbox === "danger-full-access" && permissions.approval === "never";
+  }
+  return permissions.mode === "bypassPermissions";
 }
 
 export function readSupervisorWorkers(db: SqliteDatabase) {
@@ -61,10 +69,7 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
     return {
       worker_id: row.worker_id,
       harness: spec.harness,
-      ...(((spec.permissions?.harness === "claude" || spec.permissions?.harness === "antigravity") &&
-        spec.permissions.mode === "bypassPermissions") ||
-        (spec.permissions?.harness === "codex" && spec.permissions.sandbox === "danger-full-access" && spec.permissions.approval === "never")
-        ? { unrestricted: true as const } : {}),
+      ...(hasUnrestrictedPermissions(spec.permissions) ? { unrestricted: true as const } : {}),
       cwd: spec.cwd,
       desired: row.desired,
       desired_version: row.desired_version,
@@ -99,7 +104,7 @@ export type SupervisorSnapshot =
   | { kind: "unavailable"; reason: "state" | "database" }
   | { kind: "ready"; daemon: SupervisorDaemonStatus; workers: SupervisorWorkerStatus[] };
 
-function daemonStatus(lockPath: string, liveness?: ProcessLivenessReader): SupervisorDaemonStatus {
+export function readSupervisorDaemonStatus(lockPath: string, liveness?: ProcessLivenessReader): SupervisorDaemonStatus {
   const owner = readSupervisorOwnerLock(lockPath);
   if (owner === "missing") return "stopped";
   if (owner === "unknown") return "unknown";
@@ -136,5 +141,5 @@ export function readSupervisorSnapshot(dataDir: string, options: {
   } catch {
     return { kind: "unavailable", reason: "database" };
   }
-  return { kind: "ready", daemon: daemonStatus(paths.lock, options.liveness), workers };
+  return { kind: "ready", daemon: readSupervisorDaemonStatus(paths.lock, options.liveness), workers };
 }

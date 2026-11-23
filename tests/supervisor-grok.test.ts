@@ -106,6 +106,13 @@ describe("starting a Grok worker", () => {
     expect(f.lines().some((line) => line.method === "session/prompt" || line.method === "session/resume" || line.method === "session/load")).toBe(false);
   });
 
+  test("passes native auto-approval when the worker specifies bypass", async () => {
+    const f = fixture();
+    f.spec.permissions = { harness: "grok", mode: "bypassPermissions" };
+    await f.start();
+    expect(f.lines()[0].argv).toEqual(["agent", "--no-leader", "--always-approve", "stdio"]);
+  });
+
   test("a spec's GROK_HOME wins over the user's default", async () => {
     const f = fixture("", { home: "/nonexistent/default-grok" });
     const named = path.join(f.root, "named-grok");
