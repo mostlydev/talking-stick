@@ -2350,9 +2350,9 @@ test("chat shows a pending profile notice once to a person, and neither a piped 
     return bytes;
   };
   // A chat that isn't a person's terminal (piped, or run by a harness) leaves it pending.
-  expect(await open(false)).not.toContain("Talking Stick is now Shrooms");
-  expect(await open(true)).toContain("Talking Stick is now Shrooms. Keep using `tt`.");
-  expect(await open(true)).not.toContain("Talking Stick is now Shrooms");
+  expect(await open(false)).not.toContain("Talking Stick is now shrooms");
+  expect(await open(true)).toContain("Talking Stick is now shrooms. Keep using `tt`.");
+  expect(await open(true)).not.toContain("Talking Stick is now shrooms");
 });
 
 test("chat announces a blocker another member raises or withdraws, but not one already open", async () => {

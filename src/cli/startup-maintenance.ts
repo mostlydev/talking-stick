@@ -42,7 +42,7 @@ export async function runStartupMaintenance(
     // so the sync below finds them. A kept old install is mentioned once.
     for (const result of migrateLegacySkillInstalls({ env, homeDir: env.HOME })) {
       if ((result.status === "kept_customized" || result.status === "kept_occupied") && result.offer) {
-        process.stderr.write(`Shrooms: ${result.message}\n`);
+        process.stderr.write(`shrooms: ${result.message}\n`);
       }
     }
     const targets = BUNDLED_SKILL_NAMES.flatMap((skillName) => syncInstalledSkills({

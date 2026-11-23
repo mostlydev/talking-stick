@@ -2111,7 +2111,7 @@ describe("tt notes", () => {
     }
     await captureStdout(["join", project, "--agent", "human:notice-test"]);
     const output = await captureStdout(["state", project, "--agent", "human:notice-test", "--text"]);
-    expect(output).not.toContain("now Shrooms");
+    expect(output).not.toContain("now shrooms");
     const after = new TalkingStickService();
     try {
       expect((after as unknown as { db: { prepare(sql: string): { get(): unknown } } }).db

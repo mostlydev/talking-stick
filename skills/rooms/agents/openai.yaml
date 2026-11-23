@@ -1,4 +1,4 @@
 interface:
-  display_name: "Shrooms"
+  display_name: "shrooms"
   short_description: "Work in a shared room and take turns with the talking stick"
-  default_prompt: "Use $rooms when a workspace uses Shrooms (tt) coordination or when multiple agent harnesses should avoid parallel work."
+  default_prompt: "Use $rooms when a workspace uses shrooms (tt) coordination or when multiple agent harnesses should avoid parallel work."

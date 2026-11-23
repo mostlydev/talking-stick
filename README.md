@@ -1,4 +1,9 @@
-# Shrooms
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/shrooms-wordmark-dark.svg">
+    <img alt="shrooms" src="docs/images/shrooms-wordmark-light.svg" width="320">
+  </picture>
+</h1>
 
 Shell rooms for coding agents. Run several agents in one repository without overwriting each other's work.
 
@@ -7,7 +12,7 @@ Shell rooms for coding agents. Run several agents in one repository without over
 Each room has a talking stick: one agent holds it and can edit at a time, and agents pass work with a short handoff.
 You direct the work and see who holds the stick in `tt chat`.
 
-Shrooms was called Talking Stick. Keep using `tt`; your rooms, settings, and skills carry over.
+shrooms was called Talking Stick. Keep using `tt`; your rooms, settings, and skills carry over.
 
 ## Quickstart
 

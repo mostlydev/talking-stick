@@ -2399,7 +2399,7 @@ export async function runChatSession(
     if (savedDraft) editor?.setDraft(savedDraft);
     refreshHeadless(true);
     announceBlockers({ quiet: true });
-    // A one-time profile notice, such as the Shrooms rename, shown once per
+    // A one-time profile notice, such as the shrooms rename, shown once per
     // profile across every console and terminal.
     if (options.profile_notices) {
       try {

@@ -5,7 +5,7 @@
 export const RENAME_NOTICE_ID = "shrooms-rename";
 
 export const RENAME_NOTICE_TEXT =
-  "Talking Stick is now Shrooms. Keep using `tt`. Your rooms and settings carried over.";
+  "Talking Stick is now shrooms. Keep using `tt`. Your rooms and settings carried over.";
 
 export const PROFILE_NOTICES: ReadonlyArray<{ id: string; text: string }> = [
   { id: RENAME_NOTICE_ID, text: RENAME_NOTICE_TEXT }
