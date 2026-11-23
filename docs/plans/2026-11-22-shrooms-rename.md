@@ -10,8 +10,8 @@
 | --- | --- |
 | GitHub | Rename the existing repository in place to `mostlydev/shrooms` so issues, PRs, tags, and history stay together. Verify redirects and update the URLs we control. |
 | CLI | Keep `tt` installed and supported. Add `shrooms` as an alias of the same executable once packaging and hooks can prove same-state behavior. |
-| Rooms and data | Keep the existing data directories, SQLite files, supervisor state and service label, room pins, and `.talking-stick/` project files. Preserve room IDs, leases, history, and the current checkout-to-room mapping. |
-| Environment and integrations | Keep `TT_ROOM`, `TALKING_STICK_DATA_DIR`, existing hook entry points, supervisor environment variables, and the `[talking-stick]` wake envelope. Add aliases only when precedence is explicit and both names select identical state. |
+| Rooms and data | Keep the existing data directories, SQLite files, supervisor state and service label, room pins, and `.talking-stick/` project files. Preserve room IDs, leases, history, and the current checkout-to-room mapping. The default standalone install and data share a directory on macOS and Linux. Keep both the `current` link and `rooms.sqlite` there. |
+| Environment and integrations | Keep `TT_ROOM`, `TALKING_STICK_DATA_DIR`, existing hook entry points and installer ownership markers, supervisor environment variables, the `[talking-stick]` wake envelope, the Herdr plugin ID `talking-stick.chat`, and the ack-link host `talking-stick.invalid`. Add aliases only when precedence is explicit and both names select identical state. |
 | Skills | Keep `talking-stick` and `talking-stick-rooms` invocations and existing links. Update the skill text to teach Shrooms. A later skill rename needs a compatibility story for existing links, configured shortcuts, and customized copies. |
 | Releases | Publish legacy `talking-stick_<version>_<platform>.tar.gz` names and the old checksum format through the transition. Keep npm package detection for historical installs. |
 
