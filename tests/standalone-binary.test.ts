@@ -60,6 +60,26 @@ describe.skipIf(!hasBun || !supported)("standalone binary", () => {
     execFileSync(process.execPath, [path.resolve("dist/cli.js"), "notes", "add", "from Node", "--json"],
       { cwd: project, env: env(), encoding: "utf8" });
     expect(JSON.stringify(run(["notes", "list"], project))).toContain("from Node");
+    const rooms = path.join(bin, "rooms");
+    expect(fs.realpathSync(rooms)).toBe(fs.realpathSync(tt));
+    const aliasState = JSON.parse(execFileSync(rooms, ["state", "--json"],
+      { cwd: project, env: env(), encoding: "utf8" }));
+    expect(aliasState.room.room_id).toBe(nodeState.room.room_id);
+    for (const name of [rooms, tt]) {
+      const updatePlan = execFileSync(name, ["self-update", "--print"], { env: env(), encoding: "utf8" });
+      expect(updatePlan).toContain(path.join(install, "releases"));
+    }
+  });
+
+  it("leaves an unrelated rooms entry in the install bin directory alone", () => {
+    const occupiedBin = path.join(root, "occupied bin");
+    fs.mkdirSync(occupiedBin);
+    const occupied = path.join(occupiedBin, "rooms");
+    fs.writeFileSync(occupied, "another command");
+    const result = execFileSync(tt, ["post-install", "--bin-dir", occupiedBin],
+      { env: env(), encoding: "utf8" });
+    expect(result).toContain("rooms_occupied");
+    expect(fs.readFileSync(occupied, "utf8")).toBe("another command");
   });
 
   it("recreates a missing current link, as after an upgrade by the 0.23.0 installer", () => {

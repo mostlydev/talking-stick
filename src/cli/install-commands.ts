@@ -53,7 +53,7 @@ import { createSystemHerdrRunner, type HerdrRunner } from "../herdr.js";
 import { chatLinkArgv, installHerdrPlugin, uninstallHerdrPlugin } from "../herdr-plugin.js";
 import { shouldUseJson } from "./output.js";
 import { isInstalledRelease, isStandalone, standaloneRoot } from "../standalone-mode.js";
-import { advanceCurrentLink, findRemovableNpmCopy, repointManagedSkillLinks, skillLinksInto } from "../standalone-migration.js";
+import { advanceCurrentLink, findRemovableNpmCopy, installRoomsAlias, repointManagedSkillLinks, skillLinksInto } from "../standalone-migration.js";
 import { acquireUpdateLock } from "../auto-update.js";
 import {
   getStringOption,
@@ -749,13 +749,18 @@ function formatInstallStatus(status: InstallStatus): string {
 }
 
 // Called by scripts/install.sh after it links a new release. Output is one
-// fact per line for the shell to read: `pinned`, `repointed`, `kept`,
-// `npm_copy`, and `npm_blocked`, each followed by a path.
+// fact per line for the shell to read: skill and npm records carry paths,
+// and `rooms_*` records describe the optional alias.
 export function runPostInstallCommand(binDir: string | undefined): void {
   if (!isStandalone()) throw new Error("post-install runs only from the standalone binary.");
   if (!binDir) throw new Error("Usage: tt post-install --bin-dir DIR");
   if (!isInstalledRelease()) throw new Error("post-install runs only from a release the installer placed under <install-dir>/releases/.");
   const lines = advanceCurrentLink().map((link) => `pinned ${link.path}`);
+  try {
+    lines.push(installRoomsAlias(binDir) ? "rooms_ready" : "rooms_occupied");
+  } catch {
+    lines.push("rooms_unavailable");
+  }
   const { repointed, unproven } = repointManagedSkillLinks();
   lines.push(...repointed.map((link) => `repointed ${link.path}`));
   lines.push(...unproven.map((link) => `kept ${link.path}`));

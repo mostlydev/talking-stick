@@ -19,6 +19,23 @@ export interface MigrationOptions {
   releaseRoot?: string;
 }
 
+/** Installs a relative alias so it follows the installer's next tt link. */
+export function installRoomsAlias(binDir: string): boolean {
+  const alias = path.join(binDir, "rooms");
+  try {
+    fs.symlinkSync("tt", alias);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+
+  try {
+    return fs.readlinkSync(alias) === "tt";
+  } catch {
+    return false;
+  }
+}
+
 export interface RepointedLink {
   path: string;
   from: string;

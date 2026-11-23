@@ -9,6 +9,10 @@ See the [Quickstart](../README.md#quickstart) to open your first room.
 | Windows (x64) | Download `talking-stick_<version>_windows_x64.tar.gz` from [Releases](https://github.com/mostlydev/shrooms/releases) (see below) |
 | From source | [Build and link a checkout](#install-from-source) |
 
+`rooms` is an optional second name for `tt`. Both use the same rooms, settings, and skills.
+On macOS and Linux, the installer keeps an existing `rooms` entry in the install bin directory.
+On Windows, keep `rooms.cmd` next to `tt.exe` to use the alias.
+
 ## Install on Windows
 
 1. Download the Windows x64 archive and `checksums.txt` from [GitHub Releases](https://github.com/mostlydev/shrooms/releases).

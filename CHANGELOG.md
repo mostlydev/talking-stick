@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- Use `rooms` as an optional second name for `tt`. Both commands use the same local state.
+
 ### Changed
 
 - The repository is now github.com/mostlydev/shrooms. The installer, update check, and docs use the new address. Existing installers, update checks and release downloads still work through GitHub's redirects, so older installs update as before. Links to individual issues need the new repository path. Release downloads keep their `talking-stick_*` names.
