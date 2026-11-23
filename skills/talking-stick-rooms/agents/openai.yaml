@@ -1,4 +1,0 @@
-interface:
-  display_name: "Shrooms Rooms"
-  short_description: "Check on and question Shrooms rooms on this machine"
-  default_prompt: "Use $talking-stick-rooms to see what the Shrooms rooms on this machine are doing, or to ask a room's agents something."

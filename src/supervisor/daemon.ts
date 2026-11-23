@@ -310,7 +310,7 @@ export class Supervisor {
         worker.desired !== "running" || worker.hold_reason || this.reportedState.get(workerId) !== "idle") return;
     const inputId = this.newId();
     if (!this.store.claimBootstrap(workerId, session, inputId, handle.generation, this.at())) return;
-    const text = `Use the talking-stick skill (${resolveBundledSkillPath()}/SKILL.md). ` +
+    const text = `Use the rooms skill (${resolveBundledSkillPath()}/SKILL.md). ` +
       "Join the room for your current working directory with `tt join --json` and read `tt instructions show --json`. " +
       "You have no task yet: use `tt standby --json`, or one `tt wait --park --json` if it cannot self-wake. " +
       "Do not claim the stick or start work; wait for the operator in tt chat.";

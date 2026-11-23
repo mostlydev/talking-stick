@@ -1,4 +1,0 @@
-interface:
-  display_name: "Shrooms"
-  short_description: "Work in a shared room and take turns with the talking stick"
-  default_prompt: "Use $talking-stick when a workspace uses tt/talking-stick coordination or when multiple agent harnesses should avoid parallel work."

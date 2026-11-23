@@ -82,7 +82,7 @@ describe("skiller adapter", () => {
       link: true
     });
     expect(lines?.join("\n")).toContain("[codex] link ");
-    expect(lines?.join("\n")).toContain(".agents/skills/talking-stick");
+    expect(lines?.join("\n")).toContain(".agents/skills/rooms");
 
     const install = await runSkillerInstall({
       harnesses: ["codex"],
@@ -115,7 +115,7 @@ describe("skiller adapter", () => {
       harness: "codex",
       target_type: "skill",
       action: "removed",
-      target_name: "talking-stick"
+      target_name: "rooms"
     });
 
     const calls = fs
@@ -126,9 +126,9 @@ describe("skiller adapter", () => {
     expect(calls.some((call) => call.args.includes("--dry-run"))).toBe(true);
     expect(calls.some((call) => call.args[0] === "cleanup-duplicates")).toBe(true);
     expect(calls[0].manifest).toContain('targets = ["codex"]');
-    expect(calls[0].manifest).toContain('name = "talking-stick"');
-    expect(calls[0].manifest).toContain('name = "talking-stick-rooms"');
-    expect(calls[0].manifest).toContain('canonical_id = "mostlydev:talking-stick-rooms"');
+    expect(calls[0].manifest).toContain('name = "rooms"');
+    expect(calls[0].manifest).toContain('name = "rooms-oversee"');
+    expect(calls[0].manifest).toContain('canonical_id = "mostlydev:rooms-oversee"');
     expect(calls[0].manifest).toContain('source = "');
   });
 
@@ -201,8 +201,8 @@ describe("skiller adapter", () => {
         HOME: root,
         TALKING_STICK_DATA_DIR: dataDir
       };
-      const sharedTarget = path.join(root, ".agents", "skills", "talking-stick");
-      const claudeTarget = path.join(root, ".claude", "skills", "talking-stick");
+      const sharedTarget = path.join(root, ".agents", "skills", "rooms");
+      const claudeTarget = path.join(root, ".claude", "skills", "rooms");
 
       const install = await runSkillerInstall({
         harnesses: ["codex", "claude-code"],
@@ -341,19 +341,19 @@ function valueAfter(flag) {
 }
 function installPath(target) {
   return target === "claude-code"
-    ? path.join(home, ".claude", "skills", "talking-stick")
-    : path.join(home, ".agents", "skills", "talking-stick");
+    ? path.join(home, ".claude", "skills", "rooms")
+    : path.join(home, ".agents", "skills", "rooms");
 }
 function duplicatePath(target) {
   return target === "claude-code"
-    ? path.join(home, ".claude", "skills", "talking-stick")
-    : path.join(home, "." + target, "skills", "talking-stick");
+    ? path.join(home, ".claude", "skills", "rooms")
+    : path.join(home, "." + target, "skills", "rooms");
 }
 function write(input) {
   console.log(JSON.stringify({
     schema: "skiller-plan.v1",
     operation: command,
-    sources: [{ id: "source-001", source_realpath: "/tmp/talking-stick/skills/talking-stick" }],
+    sources: [{ id: "source-001", source_realpath: "/tmp/talking-stick/skills/rooms" }],
     actions: [{
       action: input.action,
       status: input.status,

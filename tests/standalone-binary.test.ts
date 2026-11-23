@@ -143,10 +143,10 @@ printf '${"a".repeat(64)}  talking-stick_${version}_darwin_arm64.tar.gz\\n'
     const fakeRoot = fs.realpathSync(root);
     const npmRoot = path.join(fakeRoot, "npm", "lib", "node_modules");
     const npmPackage = path.join(npmRoot, "talking-stick");
-    const npmSkill = path.join(npmPackage, "skills", "talking-stick");
+    const npmSkill = path.join(npmPackage, "skills", "rooms");
     fs.mkdirSync(path.join(npmPackage, "dist"), { recursive: true });
     fs.writeFileSync(path.join(npmPackage, "dist", "cli.js"), "#!/bin/sh\necho fixture\n", { mode: 0o755 });
-    fs.cpSync(path.join(path.dirname(fs.realpathSync(tt)), "skills", "talking-stick"), npmSkill, { recursive: true });
+    fs.cpSync(path.join(path.dirname(fs.realpathSync(tt)), "skills", "rooms"), npmSkill, { recursive: true });
     const npmBin = path.join(fakeRoot, "npm", "bin");
     fs.mkdirSync(npmBin, { recursive: true });
     fs.symlinkSync(path.join(npmPackage, "dist", "cli.js"), path.join(npmBin, "tt"));
@@ -164,7 +164,7 @@ else if (args === "uninstall -g talking-stick") {
     const home = path.join(fakeRoot, "cleanup-home");
     const cleanupEnv = { ...env(), HOME: home, TALKING_STICK_DATA_DIR: path.join(fakeRoot, "cleanup-data"),
       PATH: `${npmBin}${path.delimiter}${fs.realpathSync(bin)}${path.delimiter}${process.env.PATH}` };
-    const legacySkill = path.join(home, ".codex", "skills", "talking-stick");
+    const legacySkill = path.join(home, ".codex", "skills", "rooms");
     fs.mkdirSync(path.dirname(legacySkill), { recursive: true });
     fs.symlinkSync(npmSkill, legacySkill);
     recordManagedContent(legacySkill, "skill-copy", digestDirectory(npmSkill), { env: cleanupEnv });
@@ -175,23 +175,23 @@ else if (args === "uninstall -g talking-stick") {
     expect(fs.existsSync(log)).toBe(false);
     expect(fs.readlinkSync(legacySkill)).toBe(npmSkill);
     // Restoring the recorded content makes the link eligible for migration.
-    fs.cpSync(path.join(path.dirname(fs.realpathSync(tt)), "skills", "talking-stick"), npmSkill, { recursive: true });
+    fs.cpSync(path.join(path.dirname(fs.realpathSync(tt)), "skills", "rooms"), npmSkill, { recursive: true });
     const cleaned = execFileSync("sh", args, { env: cleanupEnv, encoding: "utf8" });
     expect(cleaned).toContain("Removed the npm copy");
     expect(fs.readFileSync(log, "utf8")).toBe("uninstall -g talking-stick");
     expect(fs.existsSync(npmPackage)).toBe(false);
-    expect(fs.readlinkSync(legacySkill)).toBe(path.join(fs.realpathSync(install), "current", "skills", "talking-stick"));
+    expect(fs.readlinkSync(legacySkill)).toBe(path.join(fs.realpathSync(install), "current", "skills", "rooms"));
     expect(fs.existsSync(path.join(legacySkill, "SKILL.md"))).toBe(true);
     expect(spawnSync(tt, ["--help"], { env: cleanupEnv }).status).toBe(0);
   });
 
   it("finds its skill beside the executable and self-updates with the installed directories", () => {
     const releaseRoot = path.dirname(fs.realpathSync(tt));
-    const bundledSkill = path.join(releaseRoot, "skills", "talking-stick", "SKILL.md");
+    const bundledSkill = path.join(releaseRoot, "skills", "rooms", "SKILL.md");
     expect(fs.existsSync(bundledSkill)).toBe(true);
     fs.mkdirSync(path.join(root, "home", ".codex"), { recursive: true });
     execFileSync(tt, ["install", "codex", "--copy"], { env: env(), encoding: "utf8" });
-    expect(fs.readFileSync(path.join(root, "home", ".agents", "skills", "talking-stick", "SKILL.md"), "utf8"))
+    expect(fs.readFileSync(path.join(root, "home", ".agents", "skills", "rooms", "SKILL.md"), "utf8"))
       .toBe(fs.readFileSync(bundledSkill, "utf8"));
     const plan = execFileSync(tt, ["self-update", "--print"], { env: env(), encoding: "utf8" });
     expect(plan).toContain(path.join(releaseRoot, "scripts", "install.sh"));

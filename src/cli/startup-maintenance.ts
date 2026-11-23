@@ -1,4 +1,4 @@
-import { BUNDLED_SKILL_NAMES, DEFAULT_SKILL_NAME, syncInstalledSkills } from "../skill-install.js";
+import { BUNDLED_SKILL_NAMES, DEFAULT_SKILL_NAME, migrateLegacySkillInstalls, syncInstalledSkills } from "../skill-install.js";
 import { updateInstructions } from "../instructions.js";
 import { getCommand } from "./registry.js";
 import type { ParsedCommand } from "./parser.js";
@@ -37,6 +37,13 @@ export async function runStartupMaintenance(
     }
     if (!shouldAutoSyncInstalledSkills(parsed, env)) {
       return;
+    }
+    // Skills installed under their pre-0.39 names move to the new names first,
+    // so the sync below finds them. A kept old install is mentioned once.
+    for (const result of migrateLegacySkillInstalls({ env, homeDir: env.HOME })) {
+      if ((result.status === "kept_customized" || result.status === "kept_occupied") && result.offer) {
+        process.stderr.write(`Shrooms: ${result.message}\n`);
+      }
     }
     const targets = BUNDLED_SKILL_NAMES.flatMap((skillName) => syncInstalledSkills({
       skipMissing: true,

@@ -48,7 +48,7 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 let guardian;
 try {
-  for (const skill of ["talking-stick", "talking-stick-rooms"]) {
+  for (const skill of ["rooms", "rooms-oversee", "talking-stick"]) {
     check(fs.existsSync(path.join(path.dirname(tt), "skills", skill, "SKILL.md")), `the archive bundles ${skill}/SKILL.md`);
   }
   const joined = run(["join"]);

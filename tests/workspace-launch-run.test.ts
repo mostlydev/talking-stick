@@ -34,7 +34,7 @@ function setup() {
     fs.writeFileSync(path.join(bin, process.platform === "win32" ? `${name}.cmd` : name), "#!/bin/sh\n", { mode: 0o755 });
   }
   for (const dir of [[".claude", "skills"], [".agents", "skills"]]) {
-    const skill = path.join(home, ...dir, "talking-stick");
+    const skill = path.join(home, ...dir, "rooms");
     fs.mkdirSync(skill, { recursive: true });
     fs.writeFileSync(path.join(skill, "SKILL.md"), "# skill\n");
   }

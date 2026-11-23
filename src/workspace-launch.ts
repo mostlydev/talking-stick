@@ -167,7 +167,7 @@ export function launchUnavailableReason(agent: LaunchAgent, env: NodeJS.ProcessE
 
 export function buildBootstrapPrompt(skillPath: string, canonicalPath: string): string {
   return [
-    `Use the talking-stick skill (${path.join(skillPath, "SKILL.md")}).`,
+    `Use the rooms skill (${path.join(skillPath, "SKILL.md")}).`,
     `Join the Talking Stick room for ${canonicalPath} with \`tt join --json\` and load \`tt instructions show --json\`.`,
     "You have no task yet: follow the skill's taskless path (`tt standby --json`, or one `tt wait --park --json` if it cannot self-wake).",
     "Do not claim the stick or start work; wait for instructions from the operator in tt chat."

@@ -90,7 +90,8 @@ install_dir=$(cd "$install_dir" && pwd -P)
 bin_dir=$(cd "$bin_dir" && pwd -P)
 stage_dir=$(mktemp -d "$install_dir/releases/.install.XXXXXX")
 tar -xzf "$task_tmp/$archive" -C "$stage_dir"
-[ -f "$stage_dir/tt" ] && [ -f "$stage_dir/package.json" ] && [ -f "$stage_dir/skills/talking-stick/SKILL.md" ] || fail 'incomplete release archive'
+# Releases before 0.39 name the skill talking-stick; later ones name it rooms.
+[ -f "$stage_dir/tt" ] && [ -f "$stage_dir/package.json" ] && { [ -f "$stage_dir/skills/rooms/SKILL.md" ] || [ -f "$stage_dir/skills/talking-stick/SKILL.md" ]; } || fail 'incomplete release archive'
 chmod 0755 "$stage_dir/tt"
 "$stage_dir/tt" --help >/dev/null || fail 'binary cannot run on this system'
 release_name=${archive#talking-stick_}
@@ -133,6 +134,7 @@ while IFS= read -r line; do
   case "$line" in
     "pinned "*) printf 'Kept your edited skill %s on its current release.\n' "${line#pinned }" ;;
     "repointed "*) printf 'Updated skill link %s\n' "${line#repointed }" ;;
+    "renamed "*) printf 'Moved skill %s to its new name.\n' "${line#renamed }" ;;
     "kept "*) printf 'Left skill %s as it is (customized or not ours).\n' "${line#kept }" ;;
     "rooms_ready") printf 'The rooms command is also available in %s.\n' "$bin_dir" ;;
     "rooms_occupied") printf 'Kept the existing %s/rooms. Use tt for Shrooms.\n' "$bin_dir" ;;

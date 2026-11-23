@@ -2331,9 +2331,9 @@ describe("tt notes", () => {
     }
 
     expect(out).toContain("[codex] link ");
-    expect(out).toContain(".agents/skills/talking-stick");
+    expect(out).toContain(".agents/skills/rooms");
     expect(out).toContain("[codex] remove duplicate skill symlink ");
-    expect(out).toContain(".codex/skills/talking-stick");
+    expect(out).toContain(".codex/skills/rooms");
   });
 
   test("tt install --copy --print plans a copied skill", async () => {
@@ -2359,7 +2359,7 @@ describe("tt notes", () => {
     }
 
     expect(out).toContain("[codex] copy ");
-    expect(out).toContain(".agents/skills/talking-stick");
+    expect(out).toContain(".agents/skills/rooms");
   });
 
   test("tt install grok --print includes native skill and session hook actions", async () => {
@@ -2372,9 +2372,9 @@ describe("tt notes", () => {
     const out = await captureStdout(["install", "grok", "--print"]);
 
     expect(out).toContain("[grok] link ");
-    expect(out).toContain(".agents/skills/talking-stick");
+    expect(out).toContain(".agents/skills/rooms");
     expect(out).toContain("[grok] remove duplicate skill symlink ");
-    expect(out).toContain(".grok/skills/talking-stick");
+    expect(out).toContain(".grok/skills/rooms");
     expect(out).toContain("[grok] write Grok session hook ");
     expect(out).toContain(".grok/hooks/talking-stick-session.json");
     expect(out).toContain(".grok/hooks/talking-stick-inbox.json");
@@ -2391,7 +2391,7 @@ describe("tt notes", () => {
     expect(out).toContain("tt install antigravity");
     expect(out).not.toContain("gemini skills link");
     expect(out).not.toContain("gemini skills install");
-    expect(out).toContain(".gemini/skills/talking-stick");
+    expect(out).toContain(".gemini/skills/rooms");
   });
 
   test("tt install rejects conflicting skill link modes", async () => {
@@ -2415,8 +2415,8 @@ describe("tt notes", () => {
     const out = await captureStdout(["uninstall", "codex", "--print"]);
 
     expect(out).toContain("[codex] remove ");
-    expect(out).toContain(".codex/skills/talking-stick");
-    expect(out).toContain("Left ~/.agents/skills/talking-stick");
+    expect(out).toContain(".codex/skills/rooms");
+    expect(out).toContain("Left ~/.agents/skills/rooms");
   });
 
   test("tt uninstall claude removes the managed Stop guard without skiller", async () => {
@@ -2466,22 +2466,22 @@ describe("tt notes", () => {
     }
 
     expect(out).toContain("remove shared agents skill");
-    expect(out).toContain(".agents/skills/talking-stick");
-    expect(out).not.toContain("Left ~/.agents/skills/talking-stick");
+    expect(out).toContain(".agents/skills/rooms");
+    expect(out).not.toContain("Left ~/.agents/skills/rooms");
   });
 
   test("tt uninstall --shared --print removes the shared skill target", async () => {
     const out = await captureStdout(["uninstall", "--shared", "--print"]);
 
     expect(out).toContain("remove shared agents skill");
-    expect(out).toContain(".agents/skills/talking-stick");
+    expect(out).toContain(".agents/skills/rooms");
   });
 
   test("tt uninstall antigravity --print leaves the shared skill", async () => {
     const out = await captureStdout(["uninstall", "antigravity", "--print"]);
 
     expect(out).not.toContain("remove shared agents skill");
-    expect(out).toContain("Left ~/.agents/skills/talking-stick");
+    expect(out).toContain("Left ~/.agents/skills/rooms");
   });
 
   test("tt notes with unknown subcommand surfaces an error", async () => {

@@ -272,7 +272,7 @@ immediately revoke a live lease.
 ### Observing rooms from outside
 
 For a session whose whole job is watching rooms, such as a Claude Code or Codex session started
-in your home folder, use the `talking-stick-rooms` skill: it never joins a room, and it teaches the
+in your home folder, use the `rooms-oversee` skill: it never joins a room, and it teaches the
 session to find a room, summarize it, and ask its agents.
 
 Any agent or person on the host can see what each room is doing without joining it.
@@ -313,16 +313,16 @@ their room: when the room closes, they are deleted with it, and later reads repo
 
 #### Desktop sessions
 
-The `talking-stick-rooms` skill (installed by `tt install`) turns any local agent session into a
+The `rooms-oversee` skill (installed by `tt install`) turns any local agent session into a
 manager for every room on your computer: it reports what each room is doing, asks agents
 questions, passes on your instructions or approvals, and collects their answers. It never joins a
 room. It only needs a session that can run `tt` on this computer, started in any folder:
 
 | App | How |
 |---|---|
-| Claude Code | `/talking-stick-rooms What is the clawdapus pair doing?` |
-| Claude desktop | Switch to **Code** (`</>`), choose **This computer** and a folder (your home folder works), then type `/talking-stick-rooms` and your question |
-| Codex CLI | `$talking-stick-rooms What is the clawdapus pair doing?` |
+| Claude Code | `/rooms-oversee What is the clawdapus pair doing?` |
+| Claude desktop | Switch to **Code** (`</>`), choose **This computer** and a folder (your home folder works), then type `/rooms-oversee` and your question |
+| Codex CLI | `$rooms-oversee What is the clawdapus pair doing?` |
 | ChatGPT desktop | Start a **Work** conversation that runs on your computer, with any local folder. Select **Talking Stick Rooms** with `@` and ask. |
 
 ChatGPT finds the skill in `~/.agents/skills`, where `tt install codex` puts it. Before relying on a
@@ -335,7 +335,7 @@ See [ChatGPT Work](https://learn.chatgpt.com/docs/get-started-with-work) and
 In the Claude desktop app, use a [local session in the **Code** tab](https://code.claude.com/docs/en/desktop#use-skills), which loads `~/.claude/skills`
 and runs commands on your computer. `tt install` installs Claude Code's skill files, not your Claude
 account's Skills, so the skill doesn't appear in regular chats or Cowork. You can upload it there
-(zip the `talking-stick-rooms` folder, then
+(zip the `rooms-oversee` folder, then
 [Customize > Skills > + > Create skill > Upload a skill](https://support.claude.com/en/articles/12512180-use-skills-in-claude)).
 An uploaded skill supplies instructions, not host command access. Chat/Cowork execution may run
 in the cloud or an isolated local environment; connecting a folder alone does not establish access
@@ -903,10 +903,14 @@ edit, so installing `tt` does not litter repositories or harness config director
 
 ## Install behavior per harness
 
-`tt install` installs or refreshes the bundled skills: `talking-stick`, which agents working in a
-room use, and `talking-stick-rooms`, for a session that watches rooms from outside (see
+`tt install` installs or refreshes the bundled skills: `rooms`, which agents working in a
+room use, and `rooms-oversee`, for a session that watches rooms from outside (see
 [Observing rooms from outside](#observing-rooms-from-outside)). Both go to the same places, and an
-update adds `talking-stick-rooms` beside any existing `talking-stick` install. Skill directory writes are
+update adds `rooms-oversee` beside any existing `rooms` install. Before 0.39 the skills were named
+`talking-stick` and `talking-stick-rooms`. An update moves installs under those names to the new
+names when they are unedited links or copies made by Shrooms, and leaves customized ones in place.
+Releases keep a short `skills/talking-stick` stub that points to `rooms`, because installers from
+0.38.0 and earlier check for it. Skill directory writes are
 delegated to the `skiller` binary when available. When setting up a source checkout, npm postinstall
 bootstraps skiller from its published release and verifies `checksums.txt`. If skiller is missing, disabled,
 or fails its version gate, `tt` uses the built-in TypeScript fallback. Set
@@ -931,7 +935,7 @@ By default, `tt install` links the bundled skill so local updates are picked up 
 without touching anything. During normal execution, install commands skip harnesses that are not
 present instead of failing or creating new harness config roots.
 
-Single-harness uninstalls for shared-reading harnesses leave `~/.agents/skills/talking-stick` in
+Single-harness uninstalls for shared-reading harnesses leave `~/.agents/skills/rooms` in
 place because Codex, Antigravity, Grok, and OpenCode share that one skill location. Use
 `tt uninstall agents` or `tt uninstall --shared` to remove only the shared skill target.
 
@@ -965,8 +969,8 @@ blocked.
 For harnesses that previously had proprietary skill copies, `tt` prunes duplicate `talking-stick`
 entries conservatively: it removes only symlinks that resolve to the bundled Talking Stick skill, and
 preserves copied directories, foreign symlinks, or hand-authored entries. OpenCode cleanup checks
-both `~/.config/opencode/skills/talking-stick` (honoring `XDG_CONFIG_HOME`) and the older
-`~/.opencode/skills/talking-stick` location.
+both `~/.config/opencode/skills/rooms` (honoring `XDG_CONFIG_HOME`) and the older
+`~/.opencode/skills/rooms` location.
 
 Automatic skill sync records the digest of managed copied skills. A known unedited copy updates
 automatically; an unknown or edited copy is preserved and the CLI offers

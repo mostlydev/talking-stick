@@ -12,9 +12,9 @@ from the harness settings.
    with `tt install claude-code` or `tt install codex`. For a Claude worker, also allow
    `Bash(tt:*)` in your Claude settings, plus a read of the bundled skill that the worker's start
    prompt names. For a default install, allow
-   `Read(~/.local/share/talking-stick/**/skills/talking-stick/SKILL.md)`, which covers both the
+   `Read(~/.local/share/talking-stick/**/skills/rooms/SKILL.md)`, which covers both the
    `current` link and its release target. For a source checkout, allow
-   `Read(//<checkout>/skills/talking-stick/**)`. The supervisor denies anything your settings
+   `Read(//<checkout>/skills/rooms/**)`. The supervisor denies anything your settings
    don't allow, including the worker's own `tt join` (see [Claude workers](#claude-workers)).
 2. From a terminal or harness, add a worker with the absolute path of its workspace. Choose one of these examples.
 
@@ -550,7 +550,7 @@ A Grok session that was already recorded is held `resume_failed` until resume is
 - **Liveness:** the stream has no cheap ping, so liveness is the exact process.
 - **Permissions:** a tool call your settings don't already allow is denied at once (see
   "Permission requests"). So a Claude worker can do what your user and project settings allow
-  without asking. For room work, that's at least `Bash(tt:*)` and reading the talking-stick skill,
+  without asking. For room work, that's at least `Bash(tt:*)` and reading the rooms skill,
   `Read(//<skill dir>/**)`. Claude's rules spell an absolute path with a leading `//`.
 
 ## What the supervisor does not prove
