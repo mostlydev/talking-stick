@@ -98,7 +98,7 @@ Full notes: [\`docs/releases/0.4.3.md\`](docs/releases/0.4.3.md).
 ### Added
 - Previous release.
 
-[0.4.3]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.3
+[0.4.3]: https://github.com/mostlydev/shrooms/releases/tag/v0.4.3
 `
     );
 
@@ -118,7 +118,7 @@ Full notes: [\`docs/releases/0.4.3.md\`](docs/releases/0.4.3.md).
       "Full notes: [`docs/releases/0.4.4.md`](docs/releases/0.4.4.md)."
     );
     expect(changelog).toContain(
-      "[0.4.4]: https://github.com/mostlydev/talking-stick/releases/tag/v0.4.4\n[0.4.3]:"
+      "[0.4.4]: https://github.com/mostlydev/shrooms/releases/tag/v0.4.4\n[0.4.3]:"
     );
 
     const releaseNotes = fs.readFileSync(

@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const STANDALONE_INSTALL_COMMAND =
-  "curl -fsSL https://raw.githubusercontent.com/mostlydev/talking-stick/master/scripts/install.sh | sh";
+  "curl -fsSL https://raw.githubusercontent.com/mostlydev/shrooms/master/scripts/install.sh | sh";
 
 // Shown to humans only (help and self-update), never on JSON or agent paths.
 export const STANDALONE_MIGRATION_NOTICE = [

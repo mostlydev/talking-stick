@@ -56,7 +56,7 @@ export function versionFromChecksums(text: string): string {
 async function fetchReleaseVersion(env: NodeJS.ProcessEnv): Promise<string> {
   const manifest = await new Promise<string>((resolve, reject) => {
     const child = execFile("curl", ["-fsSL", "--connect-timeout", "3", "--max-time", "5",
-      "--max-filesize", "16384", "https://github.com/mostlydev/talking-stick/releases/latest/download/checksums.txt"],
+      "--max-filesize", "16384", "https://github.com/mostlydev/shrooms/releases/latest/download/checksums.txt"],
     { env, encoding: "utf8", timeout: 6_000, maxBuffer: 16_384, windowsHide: true },
     (error, stdout) => error ? reject(error) : resolve(stdout));
     child.stdin?.end();

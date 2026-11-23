@@ -9,7 +9,7 @@ const CHANGELOG_PATH = "CHANGELOG.md";
 const RELEASES_DIR = path.join("docs", "releases");
 const PACKAGE_PATH = "package.json";
 const RELEASE_URL_PREFIX =
-  "https://github.com/mostlydev/talking-stick/releases/tag/v";
+  "https://github.com/mostlydev/shrooms/releases/tag/v";
 
 function main() {
   const options = parseArgs(process.argv.slice(2));

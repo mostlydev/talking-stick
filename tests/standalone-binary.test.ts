@@ -100,7 +100,7 @@ printf '${"a".repeat(64)}  talking-stick_${version}_darwin_arm64.tar.gz\\n'
     const output = execFileSync("script", args, { env: humanEnv, cwd: root, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
     expect(output).not.toContain("auto-update failed");
     expect(fs.existsSync(stamp)).toBe(true);
-    expect(fs.readFileSync(called, "utf8")).toContain("https://github.com/mostlydev/talking-stick/releases/latest/download/checksums.txt");
+    expect(fs.readFileSync(called, "utf8")).toContain("https://github.com/mostlydev/shrooms/releases/latest/download/checksums.txt");
     const checkedAt = fs.readFileSync(stamp, "utf8");
     execFileSync("script", args, { env: humanEnv, cwd: root, timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] });
     expect(fs.readFileSync(stamp, "utf8")).toBe(checkedAt);
