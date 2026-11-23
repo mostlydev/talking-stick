@@ -654,39 +654,36 @@ export function migrate(db: SqliteDatabase): void {
     );
   `);
 
+  // A fully migrated profile, the usual case, needs no write lock.
+  if (pendingMigrations(db).length === 0) return;
+
+  // Read, classify, and apply the whole pending batch under one write lock.
+  // Another launch either finishes first, leaving nothing to do here, or waits
+  // for this one; it can never see a half-built new profile and mistake it for
+  // an upgraded one.
+  withImmediateTransaction(db, () => {
+    const pending = pendingMigrations(db);
+    if (pending.length === 0) return;
+    // A profile that already had migrations is being upgraded, not created.
+    const existing = pending.length < migrations.length;
+    for (const migration of pending) {
+      db.exec(migration.up);
+      migration.after?.(db, { existing });
+      db.prepare(
+        "INSERT INTO schema_migrations (id, name, applied_at) VALUES (?, ?, ?)"
+      ).run(migration.id, migration.name, new Date().toISOString());
+    }
+  });
+}
+
+function pendingMigrations(db: SqliteDatabase): Migration[] {
   const applied = new Set(
     db
       .prepare<[], { id: number }>("SELECT id FROM schema_migrations")
       .all()
       .map((row) => row.id)
   );
-  applyPendingMigrations(db, applied);
-}
-
-/**
- * Applies every migration missing from `applied`, a snapshot read before any
- * lock. Another process may apply the same migration after that read, so each
- * one is checked again under the write lock and skipped if it already ran.
- * @internal Exported for the concurrent-launch test.
- */
-export function applyPendingMigrations(db: SqliteDatabase, applied: ReadonlySet<number>): void {
-  // A profile that already had migrations is being upgraded, not created.
-  const existing = applied.size > 0;
-
-  for (const migration of migrations) {
-    if (applied.has(migration.id)) {
-      continue;
-    }
-
-    withImmediateTransaction(db, () => {
-      if (db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(migration.id)) return;
-      db.exec(migration.up);
-      migration.after?.(db, { existing });
-      db.prepare(
-        "INSERT INTO schema_migrations (id, name, applied_at) VALUES (?, ?, ?)"
-      ).run(migration.id, migration.name, new Date().toISOString());
-    });
-  }
+  return migrations.filter((migration) => !applied.has(migration.id));
 }
 
 export function withImmediateTransaction<T>(

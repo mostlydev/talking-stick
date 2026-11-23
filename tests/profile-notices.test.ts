@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { applyPendingMigrations, migrate, openDatabase } from "../src/db.js";
+import { applyPragmas, migrate, openDatabase, type SqliteDatabase } from "../src/db.js";
+import { openSqlite } from "../src/sqlite.js";
 import { TalkingStickService } from "../src/service.js";
 import { RENAME_NOTICE_ID, RENAME_NOTICE_TEXT, profileNoticeAllowed } from "../src/profile-notices.js";
 
@@ -52,23 +53,67 @@ describe("profile notices", () => {
     expect(pending(dbPath)).toHaveLength(1);
   });
 
-  test("a launch whose migration snapshot went stale skips what another process already applied", () => {
+  // Runs `during` once, right after `db` executes `sql` (for example the first
+  // COMMIT or BEGIN IMMEDIATE), to interleave a second launch at that point.
+  function interleave(db: SqliteDatabase, sql: string, timing: "before" | "after", during: () => void) {
+    let fired = false;
+    const wrapped = new Proxy(db, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target) as unknown;
+        if (key !== "prepare") return typeof value === "function" ? value.bind(target) : value;
+        return (text: string) => {
+          const statement = target.prepare(text);
+          if (text !== sql || fired) return statement;
+          return {
+            run: (...args: unknown[]) => {
+              fired = true;
+              if (timing === "before") during();
+              const result = (statement.run as (...values: unknown[]) => unknown)(...args);
+              if (timing === "after") during();
+              return result;
+            }
+          };
+        };
+      }
+    });
+    return { db: wrapped as SqliteDatabase, fired: () => fired };
+  }
+
+  const connections = (dbPath: string) => {
+    const first = openSqlite(dbPath);
+    const second = openSqlite(dbPath);
+    applyPragmas(first);
+    applyPragmas(second);
+    return { first, second };
+  };
+
+  test("a second first-launch right after the first commits never treats a new profile as an upgrade", () => {
+    const { first, second } = connections(tempDb());
+    try {
+      const paused = interleave(first, "COMMIT", "after", () => migrate(second));
+      migrate(paused.db);
+      expect(paused.fired()).toBe(true);
+      expect(first.prepare("SELECT notice_id FROM profile_notices").all()).toEqual([]);
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+
+  test("a launch that read the pending list before another took the lock re-reads it under the lock", () => {
     const dbPath = tempDb();
     openDatabase({ dbPath }).close();
     rewindToBeforeNotices(dbPath);
-    // Two first launches after an upgrade: both read the applied list before
-    // either takes the write lock. The first applies 33; the second must not
-    // try to create the table again or add a second notice.
-    const first = openDatabase({ dbPath });
-    const db = openDatabase({ dbPath });
+    const { first, second } = connections(dbPath);
     try {
-      const stale = new Set((db.prepare("SELECT id FROM schema_migrations").all() as Array<{ id: number }>)
-        .map((row) => row.id).filter((id) => id !== 33));
-      expect(() => applyPendingMigrations(db, stale)).not.toThrow();
-      expect(() => applyPendingMigrations(db, new Set())).not.toThrow();
+      // `second` sees migration 33 pending, then `first` upgrades the profile
+      // before `second` gets the write lock.
+      const late = interleave(second, "BEGIN IMMEDIATE", "before", () => migrate(first));
+      expect(() => migrate(late.db)).not.toThrow();
+      expect(late.fired()).toBe(true);
     } finally {
-      db.close();
       first.close();
+      second.close();
     }
     expect(pending(dbPath)).toEqual([{ notice_id: RENAME_NOTICE_ID, shown_at: null }]);
   });
