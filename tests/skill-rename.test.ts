@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { digestDirectory, recordManagedContent } from "../src/managed-content.js";
 import {
   LEGACY_SKILL_RENAMES,
@@ -55,7 +55,7 @@ describe("moving skills to their new names", () => {
 
   test("a link left dangling by a removed release still moves", () => {
     const { root, options, claude } = home();
-    const gone = path.join(root, "share", "releases", "0.38.0-abc", "skills", "talking-stick");
+    const gone = path.join(root, ".local", "share", "talking-stick", "releases", "0.38.0-abc", "skills", "talking-stick");
     fs.symlinkSync(gone, claude("talking-stick"), "dir");
     expect(run(options)).toMatchObject([{ status: "renamed" }]);
     expect(fs.lstatSync(claude("talking-stick"), { throwIfNoEntry: false })).toBeUndefined();
@@ -109,14 +109,73 @@ describe("moving skills to their new names", () => {
     expect(fs.realpathSync(claude("rooms"))).toBe(fs.realpathSync(bundled("rooms")));
   });
 
-  test("an old duplicate in a harness's own folder is removed without a new copy there", () => {
-    const { root, options } = home();
-    const codexDuplicate = path.join(root, ".codex", "skills", "talking-stick");
-    fs.mkdirSync(path.dirname(codexDuplicate), { recursive: true });
-    fs.symlinkSync(bundled("talking-stick"), codexDuplicate, "dir");
-    expect(run(options)).toMatchObject([{ status: "renamed", legacyPath: codexDuplicate }]);
-    expect(fs.lstatSync(codexDuplicate, { throwIfNoEntry: false })).toBeUndefined();
+  test("an install that only exists in a harness's own folder moves to that harness's new location", () => {
+    const { root, options, shared } = home();
+    const codexOnly = path.join(root, ".codex", "skills", "talking-stick");
+    fs.mkdirSync(path.dirname(codexOnly), { recursive: true });
+    fs.symlinkSync(bundled("talking-stick"), codexOnly, "dir");
+    expect(run(options)).toMatchObject([{ status: "renamed", legacyPath: codexOnly, newPath: shared("rooms") }]);
+    expect(fs.lstatSync(codexOnly, { throwIfNoEntry: false })).toBeUndefined();
+    expect(fs.realpathSync(shared("rooms"))).toBe(fs.realpathSync(bundled("rooms")));
     expect(fs.existsSync(path.join(root, ".codex", "skills", "rooms"))).toBe(false);
+  });
+
+  test("an old harness-folder install stays when that harness's new location holds something else", () => {
+    const { root, options, shared } = home();
+    const codexOnly = path.join(root, ".codex", "skills", "talking-stick");
+    fs.mkdirSync(path.dirname(codexOnly), { recursive: true });
+    fs.symlinkSync(bundled("talking-stick"), codexOnly, "dir");
+    fs.mkdirSync(shared("rooms"));
+    fs.writeFileSync(path.join(shared("rooms"), "SKILL.md"), "someone else's rooms\n");
+    expect(run(options)).toMatchObject([{ status: "kept_occupied", legacyPath: codexOnly }]);
+    expect(fs.existsSync(codexOnly)).toBe(true);
+    expect(fs.readFileSync(path.join(shared("rooms"), "SKILL.md"), "utf8")).toBe("someone else's rooms\n");
+  });
+
+  test("a dangling link only counts as ours from a known install location or a record", () => {
+    const { root, options, claude, shared } = home();
+    // Looks like a release layout, but nothing Shrooms knows about.
+    const elsewhere = path.join(root, ".other", "current", "skills", "talking-stick");
+    fs.symlinkSync(elsewhere, claude("talking-stick"), "dir");
+    // Shrooms recorded this one when it made it, wherever it pointed.
+    const recordedLink = shared("talking-stick");
+    fs.symlinkSync(path.join(root, ".gone", "skills", "talking-stick"), recordedLink, "dir");
+    recordManagedContent(recordedLink, "skill-copy", "f".repeat(64), options);
+    const results = run(options);
+    expect(results.find((result) => result.legacyPath === claude("talking-stick"))?.status).toBe("kept_customized");
+    expect(fs.readlinkSync(claude("talking-stick"))).toBe(elsewhere);
+    expect(results.find((result) => result.legacyPath === recordedLink)?.status).toBe("renamed");
+  });
+
+  test("a foreign dangling link already at the new name is never replaced", () => {
+    const { root, options, claude } = home();
+    fs.symlinkSync(bundled("talking-stick"), claude("talking-stick"), "dir");
+    const foreign = path.join(root, ".other", "current", "skills", "rooms");
+    fs.symlinkSync(foreign, claude("rooms"), "dir");
+    expect(run(options)).toMatchObject([{ status: "kept_occupied" }]);
+    expect(fs.readlinkSync(claude("rooms"))).toBe(foreign);
+    expect(fs.existsSync(claude("talking-stick"))).toBe(true);
+  });
+
+  test("if something else appears at the new name during the move, it is kept and so is the old link", () => {
+    const { options, claude } = home();
+    fs.symlinkSync(bundled("talking-stick"), claude("talking-stick"), "dir");
+    const real = fs.symlinkSync;
+    const spy = vi.spyOn(fs, "symlinkSync").mockImplementation((target, file, type) => {
+      if (String(file) === claude("rooms")) {
+        // Another installer wins the race with its own content.
+        fs.mkdirSync(claude("rooms"));
+        fs.writeFileSync(path.join(claude("rooms"), "SKILL.md"), "raced in\n");
+      }
+      return real(target, file, type);
+    });
+    try {
+      expect(run(options)).toMatchObject([{ status: "kept_occupied" }]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.readFileSync(path.join(claude("rooms"), "SKILL.md"), "utf8")).toBe("raced in\n");
+    expect(fs.realpathSync(claude("talking-stick"))).toBe(fs.realpathSync(bundled("talking-stick")));
   });
 
   test("a new link can point through the installer's current release", () => {

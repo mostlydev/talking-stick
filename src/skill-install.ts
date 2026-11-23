@@ -11,7 +11,7 @@ import {
 } from "./harness-model.js";
 import type { AuditLog, AuditReason } from "./install-audit.js";
 import type { CleanupResult } from "./install-audit.js";
-import { isStandalone, standaloneLinkRoot } from "./standalone-mode.js";
+import { isStandalone, standaloneInstallDir, standaloneLinkRoot } from "./standalone-mode.js";
 import {
   digestDirectory,
   getManagedContent,
@@ -328,6 +328,7 @@ export interface LegacySkillMigrationOptions extends SkillInstallOptions {
  */
 export function migrateLegacySkillInstalls(options: LegacySkillMigrationOptions = {}): LegacySkillMigrationResult[] {
   const results: LegacySkillMigrationResult[] = [];
+  const roots = knownInstallRoots(options);
   for (const [legacyName, newName] of LEGACY_SKILL_RENAMES) {
     const newBundled = resolveBundledSkillPath({ ...options, skillName: newName });
     if (!fs.existsSync(path.join(newBundled, "SKILL.md"))) continue;
@@ -335,18 +336,23 @@ export function migrateLegacySkillInstalls(options: LegacySkillMigrationOptions 
     const known = new Set<string>([LEGACY_BUNDLED_SKILL_DIGEST]);
     if (fs.existsSync(path.join(stub, "SKILL.md"))) known.add(digestDirectory(stub));
     const linkSource = options.linkSourceFor?.(newName) ?? newBundled;
-    // Primary locations get the new name; duplicate locations are only cleaned up.
-    const locations = new Map<string, string | null>();
+    // Every old location, primary or duplicate, moves to the new name in that
+    // harness's primary location, so an install that only exists in a
+    // harness's own folder keeps working after the rename.
+    const locations = new Map<string, string>();
     for (const harness of FILE_SKILL_HARNESSES) {
-      const legacyPath = path.resolve(resolvePrimarySkillTargetPath(harness, { ...options, skillName: legacyName }));
-      locations.set(legacyPath, path.resolve(resolvePrimarySkillTargetPath(harness, { ...options, skillName: newName })));
-      for (const duplicate of resolveDuplicateSkillTargetPaths(harness, { ...options, skillName: legacyName })) {
-        const key = path.resolve(duplicate);
-        if (!locations.has(key)) locations.set(key, null);
+      const newPath = path.resolve(resolvePrimarySkillTargetPath(harness, { ...options, skillName: newName }));
+      const legacyPaths = [
+        resolvePrimarySkillTargetPath(harness, { ...options, skillName: legacyName }),
+        ...resolveDuplicateSkillTargetPaths(harness, { ...options, skillName: legacyName })
+      ];
+      for (const legacyPath of legacyPaths) {
+        const key = path.resolve(legacyPath);
+        if (!locations.has(key)) locations.set(key, newPath);
       }
     }
     for (const [legacyPath, newPath] of locations) {
-      const result = migrateLegacySkillPath({ legacyPath, newPath, legacyName, newName, known, newBundled, linkSource, options });
+      const result = migrateLegacySkillPath({ legacyPath, newPath, legacyName, newName, known, newBundled, linkSource, roots, options });
       if (result) results.push(result);
     }
   }
@@ -354,102 +360,99 @@ export function migrateLegacySkillInstalls(options: LegacySkillMigrationOptions 
 }
 
 function migrateLegacySkillPath(input: {
-  legacyPath: string; newPath: string | null; legacyName: string; newName: string;
-  known: Set<string>; newBundled: string; linkSource: string; options: LegacySkillMigrationOptions;
+  legacyPath: string; newPath: string; legacyName: string; newName: string; known: Set<string>;
+  newBundled: string; linkSource: string; roots: string[]; options: LegacySkillMigrationOptions;
 }): LegacySkillMigrationResult | null {
   const { legacyPath, newPath, legacyName, newName, options } = input;
-  const reportedPath = newPath ?? legacyPath;
   let legacy: fs.Stats | undefined;
   try {
     legacy = fs.lstatSync(legacyPath, { throwIfNoEntry: false });
   } catch (error) {
-    return { legacyPath, newPath: reportedPath, status: "failed", message: errorText(error) };
+    return { legacyPath, newPath, status: "failed", message: errorText(error) };
   }
   if (!legacy) return null;
+  const kept = (status: "kept_customized" | "kept_occupied", message: string): LegacySkillMigrationResult => ({
+    legacyPath, newPath, status, message, offer: keptOffer(legacyPath, `${status}-${newName}`, options)
+  });
   try {
-    const content = legacyContentDigest(legacyPath, legacy, legacyName);
     const recorded = getManagedContent(legacyPath, options)?.digest;
-    const ours = content === "ours-dangling" ||
-      (content !== null && content !== "foreign" && (input.known.has(content) || content === recorded));
-    if (!ours) {
-      return {
-        legacyPath, newPath: reportedPath, status: "kept_customized",
-        message: `${legacyPath} is customized or not from Shrooms; left in place. The skill is now ${newName}.`,
-        offer: keptOffer(legacyPath, `kept-${newName}`, options)
-      };
+    if (!legacyIsOurs(legacyPath, legacy, legacyName, input.known, recorded, input.roots)) {
+      return kept("kept_customized", `${legacyPath} is customized or not from Shrooms; left in place. The skill is now ${newName}.`);
     }
-    if (newPath) {
-      const state = newSkillState(newPath, input.newBundled, input.linkSource, newName, options);
-      if (state === "occupied") {
-        return {
-          legacyPath, newPath, status: "kept_occupied",
-          message: `${newPath} already holds something else; left ${legacyPath} in place.`,
-          offer: keptOffer(legacyPath, `occupied-${newName}`, options)
-        };
-      }
-      if (state !== "ours") {
-        removeInstalledSkill(newPath);
-        fs.mkdirSync(path.dirname(newPath), { recursive: true });
-        if (legacy.isSymbolicLink()) {
-          fs.symlinkSync(input.linkSource, newPath, process.platform === "win32" ? "junction" : "dir");
-          recordManagedContent(newPath, "skill-copy", digestDirectory(input.linkSource), options);
-        } else {
-          fs.cpSync(input.newBundled, newPath, { recursive: true });
-          recordManagedContent(newPath, "skill-copy", digestDirectory(input.newBundled), options);
-        }
-      }
+    const state = newSkillState(newPath, input.newBundled, input.linkSource, newName, input.roots, options);
+    if (state === "occupied") {
+      return kept("kept_occupied", `${newPath} already holds something else; left ${legacyPath} in place.`);
+    }
+    if (state !== "ours" && !createNewSkill(newPath, state, legacy.isSymbolicLink(), input.newBundled, input.linkSource, options)) {
+      return kept("kept_occupied", `${newPath} appeared while moving ${legacyPath}; left the old install in place.`);
     }
     removeInstalledSkill(legacyPath);
-    return {
-      legacyPath, newPath: reportedPath, status: "renamed",
-      message: newPath ? `Moved skill ${legacyPath} to ${newPath}.` : `Removed old duplicate skill ${legacyPath}.`
-    };
+    return { legacyPath, newPath, status: "renamed", message: `Moved skill ${legacyPath} to ${newPath}.` };
   } catch (error) {
-    return { legacyPath, newPath: reportedPath, status: "failed", message: errorText(error) };
+    return { legacyPath, newPath, status: "failed", message: errorText(error) };
   }
-}
-
-// The old install's content digest; "ours-dangling" for a link whose target is
-// gone but sat where Shrooms puts skills; "foreign" for a link elsewhere.
-function legacyContentDigest(legacyPath: string, stat: fs.Stats, legacyName: string): string | "ours-dangling" | "foreign" | null {
-  if (stat.isSymbolicLink()) {
-    const destination = path.resolve(path.dirname(legacyPath), fs.readlinkSync(legacyPath));
-    if (!isShroomsSkillLocation(destination, legacyName)) return "foreign";
-    if (!fs.existsSync(destination)) return "ours-dangling";
-    return fs.statSync(destination).isDirectory() ? digestDirectory(destination) : null;
-  }
-  return stat.isDirectory() ? digestDirectory(legacyPath) : null;
 }
 
 /**
- * Whether a link destination is a place Shrooms installs bundled skills from:
- * this package, a standalone release or its `current` link, or the npm copy.
+ * Whether an old install is Shrooms' own and unedited. A link must lead to a
+ * known install location or have been recorded when Shrooms made it; then its
+ * content must be the stub, an old bundled skill, or what was recorded. A
+ * dangling link counts only with that evidence. A copy must match its record.
  */
-function isShroomsSkillLocation(destination: string, skillName: string): boolean {
+function legacyIsOurs(
+  legacyPath: string, stat: fs.Stats, legacyName: string, known: Set<string>, recorded: string | undefined, roots: string[]
+): boolean {
+  if (stat.isSymbolicLink()) {
+    const destination = path.resolve(path.dirname(legacyPath), fs.readlinkSync(legacyPath));
+    if (!isShroomsSkillLocation(destination, legacyName, roots) && recorded === undefined) return false;
+    if (!fs.existsSync(destination)) return true;
+    if (!fs.statSync(destination).isDirectory()) return false;
+    const digest = digestDirectory(destination);
+    return known.has(digest) || digest === recorded;
+  }
+  if (!stat.isDirectory()) return false;
+  const digest = digestDirectory(legacyPath);
+  return digest === recorded || digest === LEGACY_BUNDLED_SKILL_DIGEST;
+}
+
+/**
+ * Install directories Shrooms itself manages: this package, the standalone
+ * install directory (its `current` link and releases), the default install
+ * directory, and the published npm package. Nothing else counts by location.
+ */
+function knownInstallRoots(options: SkillInstallOptions): string[] {
+  const roots = [currentPackageDir()];
+  const homeDir = options.homeDir ?? process.env.HOME ?? "";
+  const installDirs = [path.join(homeDir, ".local", "share", "talking-stick")];
+  if (isStandalone()) installDirs.push(standaloneInstallDir());
+  for (const installDir of installDirs) {
+    roots.push(path.join(installDir, "current"));
+    roots.push(path.join(installDir, "releases"));
+  }
+  return roots;
+}
+
+function isShroomsSkillLocation(destination: string, skillName: string, roots: string[]): boolean {
   if (path.basename(destination) !== skillName || path.basename(path.dirname(destination)) !== "skills") return false;
   const packageRoot = path.dirname(path.dirname(destination));
-  if (sameRealPath(packageRoot, currentPackageDir())) return true;
-  const normalized = packageRoot.split(path.sep).join("/");
-  if (/\/node_modules\/talking-stick$/.test(normalized)) return true;
-  if (/\/releases\/[^/]+$/.test(normalized) || path.basename(packageRoot) === "current") return true;
-  try {
-    const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")) as { name?: unknown };
-    return manifest.name === "talking-stick";
-  } catch {
-    return false;
-  }
+  if (/[\\/]node_modules[\\/]talking-stick$/.test(packageRoot)) return true;
+  return roots.some((root) => {
+    if (path.basename(root) === "releases") return path.dirname(path.resolve(packageRoot)) === path.resolve(root);
+    return path.resolve(packageRoot) === path.resolve(root) || sameRealPath(packageRoot, root);
+  });
 }
 
 function newSkillState(
-  newPath: string, newBundled: string, linkSource: string, newName: string, options: SkillInstallOptions
+  newPath: string, newBundled: string, linkSource: string, newName: string, roots: string[], options: SkillInstallOptions
 ): "absent" | "ours" | "stale" | "occupied" {
   const stat = fs.lstatSync(newPath, { throwIfNoEntry: false });
   if (!stat) return "absent";
   if (stat.isSymbolicLink()) {
     const destination = path.resolve(path.dirname(newPath), fs.readlinkSync(newPath));
     if (sameRealPath(destination, linkSource) || sameRealPath(destination, newBundled)) return "ours";
-    return isShroomsSkillLocation(destination, newName) &&
-      (!fs.existsSync(destination) || getManagedContent(newPath, options)?.digest === digestDirectory(destination))
+    if (!isShroomsSkillLocation(destination, newName, roots)) return "occupied";
+    // A known location that's gone or unedited since it was recorded is ours to refresh.
+    return !fs.existsSync(destination) || getManagedContent(newPath, options)?.digest === digestDirectory(destination)
       ? "stale" : "occupied";
   }
   if (stat.isDirectory()) {
@@ -457,6 +460,40 @@ function newSkillState(
     return digest === digestDirectory(newBundled) || digest === getManagedContent(newPath, options)?.digest ? "ours" : "occupied";
   }
   return "occupied";
+}
+
+/**
+ * Creates the new skill without replacing anything that appeared since the
+ * check. A missing path gets a link (which fails if the path now exists) or a
+ * copy renamed into place; our own stale link is swapped for a fresh one only
+ * while it is still a link. Returns false when something else got there first.
+ */
+function createNewSkill(
+  newPath: string, state: "absent" | "stale", asLink: boolean, newBundled: string, linkSource: string, options: SkillInstallOptions
+): boolean {
+  fs.mkdirSync(path.dirname(newPath), { recursive: true });
+  const linkType = process.platform === "win32" ? "junction" : "dir";
+  const link = asLink || state === "stale";
+  const temporary = `${newPath}.tt-${process.pid}.tmp`;
+  try {
+    if (state === "absent" && link) {
+      fs.symlinkSync(linkSource, newPath, linkType);
+    } else {
+      fs.rmSync(temporary, { recursive: true, force: true });
+      if (link) fs.symlinkSync(linkSource, temporary, linkType);
+      else fs.cpSync(newBundled, temporary, { recursive: true });
+      const current = fs.lstatSync(newPath, { throwIfNoEntry: false });
+      if (state === "absent" ? current !== undefined : !current?.isSymbolicLink()) return false;
+      fs.renameSync(temporary, newPath);
+    }
+  } catch (error) {
+    if (["EEXIST", "ENOTEMPTY", "EISDIR", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+  recordManagedContent(newPath, "skill-copy", digestDirectory(link ? linkSource : newBundled), options);
+  return true;
 }
 
 function keptOffer(legacyPath: string, reason: string, options: SkillInstallOptions): boolean {
