@@ -284,6 +284,19 @@ describe("tt up --headless", () => {
     expect(workerSearchPath({ PATH: `${t.bin}:${local}` }, t.home, "darwin")).toBe(`${t.bin}:${local}`);
   });
 
+  test("agents installed next to tt count as installed when the caller's PATH lacks that folder", async () => {
+    // The standard layout: tt from install.sh and native Claude Code both in ~/.local/bin.
+    const t = setup({ ttOnPath: false, installed: ["codex"] });
+    const local = path.join(t.home, ".local", "bin");
+    fs.mkdirSync(local, { recursive: true });
+    for (const name of ["tt", "claude"]) fs.writeFileSync(path.join(local, name), "#!/bin/sh\n", { mode: 0o755 });
+    const preview = await t.up(["--print"]);
+    expect(preview.workers.map((worker: { agent: string }) => worker.agent)).toEqual(["claude", "codex"]);
+    const result = await t.up(["--agents", "claude"]);
+    expect(result.workers).toMatchObject([{ agent: "claude", worker: "shrooms-claude", action: "added" }]);
+    expect(t.spec("shrooms-claude").env).toEqual([{ name: "PATH", from: "literal", value: `${local}:${t.bin}` }]);
+  });
+
   test("worker-name prefixes are lowercase and worker-id safe", () => {
     expect(headlessPrefix("Talking Stick")).toBe("talking-stick");
     expect(headlessPrefix("__api")).toBe("api");

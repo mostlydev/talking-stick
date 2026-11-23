@@ -228,11 +228,13 @@ export async function handleHeadlessUp(runtime: Runtime, parsed: ParsedCommand, 
 
   const dataDir = resolveDataDir({ env });
   const searchPath = workerSearchPath(env, options.homeDir, platform);
-  const launchable = installedLaunchAgents(env, options.homeDir, true, platform).filter((agent) => agent !== "opencode");
+  // Agents are looked up on the PATH the workers will run with, which may add tt's folder.
+  const workerEnv = { ...env, PATH: searchPath };
+  const launchable = installedLaunchAgents(workerEnv, options.homeDir, true, platform).filter((agent) => agent !== "opencode");
   const choice = resolveAgentChoice({ requested, defaults: requested ? {} : readLaunchDefaults(dataDir), roomKey: roomPath, launchable });
   if (requested) {
     const missing = requested.flatMap((agent) => {
-      const reason = launchUnavailableReason(agent, env, options.homeDir, platform);
+      const reason = launchUnavailableReason(agent, workerEnv, options.homeDir, platform);
       return reason ? [`${agentLabel(agent)} (${reason})`] : [];
     });
     if (missing.length > 0) throw new Error(`Cannot start ${missing.join(", ")} here.`);
