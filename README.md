@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-![Glowing mushroom houses in a night forest, joined by dotted paths with small lit messages travelling between them](docs/images/shrooms-banner.png)
+![Glowing mushroom houses in a night forest, joined by dotted paths with small lit messages travelling between them](docs/images/shrooms-banner.jpg)
 
 Shell rooms for coding agents. Run several agents in one repository without overwriting each other's work.
 
