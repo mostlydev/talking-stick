@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { WorkerEvent, WorkerSpec } from "../src/supervisor/adapter.js";
+import { AcpRpc } from "../src/supervisor/adapters/acp-rpc.js";
 import { AntigravityAdapter } from "../src/supervisor/adapters/antigravity.js";
 
 const cleanup: Array<() => void | Promise<void>> = [];
@@ -32,6 +33,26 @@ function fixture() {
     .map(line => JSON.parse(line)).find(entry => entry.method === name);
   return { root, trace, spec, adapter, events, start, method };
 }
+
+test("an ACP prompt can finish after a long-running turn", async () => {
+  vi.useFakeTimers();
+  try {
+    const rpc = new AcpRpc();
+    const write = vi.fn(async () => {});
+    rpc.process = { pid: 123, pgid: 123, processStartedAt: "start", write, alive: () => true, async stop() {} };
+    const completed = vi.fn();
+    const rejected = vi.fn();
+    const result = rpc.request("session/prompt", {}, undefined).then(completed, rejected);
+    await vi.advanceTimersByTimeAsync(45 * 60_000);
+    expect(completed).not.toHaveBeenCalled();
+    expect(rejected).not.toHaveBeenCalled();
+    rpc.complete({ id: 1, result: { stopReason: "end_turn" } });
+    await result;
+    expect(completed).toHaveBeenCalledWith({ stopReason: "end_turn" });
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 posix("runs through native ACP, accepts a prompt and resumes the exact conversation", async () => {
   const f = fixture();

@@ -248,7 +248,7 @@ class AntigravityHandle implements WorkerHandle {
     this.turn = turn;
     return new Promise(resolve => {
       void this.rpc.request("session/prompt", { sessionId: this.session,
-        prompt: [{ type: "text", text: input.text }] }, 30 * 60_000,
+        prompt: [{ type: "text", text: input.text }] }, undefined,
       () => resolve("written")).then(result => {
         if (typeof result.stopReason !== "string" ||
             (result.sessionId !== undefined && result.sessionId !== this.session)) {

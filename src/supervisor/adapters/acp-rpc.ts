@@ -19,13 +19,13 @@ function authenticationError(value: unknown): boolean {
 export class AcpRpc {
   process: ManagedProcess | null = null;
   private id = 0;
-  private pending = new Map<number, { resolve(value: AcpObject): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-  request(method: string, params: AcpObject, timeoutMs: number, onWritten?: () => void): Promise<AcpObject> {
+  private pending = new Map<number, { resolve(value: AcpObject): void; reject(error: Error): void; timer?: NodeJS.Timeout }>();
+  request(method: string, params: AcpObject, timeoutMs: number | undefined, onWritten?: () => void): Promise<AcpObject> {
     if (!this.process?.alive()) return Promise.reject(new AcpError("ACP is not connected.", "unsent"));
     if (this.pending.size >= 64) return Promise.reject(new AcpError("ACP has too many pending requests.", "unsent"));
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
         this.pending.delete(id);
         reject(new AcpError("ACP request is unconfirmed.", "uncertain"));
       }, timeoutMs);
