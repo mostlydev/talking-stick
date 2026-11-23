@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.37.0] — 2026-11-23
+
+Full notes: [`docs/releases/0.37.0.md`](docs/releases/0.37.0.md).
+
 ### Added
 
 - Rooms keep up to three open blockers. See them in chat, `tt blocker list`, and `tt room brief`. An explicit resolution message closes a blocker and stays in room history, including when sent from outside an empty room.
@@ -1166,6 +1170,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.37.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.37.0
 [0.36.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.36.0
 [0.35.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.35.0
 [0.34.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.34.0
