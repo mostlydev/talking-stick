@@ -2407,8 +2407,9 @@ describe("tt notes", () => {
       "--replace",
       "--print"
     ]);
-    expect(out).toContain("talking-stick");
-    expect(out).toContain("link");
+    // Exact paths, so the checkout's own directory name can't satisfy the check.
+    expect(out).toMatch(/\[codex\] link \S+\/skills\/rooms -> \S+\/\.agents\/skills\/rooms\n/);
+    expect(out).toMatch(/\[codex\] link \S+\/skills\/rooms-oversee -> \S+\/\.agents\/skills\/rooms-oversee\n/);
   });
 
   test("tt uninstall --print includes skill removal", async () => {
