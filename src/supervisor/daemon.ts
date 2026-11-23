@@ -278,7 +278,7 @@ export class Supervisor {
     this.starting.delete(worker.worker_id);
     this.store.transaction(() => {
       this.store.updateGeneration(worker.worker_id, generation, { pid: handle.pid, process_started_at: handle.processStartedAt,
-        pgid: handle.pgid, session_id: handle.sessionId() ?? resume ?? null, state: "idle" });
+        pgid: handle.pgid, session_id: handle.sessionId() ?? resume ?? null, state: resume ? "starting" : "idle" });
       if (worker.fresh_next) this.store.clearFresh(worker.worker_id);
       this.store.audit(this.at(), "supervisor", "start", worker.worker_id, { generation, pid: handle.pid, resumed: Boolean(resume) });
     });
@@ -298,6 +298,10 @@ export class Supervisor {
     if (!current || current.desired !== "running" || current.desired_version !== worker.desired_version) {
       await this.stopHandle(worker.worker_id, handle);
       return;
+    }
+    if (resume) {
+      this.recoverMembership(current, handle);
+      this.store.updateGeneration(worker.worker_id, generation, { state: this.reportedState.get(worker.worker_id) ?? "idle" });
     }
     this.bootstrapWorker(handle, worker.worker_id);
   }

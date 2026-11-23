@@ -78,6 +78,21 @@ failures. `TT_NO_AUTO_UPDATE=1` turns off both startup and chat checks. `tt self
 **After any update,** restart running harnesses so they load the new skill and hooks, and reopen
 `tt chat`.
 
+## Skill and hook locations
+
+The workspace instructions live in `AGENTS.md`. The repository also provides
+`CLAUDE.md` for Claude Code. Global skills and hooks use these directories:
+
+| Harness | Global skills | Hooks |
+|---|---|---|
+| Claude Code | `~/.claude/skills` | `~/.claude/settings.json` |
+| Codex | `~/.agents/skills` | `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) |
+| Grok Build | `~/.agents/skills` | `$GROK_HOME/hooks/` (default `~/.grok/hooks/`) |
+| Antigravity (`agy`) | `~/.gemini/config/skills` | `~/.gemini/config/hooks.json` |
+
+Antigravity reads `.agents/skills` under a workspace. For global installs use
+`tt install agy`; it knows the Antigravity path and preserves customized skills.
+
 ## Harness hooks
 
 All of them merge into existing settings, fail open, and are

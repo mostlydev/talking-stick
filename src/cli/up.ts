@@ -39,7 +39,7 @@ import { RoomSelectorError, roomShortName, selectedRoom } from "./room-selector.
 import { pickDeepestRoom } from "./session.js";
 
 export const UP_USAGE =
-  "tt up [--agents claude,codex,grok,opencode,antigravity [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab | --new-workspace] [--print] [--forget] [--timeout 120s] [--json]";
+  "tt up [--agents claude,codex,grok,agy,opencode [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab | --new-workspace] [--print] [--forget] [--timeout 120s] [--json]";
 
 export type AgentPickerPrompt = (picker: AgentPicker, roomName: string) =>
   Promise<{ agents: LaunchAgent[]; scope: PickerScope } | null>;
