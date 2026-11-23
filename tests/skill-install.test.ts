@@ -500,6 +500,24 @@ describe("talking-stick skill install", () => {
     expect(fs.existsSync(path.join(tempRoot, ".agents", "skills"))).toBe(true);
   });
 
+  test("a fresh agy install creates agy's config folder when agy is on PATH", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const target = path.join(tempRoot, ".gemini", "config", "skills", "rooms");
+
+    // No agy and no folder: nothing to install for.
+    expect(planSkillInstall("antigravity", { homeDir: tempRoot, skipMissing: true, which: () => null }).kind).toBe("skip");
+
+    // agy installed but never run, so ~/.gemini/config does not exist yet.
+    const action = planSkillInstall("antigravity", {
+      homeDir: tempRoot, skipMissing: true, which: (binary: string) => (binary === "agy" ? "/usr/local/bin/agy" : null)
+    });
+    expect(action.kind).toBe("file-patch");
+    if (action.kind !== "file-patch") throw new Error("unreachable");
+    action.apply();
+    expect(fs.realpathSync(target)).toBe(fs.realpathSync(resolveBundledSkillPath()));
+  });
+
   test("duplicate cleanup keeps agy's old link until agy's own folder holds the skill", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);

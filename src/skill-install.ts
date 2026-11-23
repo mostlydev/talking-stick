@@ -18,6 +18,7 @@ import {
 } from "./managed-content.js";
 import {
   MissingHarnessError,
+  detectHarness,
   resolveHarnessConfigDir,
   skipAction,
   type InstallAction,
@@ -82,6 +83,14 @@ export function resolveSharedAgentsSkillsDir(
 ): string {
   const homeDir = options.homeDir ?? process.env.HOME ?? "";
   return path.join(homeDir, ".agents", "skills");
+}
+
+/**
+ * agy creates ~/.gemini/config only when it first needs it, so a fresh install
+ * with agy on PATH may create it, as its hooks install does.
+ */
+function mayCreateConfigDir(harness: HarnessId, options: SkillInstallOptions): boolean {
+  return harness === "antigravity" && detectHarness(harness, options).detected;
 }
 
 /** ~/.gemini, where agy keeps its config folder and its older skill folders. */
@@ -200,7 +209,8 @@ export function planSkillInstall(
   const targetPath = resolvePrimarySkillTargetPath(harness, options);
   const harnessRootPath =
     skillLoadingModel(harness) === "shared" ||
-    skillLoadingModel(harness) === "shared+proprietary"
+    skillLoadingModel(harness) === "shared+proprietary" ||
+    mayCreateConfigDir(harness, options)
       ? undefined
       : resolveHarnessConfigDir(harness, options);
   const pathExists = options.pathExists ?? fs.existsSync;

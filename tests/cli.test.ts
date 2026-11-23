@@ -2339,6 +2339,25 @@ describe("tt notes", () => {
     expect(fs.existsSync(path.join(home, ".agents", "skills", "rooms"))).toBe(false);
   });
 
+  test("tt install agy in a fresh home installs the skill and the hooks", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
+    tempDirs.push(home);
+    const bin = path.join(home, "bin");
+    fs.mkdirSync(bin);
+    const agy = path.join(bin, process.platform === "win32" ? "agy.cmd" : "agy");
+    fs.writeFileSync(agy, "#!/bin/sh\n", { mode: 0o755 });
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+    try {
+      await installWithHome(home, ["install", "agy", "--link"]);
+    } finally {
+      process.env.PATH = previousPath;
+    }
+
+    expect(fs.realpathSync(path.join(home, ".gemini", "config", "skills", "rooms"))).toBe(fs.realpathSync(path.resolve("skills", "rooms")));
+    expect(fs.readFileSync(path.join(home, ".gemini", "config", "hooks.json"), "utf8")).toContain("tt antigravity-hook");
+  });
+
   test("tt install agy keeps the old link when agy's folder holds something else", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
     tempDirs.push(home);

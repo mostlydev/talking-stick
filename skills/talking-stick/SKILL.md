@@ -15,4 +15,6 @@ tt instructions show --json
 tt standby --json
 ```
 
+If `tt standby --json` reports `can_self_wake: false`, nothing can wake you. Keep one `tt wait --park --json` running instead of stopping.
+
 If you have a task, read the full `rooms` skill before you continue. It sits in this skill's real folder as `../rooms/SKILL.md`. If this folder is a symbolic link, resolve the link first (`readlink -f` on the folder), because the path next to the link itself does not exist.

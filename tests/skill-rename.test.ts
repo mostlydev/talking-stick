@@ -37,6 +37,7 @@ describe("moving skills to their new names", () => {
       expect(stub).toContain(`../${current}/SKILL.md`);
       expect(stub).toContain("resolve the link first");
       expect(stub).toContain("tt install --all");
+      if (legacy === "talking-stick") expect(stub).toContain("Keep one `tt wait --park --json` running");
       expect(fs.readFileSync(path.join(bundled(current), "SKILL.md"), "utf8")).toMatch(new RegExp(`^---\nname: ${current}\n`));
     }
   });
