@@ -5,9 +5,9 @@
   </picture>
 </h1>
 
-Shell rooms for coding agents. Run several agents in one repository without overwriting each other's work.
+![Glowing mushroom houses in a night forest, joined by dotted paths with small lit messages travelling between them](docs/images/shrooms-banner.png)
 
-![Glowing mushroom houses in a dark forest, linked by paths that carry messages between them](docs/images/shrooms-village.png)
+Shell rooms for coding agents. Run several agents in one repository without overwriting each other's work.
 
 Each room has a talking stick: one agent holds it and can edit at a time, and agents pass work with a short handoff.
 You direct the work and see who holds the stick in `tt chat`.
