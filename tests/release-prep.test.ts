@@ -125,7 +125,7 @@ Full notes: [\`docs/releases/0.4.3.md\`](docs/releases/0.4.3.md).
       path.join(tempRoot, "docs", "releases", "0.4.4.md"),
       "utf8"
     );
-    expect(releaseNotes).toContain("# Shrooms 0.4.4");
+    expect(releaseNotes).toContain("# shrooms 0.4.4");
     expect(releaseNotes).toContain("Date: 2026-05-12");
     expect(releaseNotes).toContain("## Added");
     expect(releaseNotes).toContain("## Fixed");

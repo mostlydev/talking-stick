@@ -19,6 +19,7 @@ changes will be called out under **Breaking changes**.
 
 - The repository is now github.com/mostlydev/shrooms. The installer, update check, and docs use the new address. Existing installers, update checks and release downloads still work through GitHub's redirects, so older installs update as before. Links to individual issues need the new repository path. Release downloads keep their `talking-stick_*` names.
 - The skills are now `rooms` (`/rooms` in Claude Code, `$rooms` in Codex) and `rooms-oversee`, formerly `talking-stick` and `talking-stick-rooms`. Updating moves installs under the old names when they are unedited links or copies made by Shrooms, and leaves customized ones in place. Release archives keep a short `skills/talking-stick` stub that points to `rooms`, because installers from 0.38.0 and earlier check for it.
+- The name is now written in lowercase, shrooms, in the README, docs, skills, and messages. The README opens with the shrooms wordmark, in dark and light versions for GitHub's themes.
 
 ## [0.38.0] — 2026-11-23
 

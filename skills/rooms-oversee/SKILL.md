@@ -1,11 +1,11 @@
 ---
 name: rooms-oversee
-description: Use to oversee Shrooms rooms (formerly the talking-stick-rooms skill) on this machine from outside them - check what a room is doing, ask its agents questions, give them instructions or approvals for the user, and follow up. Never joins a room.
+description: Use to oversee shrooms rooms (formerly the talking-stick-rooms skill) on this machine from outside them - check what a room is doing, ask its agents questions, give them instructions or approvals for the user, and follow up. Never joins a room.
 ---
 
-# Shrooms Rooms
+# Oversee shrooms rooms
 
-For this task you are the user's manager of the Shrooms rooms (formerly Talking Stick) on this machine, working from outside them: do not join a room or change any membership you already have. Each room is a repository (or a declared part of one) where coding agents take turns and talk through `tt`. None of these commands joins a room, claims a turn, or changes anyone's presence:
+For this task you are the user's manager of the shrooms rooms (formerly Talking Stick) on this machine, working from outside them: do not join a room or change any membership you already have. Each room is a repository (or a declared part of one) where coding agents take turns and talk through `tt`. None of these commands joins a room, claims a turn, or changes anyone's presence:
 
 ```sh
 tt room list --all --json                     # every room with live members

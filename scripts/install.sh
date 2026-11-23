@@ -137,8 +137,8 @@ while IFS= read -r line; do
     "renamed "*) printf 'Moved skill %s to its new name.\n' "${line#renamed }" ;;
     "kept "*) printf 'Left skill %s as it is (customized or not ours).\n' "${line#kept }" ;;
     "rooms_ready") printf 'The rooms command is also available in %s.\n' "$bin_dir" ;;
-    "rooms_occupied") printf 'Kept the existing %s/rooms. Use tt for Shrooms.\n' "$bin_dir" ;;
-    "rooms_unavailable") printf 'Could not create %s/rooms. Use tt for Shrooms.\n' "$bin_dir" ;;
+    "rooms_occupied") printf 'Kept the existing %s/rooms. Use tt for shrooms.\n' "$bin_dir" ;;
+    "rooms_unavailable") printf 'Could not create %s/rooms. Use tt for shrooms.\n' "$bin_dir" ;;
     "npm_copy "*) npm_copy=${line#npm_copy } ;;
     "npm_blocked "*) printf 'Not offering to remove the npm copy: %s still uses its skill. Re-run `tt install` after reviewing it.\n' "${line#npm_blocked }" ;;
   esac

@@ -79,7 +79,7 @@ describe("moving skills to their new names", () => {
     expect(fs.existsSync(shared("rooms"))).toBe(false);
   });
 
-  test("a link to something that isn't from Shrooms is left alone", () => {
+  test("a link to something that isn't from shrooms is left alone", () => {
     const { root, options, claude } = home();
     const mine = path.join(root, "my-skills", "talking-stick");
     fs.mkdirSync(mine, { recursive: true });
@@ -134,10 +134,10 @@ describe("moving skills to their new names", () => {
 
   test("a dangling link only counts as ours from a known install location or a record", () => {
     const { root, options, claude, shared } = home();
-    // Looks like a release layout, but nothing Shrooms knows about.
+    // Looks like a release layout, but nothing shrooms knows about.
     const elsewhere = path.join(root, ".other", "current", "skills", "talking-stick");
     fs.symlinkSync(elsewhere, claude("talking-stick"), "dir");
-    // Shrooms recorded this one when it made it, wherever it pointed.
+    // shrooms recorded this one when it made it, wherever it pointed.
     const recordedLink = shared("talking-stick");
     fs.symlinkSync(path.join(root, ".gone", "skills", "talking-stick"), recordedLink, "dir");
     recordManagedContent(recordedLink, "skill-copy", "f".repeat(64), options);

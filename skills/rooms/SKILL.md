@@ -1,11 +1,11 @@
 ---
 name: rooms
-description: Use when working in a Shrooms room (formerly the talking-stick skill) - joining it, coordinating with other agents, taking turns, handing off work, or messaging peers with tt. To check on or question rooms from outside, use rooms-oversee instead.
+description: Use when working in a shrooms room (formerly the talking-stick skill) - joining it, coordinating with other agents, taking turns, handing off work, or messaging peers with tt. To check on or question rooms from outside, use rooms-oversee instead.
 ---
 
-# Shrooms
+# shrooms
 
-Shrooms (formerly Talking Stick) gives several harnesses a shared room: one event stream, and a talking stick that grants one shared-writer turn at a time. Use the `tt` CLI.
+shrooms (formerly Talking Stick) gives several harnesses a shared room: one event stream, and a talking stick that grants one shared-writer turn at a time. Use the `tt` CLI.
 
 If the task is only to check on rooms or ask another room's agents something, use the `rooms-oversee` skill and do not join anything. If you are already in a room, stay in it; looking into other rooms never changes your membership.
 

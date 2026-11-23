@@ -32,7 +32,7 @@ export const DEFAULT_SKILL_NAME = "rooms";
 export const COMPANION_SKILL_NAMES = ["rooms-oversee"] as const;
 export const BUNDLED_SKILL_NAMES: readonly string[] = [DEFAULT_SKILL_NAME, ...COMPANION_SKILL_NAMES];
 /**
- * The names the bundled skills had before Shrooms 0.39, each with its new name.
+ * The names the bundled skills had before shrooms 0.39, each with its new name.
  * Their folders still ship as short redirect stubs, because installers from
  * 0.38.0 and earlier refuse an archive without skills/talking-stick/SKILL.md,
  * but they are never installed. Installs under these names move to the new ones.
@@ -377,7 +377,7 @@ function migrateLegacySkillPath(input: {
   try {
     const recorded = getManagedContent(legacyPath, options)?.digest;
     if (!legacyIsOurs(legacyPath, legacy, legacyName, input.known, recorded, input.roots)) {
-      return kept("kept_customized", `${legacyPath} is customized or not from Shrooms; left in place. The skill is now ${newName}.`);
+      return kept("kept_customized", `${legacyPath} is customized or not from shrooms; left in place. The skill is now ${newName}.`);
     }
     const state = newSkillState(newPath, input.newBundled, input.linkSource, options);
     if (state === "occupied") {
@@ -394,8 +394,8 @@ function migrateLegacySkillPath(input: {
 }
 
 /**
- * Whether an old install is Shrooms' own and unedited. A link must lead to a
- * known install location or have been recorded when Shrooms made it; then its
+ * Whether an old install is shrooms' own and unedited. A link must lead to a
+ * known install location or have been recorded when shrooms made it; then its
  * content must be the stub, an old bundled skill, or what was recorded. A
  * dangling link counts only with that evidence. A copy must match its record.
  */
@@ -416,7 +416,7 @@ function legacyIsOurs(
 }
 
 /**
- * Install directories Shrooms itself manages: this package, the standalone
+ * Install directories shrooms itself manages: this package, the standalone
  * install directory (its `current` link and releases), the default install
  * directory, and the published npm package. Nothing else counts by location.
  */

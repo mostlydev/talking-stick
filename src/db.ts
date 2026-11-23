@@ -594,7 +594,7 @@ const migrations: Migration[] = [
       shown_at TEXT
     );`,
     // Only a profile that existed before this upgrade has a name change to hear
-    // about. A new install starts as Shrooms and never sees it.
+    // about. A new install starts as shrooms and never sees it.
     after: (db, { existing }) => {
       if (!existing) return;
       db.prepare("INSERT OR IGNORE INTO profile_notices (notice_id, created_at) VALUES (?, ?)")

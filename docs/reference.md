@@ -908,7 +908,7 @@ room use, and `rooms-oversee`, for a session that watches rooms from outside (se
 [Observing rooms from outside](#observing-rooms-from-outside)). Both go to the same places, and an
 update adds `rooms-oversee` beside any existing `rooms` install. Before 0.39 the skills were named
 `talking-stick` and `talking-stick-rooms`. An update moves installs under those names to the new
-names when they are unedited links or copies made by Shrooms, and leaves customized ones in place.
+names when they are unedited links or copies made by shrooms, and leaves customized ones in place.
 Releases keep a short `skills/talking-stick` stub that points to `rooms`, because installers from
 0.38.0 and earlier check for it. Skill directory writes are
 delegated to the `skiller` binary when available. When setting up a source checkout, npm postinstall

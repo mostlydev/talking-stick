@@ -103,7 +103,7 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
             gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
-              --title "Shrooms $version" \
+              --title "shrooms $version" \
               --notes-file "docs/releases/$version.md" \
               --verify-tag
           fi

@@ -186,7 +186,7 @@ function ensureReleaseLink(changelog, version) {
 }
 
 function renderReleaseNotes(version, date, changelogBody) {
-  return `# Shrooms ${version}
+  return `# shrooms ${version}
 
 Date: ${date}
 
