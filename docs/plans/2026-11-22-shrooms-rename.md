@@ -23,6 +23,12 @@
 4. **Add ergonomic aliases after cutover.** Test that `tt` and `shrooms` see the same room, acquire the same stick, and update the same installation. Keep legacy asset labels until old updaters can parse the new ones or support both. Windows needs its own manually extracted archive and alias check.
 5. **Treat any on-disk path rename as a later migration.** It needs its own compatibility policy and test matrix, including old/new command coexistence, interruption, rollback, and an active supervisor. Never open two writable databases for one profile. Keeping the existing storage paths is a valid end state.
 
+## Existing installations must migrate seamlessly
+
+Treat compatibility as a release gate. Test direct upgrades from the currently published installers as well as upgrades from the bridge. Cover standalone macOS and Linux, manual Windows archive replacement, historical npm installs, and linked development checkouts. Carry forward the command, room database and IDs, worker state, service registration, hooks, and customized skill links. Prove that old hard-coded update endpoints work after a disposable repository rename. Defer the production rename if a supported existing upgrade path would strand an installation.
+
+After a successful upgrade, show one human-readable notice in the console updater or on the next interactive `tt` or `tt chat` launch. Example: “Talking Stick is now Shrooms. Keep using `tt`. Your rooms and settings carried over.” Share one durable notice marker per local user profile across consoles. Keep JSON, hooks, harness output, and wake envelopes unchanged. A failed or rolled-back update leaves the notice pending. Test the notice exactly once across restart, concurrent terminals, and self-update followed by chat.
+
 ## Acceptance
 
 A fresh Shrooms install opens a room. An upgrade from the public Talking Stick release preserves its room history, declared room routing, worker records, and installed skill links. Existing `tt` scripts and hooks continue to work. A single profile has one database and supervisor across both command names. Old GitHub links and the updater either work through the transition or point to a tested recovery path. Run these checks on macOS, Linux, and Windows where the surface exists before announcing the rename.
