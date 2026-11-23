@@ -1488,6 +1488,20 @@ test.each([false, true])("normal operator delivery steers Claude and still coale
   expect(nativeRequests).toHaveLength(1);
 });
 
+test("an outside blocker resolution wakes the room with an explicit resolution marker", async () => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  const blocker = service.addBlocker({ room_id: roomId, agent_id: "claude:aa", body: "May I continue?" });
+  const input = { agent_id: "codex:manager", room_id: roomId, resolves: blocker.blocker_id, body: "Continue." };
+  const sent = await service.sendMessageAndWake(input);
+  expect(nativeRequests).toHaveLength(1);
+  expect(nativeRequests[0]).toMatchObject({ steer: true, transport: "claude_inbox" });
+  expect(envelope(nativeRequests[0]).events[0]).toMatchObject({ event_seq: sent.event_seq,
+    payload: { body: `Resolves ${blocker.blocker_id}\nContinue.` } });
+  expect(await service.sendMessageAndWake(input)).toMatchObject({ deduplicated: true, event_seq: sent.event_seq });
+  expect(nativeRequests).toHaveLength(1);
+});
+
 test("normal peer delivery does not steer Claude", async () => {
   const { service, project, nativeRequests } = harness();
   const roomId = joinPair(service, project);

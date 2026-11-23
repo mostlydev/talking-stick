@@ -128,7 +128,7 @@ export function formatNativeEventText(input: {
   const lines = [`[talking-stick] room ${input.path} · ack: tt ack ${input.token}`];
   for (const event of input.events) {
     const payload = (event.payload ?? {}) as { body?: unknown; delivery_hint?: unknown; recipients?: unknown;
-      request_id?: unknown; in_reply_to?: unknown };
+      request_id?: unknown; in_reply_to?: unknown; resolves?: unknown };
     const recipients = Array.isArray(payload.recipients) ? payload.recipients.filter((id): id is string => typeof id === "string") : [];
     // Request ids are generated tokens, never sender text, so they are safe
     // in the header line.
@@ -144,6 +144,9 @@ export function formatNativeEventText(input: {
     const arrow = event.event_type === "message_sent" || event.to_agent_id || recipients.length > 0 ? ` → ${route}` : "";
     const reply = requestId ? ` · reply: tt msg reply ${requestId} --stdin` : "";
     lines.push(`#${event.event_seq} ${kind}${event.from_agent_id ?? "system"}${arrow}${urgent}${reply}`);
+    if (typeof payload.resolves === "string" && /^B[1-9]\d*$/.test(payload.resolves)) {
+      lines.push(...quote(`Resolves ${payload.resolves}`));
+    }
     if (typeof payload.body === "string" && payload.body.length > 0) lines.push(...quote(payload.body));
     for (const [index, attachment] of payloadAttachments(event.payload).entries()) lines.push(...quote(attachmentInstruction(attachment, index)));
     if (event.handoff) {

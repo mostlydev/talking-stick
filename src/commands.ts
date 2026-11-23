@@ -157,12 +157,29 @@ export interface SendMessageCommandInput {
   to_agent_id?: string | null;
   delivery_hint?: "normal" | "interrupt";
   attachments?: MessageAttachment[];
+  resolves?: string;
 }
 
 export interface WaitForEventsCommandInput extends WaitForEventsInput {}
 
 export class TalkingStickCommands {
   constructor(private readonly service = new TalkingStickService()) {}
+
+  listBlockers(input: Parameters<TalkingStickService["listBlockers"]>[0]) {
+    return this.service.listBlockers(input);
+  }
+
+  getBlockerCounts() {
+    return this.service.getBlockerCounts();
+  }
+
+  addBlocker(identity: DerivedIdentity, input: { room_id: string; body: string }) {
+    return this.service.addBlocker({ ...input, agent_id: identity.agent_id });
+  }
+
+  withdrawBlocker(identity: DerivedIdentity, input: { room_id: string; blocker_id: string; reason: string }) {
+    return this.service.withdrawBlocker({ ...input, agent_id: identity.agent_id });
+  }
 
   close(): void {
     this.service.close();
@@ -546,6 +563,7 @@ export class TalkingStickCommands {
       to_agent_id: input.to_agent_id,
       delivery_hint: input.delivery_hint,
       attachments: input.attachments,
+      resolves: input.resolves,
       process_metadata: identity.process_metadata
     });
   }

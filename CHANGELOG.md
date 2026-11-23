@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- Rooms keep up to three open blockers. See them in chat, `tt blocker list`, and `tt room brief`. An explicit resolution message closes a blocker and stays in room history, including when sent from outside an empty room.
+
 ### Fixed
 
 - Chat keeps supervised Claude visible after a reply by recognizing its version-named native process instead of attributing room activity to its temporary command shell.

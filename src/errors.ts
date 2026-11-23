@@ -2,6 +2,11 @@ import type { RoomState } from "./types.js";
 
 export type ProtocolErrorCode =
   | "room_not_found"
+  | "blocker_not_found"
+  | "blocker_limit"
+  | "blocker_withdrawn"
+  | "blocker_resolved"
+  | "room_blocked"
   | "request_not_found"
   | "request_key_conflict"
   | "no_recipients"

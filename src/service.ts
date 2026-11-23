@@ -1,3 +1,4 @@
+import type { RoomBlocker } from "./types.js";
 import { humanAttentionIdentity, isHumanDirected } from "./human-attention.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -1284,7 +1285,7 @@ export class TalkingStickService {
         // remaining agent rows, even stale ones, are left to idle purge.
         if (
           !remainingMembers.some((remaining) => !isObserverMember(remaining)) &&
-          !this.hasLiveObserver(remainingMembers)
+          !this.hasLiveObserver(remainingMembers) && !this.hasBlockers(input.room_id, true)
         ) {
           this.deleteRoom(input.room_id);
           return {
@@ -1301,7 +1302,7 @@ export class TalkingStickService {
           remaining_members: remainingMembers.length
         };
       }
-      if (!this.shouldKeepRoom(remainingMembers, now)) {
+      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasBlockers(input.room_id, true)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -1442,7 +1443,7 @@ export class TalkingStickService {
       });
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (!this.shouldKeepRoom(remainingMembers, now)) {
+      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasBlockers(input.room_id, true)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -2614,14 +2615,14 @@ export class TalkingStickService {
     // reaches every agent that is a member right now, standby included. An
     // agent's room message still wakes nobody: agents answering each other's
     // broadcasts would loop. Later joiners never inherit earlier messages.
-    const humanSender = input.agent_id.startsWith("human:");
+    const roomWake = input.agent_id.startsWith("human:") || input.resolves !== undefined;
     // An answer to a visitor goes to someone outside the room, so it wakes
     // nobody inside it; the visitor pulls answers with tt room replies.
     const wakeTargets: AgentId[] = link.in_reply_to ? [] : directed
       ? (lostIds.has(directed) ? [] : [directed])
       : scoped
         ? scoped.filter((agentId) => !lostIds.has(agentId))
-        : humanSender
+        : roomWake
           ? this.getMembers(input.room_id)
               .filter((member) => member.agent_id !== input.agent_id &&
                 !isObserverMember(member) && !member.agent_id.startsWith("human:"))
@@ -2646,7 +2647,8 @@ export class TalkingStickService {
         ...(link.in_reply_to ? { in_reply_to: link.in_reply_to } : {}),
         // Who a room message went to, for display only. Unlike recipients it
         // never narrows visibility: everyone in the room can still read it.
-        ...(!directed && !scoped && humanSender && wakeTargets.length > 0 ? { sent_to: wakeTargets } : {})
+        ...(input.resolves ? { resolves: input.resolves } : {}),
+        ...(!directed && !scoped && roomWake && wakeTargets.length > 0 ? { sent_to: wakeTargets } : {})
       }
     });
 
@@ -2692,15 +2694,90 @@ export class TalkingStickService {
 
   /**
    * Recovery notices for held recipients of a directed message or an
-   * operator's room message; an agent's room message notifies nobody.
+   * operator's room message or blocker resolution.
    */
-  private async noticeHeldRecipients(input: Pick<SendMessageInput, "agent_id" | "room_id" | "to_agent_id" | "to_agent_ids">, held: HeldRecipient[] | undefined): Promise<HeldRecipient[] | undefined> {
+  private async noticeHeldRecipients(input: Pick<SendMessageInput, "agent_id" | "room_id" | "to_agent_id" | "to_agent_ids" | "resolves">, held: HeldRecipient[] | undefined): Promise<HeldRecipient[] | undefined> {
     if (!held?.length) return held;
-    const notify = Boolean(input.to_agent_id || input.to_agent_ids?.length || input.agent_id.startsWith("human:"));
+    const notify = Boolean(input.to_agent_id || input.to_agent_ids?.length || input.resolves || input.agent_id.startsWith("human:"));
     if (!notify) return held;
     return Promise.all(held.map(async (recipient) => ({
       ...recipient, notice: await this.sendRecoveryNotice(input.room_id, recipient.agent_id)
     })));
+  }
+
+  listBlockers(input: { room_id: string; all?: boolean }): RoomBlocker[] {
+    this.requireRoom(input.room_id);
+    return this.db.prepare<[string, number], RoomBlocker>(`
+      SELECT 'B' || id AS blocker_id, room_id, author_agent_id, body, created_at,
+             closed_at, closed_by_agent_id, withdrawal_reason, resolution_event_seq
+      FROM room_blockers WHERE room_id = ? AND (? OR closed_at IS NULL) ORDER BY id
+    `).all(input.room_id, input.all ? 1 : 0);
+  }
+
+  getBlockerCounts(): Array<{ room_id: string; count: number }> {
+    return this.db.prepare<[], { room_id: string; count: number }>(`
+      SELECT room_id, COUNT(*) AS count FROM room_blockers WHERE closed_at IS NULL GROUP BY room_id
+    `).all();
+  }
+
+  private hasBlockers(roomId: string, includeHistory = false): boolean {
+    return Boolean(this.db.prepare(
+      includeHistory
+        ? "SELECT 1 FROM room_blockers WHERE room_id = ? LIMIT 1"
+        : "SELECT 1 FROM room_blockers WHERE room_id = ? AND closed_at IS NULL LIMIT 1"
+    ).get(roomId));
+  }
+
+  private requireBlocker(roomId: string, blockerId: string): RoomBlocker {
+    const id = /^B([1-9]\d*)$/i.exec(blockerId.trim());
+    const blocker = id && this.db.prepare<[string, string], RoomBlocker>(`
+      SELECT 'B' || id AS blocker_id, room_id, author_agent_id, body, created_at,
+             closed_at, closed_by_agent_id, withdrawal_reason, resolution_event_seq
+      FROM room_blockers WHERE room_id = ? AND id = ?
+    `).get(roomId, id[1]);
+    if (!blocker) throw new ProtocolError("blocker_not_found", `No blocker ${blockerId} in this room.`);
+    return blocker;
+  }
+
+  addBlocker(input: { room_id: string; agent_id: string; body: string }): RoomBlocker {
+    const body = input.body.trim();
+    if (!body || Buffer.byteLength(body) > 2_000) {
+      throw new ProtocolError("invalid_body", "Write the facts and one question in 1–2,000 bytes.");
+    }
+    return this.writeTransaction(() => {
+      const room = this.requireRoom(input.room_id);
+      if (room.state === "closed") throw new ProtocolError("room_closed", "Cannot add a blocker to a closed room.");
+      if (!this.getMember(input.room_id, input.agent_id)) {
+        throw new ProtocolError("unknown_member", "Join the room before raising a blocker.");
+      }
+      const open = this.listBlockers(input);
+      const repeated = open.find(blocker => blocker.body === body);
+      if (repeated) return repeated;
+      if (open.length >= 3) {
+        throw new ProtocolError("blocker_limit", `This room has three open blockers (${open.map(b => b.blocker_id).join(", ")}). Finish safe cleanup and park.`);
+      }
+      const timestamp = this.now().toISOString();
+      const id = this.db.prepare("INSERT INTO room_blockers (room_id, author_agent_id, body, created_at) VALUES (?, ?, ?, ?)")
+        .run(input.room_id, input.agent_id, body, timestamp).lastInsertRowid;
+      return this.requireBlocker(input.room_id, `B${id}`);
+    });
+  }
+
+  withdrawBlocker(input: { room_id: string; agent_id: string; blocker_id: string; reason: string }): RoomBlocker {
+    const reason = input.reason.trim();
+    if (!reason || Buffer.byteLength(reason) > 2_000) throw new ProtocolError("invalid_body", "Give a short reason for withdrawal.");
+    return this.writeTransaction(() => {
+      if (!this.getMember(input.room_id, input.agent_id)) {
+        throw new ProtocolError("unknown_member", "Join the room before withdrawing a blocker.");
+      }
+      const blocker = this.requireBlocker(input.room_id, input.blocker_id);
+      if (blocker.resolution_event_seq !== null) throw new ProtocolError("blocker_resolved", `${blocker.blocker_id} was already resolved.`);
+      if (blocker.closed_at) return blocker;
+      const timestamp = this.now().toISOString();
+      this.db.prepare(`UPDATE room_blockers SET closed_at = ?, closed_by_agent_id = ?, withdrawal_reason = ? WHERE id = ?`)
+        .run(timestamp, input.agent_id, reason, blocker.blocker_id.slice(1));
+      return this.requireBlocker(input.room_id, blocker.blocker_id);
+    });
   }
 
   sendMessage(input: SendMessageInput): SendMessageResult {
@@ -2734,9 +2811,25 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     this.purgeExpiredIdleRooms(now);
 
+    if (input.resolves !== undefined && (!body.trim() || input.to_agent_id || input.to_agent_ids?.length || deliveryHint !== "normal")) {
+      throw new ProtocolError("invalid_input", "A resolution needs text and must be sent to the whole room.");
+    }
     const attachments = validateAttachments(input.attachments, this.dataDir);
-    const result = this.writeTransaction(() =>
-      this.sendMessageLocked({ ...input, attachments }, body, deliveryHint, timestamp));
+    const result = this.writeTransaction(() => {
+      if (input.resolves === undefined) return this.sendMessageLocked({ ...input, attachments }, body, deliveryHint, timestamp);
+      const blocker = this.requireBlocker(input.room_id, input.resolves);
+      if (blocker.closed_at) {
+        if (blocker.resolution_event_seq === null) throw new ProtocolError("blocker_withdrawn", `${blocker.blocker_id} was withdrawn.`);
+        const original = this.getEventBySeq(blocker.resolution_event_seq)!;
+        return { event_seq: original.event_seq, event_id: original.event_id, created_at: original.created_at,
+          resolves: blocker.blocker_id, deduplicated: true, wake_target_ids: [] };
+      }
+      const sent = this.sendMessageLocked({ ...input, attachments, resolves: blocker.blocker_id },
+        body, deliveryHint, timestamp, "visitor");
+      this.db.prepare(`UPDATE room_blockers SET closed_at = ?, closed_by_agent_id = ?, resolution_event_seq = ? WHERE id = ?`)
+        .run(timestamp, input.agent_id, sent.event_seq, blocker.blocker_id.slice(1));
+      return { ...sent, resolves: blocker.blocker_id };
+    });
 
     const { wake_target_ids: wakeTargetIds, ...sendResult } = result;
     if (wakeTargetIds.length === 0) {
@@ -3486,7 +3579,7 @@ export class TalkingStickService {
       const steer = Boolean(this.db.prepare(`SELECT 1 FROM native_event_receipts n
         JOIN room_events e ON e.room_id = n.room_id AND e.event_seq = n.event_seq
         WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL
-          AND e.event_type = 'message_sent' AND e.from_agent_id LIKE 'human:%'
+          AND e.event_type = 'message_sent' AND (e.from_agent_id LIKE 'human:%' OR json_extract(e.payload_json, '$.resolves') IS NOT NULL)
           AND NOT EXISTS (SELECT 1 FROM native_delivery_batches b, json_each(b.event_seqs_json) j
             WHERE b.room_id = n.room_id AND b.agent_id = n.agent_id AND j.value = n.event_seq
               AND b.source = 'codex_hook' AND b.acknowledged_at IS NULL AND b.created_at > ?)
@@ -4992,6 +5085,7 @@ export class TalkingStickService {
         throw new ProtocolError("target_active",
           `Room ${room.room_id} still has members (${agents.map((member) => member.agent_id).join(", ") || room.owner}). Ask them to leave first.`);
       }
+      if (this.hasBlockers(room.room_id)) throw new ProtocolError("room_blocked", "Resolve open blockers before removing the room.");
       this.deleteRoom(room.room_id);
       return { retired: true };
     });
@@ -6474,7 +6568,12 @@ export class TalkingStickService {
           return !stored || stored.identity !== livenessIdentity(member) ||
             stored.first_gone_at !== observations.get(member.agent_id);
         })) return;
-        if (expire) { this.deleteRoom(room.room_id); return; }
+        if (expire && !this.db.prepare(`SELECT 1 FROM room_blockers
+          WHERE room_id = ? AND (closed_at IS NULL OR closed_at > ?) LIMIT 1`)
+          .get(room.room_id, new Date(cutoffMs).toISOString())) {
+          this.deleteRoom(room.room_id);
+          return;
+        }
         for (const member of ended) {
           this.db.prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
             .run(room.room_id, member.agent_id);
@@ -6594,6 +6693,7 @@ export class TalkingStickService {
     this.db.prepare("DELETE FROM visitor_requests WHERE room_id = ?").run(roomId);
     this.db.prepare("DELETE FROM room_roles WHERE room_id = ?").run(roomId);
     this.db.prepare("DELETE FROM notes WHERE room_id = ?").run(roomId);
+    this.db.prepare("DELETE FROM room_blockers WHERE room_id = ?").run(roomId);
     this.db.prepare("DELETE FROM room_events WHERE room_id = ?").run(roomId);
     this.db.prepare("DELETE FROM room_members WHERE room_id = ?").run(roomId);
     this.db.prepare("DELETE FROM path_rooms WHERE room_id = ?").run(roomId);

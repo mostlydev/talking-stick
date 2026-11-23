@@ -3,6 +3,7 @@ import { readAllStdin } from "./handoff.js";
 import { attachFile } from "../attachments.js";
 import { resolveDataDir } from "../config.js";
 import {
+  getStringOption,
   getStringOptions,
   hasOption,
   type ParsedCommand
@@ -89,10 +90,13 @@ async function handleMsgSendCommand(
           recipientSelector
         );
 
+  const resolves = getStringOption(parsed, "resolves");
+  if (hasOption(parsed, "resolves") && !resolves) throw new Error("--resolves needs a blocker ID.");
   const result = await runtime.commands.sendMessageAndWake(identity, {
     room_id: session.room_id,
     body,
     to_agent_id: toAgentId,
+    resolves,
     delivery_hint: hasOption(parsed, "interrupt") ? "interrupt" : "normal",
     ...(attachments.length ? { attachments } : {})
   });
@@ -105,6 +109,7 @@ async function handleMsgSendCommand(
           result.delivery_error ? ` (${[result.delivery_error, result.delivery_error_detail].filter(Boolean).join(" ")})` : ""
         }.`
       : "";
+    if (result.resolves) return `${result.deduplicated ? "Already resolved" : "Resolved"} ${result.resolves} in message #${result.event_seq}.${delivery}`;
     return `Sent${hint} message ${shortEventId(result.event_id)} to ${target}.${delivery}`;
   });
 }

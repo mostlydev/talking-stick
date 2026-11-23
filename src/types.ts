@@ -163,6 +163,7 @@ export interface MessagePayload {
   // A visitor's question (tt room ask), and an answer to one (tt msg reply).
   request_id?: string;
   in_reply_to?: string;
+  resolves?: string;
 }
 
 export interface RoomEvent {
@@ -583,7 +584,20 @@ export interface SendMessageInput {
   delivery_hint?: DeliveryHint;
   /** Stored images (see attachments.ts); the body may be empty when present. */
   attachments?: MessageAttachment[];
+  resolves?: string;
   process_metadata?: ProcessMetadata;
+}
+
+export interface RoomBlocker {
+  blocker_id: string;
+  room_id: string;
+  author_agent_id: AgentId;
+  body: string;
+  created_at: string;
+  closed_at: string | null;
+  closed_by_agent_id: AgentId | null;
+  withdrawal_reason: string | null;
+  resolution_event_seq: number | null;
 }
 
 export interface AskRoomInput {
@@ -680,6 +694,8 @@ export interface MessageReceipt {
 
 export interface SendMessageResult {
   event_seq: number;
+  resolves?: string;
+  deduplicated?: boolean;
   event_id: string;
   created_at: string;
   delivery_status?: MessageDeliveryStatus;

@@ -56,6 +56,7 @@ import {
   chatWheelRegion,
   chatMemberAt,
   CHAT_COMMANDS,
+  renderBlockersMenu,
   type ChatFrame
 } from "./chat-view.js";
 import type { Readable, Writable } from "node:stream";
@@ -404,6 +405,8 @@ export async function runChatSession(
   let headlessHere: Map<string, HeadlessWorker> | null = null;
   let headlessMarkerForms: string[] = [];
   let lastHeadlessRefresh = 0;
+  let blockerCounts = new Map<string, number>();
+  const blockerCount = (id: string) => blockerCounts.get(id) ?? 0;
   const headlessLookups = createHeadlessLookups(runtime.commands, HEADLESS_ROUTE_TTL_MS);
   const headlessInRoom = (room: { room_id: string; canonical_path: string }) =>
     workersInRoom(headless, { room_id: room.room_id, room_path: room.canonical_path });
@@ -417,11 +420,15 @@ export async function runChatSession(
   };
   // The marker leads the header strip, so it survives when the other rooms don't fit.
   const composeStrip = () => {
-    const [long, short] = headlessMarkerForms;
-    if (!long) { roomStrip = baseStrip; return; }
+    const [headlessLong, headlessShort] = headlessMarkerForms;
+    const count = blockerCount(roomId);
     const dot = paintStyle(options.color, "2", " · ");
-    const join = (marker: string, strip: string | undefined) => strip ? `${marker}${dot}${strip}` : marker;
-    roomStrip = [join(long, baseStrip[0]), join(long, baseStrip[1]), join(short, baseStrip[1]), long, short];
+    const combine = (...parts: Array<string | undefined>) => parts.filter(Boolean).join(dot);
+    const blocker = count ? paintStyle(options.color, themeStyle("warn"), `${count} blocker${count === 1 ? "" : "s"}`) : "";
+    const long = combine(blocker ? `${blocker} · /blockers` : undefined, headlessLong);
+    const short = combine(blocker, headlessShort);
+    if (!long) { roomStrip = baseStrip; return; }
+    roomStrip = [combine(long, baseStrip[0]), combine(short, baseStrip[1]), long, short, blocker].filter(Boolean);
   };
   let roomNames = new Map<string, string>();
   // Every open room in this repository except the current one, for /go completion.
@@ -432,8 +439,11 @@ export async function runChatSession(
   // can reply to it, and shows messages addressed to it inline. Its own
   // membership never keeps a room listed.
   const refreshStrip = (): boolean => {
-    if (!consoleState) return false;
     lastStripRefresh = Date.now();
+    const previousCount = blockerCount(roomId);
+    blockerCounts = new Map(runtime.commands.getBlockerCounts().map(row => [row.room_id, row.count]));
+    const blockerChanged = previousCount !== blockerCount(roomId);
+    if (!consoleState) { composeStrip(); return blockerChanged; }
     const rooms = runtime.commands.listRooms({}).rooms.filter((room) =>
       room.state !== "closed" && room.room_id !== roomId && isWithinOrSame(room.canonical_path, consoleState.anchor) &&
       !insideNestedRepository(room.canonical_path, consoleState.anchor));
@@ -464,7 +474,8 @@ export async function runChatSession(
       const agents = activity.get(room.room_id)?.agent_members ?? 0;
       const where = path.relative(consoleState.anchor, room.canonical_path) || ".";
       const counts = headlessCounts(headlessInRoom(room));
-      const extra = `${counts.headless ? ` · ${counts.headless} headless` : ""}${counts.blocked ? ` · ${counts.blocked} blocked` : ""}`;
+      const blockers = blockerCount(room.room_id);
+      const extra = `${blockers ? ` · ${blockers} blocker${blockers === 1 ? "" : "s"}` : ""}${counts.headless ? ` · ${counts.headless} headless` : ""}${counts.blocked ? ` · ${counts.blocked} blocked` : ""}`;
       return { name: allNames.get(room.room_id) ?? roomShortName(room), description: `${where} · ${agents} agent${agents === 1 ? "" : "s"}${extra}` };
     }).sort((left, right) => left.name.localeCompare(right.name));
     for (const room of listed) {
@@ -493,7 +504,7 @@ export async function runChatSession(
     const changed = next.join("\n") !== baseStrip.join("\n");
     baseStrip = next;
     composeStrip();
-    return changed;
+    return changed || blockerChanged;
   };
   const openRoomAtPath = (target: string, crossRepository = false): PathRoom | null => {
     if (!consoleState) return null;
@@ -522,7 +533,8 @@ export async function runChatSession(
       const consoles = members.length - agents;
       const counts = headlessCounts(headlessInRoom(room));
       return { id: room.room_id, path: room.canonical_path, name: roomShortName(room), agents, consoles,
-        active: members.length > 0 || counts.headless > 0, ...counts,
+        active: members.length > 0 || counts.headless > 0 || blockerCount(room.room_id) > 0, ...counts,
+        open_blockers: blockerCount(room.room_id),
         last_activity_at: runtime.commands.getRoomActivity({ room_id: room.room_id }).last_event_at ?? "",
         unread: room.room_id === roomId ? 0 : personalUnread(room.room_id) };
     });
@@ -567,7 +579,7 @@ export async function runChatSession(
   };
   const openRoomTree = () => {
     if (!consoleState || !editor) { print("Use /go <directory> to open a room."); return; }
-    if (rolesPanel || memberMenu) { print("Close the current editor before opening rooms."); return; }
+    if (rolesPanel || memberMenu || blockersPanel) { print("Close the current editor before opening rooms."); return; }
     treeResolvedCache.clear();
     refreshHeadless(true);
     roomTree = new RoomNavigator(consoleState.anchor, treeRooms(), joined.canonical_path);
@@ -599,7 +611,7 @@ export async function runChatSession(
   };
   const openMemberMenu = (target?: string) => {
     if (roomTree) { print("Close /rooms before opening member actions."); return; }
-    if (rolesPanel) { print("Close /roles before opening member actions."); return; }
+    if (rolesPanel || blockersPanel) { print("Close the current menu before opening member actions."); return; }
     if (!editor) { print("Use /who to list members and /kick <agent> to remove one."); return; }
     refreshMembers();
     const agents = members.filter(member => member.agent_id !== selfId && member.session_kind !== HUMAN_CHAT_SESSION_KIND)
@@ -609,6 +621,55 @@ export async function runChatSession(
     rolesPanel = null;
     memberMenu = createMemberMenu(agents, target);
     editor?.setModal(onMemberMenuKey);
+    redraw();
+  };
+  let blockersPanel: { rows: ReturnType<typeof runtime.commands.listBlockers>; selected: number } | null = null;
+  const openBlockers = (args: string) => {
+    const add = /^add\s+([\s\S]+)$/.exec(args);
+    const withdraw = /^withdraw\s+(B[1-9]\d*)\s+([\s\S]+)$/i.exec(args);
+    if (add || withdraw) {
+      try {
+        if (add) {
+          const item = runtime.commands.addBlocker(identity, { room_id: roomId, body: add[1] });
+          print(`Open blocker ${item.blocker_id}.`);
+        } else if (withdraw) {
+          const item = runtime.commands.withdrawBlocker(identity, { room_id: roomId, blocker_id: withdraw[1], reason: withdraw[2] });
+          print(`Withdrawn ${item.blocker_id}.`);
+        }
+        refreshStrip();
+        redraw();
+      } catch (error) {
+        print(`! ${sanitizeChatText(error instanceof Error ? error.message : String(error))}`);
+      }
+      return;
+    }
+    const rows = runtime.commands.listBlockers({ room_id: roomId });
+    if (args) {
+      const id = /^show\s+(B[1-9]\d*)$/i.exec(args)?.[1]?.toUpperCase();
+      const blocker = rows.find(item => item.blocker_id === id);
+      print(blocker ? `${blocker.blocker_id} · ${sanitizeChatText(blocker.author_agent_id)}\n${sanitizeChatText(blocker.body)}`
+        : "Use /blockers, /blockers show ID, /blockers add <question>, or /blockers withdraw ID <reason>.");
+      return;
+    }
+    if (!rows.length) { print("No open blockers."); return; }
+    if (!editor) {
+      print(rows.map(item => `${item.blocker_id} · ${sanitizeChatText(item.body)}`).join("\n") + "\n/resolve ID <answer>");
+      return;
+    }
+    if (roomTree || memberMenu || rolesPanel) { print("Close the current menu first."); return; }
+    blockersPanel = { rows, selected: 0 };
+    editor.setModal(key => {
+      if (!blockersPanel) return;
+      const panel = blockersPanel;
+      if (key === "up") panel.selected = Math.max(0, panel.selected - 1);
+      if (key === "down") panel.selected = Math.min(panel.rows.length - 1, panel.selected + 1);
+      if (key === "escape" || key === "enter") {
+        blockersPanel = null;
+        editor?.setModal(null);
+        if (key === "enter") editor?.setDraft(`/resolve ${panel.rows[panel.selected].blocker_id} `);
+      }
+      redraw();
+    });
     redraw();
   };
   let rolesPanel: RolesEditorState | null = null;
@@ -621,6 +682,7 @@ export async function runChatSession(
   const panelHeight = () => Math.max(3, dimensions().rows - 7 - renderAttention(attention, dimensions().columns - 1, dimensions().rows, formatContext()).lines.length);
   const rolesPanelLines = () => roomTree ? roomTree.render(panelHeight(), resolvedTreeRoom(), Boolean(formatContext().color)) : memberMenu ? renderMemberMenu(memberMenu, panelHeight(), nameOf, formatContext()) : rolesPanel
     ? renderRolesEditor(rolesPanel, formatContext(), panelHeight(), Math.max(1, dimensions().columns - 1))
+    : blockersPanel ? renderBlockersMenu(blockersPanel, panelHeight(), formatContext())
     : undefined;
   const closeRolesPanel = () => {
     rolesPanel = null;
@@ -1677,6 +1739,25 @@ export async function runChatSession(
         print(`── Earlier saved messages ──\n${lines}\n── End of earlier page · /older for more ──`);
         return;
       }
+      case "blockers": {
+        openBlockers(args);
+        return;
+      }
+      case "resolve": {
+        const resolution = /^(B[1-9]\d*)\s+([\s\S]+)$/i.exec(args);
+        if (!resolution) { print("Use /resolve ID <answer>."); return; }
+        const [, resolves, body] = resolution;
+        void Promise.resolve().then(() => runtime.commands.sendMessageAndWake(identity, { room_id: roomId, body, resolves }))
+          .then(result => {
+            if (closed) return;
+            if (result.deduplicated) print(`${result.resolves} was already resolved in #${result.event_seq}.`);
+            refreshStrip();
+            redraw();
+          }).catch(error => {
+            if (!closed) print(`! ${sanitizeChatText(error instanceof Error ? error.message : String(error))}`);
+          });
+        return;
+      }
       case "who": {
         refreshMembers();
         refreshHeadless(true);
@@ -2260,7 +2341,7 @@ export async function runChatSession(
     const savedDraft = consoleState?.drafts.get(roomId);
     if (savedDraft) editor?.setDraft(savedDraft);
     refreshHeadless(true);
-    if (refreshStrip() || headlessMarkerForms.length) redraw();
+    if (refreshStrip() || headlessMarkerForms.length || blockerCount(roomId)) redraw();
     let busyAttempts = 0;
     let lastWakeRelay = Date.now();
     while (!closed) {
@@ -2295,7 +2376,7 @@ export async function runChatSession(
           refreshMembers();
         }
         const headlessChanged = refreshHeadless();
-        if (consoleState && Date.now() - lastStripRefresh >= STRIP_REFRESH_MS) {
+        if (Date.now() - lastStripRefresh >= STRIP_REFRESH_MS || result.events.some(event => event.payload?.resolves)) {
           const changed = refreshStrip();
           refreshTree();
           if (changed || headlessChanged || roomTree) redraw();

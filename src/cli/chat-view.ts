@@ -3,7 +3,7 @@ import { renderAttention, resolveAttentionFrame, type HumanAttention, type Atten
 import stringWidth from "string-width";
 import { draftStyleSpans, type DraftHighlightOptions } from "./chat-draft-highlight.js";
 import { agentStyle, paintStyle, themeStyle, type ChatColorMode } from "./theme.js";
-import type { RoomEvent } from "../types.js";
+import type { RoomBlocker, RoomEvent } from "../types.js";
 import type { ReleaseNotice } from "../release-status.js";
 import {
   formatChatEvent,
@@ -26,6 +26,19 @@ export const MAX_COMPOSER_ROWS = 5;
 export const MAX_TRANSCRIPT_BLOCKS = 2_000;
 const MAX_MENU_ROWS = 3;
 
+export function renderBlockersMenu(panel: { rows: RoomBlocker[]; selected: number }, height: number,
+  context: ChatFormatContext): string[] {
+  const capacity = Math.max(1, height - 1);
+  const start = Math.max(0, panel.selected - capacity + 1);
+  const rows = panel.rows.slice(start, start + capacity).map((row, index) => {
+    const selected = start + index === panel.selected;
+    const body = sanitizeChatText(row.body).replace(/\s+/g, " ");
+    const label = `${selected ? "›" : " "} ${row.blocker_id}  ${body}`;
+    return selected ? paintStyle(context.color, `1;${themeStyle("selection", context.color_mode, true)};${themeStyle("selectionText", context.color_mode)}`, label) : label;
+  });
+  return ["Blockers · Enter resolve · Esc close", ...rows];
+}
+
 export interface ChatCommandInfo {
   name: string;
   usage: string;
@@ -35,6 +48,8 @@ export interface ChatCommandInfo {
 export const CHAT_COMMANDS: ChatCommandInfo[] = [
   { name: "quit", usage: "/quit", description: "leave the chat" },
   { name: "members", usage: "/members", description: "choose a member to message or remove (right-click status with --fullscreen --mouse)" },
+  { name: "blockers", usage: "/blockers [show ID | add <question> | withdraw ID <reason>]", description: "manage room blockers" },
+  { name: "resolve", usage: "/resolve ID <answer>", description: "post a room message and close a blocker" },
   { name: "who", usage: "/who", description: "members and who has the stick" },
   { name: "roles", usage: "/roles", description: "edit assignments and harness defaults (Tab switches scope; Enter applies)" },
   { name: "rooms", usage: "/rooms [room]", description: "browse host rooms or folders; / filter, Tab views (Ctrl+T)" },
