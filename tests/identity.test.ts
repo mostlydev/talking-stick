@@ -349,10 +349,10 @@ describe("deriveHarnessCliIdentity", () => {
       inspector
     });
 
-    expect(first!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(first!.agent_id).toMatch(/^agy:[0-9a-f]{8}$/);
     expect(first!.agent_id).toBe(second!.agent_id);
     expect(first!.process_metadata).toMatchObject({
-      display_name: "antigravity",
+      display_name: "agy",
       harness_name: "antigravity",
       harness_session_id: "harness:conversation-a"
     });
@@ -367,7 +367,7 @@ describe("deriveHarnessCliIdentity", () => {
       inspector
     });
 
-    expect(identity!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(identity!.agent_id).toMatch(/^agy:[0-9a-f]{8}$/);
     expect(identity!.process_metadata.harness_session_id).toBe(
       "harness:trajectory-a"
     );
@@ -395,9 +395,9 @@ describe("deriveHarnessCliIdentity", () => {
       inspector: agyInspector
     });
 
-    expect(identity!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(identity!.agent_id).toMatch(/^agy:[0-9a-f]{8}$/);
     expect(identity!.process_metadata).toMatchObject({
-      display_name: "antigravity",
+      display_name: "agy",
       harness_name: "antigravity",
       harness_session_id: "harness:pid:100@Sat Jun 13 14:00:00 2026",
       harness_pid: 100,

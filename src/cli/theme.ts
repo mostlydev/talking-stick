@@ -13,7 +13,7 @@ export const CHAT_THEME = {
   },
   agents: {
     claude: ["e8a180", 209], codex: ["91c9a1", 78], gemini: ["86b5dc", 75],
-    antigravity: ["b8a6df", 141], grok: ["d49fc7", 177], opencode: ["83c9c7", 44],
+    antigravity: ["b8a6df", 141], agy: ["b8a6df", 141], grok: ["d49fc7", 177], opencode: ["83c9c7", 44],
     human: ["e3c578", 220]
   },
   roles: [["86b5dc", 75], ["e5bb85", 214], ["d49fc7", 170], ["a2c98c", 114],

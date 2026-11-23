@@ -18,7 +18,7 @@ export interface HighlightOptions {
 
 const MUTED = "2";
 
-const HARNESS_PREFIX = "(?:claude|codex|grok|gemini|antigravity|opencode|human)";
+const HARNESS_PREFIX = "(?:claude|codex|grok|gemini|antigravity|agy|opencode|human)";
 const TOKEN = new RegExp(
   [
     // `inline code`

@@ -508,6 +508,9 @@ OpenCode, and Antigravity wake only through cmux.
   `codex_thread_not_found` is omitted until the endpoint changes or delivery succeeds; use one
   `tt wait --park --json` while `can_self_wake` is false. Sender-local permission failures do not
   disable the route, because another process on the host may deliver it.
+- Antigravity (`agy`) receives pending room messages through its hooks while a conversation is
+  active. Use a parked listener to wake an idle conversation. Each conversation in an
+  Antigravity terminal has its own membership, even when several share one process.
 - `tt health` shows a `Wake:` line with the last delivery status and a fixed error code.
   `last_error_detail` and `delivery_error_detail` add where it failed and the system's code, such as
   `connect:EPERM`, `write:EPIPE`, `spawn:ENOENT`, or `exit:1 rpc:-32603`; only known codes are
