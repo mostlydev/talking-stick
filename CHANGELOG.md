@@ -18,6 +18,7 @@ changes will be called out under **Breaking changes**.
 
 ### Fixed
 
+- A chat console left open past midnight no longer greys out the conversation it is showing. Only activity from before the day the console opened, or before the latest conversation break, is dimmed.
 - Chat keeps supervised Claude visible after a reply by recognizing its version-named native process instead of attributing room activity to its temporary command shell.
 
 ## [0.36.0] — 2026-11-23

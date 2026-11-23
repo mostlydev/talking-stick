@@ -24,6 +24,12 @@ export interface ChatFormatContext {
   color_mode?: ChatColorMode;
   show_turn_events: boolean;
   now?: Date;
+  /**
+   * When the console opened. Activity from before that day is history; the
+   * cutoff stays put while the console runs, so midnight never greys out the
+   * live conversation. Without it, `now` sets the cutoff.
+   */
+  opened_at?: Date;
   history_before?: string;
   /** Pending pins retain their normal colors across restarts and dates. */
   dim_history?: boolean;
@@ -400,7 +406,8 @@ export function formatChatTime(iso: string, now?: Date): string {
 
 export function isHistoricalChatEvent(event: RoomEvent, context: ChatFormatContext): boolean {
   const timestamp = Date.parse(event.created_at);
-  const today = context.now && new Date(context.now.getFullYear(), context.now.getMonth(), context.now.getDate()).getTime();
+  const anchor = context.opened_at ?? context.now;
+  const today = anchor && new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate()).getTime();
   return (today !== undefined && timestamp < today) ||
     (context.history_before !== undefined && timestamp < Date.parse(context.history_before));
 }

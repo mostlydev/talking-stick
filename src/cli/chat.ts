@@ -845,6 +845,8 @@ export async function runChatSession(
   let closed = false;
   let lastPresenceRefresh = 0;
   let namesSignature = "";
+  // Fixed for this console's life, so midnight never greys the live conversation.
+  const consoleOpenedAt = new Date();
   let historyBefore: string | undefined;
   let historyCursor = 0;
   let historyExhausted = false;
@@ -920,6 +922,7 @@ export async function runChatSession(
     color_mode: terminalColorMode(),
     show_turn_events: showTurnEvents,
     now: new Date(),
+    opened_at: consoleOpenedAt,
     history_before: historyBefore,
     delivery_icon: deliveryIcon,
     pin_link: chatLinks?.url,
