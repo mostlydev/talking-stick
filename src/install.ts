@@ -397,13 +397,12 @@ export function planSessionHooks(harness: HarnessId, operation: "install" | "uni
   const resolved = resolveOptions(options);
   const configDir = harness === "codex" && resolved.env.CODEX_HOME?.trim()
     ? resolved.env.CODEX_HOME.trim() : resolveHarnessConfigDirFromResolved(harness, resolved);
-  const hookDir = harness === "antigravity" ? path.join(resolved.homeDir, ".gemini", "config") : configDir;
-  if (resolved.skipMissing && !resolved.hooks.pathExists(hookDir) &&
+  if (resolved.skipMissing && !resolved.hooks.pathExists(configDir) &&
       !(harness === "antigravity" && resolved.hooks.which("agy"))) {
-    return [skipAction(harness, `config directory not found: ${hookDir}`)];
+    return [skipAction(harness, `config directory not found: ${configDir}`)];
   }
   const filePath = harness === "claude-code" ? resolveClaudeSettingsPath(resolved)
-    : path.join(hookDir, ...(harness === "grok" ? ["hooks", "talking-stick-lifecycle.json"] : ["hooks.json"]));
+    : path.join(configDir, ...(harness === "grok" ? ["hooks", "talking-stick-lifecycle.json"] : ["hooks.json"]));
   const name = harness === "claude-code" ? "claude" : harness;
   return [{ kind: "file-patch", harness, filePath, operation, dedupeKey: `${filePath}:lifecycle`,
     description: `${operation} session lifecycle${harness === "claude-code" ? " and interrupt" : ""} hooks in ${filePath}${harness === "codex" && operation === "install" ? " (review and trust in /hooks)" : ""}`,

@@ -806,7 +806,7 @@ describe("deriveHarnessCliIdentity", () => {
       hostId: "test-host",
       inspector
     });
-    expect(identity!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(identity!.agent_id).toMatch(/^agy:[0-9a-f]{8}$/);
   });
 
   test("terminal-emulator fallback keeps identity stable across invocations in the same tab", () => {
