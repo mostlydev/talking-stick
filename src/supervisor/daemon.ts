@@ -278,7 +278,7 @@ export class Supervisor {
     this.starting.delete(worker.worker_id);
     this.store.transaction(() => {
       this.store.updateGeneration(worker.worker_id, generation, { pid: handle.pid, process_started_at: handle.processStartedAt,
-        pgid: handle.pgid, session_id: handle.sessionId() ?? resume ?? null, state: "idle" });
+        pgid: handle.pgid, session_id: handle.sessionId() ?? resume ?? null, state: resume ? "starting" : "idle" });
       if (worker.fresh_next) this.store.clearFresh(worker.worker_id);
       this.store.audit(this.at(), "supervisor", "start", worker.worker_id, { generation, pid: handle.pid, resumed: Boolean(resume) });
     });
@@ -298,6 +298,10 @@ export class Supervisor {
     if (!current || current.desired !== "running" || current.desired_version !== worker.desired_version) {
       await this.stopHandle(worker.worker_id, handle);
       return;
+    }
+    if (resume) {
+      this.recoverMembership(current, handle);
+      this.store.updateGeneration(worker.worker_id, generation, { state: this.reportedState.get(worker.worker_id) ?? "idle" });
     }
     this.bootstrapWorker(handle, worker.worker_id);
   }
@@ -320,6 +324,16 @@ export class Supervisor {
       // Never turn a failed bootstrap into an unjournalled retry.
       if (this.store.db.open) this.store.hold(workerId, "bootstrap_failed", this.at());
     });
+  }
+
+  private completeEnrollment(workerId: string, handle: WorkerHandle): boolean {
+    if (this.hasEnrolled(workerId, handle)) return true;
+    const worker = this.store.worker(workerId);
+    if (!worker) return false;
+    // A native tool can join before its endpoint is available. Try the same
+    // authenticated rebind used for restarts before deciding it has no room.
+    this.recoverMembership(worker, handle);
+    return this.hasEnrolled(workerId, handle);
   }
 
   private hasEnrolled(workerId: string, handle: WorkerHandle): boolean {
@@ -375,7 +389,7 @@ export class Supervisor {
         if (this.store.db.prepare(`SELECT 1 FROM inputs
           WHERE worker_id = ? AND generation = ? AND native_turn_id = ? AND source = 'bootstrap'`)
           .get(workerId, generation, event.native_turn_id) &&
-          (event.outcome !== "success" || !this.hasEnrolled(workerId, handle))) {
+          (event.outcome !== "success" || !this.completeEnrollment(workerId, handle))) {
           this.store.hold(workerId, "bootstrap_failed", at);
         }
         this.drain(workerId);

@@ -1,4 +1,4 @@
-# Release Talking Stick
+# Release shrooms
 
 1. Review `CHANGELOG.md` against the last release tag. Put upgrade steps and changed or removed
    commands under **Unreleased**. Write local links relative to the repository root and keep
@@ -17,3 +17,19 @@
 
 GitHub is the distribution channel for standalone releases. The npm package stopped updating
 after 0.23.0.
+
+## Harness support
+
+Claude Code, Codex, Grok Build, and Antigravity are the supported toolchains.
+CI checks that each installs both packaged skills and its native lifecycle hook,
+and provides a supervisor adapter for startup, prompting, resuming, and cancellation
+on platforms that support managed process groups.
+
+When a release changes a toolchain, check it with the real harness in a temporary
+room. Install the skills and hooks into a test profile. Open the room in `tt chat`,
+invoke the room skill, and verify that the member appears. Start a managed worker,
+send a room message, and verify the worker's reply and return to idle. Restart the
+worker and verify that it keeps the same conversation.
+
+Workspace skill paths and global paths can differ. See [Install and update](install.md)
+for the locations used by shrooms.

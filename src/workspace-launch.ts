@@ -131,10 +131,11 @@ export function parseLaunchAgents(value: string | undefined): LaunchAgent[] {
   }
   const agents: LaunchAgent[] = [];
   for (const raw of value.split(",")) {
-    const name = raw.trim();
-    if (!name) continue;
+    const label = raw.trim();
+    if (!label) continue;
+    const name = label === "agy" ? "antigravity" : label;
     if (!(LAUNCH_AGENTS as string[]).includes(name)) {
-      throw new Error(`Unsupported agent "${name}". Supported: ${LAUNCH_AGENTS.join(", ")}.`);
+      throw new Error(`Unsupported agent "${label}". Supported: ${LAUNCH_AGENTS.join(", ")}.`);
     }
     if (agents.includes(name as LaunchAgent)) {
       throw new Error(`Agent "${name}" is listed more than once.`);

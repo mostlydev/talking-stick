@@ -43,7 +43,7 @@ The repository is the default room.
 
 ### 3. Ask each agent to join
 
-Enter `/rooms` in Claude Code or Antigravity (`agy`), and `$rooms` in Codex.
+Enter `/rooms` in Claude Code, Grok Build, or Antigravity (`agy`). In Codex, enter `$rooms`.
 In other harnesses, ask the agent to use the `rooms` skill. Wait for both joins to appear in
 `tt chat`, then send the task there. An idle agent may show `tt wait --park` running while it waits
 for your message.
@@ -85,8 +85,9 @@ Look for the agents' replies in the transcript. The marks next to each recipient
 - **Pane launcher.** Inside Herdr or tmux, `tt up` opens agents beside chat. Use `tt up --print`
   to preview it. Herdr needs the session integration for each agent. [Launcher setup](docs/reference.md#herdr-launch-tt-up)
 
-Claude Code, Codex, Antigravity, Grok Build, and OpenCode can join a room. Wake support depends
-on the harness and how it launched. [Wake and delivery reference](docs/reference.md#waking-idle-agents)
+Claude Code, Codex, Grok Build, and Antigravity (`agy`) have room skills, hooks, and managed
+workers. OpenCode can join a room as an experimental client. The harness and launch method
+determine how an idle agent is woken. [Wake and delivery reference](docs/reference.md#waking-idle-agents)
 
 To check on rooms from a separate local agent session, use the `rooms-oversee` skill.
 It can report on rooms and ask their agents questions without joining. [Visitor workflow](docs/reference.md#observing-rooms-from-outside)

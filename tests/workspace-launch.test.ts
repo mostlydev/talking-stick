@@ -87,6 +87,8 @@ describe("tt up planning", () => {
   });
   test("parses an explicit, unique, supported agent list", () => {
     expect(parseLaunchAgents("claude, codex")).toEqual(["claude", "codex"]);
+    expect(parseLaunchAgents("agy, grok")).toEqual(["antigravity", "grok"]);
+    expect(() => parseLaunchAgents("agy,antigravity")).toThrow(/more than once/);
     expect(() => parseLaunchAgents(undefined)).toThrow(/--agents is required/);
     expect(() => parseLaunchAgents("claude,claude")).toThrow(/more than once/);
     expect(() => parseLaunchAgents("aider")).toThrow(/Unsupported agent "aider"/);

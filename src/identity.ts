@@ -566,6 +566,8 @@ function deriveCommandLabel(command: string | null): string {
   // Process inspection sees that path when the supervisor runs it directly.
   if (/^\/[^\s]+\/claude\/versions\/\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(token)) return "claude";
   const basename = executableName(token).replace(/\.(exe|cmd|bat)$/i, "");
+  // The Grok installer stores a versioned native download behind the grok link.
+  if (/^grok-\d+\.\d+\.\d+(?:-[\w.]+)?-(?:macos|linux|windows)-(?:aarch64|arm64|x86_64|x64)$/.test(basename)) return "grok";
   const sanitized = sanitizeIdentityComponent(basename);
   return sanitized || "harness";
 }

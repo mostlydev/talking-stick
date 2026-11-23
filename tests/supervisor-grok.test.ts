@@ -46,9 +46,10 @@ function fixture(mode = "", options: GrokAdapterOptions = {}) {
 }
 
 describe("Grok capabilities", () => {
-  test("all four stay false, and the built-in registry includes the adapter", () => {
+  test("advertises only the proven capabilities, and the built-in registry includes the adapter", () => {
     const adapter = new GrokAdapter();
-    expect(adapter.capabilities()).toEqual({ prompt: false, resume: false, interrupt: false, approvals: false });
+    const supported = process.platform !== "win32";
+    expect(adapter.capabilities()).toEqual({ prompt: supported, resume: supported, interrupt: supported, approvals: false });
     expect(builtinAdapters().grok?.capabilities()).toEqual(adapter.capabilities());
     expect(builtinAdapters().grok?.harness).toBe("grok");
   });
@@ -98,8 +99,8 @@ describe("starting a Grok worker", () => {
     expect(f.events).toContainEqual({ type: "session", session_id: "grok-session-1" });
     expect(f.events.some((event) => event.type === "turn_started" || event.type === "turn_completed")).toBe(false);
     const initialize = f.lines().find((line) => line.method === "initialize");
-    expect(initialize?.params).toEqual({ protocolVersion: 1, clientInfo: { name: "talking_stick_supervisor", version: "0" } });
-    expect(initialize?.params?.clientCapabilities).toBeUndefined();
+    expect(initialize?.params).toEqual({ protocolVersion: 1, clientCapabilities: {},
+      clientInfo: { name: "talking_stick_supervisor", version: "0" } });
     const created = f.lines().find((line) => line.method === "session/new");
     expect(created?.params).toEqual({ cwd: f.spec.cwd, mcpServers: [] });
     expect(f.lines().some((line) => line.method === "session/prompt" || line.method === "session/resume" || line.method === "session/load")).toBe(false);
@@ -122,12 +123,7 @@ describe("starting a Grok worker", () => {
     expect(fs.existsSync(f.trace)).toBe(false);
   });
 
-  test("a resume id or the wrong permissions are rejected before spawn", async () => {
-    const resumed = fixture();
-    resumed.spec.resume_session_id = "live-session";
-    await expect(resumed.start()).rejects.toThrow(/resume/);
-    expect(resumed.spawned).toEqual([]);
-    expect(fs.existsSync(resumed.trace)).toBe(false);
+  test("the wrong permissions are rejected before spawn", async () => {
     const wrong = fixture();
     wrong.spec.permissions = { harness: "claude", mode: "default" };
     await expect(wrong.start()).rejects.toThrow(/permissions/);
@@ -160,18 +156,31 @@ describe("starting a Grok worker", () => {
 });
 
 describe("a running Grok worker", () => {
-  test("probe lists sessions, and submit, interrupt and approval send nothing", async () => {
+  test("prompts, lists sessions, and cancels the active turn", async () => {
     const f = fixture();
     const handle = await f.start();
     expect(await handle.probe()).toBe("alive");
     expect(f.lines().some((line) => line.method === "session/list")).toBe(true);
-    const before = f.lines().length;
-    expect(await handle.submit({ input_id: "i1", text: "hello", mode: "start_turn" })).toBe("rejected");
+    expect(await handle.submit({ input_id: "i1", text: "hello", mode: "start_turn" })).toBe("written");
+    await until(() => f.events.some(event => event.type === "turn_completed"));
+    expect(f.events).toContainEqual({ type: "turn_completed", native_turn_id: "i1", outcome: "success" });
     expect(await handle.submit({ input_id: "i2", text: "steer", mode: "steer" })).toBe("rejected");
-    expect(await handle.interrupt()).toBe("unsupported");
-    await expect(handle.answerApproval("req-1", "allow")).rejects.toThrow(/not available/);
-    expect(f.lines()).toHaveLength(before);
-    expect(f.events.some((event) => event.type === "state" && event.state === "awaiting_input")).toBe(false);
+    expect(await handle.submit({ input_id: "i3", text: "wait", mode: "start_turn" })).toBe("written");
+    expect(await handle.interrupt("other")).toBe("not_busy");
+    expect(await handle.interrupt("i3")).toBe("interrupted");
+    await until(() => f.events.some(event => event.type === "turn_completed" && event.native_turn_id === "i3"));
+    expect(f.events).toContainEqual({ type: "turn_completed", native_turn_id: "i3", outcome: "interrupted" });
+    await expect(handle.answerApproval("req-1", "allow")).rejects.toThrow(/no matching denial/);
+  });
+
+  test("an unqualified Grok permission request is cancelled without waiting on the operator", async () => {
+    const f = fixture("permission");
+    const handle = await f.start();
+    expect(await handle.submit({ input_id: "i1", text: "permission", mode: "start_turn" })).toBe("written");
+    await until(() => f.events.some(event => event.type === "turn_completed"));
+    expect(f.events).toContainEqual({ type: "request_refused", method: "session/request_permission" });
+    expect(f.events.some(event => event.type === "approval_requested")).toBe(false);
+    expect(f.lines().find(line => line.id === 901)?.result).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
   test("a server request is refused without waiting for input", async () => {
@@ -185,17 +194,17 @@ describe("a running Grok worker", () => {
     expect(createSystemProcessInspector().inspect(handle.pid)).not.toBeNull();
   });
 
-  test("a malformed line after start is an overflow and stops the child", async () => {
+  test("a malformed line after start is a protocol error and stops the child", async () => {
     const f = fixture();
     const handle = await f.start();
     (handle as unknown as { receive(line: string): void }).receive("not-json");
-    expect(f.events).toContainEqual({ type: "overflow" });
+    expect(f.events).toContainEqual({ type: "protocol_error" });
     await until(() => createSystemProcessInspector().inspect(handle.pid) == null);
   });
 });
 
 describe("supervisor restarts", () => {
-  test("a configured resume is held before any process", async () => {
+  test("a resume rejected by Grok is held without opening a new conversation", async () => {
     const f = fixture();
     const store = new SupervisorStore(supervisorDatabasePath(f.dataDir));
     cleanup.push(() => store.close());
@@ -206,11 +215,11 @@ describe("supervisor restarts", () => {
     supervisor.reconcileStartup();
     await supervisor.tick();
     expect(store.worker("w1")?.hold_reason).toBe("resume_failed");
-    expect(store.latestGeneration("w1")).toBeNull();
-    expect(fs.existsSync(f.trace)).toBe(false);
+    expect(f.lines().some(line => line.method === "session/resume")).toBe(true);
+    expect(f.lines().some(line => line.method === "session/new")).toBe(false);
   });
 
-  test("a later tick after a recorded session holds resume_failed and does not spawn again", async () => {
+  test("a later tick resumes the exact recorded Grok conversation", async () => {
     const f = fixture();
     const store = new SupervisorStore(supervisorDatabasePath(f.dataDir));
     cleanup.push(() => store.close());
@@ -236,9 +245,11 @@ describe("supervisor restarts", () => {
     expect(next).toBeTruthy();
     now = Date.parse(next!) + 1;
     await supervisor.tick();
-    expect(store.worker("w1")?.hold_reason).toBe("resume_failed");
-    expect(f.lines().filter((line) => Array.isArray(line.argv))).toHaveLength(1);
-    expect(f.lines().some((line) => line.method === "session/prompt" || line.method === "session/resume")).toBe(false);
+    expect(store.worker("w1")?.hold_reason).toBeNull();
+    expect(store.latestGeneration("w1")?.session_id).toBe("grok-session-1");
+    expect(f.lines().filter((line) => Array.isArray(line.argv))).toHaveLength(2);
+    expect(f.lines().find((line) => line.method === "session/resume")?.params?.sessionId).toBe("grok-session-1");
+    expect(f.lines().some((line) => line.method === "session/prompt")).toBe(false);
   });
 
   test("an explicit fresh restart starts a new conversation", async () => {
@@ -256,8 +267,6 @@ describe("supervisor restarts", () => {
     await supervisor.handle("w1")!.stop(100);
     await until(() => Boolean(store.worker("w1")?.next_start_at));
     now = Date.parse(store.worker("w1")!.next_start_at!) + 1;
-    await supervisor.tick();
-    expect(store.worker("w1")?.hold_reason).toBe("resume_failed");
     store.requestRestart("w1", true, "human:test", "t2");
     await supervisor.tick();
     expect(store.worker("w1")?.hold_reason).toBeNull();

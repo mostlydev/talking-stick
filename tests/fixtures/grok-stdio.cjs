@@ -25,11 +25,18 @@ trace({
   configCopied: home ? fs.existsSync(path.join(home, "config.toml")) : false,
 });
 const respond = (id, result) => out({ jsonrpc: "2.0", id, result });
+let pending;
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
   trace(message);
-  if (!message.method) return;
+  if (!message.method) {
+    if (message.id === 901 && message.result?.outcome?.outcome === "cancelled") {
+      respond(pending, { stopReason: "end_turn" });
+      pending = undefined;
+    }
+    return;
+  }
   if (mode === "malformed" && message.method === "initialize") {
     process.stdout.write("not-json\n");
     return;
@@ -51,6 +58,29 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     if (mode === "server-request") {
       out({ jsonrpc: "2.0", id: 900, method: "fs/readTextFile", params: { path: "secret" } });
     }
+    return;
+  }
+  if (message.method === "session/resume") {
+    if (message.params.sessionId === "grok-session-1") respond(message.id, {});
+    else out({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "unknown session" } });
+    return;
+  }
+  if (message.method === "session/prompt") {
+    pending = message.id;
+    const sessionId = message.params.sessionId;
+    out({ jsonrpc: "2.0", method: "session/update", params: { sessionId,
+      update: { sessionUpdate: "agent_message_chunk" } } });
+    if (mode === "permission") {
+      out({ jsonrpc: "2.0", id: 901, method: "session/request_permission", params: { sessionId } });
+    } else if (message.params.prompt[0].text !== "wait") {
+      respond(message.id, { stopReason: "end_turn" });
+      pending = undefined;
+    }
+    return;
+  }
+  if (message.method === "session/cancel") {
+    respond(pending, { stopReason: "cancelled" });
+    pending = undefined;
     return;
   }
   if (message.method === "session/list") {

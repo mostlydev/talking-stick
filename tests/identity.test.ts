@@ -252,6 +252,21 @@ describe("deriveHarnessCliIdentity", () => {
       harness_process_started_at: "inner-server", harness_session_id: "harness:owned-thread" });
   });
 
+  test("anchors managed Grok commands to the installed versioned process", () => {
+    const inspector = fakeInspector({
+      9100: { startTime: "tool", command: "bash", ppid: 9050 },
+      9050: { startTime: "native", command: "/home/alice/.grok/downloads/grok-1.0.92-macos-aarch64 agent --no-leader stdio", ppid: 1 }
+    });
+    const identity = deriveHarnessCliIdentity({
+      env: { GROK_AGENT: "1", GROK_SESSION_ID: "conversation",
+        TT_SUPERVISOR_ENDPOINT: "/tmp/owned.sock#w1@1", TT_SUPERVISOR_TOKEN: "generation-token" },
+      username: "alice", parentPid: 9100, hostId: "test-host", inspector
+    });
+    expect(identity!.process_metadata).toMatchObject({
+      harness_pid: 9050, harness_process_started_at: "native", harness_session_id: "harness:conversation"
+    });
+  });
+
   test("uses supervisor evidence only for the selected PID and matching endpoint and token when ps is denied", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-process-evidence-")); tempDirs.push(dir);
     const file = path.join(dir, "process.json");

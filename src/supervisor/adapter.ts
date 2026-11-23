@@ -54,7 +54,7 @@ export interface WorkerSpec {
 }
 
 export class WorkerExecutableError extends Error {
-  constructor(readonly envName: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE" | "AGY_EXECUTABLE", message: string) {
+  constructor(readonly envName: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE" | "AGY_EXECUTABLE" | "GROK_EXECUTABLE", message: string) {
     super(message);
     this.name = "WorkerExecutableError";
   }

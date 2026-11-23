@@ -433,7 +433,6 @@ test("a kick from another connection during the re-bind is never undone", async 
     workspace_root: project, recovery_credential: joined.recovery_credential, updated_at: "t" }]);
   handle.emit({ type: "exited", code: 1, signal: null });
   advance(10_000);
-  await supervisor.tick();
   const racer = new TalkingStickService({ dataDir, hostId: HOST, processLivenessChecker: () => "alive" });
   cleanup.push(() => racer.close());
   racer.db.exec("PRAGMA busy_timeout = 0");
