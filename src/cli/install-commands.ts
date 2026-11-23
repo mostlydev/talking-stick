@@ -343,7 +343,7 @@ export async function runSelfUpdateCommand(
 
   if (!managerOverride && isStandalone()) {
     if (!isInstalledRelease()) {
-      throw new Error("This tt was not installed by the installer, so it cannot update itself. Install with: curl -fsSL https://raw.githubusercontent.com/mostlydev/talking-stick/master/scripts/install.sh | sh");
+      throw new Error("This tt was not installed by the installer, so it cannot update itself. Install with: curl -fsSL https://raw.githubusercontent.com/mostlydev/shrooms/master/scripts/install.sh | sh");
     }
     const plan = planStandaloneUpdate(standaloneRoot());
     if (dryRun) {

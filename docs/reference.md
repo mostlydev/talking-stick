@@ -138,7 +138,7 @@ member status keeps at least 40 cells, in its short form while it keeps 32, and 
 at all. The status keeps the stick holder and compresses other members to `+N`. Copies that no
 installer manages (Windows and hand-extracted archives) say `available · download from GitHub`
 instead, never `installed`; download the next archive from
-<https://github.com/mostlydev/talking-stick/releases>. Development checkouts linked with
+<https://github.com/mostlydev/shrooms/releases>. Development checkouts linked with
 `npm link` show no notice. `TT_NO_AUTO_UPDATE=1` also disables the running-chat check.
 
 `tt self-update` on the standalone binary reruns the installer bundled with the current release,

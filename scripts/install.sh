@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo=mostlydev/talking-stick
+repo=mostlydev/shrooms
 version=latest
 bin_dir="${HOME:?HOME is required}/.local/bin"
 install_dir="$HOME/.local/share/talking-stick"

@@ -19,7 +19,7 @@ binary runs on macOS and glibc Linux (arm64 and x64), and on Windows x64. It nee
 On macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mostlydev/talking-stick/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mostlydev/shrooms/master/scripts/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 tt --version
 tt install --all

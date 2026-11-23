@@ -4,14 +4,14 @@ See the [Quickstart](../README.md#quickstart) to open your first room.
 
 | Method | Command |
 |---|---|
-| Standalone binary (recommended) | `curl -fsSL https://raw.githubusercontent.com/mostlydev/talking-stick/master/scripts/install.sh \| sh` |
+| Standalone binary (recommended) | `curl -fsSL https://raw.githubusercontent.com/mostlydev/shrooms/master/scripts/install.sh \| sh` |
 | A specific release | Pass `--version VERSION` to the installer (see below) |
-| Windows (x64) | Download `talking-stick_<version>_windows_x64.tar.gz` from [Releases](https://github.com/mostlydev/talking-stick/releases) (see below) |
+| Windows (x64) | Download `talking-stick_<version>_windows_x64.tar.gz` from [Releases](https://github.com/mostlydev/shrooms/releases) (see below) |
 | From source | [Build and link a checkout](#install-from-source) |
 
 ## Install on Windows
 
-1. Download the Windows x64 archive and `checksums.txt` from [GitHub Releases](https://github.com/mostlydev/talking-stick/releases).
+1. Download the Windows x64 archive and `checksums.txt` from [GitHub Releases](https://github.com/mostlydev/shrooms/releases).
 2. In PowerShell, run `Get-FileHash .\talking-stick_VERSION_windows_x64.tar.gz -Algorithm SHA256`. Replace `VERSION` with the downloaded version and compare the hash with the line for that archive.
 3. In a dedicated install folder, run `tar -xzf PATH_TO_ARCHIVE` with the actual archive path. Put the install folder on your user `PATH` and keep `tt.exe` beside the bundled `skills` directory.
 4. Open a new terminal and run `tt --version` and `tt install --all`. To upgrade, repeat these steps with the new archive.
@@ -29,7 +29,7 @@ writable_roots = ['C:\Users\<you>\AppData\Roaming\talking-stick']
 To pin the standalone installer, append `--version VERSION` as shown below.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mostlydev/talking-stick/master/scripts/install.sh |
+curl -fsSL https://raw.githubusercontent.com/mostlydev/shrooms/master/scripts/install.sh |
   sh -s -- --version X.Y.Z
 ```
 
@@ -50,8 +50,8 @@ tt uninstall --all             # remove
 With Node 22 or later, run:
 
 ```sh
-git clone https://github.com/mostlydev/talking-stick.git
-cd talking-stick
+git clone https://github.com/mostlydev/shrooms.git
+cd shrooms
 npm install
 npm link
 tt install --all

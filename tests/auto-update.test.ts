@@ -114,7 +114,7 @@ printf '${"a".repeat(64)}  talking-stick_${tag.slice(1)}_darwin_arm64.tar.gz\\n'
     expect(await autoUpdate({ ...options, env: { TALKING_STICK_DATA_DIR: path.join(dir, "data"), PATH: `${bin}${path.delimiter}${process.env.PATH}`, TT_TEST_ARGS: path.join(dir, "curl-args") }, latestVersion: undefined })).toBe(tag === "v0.25.0");
     const args = fs.readFileSync(path.join(dir, "curl-args"), "utf8");
     expect(args).toContain("--connect-timeout\n3\n--max-time\n5");
-    expect(args).toContain("https://github.com/mostlydev/talking-stick/releases/latest/download/checksums.txt");
+    expect(args).toContain("https://github.com/mostlydev/shrooms/releases/latest/download/checksums.txt");
     expect(args).not.toContain("api.github.com");
     if (tag === "bad-tag") expect(options.install).not.toHaveBeenCalled();
   });
