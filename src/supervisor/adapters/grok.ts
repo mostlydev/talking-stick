@@ -45,6 +45,7 @@ export class GrokAdapter implements HarnessAdapter {
   async start(spec: WorkerSpec, generation: number, onSpawn: (process: SpawnedProcess) => void, signal?: AbortSignal): Promise<WorkerHandle> {
     if (spec.harness !== "grok" || spec.permissions.harness !== "grok") throw new Error("Grok needs explicit Grok permissions.");
     const env = workerEnvironment(spec);
+    const permissionArgs = spec.permissions.mode === "bypassPermissions" ? ["--always-approve"] : [];
     if (signal?.aborted) throw new Error("Grok start aborted.");
     const stateDir = spec.state_dir;
     if (!stateDir) throw new Error("A managed Grok worker needs the supervisor's state directory.");
@@ -62,7 +63,7 @@ export class GrokAdapter implements HarnessAdapter {
     try {
       const child = await spawnManagedProcess({
         command: this.options.command ?? resolveGrokExecutable(env),
-        args: [...(this.options.argsPrefix ?? []), "agent", "--no-leader", "stdio"],
+        args: [...(this.options.argsPrefix ?? []), "agent", "--no-leader", ...permissionArgs, "stdio"],
         cwd: spec.cwd, env, signal,
         onSpawn: (process) => {
           evidence?.record(process);
