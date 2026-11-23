@@ -25,6 +25,8 @@ export interface RoomBridge {
    */
   sessionStarted(input: { harness: Harness; session_id: string; pid: number; process_started_at: string }): void;
   lostSessions(input: { harness: Harness; session_id: string }): Array<{ room_id: string; agent_id: string }>;
+  isEnrolled(input: { harness: Harness; session_id: string; pid: number; process_started_at: string;
+    endpoint_address: string }): boolean;
 }
 
 export function createRoomBridge(service: TalkingStickService, options: { dataDir?: string; hostId?: string } = {}): RoomBridge {
@@ -87,6 +89,14 @@ export function createRoomBridge(service: TalkingStickService, options: { dataDi
     },
     lostSessions(input) {
       return service.findLostMembersForSession({ harness_name: input.harness, harness_session_id: `harness:${input.session_id}` });
+    },
+    isEnrolled(input) {
+      return service.findMembersForSession({ harness_name: input.harness, harness_session_id: `harness:${input.session_id}` })
+        .some(member => member.harness_pid === input.pid &&
+          member.harness_process_started_at?.trim() === input.process_started_at.trim() &&
+          !!service.db.prepare(`SELECT 1 FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ?
+            AND transport = 'supervisor' AND address = ? AND host_id = ?`)
+            .get(member.room_id, member.agent_id, input.endpoint_address, hostId));
     }
   };
 }

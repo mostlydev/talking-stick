@@ -12,7 +12,7 @@ const cleanup: Array<() => void> = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
 const bootstrapBridge: RoomBridge = { fence() {}, recover: () => ({ recovered: [], refused: [] }),
-  sessionStarted() {}, lostSessions: () => [] };
+  sessionStarted() {}, lostSessions: () => [], isEnrolled: () => true };
 
 function setup(options: { liveness?: (pid: number) => "alive" | "gone" | "unknown" } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-supervisor-"));
@@ -70,6 +70,19 @@ describe("one-time room enrolment", () => {
     expect(adapter.last.submitted).toHaveLength(0);
     expect(store.db.prepare("SELECT * FROM bootstrap_sessions").all()).toHaveLength(1);
   });
+  test("holds a successful bootstrap turn that left the worker outside the room", async () => {
+    const { store, adapter, spec } = setup();
+    store.addWorker({ ...spec, resume_session_id: "native-first" }, "human:op", "t");
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone",
+      bridge: { ...bootstrapBridge, isEnrolled: () => false }, socketPath: "/tmp/bootstrap.sock", bootstrap: true });
+    supervisor.reconcileStartup();
+    await supervisor.tick();
+    const input = adapter.last.submitted[0];
+    adapter.last.emit({ type: "turn_started", native_turn_id: "enrol", input_id: input.input_id });
+    adapter.last.emit({ type: "turn_completed", native_turn_id: "enrol", outcome: "success" });
+    expect(store.worker("w1")?.hold_reason).toBe("bootstrap_failed");
+  });
+
   test("an enrolment reserved before a daemon crash is held, never silently replayed", async () => {
     const { store, adapter, supervisor, spec } = setup();
     store.addWorker({ ...spec, resume_session_id: "native-first" }, "human:op", "t");

@@ -286,7 +286,7 @@ test("the supervisor enrols a fresh Claude worker with one bootstrap turn", asyn
   const store = new SupervisorStore(supervisorDatabasePath(f.root));
   cleanup.push(() => store.close());
   store.addWorker(f.spec, "human:test", "t");
-  const bridge = { fence() {}, recover: () => ({ recovered: [], refused: [] }), sessionStarted() {}, lostSessions: () => [] };
+  const bridge = { fence() {}, recover: () => ({ recovered: [], refused: [] }), sessionStarted() {}, lostSessions: () => [], isEnrolled: () => true };
   const supervisor = new Supervisor({ store, adapters: { claude: f.adapter }, processLiveness: () => "alive", bridge,
     socketPath: path.join(f.root, "intake.sock"), dataDir: path.join(f.root, "data"), bootstrap: true });
   cleanup.push(() => supervisor.shutdown());

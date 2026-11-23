@@ -30,7 +30,10 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
         case "wait":
           break;
         case "permission":
-          send({ id: "perm", method: "session/request_permission", params: { sessionId, toolCall: { title: "echo hello" } } });
+        case "oversized permission":
+          send({ id: "perm", method: "session/request_permission", params: { sessionId,
+            toolCall: { title: "echo hello", extra: message.params.prompt[0].text === "oversized permission" ? "x".repeat(140_000) : "" }
+          } });
           break;
         default:
           reply({ stopReason: "end_turn" });

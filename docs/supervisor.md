@@ -61,7 +61,8 @@ held:
 | `deny_undelivered` | Check `tt supervisor approvals` and `tt supervisor logs`, then resume the worker. |
 | `start_failed` | If the executable could not be found, correct PATH or re-add the worker with an explicit executable (see below). |
 | `crash_loop` | Check `tt supervisor logs`, fix the cause, then resume the worker. |
-| `resume_failed` or `bootstrap_failed` | Use `tt supervisor restart <worker> --fresh` if you want to start a new conversation. |
+| `resume_failed` | Use `tt supervisor restart <worker> --fresh` to start a new conversation. |
+| `bootstrap_failed` | Check `tt supervisor approvals` and the worker’s permission settings. Once the worker can join, run `tt supervisor restart <worker> --fresh`. |
 
 Permission prompts are denied automatically and recorded. See
 [Permissions and environment](#permissions-and-environment) for worker settings, and

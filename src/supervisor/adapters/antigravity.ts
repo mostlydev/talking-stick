@@ -7,6 +7,7 @@ import {
   type Capabilities, type HarnessAdapter, type InputOutcome, type SpawnedProcess, type WorkerEvent,
   type WorkerHandle, type WorkerSpec
 } from "../adapter.js";
+import { approvalDetail, approvalSummary } from "../approval-detail.js";
 import { AcpError, AcpRpc, acpObject, type AcpObject } from "./acp-rpc.js";
 import { spawnManagedProcess, workerEnvironment, type ManagedProcess } from "./process.js";
 
@@ -217,11 +218,17 @@ class AntigravityHandle implements WorkerHandle {
         this.fail({ type: "protocol_error" });
         return;
       }
+      const detail = approvalDetail(params);
+      if (!detail) {
+        this.emit({ type: "request_refused", method: message.method });
+        void this.cancelPermission(message.id).catch(() => this.fail({ type: "protocol_error" }));
+        return;
+      }
       this.requested.set(key, message.id);
       const title = acpObject(params.toolCall).title;
       this.emit({ type: "approval_requested", native_request_id: key, tool: "Antigravity tool",
-        summary: typeof title === "string" ? title.slice(0, 500) : "Permission requested.",
-        detail: JSON.stringify(params) });
+        summary: approvalSummary(typeof title === "string" ? title : "Permission requested."),
+        detail });
       return;
     }
     this.emit({ type: "request_refused", method: message.method });
@@ -286,8 +293,12 @@ class AntigravityHandle implements WorkerHandle {
   async answerApproval(nativeRequestId: string, decision: "allow" | "deny"): Promise<void> {
     const id = this.requested.get(nativeRequestId);
     if (id === undefined || decision !== "deny") throw new Error("Antigravity has no matching denial to deliver.");
-    await this.respond({ id, result: { outcome: { outcome: "cancelled" } } });
     this.requested.delete(nativeRequestId);
+    await this.cancelPermission(id);
+  }
+
+  private cancelPermission(id: number | string): Promise<void> {
+    return this.respond({ id, result: { outcome: { outcome: "cancelled" } } });
   }
 
   private async respond(body: AcpObject): Promise<void> {

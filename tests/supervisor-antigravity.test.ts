@@ -66,6 +66,15 @@ posix("cancels the exact active turn and declines an ACP permission request", as
   await expect.poll(() => f.events).toContainEqual({ type: "turn_completed", native_turn_id: "b", outcome: "success" });
 });
 
+posix("refuses an oversized permission request without journalling the raw details", async () => {
+  const f = fixture();
+  const handle = await f.start();
+  expect(await handle.submit({ input_id: "large", text: "oversized permission", mode: "start_turn" })).toBe("written");
+  await expect.poll(() => f.events).toContainEqual({ type: "request_refused", method: "session/request_permission" });
+  await expect.poll(() => f.events).toContainEqual({ type: "turn_completed", native_turn_id: "large", outcome: "success" });
+  expect(f.events.some(event => event.type === "approval_requested")).toBe(false);
+});
+
 posix("requires an account login and passes bypass only when chosen", async () => {
   const f = fixture();
   const settings = path.join(f.root, ".gemini", "antigravity-cli", "settings.json");
