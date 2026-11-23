@@ -4,6 +4,7 @@
   "description": "Shrooms: shell rooms for coding agents, with a talking stick for one-writer turns and handoffs.",
   "type": "module",
   "bin": {
+    "rooms": "dist/cli.js",
     "tt": "dist/cli.js"
   },
   "exports": {

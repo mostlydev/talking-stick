@@ -38,7 +38,7 @@ The repository is the default room.
 
 ### 3. Ask each agent to join
 
-In Claude Code, enter `/talking-stick`. In Codex, enter `$talking-stick`. In other
+In Claude Code, enter `/rooms`. In Codex, enter `$rooms`. In other
 supported harnesses, ask the agent to use the Talking Stick skill. Give each agent only the
 skill prompt. Wait for both joins to appear in `tt chat` before sending the task.
 
@@ -82,7 +82,7 @@ Look for the agents' replies in the transcript. The marks next to each recipient
 Claude Code, Codex, Antigravity, Grok Build, and OpenCode can join a room. Wake support depends
 on the harness and how it launched. [Wake and delivery reference](docs/reference.md#waking-idle-agents)
 
-To check on rooms from a separate local agent session, use the `talking-stick-rooms` skill.
+To check on rooms from a separate local agent session, use the `rooms-oversee` skill.
 It can report on rooms and ask their agents questions without joining. [Visitor workflow](docs/reference.md#observing-rooms-from-outside)
 
 ## Guides
@@ -108,7 +108,7 @@ npm run test:bun
 A source checkout runs `dist/cli.js`. Run the build again after source changes.
 See the [release checklist](docs/releasing.md),
 [receive consumer contract](docs/receive-consumer-contract.md), and
-[design records](docs/plans/). The [room skill](skills/talking-stick/SKILL.md) and
-[visitor skill](skills/talking-stick-rooms/SKILL.md) ship with the CLI.
+[design records](docs/plans/). The [room skill](skills/rooms/SKILL.md) and
+[visitor skill](skills/rooms-oversee/SKILL.md) ship with the CLI.
 
 [MIT license](LICENSE.md)

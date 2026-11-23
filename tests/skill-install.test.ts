@@ -45,30 +45,30 @@ describe("talking-stick skill install", () => {
       "/home/u/.agents/skills"
     );
     expect(resolveSharedSkillTargetPath({ homeDir: "/home/u" })).toBe(
-      "/home/u/.agents/skills/talking-stick"
+      "/home/u/.agents/skills/rooms"
     );
     expect(
       resolveSkillTargetPath("claude-code", { homeDir: "/home/u" })
-    ).toBe("/home/u/.claude/skills/talking-stick");
+    ).toBe("/home/u/.claude/skills/rooms");
     expect(resolveSkillTargetPath("codex", { homeDir: "/home/u" })).toBe(
-      "/home/u/.codex/skills/talking-stick"
+      "/home/u/.codex/skills/rooms"
     );
     expect(resolvePrimarySkillTargetPath("codex", { homeDir: "/home/u" })).toBe(
-      "/home/u/.agents/skills/talking-stick"
+      "/home/u/.agents/skills/rooms"
     );
     expect(resolveSkillTargetPath("grok", { env: {}, homeDir: "/home/u" })).toBe(
-      "/home/u/.grok/skills/talking-stick"
+      "/home/u/.grok/skills/rooms"
     );
     expect(
       resolveSkillTargetPath("grok", {
         env: { GROK_HOME: "/custom/grok" },
         homeDir: "/home/u"
       })
-    ).toBe("/custom/grok/skills/talking-stick");
+    ).toBe("/custom/grok/skills/rooms");
     expect(
       resolveSkillTargetPath("opencode", { env: {}, homeDir: "/home/u" })
     ).toBe(
-      "/home/u/.config/opencode/skills/talking-stick"
+      "/home/u/.config/opencode/skills/rooms"
     );
     expect(
       resolveSkillTargetPath("opencode", {
@@ -76,10 +76,10 @@ describe("talking-stick skill install", () => {
         homeDir: "/home/u"
       })
     ).toBe(
-      "/custom/config/opencode/skills/talking-stick"
+      "/custom/config/opencode/skills/rooms"
     );
     expect(resolveSkillTargetPath("antigravity", { homeDir: "/home/u" })).toBe(
-      "/home/u/.agents/skills/talking-stick"
+      "/home/u/.agents/skills/rooms"
     );
   });
 
@@ -95,7 +95,7 @@ describe("talking-stick skill install", () => {
 
   test("resolves proprietary duplicate cleanup targets", () => {
     expect(resolveDuplicateSkillTargetPaths("codex", { homeDir: "/home/u" })).toEqual([
-      "/home/u/.codex/skills/talking-stick"
+      "/home/u/.codex/skills/rooms"
     ]);
     expect(
       resolveDuplicateSkillTargetPaths("opencode", {
@@ -103,8 +103,8 @@ describe("talking-stick skill install", () => {
         homeDir: "/home/u"
       })
     ).toEqual([
-      "/home/u/.config/opencode/skills/talking-stick",
-      "/home/u/.opencode/skills/talking-stick"
+      "/home/u/.config/opencode/skills/rooms",
+      "/home/u/.opencode/skills/rooms"
     ]);
     expect(resolveDuplicateSkillTargetPaths("antigravity", { homeDir: "/home/u" })).toEqual([]);
   });
@@ -115,7 +115,7 @@ describe("talking-stick skill install", () => {
     });
     expect(linkAction.kind).toBe("skip");
     expect(linkAction.description).toContain("Gemini CLI skill install is deprecated");
-    expect(linkAction.description).toContain("/home/u/.gemini/skills/talking-stick");
+    expect(linkAction.description).toContain("/home/u/.gemini/skills/rooms");
   });
 
   test("gemini install does not spawn the deprecated skills CLI", async () => {
@@ -125,7 +125,7 @@ describe("talking-stick skill install", () => {
     const sourcePath = path.join(tempRoot, "source-skill");
     fs.mkdirSync(sourcePath, { recursive: true });
     fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "source\n");
-    const geminiTarget = path.join(tempRoot, ".gemini", "skills", "talking-stick");
+    const geminiTarget = path.join(tempRoot, ".gemini", "skills", "rooms");
     fs.mkdirSync(path.dirname(geminiTarget), { recursive: true });
     fs.symlinkSync(sourcePath, geminiTarget);
 
@@ -156,7 +156,7 @@ describe("talking-stick skill install", () => {
 
     action.apply();
 
-    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "rooms");
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     expect(fs.readlinkSync(target)).toBe(resolveBundledSkillPath());
   });
@@ -175,7 +175,7 @@ describe("talking-stick skill install", () => {
 
     action.apply();
 
-    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "rooms");
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("tt instructions show --json");
@@ -201,7 +201,7 @@ describe("talking-stick skill install", () => {
 
     expect(result.ok).toBe(true);
     expect(result.skipped).toBeUndefined();
-    expect(fs.existsSync(path.join(tempRoot, ".agents", "skills", "talking-stick"))).toBe(true);
+    expect(fs.existsSync(path.join(tempRoot, ".agents", "skills", "rooms"))).toBe(true);
     expect(fs.existsSync(path.join(tempRoot, ".codex"))).toBe(false);
   });
 
@@ -218,7 +218,7 @@ describe("talking-stick skill install", () => {
 
     const result = await runAction(action, { skipMissing: true });
 
-    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "rooms");
     expect(result.ok).toBe(true);
     expect(result.skipped).toBeUndefined();
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
@@ -245,7 +245,7 @@ describe("talking-stick skill install", () => {
     const sourcePath = path.join(tempRoot, "source-skill");
     fs.mkdirSync(sourcePath, { recursive: true });
     fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "bundled\n");
-    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "rooms");
     fs.mkdirSync(target, { recursive: true });
     fs.writeFileSync(path.join(target, "SKILL.md"), "custom\n");
 
@@ -288,7 +288,7 @@ describe("talking-stick skill install", () => {
 
     action.apply();
 
-    const target = path.join(tempRoot, ".claude", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".claude", "skills", "rooms");
     expect(fs.existsSync(path.join(target, "SKILL.md"))).toBe(true);
     expect(fs.existsSync(path.join(target, "agents", "openai.yaml"))).toBe(true);
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
@@ -309,7 +309,7 @@ describe("talking-stick skill install", () => {
 
     action.apply();
 
-    const target = path.join(tempRoot, ".claude", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".claude", "skills", "rooms");
     expect(fs.lstatSync(target).isSymbolicLink()).toBe(false);
     const skill = fs.readFileSync(path.join(target, "SKILL.md"), "utf8");
     expect(skill).toContain("tt instructions show --json");
@@ -337,7 +337,7 @@ describe("talking-stick skill install", () => {
     install.apply();
     fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "new skill\n");
 
-    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "rooms");
 
     const result = syncInstalledSkills({
       homeDir: tempRoot,
@@ -355,7 +355,7 @@ describe("talking-stick skill install", () => {
   });
 
   test("every bundled skill ships with a frontmatter name matching its directory", () => {
-    expect(BUNDLED_SKILL_NAMES).toEqual(["talking-stick", "talking-stick-rooms"]);
+    expect(BUNDLED_SKILL_NAMES).toEqual(["rooms", "rooms-oversee"]);
     for (const skillName of BUNDLED_SKILL_NAMES) {
       const source = resolveBundledSkillPath({ skillName });
       expect(path.basename(source)).toBe(skillName);
@@ -363,47 +363,47 @@ describe("talking-stick skill install", () => {
     }
   });
 
-  test("the rooms skill installs beside an existing talking-stick install and nowhere else", () => {
+  test("rooms-oversee installs beside an existing rooms install and nowhere else", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
     const mainSource = resolveBundledSkillPath();
-    const roomsSource = resolveBundledSkillPath({ skillName: "talking-stick-rooms" });
-    // Claude Code and the shared folder have talking-stick; Gemini's folder exists without it.
+    const roomsSource = resolveBundledSkillPath({ skillName: "rooms-oversee" });
+    // Claude Code and the shared folder have rooms; Gemini's folder exists without it.
     for (const dir of [".claude/skills", ".agents/skills"]) {
       fs.mkdirSync(path.join(tempRoot, dir), { recursive: true });
-      fs.symlinkSync(mainSource, path.join(tempRoot, dir, "talking-stick"), "dir");
+      fs.symlinkSync(mainSource, path.join(tempRoot, dir, "rooms"), "dir");
     }
     fs.mkdirSync(path.join(tempRoot, ".gemini", "skills"), { recursive: true });
-    const sync = () => syncInstalledSkills({ homeDir: tempRoot, skillName: "talking-stick-rooms", installBesideDefault: true });
+    const sync = () => syncInstalledSkills({ homeDir: tempRoot, skillName: "rooms-oversee", installBesideDefault: true });
 
     const first = sync();
     for (const dir of [".claude/skills", ".agents/skills"]) {
-      expect(fs.readlinkSync(path.join(tempRoot, dir, "talking-stick-rooms"))).toBe(roomsSource);
+      expect(fs.readlinkSync(path.join(tempRoot, dir, "rooms-oversee"))).toBe(roomsSource);
     }
-    expect(fs.existsSync(path.join(tempRoot, ".gemini", "skills", "talking-stick-rooms"))).toBe(false);
+    expect(fs.existsSync(path.join(tempRoot, ".gemini", "skills", "rooms-oversee"))).toBe(false);
     expect(first.targets.filter((target) => target.status === "updated").map((target) => target.targetPath).sort())
-      .toEqual([path.join(tempRoot, ".agents/skills/talking-stick-rooms"), path.join(tempRoot, ".claude/skills/talking-stick-rooms")]);
+      .toEqual([path.join(tempRoot, ".agents/skills/rooms-oversee"), path.join(tempRoot, ".claude/skills/rooms-oversee")]);
     expect(sync().targets.filter((target) => target.status === "updated")).toEqual([]);
 
     // Without the flag a missing skill stays missing, as before.
-    fs.unlinkSync(path.join(tempRoot, ".claude/skills/talking-stick-rooms"));
-    expect(syncInstalledSkills({ homeDir: tempRoot, skillName: "talking-stick-rooms" }).targets
+    fs.unlinkSync(path.join(tempRoot, ".claude/skills/rooms-oversee"));
+    expect(syncInstalledSkills({ homeDir: tempRoot, skillName: "rooms-oversee" }).targets
       .find((target) => target.harness === "claude-code")).toMatchObject({ status: "missing" });
-    expect(fs.existsSync(path.join(tempRoot, ".claude/skills/talking-stick-rooms"))).toBe(false);
+    expect(fs.existsSync(path.join(tempRoot, ".claude/skills/rooms-oversee"))).toBe(false);
   });
 
   test("the rooms skill copies beside a copied install and never replaces a dangling link", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
-    const roomsSource = resolveBundledSkillPath({ skillName: "talking-stick-rooms" });
-    fs.cpSync(resolveBundledSkillPath(), path.join(tempRoot, ".claude/skills/talking-stick"), { recursive: true });
+    const roomsSource = resolveBundledSkillPath({ skillName: "rooms-oversee" });
+    fs.cpSync(resolveBundledSkillPath(), path.join(tempRoot, ".claude/skills/rooms"), { recursive: true });
     fs.mkdirSync(path.join(tempRoot, ".agents/skills"), { recursive: true });
-    fs.symlinkSync(resolveBundledSkillPath(), path.join(tempRoot, ".agents/skills/talking-stick"), "dir");
-    const dangling = path.join(tempRoot, ".agents/skills/talking-stick-rooms");
+    fs.symlinkSync(resolveBundledSkillPath(), path.join(tempRoot, ".agents/skills/rooms"), "dir");
+    const dangling = path.join(tempRoot, ".agents/skills/rooms-oversee");
     fs.symlinkSync(path.join(tempRoot, "missing"), dangling, "dir");
 
-    syncInstalledSkills({ homeDir: tempRoot, skillName: "talking-stick-rooms", installBesideDefault: true });
-    const copied = path.join(tempRoot, ".claude/skills/talking-stick-rooms");
+    syncInstalledSkills({ homeDir: tempRoot, skillName: "rooms-oversee", installBesideDefault: true });
+    const copied = path.join(tempRoot, ".claude/skills/rooms-oversee");
     expect(fs.lstatSync(copied).isSymbolicLink()).toBe(false);
     expect(fs.readFileSync(path.join(copied, "SKILL.md"), "utf8")).toBe(fs.readFileSync(path.join(roomsSource, "SKILL.md"), "utf8"));
     expect(fs.readlinkSync(dangling)).toBe(path.join(tempRoot, "missing"));
@@ -413,15 +413,15 @@ describe("talking-stick skill install", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
     fs.mkdirSync(path.join(tempRoot, ".claude"), { recursive: true });
-    const action = planSkillInstall("claude-code", { homeDir: tempRoot, skillName: "talking-stick-rooms" });
+    const action = planSkillInstall("claude-code", { homeDir: tempRoot, skillName: "rooms-oversee" });
     if (action.kind !== "file-patch") throw new Error("unreachable");
     action.apply();
-    expect(fs.readlinkSync(path.join(tempRoot, ".claude", "skills", "talking-stick-rooms")))
-      .toBe(resolveBundledSkillPath({ skillName: "talking-stick-rooms" }));
-    const remove = planSkillUninstall("claude-code", { homeDir: tempRoot, skillName: "talking-stick-rooms" });
+    expect(fs.readlinkSync(path.join(tempRoot, ".claude", "skills", "rooms-oversee")))
+      .toBe(resolveBundledSkillPath({ skillName: "rooms-oversee" }));
+    const remove = planSkillUninstall("claude-code", { homeDir: tempRoot, skillName: "rooms-oversee" });
     if (remove.kind !== "file-patch") throw new Error("unreachable");
     remove.apply();
-    expect(fs.existsSync(path.join(tempRoot, ".claude", "skills", "talking-stick-rooms"))).toBe(false);
+    expect(fs.existsSync(path.join(tempRoot, ".claude", "skills", "rooms-oversee"))).toBe(false);
   });
 
   test("syncInstalledSkills leaves current symlinks alone and preserves unknown symlinks", () => {
@@ -434,10 +434,10 @@ describe("talking-stick skill install", () => {
     fs.mkdirSync(staleSourcePath, { recursive: true });
     fs.writeFileSync(path.join(staleSourcePath, "SKILL.md"), "stale\n");
 
-    const codexTarget = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const codexTarget = path.join(tempRoot, ".agents", "skills", "rooms");
     fs.mkdirSync(path.dirname(codexTarget), { recursive: true });
     fs.symlinkSync(sourcePath, codexTarget, "dir");
-    const claudeTarget = path.join(tempRoot, ".claude", "skills", "talking-stick");
+    const claudeTarget = path.join(tempRoot, ".claude", "skills", "rooms");
     fs.mkdirSync(path.dirname(claudeTarget), { recursive: true });
     fs.symlinkSync(staleSourcePath, claudeTarget, "dir");
 
@@ -462,7 +462,7 @@ describe("talking-stick skill install", () => {
     const sourcePath = path.join(tempRoot, "source-skill");
     fs.mkdirSync(sourcePath, { recursive: true });
     fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "new bundled skill\n");
-    const target = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const target = path.join(tempRoot, ".agents", "skills", "rooms");
     fs.mkdirSync(target, { recursive: true });
     fs.writeFileSync(path.join(target, "SKILL.md"), "custom skill\n");
 
@@ -488,7 +488,7 @@ describe("talking-stick skill install", () => {
       ".config",
       "opencode",
       "skills",
-      "talking-stick"
+      "rooms"
     );
     fs.mkdirSync(target, { recursive: true });
     fs.writeFileSync(path.join(target, "SKILL.md"), "old\n");
@@ -510,7 +510,7 @@ describe("talking-stick skill install", () => {
   test("shared uninstall removes only the talking-stick skill subdirectory", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
-    const sharedSkill = path.join(tempRoot, ".agents", "skills", "talking-stick");
+    const sharedSkill = path.join(tempRoot, ".agents", "skills", "rooms");
     const otherSkill = path.join(tempRoot, ".agents", "skills", "other-skill");
     fs.mkdirSync(sharedSkill, { recursive: true });
     fs.mkdirSync(otherSkill, { recursive: true });
@@ -533,7 +533,7 @@ describe("talking-stick skill install", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
     const sourcePath = resolveBundledSkillPath();
-    const codexDuplicate = path.join(tempRoot, ".codex", "skills", "talking-stick");
+    const codexDuplicate = path.join(tempRoot, ".codex", "skills", "rooms");
     fs.mkdirSync(path.dirname(codexDuplicate), { recursive: true });
     fs.symlinkSync(sourcePath, codexDuplicate, "dir");
     const unknownDuplicate = path.join(
@@ -541,7 +541,7 @@ describe("talking-stick skill install", () => {
       ".config",
       "opencode",
       "skills",
-      "talking-stick"
+      "rooms"
     );
     fs.mkdirSync(unknownDuplicate, { recursive: true });
     fs.writeFileSync(path.join(unknownDuplicate, "SKILL.md"), "custom\n");
@@ -549,7 +549,7 @@ describe("talking-stick skill install", () => {
       tempRoot,
       ".opencode",
       "skills",
-      "talking-stick"
+      "rooms"
     );
     fs.mkdirSync(path.dirname(legacyOpencodeDuplicate), { recursive: true });
     fs.symlinkSync(sourcePath, legacyOpencodeDuplicate, "dir");

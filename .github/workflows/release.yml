@@ -63,6 +63,9 @@ jobs:
           tt="$stage/tt"
           if [ "$RUNNER_OS" = "Windows" ]; then tt="$stage/tt.exe"; fi
           "$tt" --help >/dev/null
+          test -f "$stage/skills/rooms/SKILL.md"
+          test -f "$stage/skills/rooms-oversee/SKILL.md"
+          # Installers from 0.38.0 and earlier require this path; it holds a redirect stub.
           test -f "$stage/skills/talking-stick/SKILL.md"
           # A full turn through the compiled binary, including native Windows,
           # where the install-script test above is skipped.

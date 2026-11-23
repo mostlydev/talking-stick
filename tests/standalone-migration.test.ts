@@ -14,9 +14,9 @@ function layout() {
   const install = path.join(root, "install");
   const release = (name: string, text: string) => {
     const dir = path.join(install, "releases", name);
-    fs.mkdirSync(path.join(dir, "skills", "talking-stick"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "skills", "rooms"), { recursive: true });
     fs.writeFileSync(path.join(dir, "package.json"), "{}");
-    fs.writeFileSync(path.join(dir, "skills", "talking-stick", "SKILL.md"), text);
+    fs.writeFileSync(path.join(dir, "skills", "rooms", "SKILL.md"), text);
     return dir;
   };
   const home = path.join(root, "home");
@@ -49,17 +49,17 @@ describe("standalone migration", () => {
       fs.symlinkSync(source, target);
       recordManagedContent(target, "skill-copy", digestDirectory(source), { env: f.env });
     };
-    const npmSkill = skill(path.join(f.root, "lib", "node_modules", "talking-stick", "skills", "talking-stick"), "npm");
-    const checkout = skill(path.join(f.root, "checkout", "skills", "talking-stick"), "dev");
-    const claude = path.join(f.home, ".claude", "skills", "talking-stick");
-    const shared = path.join(f.home, ".agents", "skills", "talking-stick");
-    const grok = path.join(f.home, ".grok", "skills", "talking-stick");
+    const npmSkill = skill(path.join(f.root, "lib", "node_modules", "talking-stick", "skills", "rooms"), "npm");
+    const checkout = skill(path.join(f.root, "checkout", "skills", "rooms"), "dev");
+    const claude = path.join(f.home, ".claude", "skills", "rooms");
+    const shared = path.join(f.home, ".agents", "skills", "rooms");
+    const grok = path.join(f.home, ".grok", "skills", "rooms");
     link(claude, npmSkill);
-    link(shared, path.join(oldRelease, "skills", "talking-stick"));
+    link(shared, path.join(oldRelease, "skills", "rooms"));
     link(grok, checkout);
 
     const result = repointManagedSkillLinks({ releaseRoot: release, env: f.env, homeDir: f.home });
-    const current = path.join(f.install, "current", "skills", "talking-stick");
+    const current = path.join(f.install, "current", "skills", "rooms");
     expect(result.repointed.map((entry) => entry.path).sort()).toEqual([shared, claude].sort());
     expect(result.unproven).toEqual([]);
     expect(fs.readlinkSync(claude)).toBe(current);
@@ -73,10 +73,10 @@ describe("standalone migration", () => {
     const f = layout();
     const release = f.release("0.23.1-abc", "new");
     ensureCurrentLink({ releaseRoot: release });
-    const npmSkill = path.join(f.root, "lib", "node_modules", "talking-stick", "skills", "talking-stick");
+    const npmSkill = path.join(f.root, "lib", "node_modules", "talking-stick", "skills", "rooms");
     fs.mkdirSync(npmSkill, { recursive: true });
     fs.writeFileSync(path.join(npmSkill, "SKILL.md"), "npm");
-    const claude = path.join(f.home, ".claude", "skills", "talking-stick");
+    const claude = path.join(f.home, ".claude", "skills", "rooms");
     fs.mkdirSync(path.dirname(claude), { recursive: true });
     fs.symlinkSync(npmSkill, claude);
     recordManagedContent(claude, "skill-copy", digestDirectory(npmSkill), { env: f.env });
@@ -84,14 +84,14 @@ describe("standalone migration", () => {
 
     const linkedPackage = path.join(f.root, "linked", "node_modules", "talking-stick");
     const checkout = path.join(f.root, "checkout");
-    fs.mkdirSync(path.join(checkout, "skills", "talking-stick"), { recursive: true });
-    fs.writeFileSync(path.join(checkout, "skills", "talking-stick", "SKILL.md"), "dev");
+    fs.mkdirSync(path.join(checkout, "skills", "rooms"), { recursive: true });
+    fs.writeFileSync(path.join(checkout, "skills", "rooms", "SKILL.md"), "dev");
     fs.mkdirSync(path.dirname(linkedPackage), { recursive: true });
     fs.symlinkSync(checkout, linkedPackage);
-    const shared = path.join(f.home, ".agents", "skills", "talking-stick");
+    const shared = path.join(f.home, ".agents", "skills", "rooms");
     fs.mkdirSync(path.dirname(shared), { recursive: true });
-    fs.symlinkSync(path.join(linkedPackage, "skills", "talking-stick"), shared);
-    recordManagedContent(shared, "skill-copy", digestDirectory(path.join(checkout, "skills", "talking-stick")), { env: f.env });
+    fs.symlinkSync(path.join(linkedPackage, "skills", "rooms"), shared);
+    recordManagedContent(shared, "skill-copy", digestDirectory(path.join(checkout, "skills", "rooms")), { env: f.env });
 
     const result = repointManagedSkillLinks({ releaseRoot: release, env: f.env, homeDir: f.home });
     expect(result.repointed).toEqual([]);
@@ -104,16 +104,16 @@ describe("standalone migration", () => {
     const oldRelease = f.release("0.23.1-old", "old");
     const release = f.release("0.23.2-new", "new");
     ensureCurrentLink({ releaseRoot: oldRelease });
-    const through = path.join(f.install, "current", "skills", "talking-stick");
-    const claude = path.join(f.home, ".claude", "skills", "talking-stick");
-    const shared = path.join(f.home, ".agents", "skills", "talking-stick");
+    const through = path.join(f.install, "current", "skills", "rooms");
+    const claude = path.join(f.home, ".claude", "skills", "rooms");
+    const shared = path.join(f.home, ".agents", "skills", "rooms");
     for (const target of [claude, shared]) {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.symlinkSync(through, target);
       recordManagedContent(target, "skill-copy", digestDirectory(through), { env: f.env });
     }
     // Someone edited the release's skill that claude reads; record shared as edited.
-    fs.appendFileSync(path.join(oldRelease, "skills", "talking-stick", "SKILL.md"), " + local edit");
+    fs.appendFileSync(path.join(oldRelease, "skills", "rooms", "SKILL.md"), " + local edit");
     recordManagedContent(shared, "skill-copy", digestDirectory(through), { env: f.env });
 
     const pinned = advanceCurrentLink({ releaseRoot: release, env: f.env, homeDir: f.home });
@@ -122,29 +122,56 @@ describe("standalone migration", () => {
     expect(fs.readFileSync(path.join(shared, "SKILL.md"), "utf8")).toBe("new");
   });
 
+  it("pins an edited skill under its pre-0.39 name before current moves to a release that only has the stub", () => {
+    const f = layout();
+    // A 0.38 release served the skill as talking-stick; the new one has rooms plus a stub.
+    const oldRelease = path.join(f.install, "releases", "0.38.0-old");
+    fs.mkdirSync(path.join(oldRelease, "skills", "talking-stick"), { recursive: true });
+    fs.writeFileSync(path.join(oldRelease, "package.json"), "{}");
+    fs.writeFileSync(path.join(oldRelease, "skills", "talking-stick", "SKILL.md"), "old");
+    const release = f.release("0.39.0-new", "new");
+    fs.mkdirSync(path.join(release, "skills", "talking-stick"), { recursive: true });
+    fs.writeFileSync(path.join(release, "skills", "talking-stick", "SKILL.md"), "stub");
+    ensureCurrentLink({ releaseRoot: oldRelease });
+    const through = path.join(f.install, "current", "skills", "talking-stick");
+    const edited = path.join(f.home, ".claude", "skills", "talking-stick");
+    const unedited = path.join(f.home, ".agents", "skills", "talking-stick");
+    for (const target of [edited, unedited]) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.symlinkSync(through, target);
+      recordManagedContent(target, "skill-copy", digestDirectory(through), { env: f.env });
+    }
+    fs.appendFileSync(path.join(oldRelease, "skills", "talking-stick", "SKILL.md"), " + local edit");
+    recordManagedContent(unedited, "skill-copy", digestDirectory(through), { env: f.env });
+
+    expect(advanceCurrentLink({ releaseRoot: release, env: f.env, homeDir: f.home }).map((link) => link.path)).toEqual([edited]);
+    expect(fs.readFileSync(path.join(edited, "SKILL.md"), "utf8")).toBe("old + local edit");
+    expect(fs.readFileSync(path.join(unedited, "SKILL.md"), "utf8")).toBe("stub");
+  });
+
   it("pins an edited skill that reaches current through an alias", () => {
     const f = layout();
     const oldRelease = f.release("0.23.1-old", "old");
     const release = f.release("0.23.2-new", "new");
     ensureCurrentLink({ releaseRoot: oldRelease });
     const alias = path.join(f.root, "alias");
-    fs.symlinkSync(path.join(f.install, "current", "skills", "talking-stick"), alias);
-    const claude = path.join(f.home, ".claude", "skills", "talking-stick");
+    fs.symlinkSync(path.join(f.install, "current", "skills", "rooms"), alias);
+    const claude = path.join(f.home, ".claude", "skills", "rooms");
     fs.mkdirSync(path.dirname(claude), { recursive: true });
     fs.symlinkSync(alias, claude);
     recordManagedContent(claude, "skill-copy", digestDirectory(alias), { env: f.env });
-    fs.appendFileSync(path.join(oldRelease, "skills", "talking-stick", "SKILL.md"), " + edit");
+    fs.appendFileSync(path.join(oldRelease, "skills", "rooms", "SKILL.md"), " + edit");
     expect(advanceCurrentLink({ releaseRoot: release, env: f.env, homeDir: f.home }).map((link) => link.path)).toEqual([claude]);
     expect(fs.readFileSync(path.join(claude, "SKILL.md"), "utf8")).toBe("old + edit");
   });
 
   it("finds skill links that reach a package through an alias", () => {
     const f = layout();
-    const npmSkill = path.join(f.root, "lib", "node_modules", "talking-stick", "skills", "talking-stick");
+    const npmSkill = path.join(f.root, "lib", "node_modules", "talking-stick", "skills", "rooms");
     fs.mkdirSync(npmSkill, { recursive: true });
     const alias = path.join(f.root, "shared-alias");
     fs.symlinkSync(npmSkill, alias);
-    const claude = path.join(f.home, ".claude", "skills", "talking-stick");
+    const claude = path.join(f.home, ".claude", "skills", "rooms");
     fs.mkdirSync(path.dirname(claude), { recursive: true });
     fs.symlinkSync(alias, claude);
     expect(skillLinksInto(path.join(f.root, "lib", "node_modules", "talking-stick"), { env: f.env, homeDir: f.home }))

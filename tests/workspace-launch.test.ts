@@ -33,7 +33,7 @@ function fixture(options: { executables?: string[]; skills?: Array<"claude" | "s
   }
   const skillDirs = { claude: [".claude", "skills"], shared: [".agents", "skills"] };
   for (const kind of options.skills ?? ["claude", "shared"]) {
-    const dir = path.join(home, ...skillDirs[kind], "talking-stick");
+    const dir = path.join(home, ...skillDirs[kind], "rooms");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "SKILL.md"), "# skill\n");
   }
@@ -110,7 +110,7 @@ describe("tt up planning", () => {
       ["claude", "launch", "initial_argument"],
       ["codex", "launch", "initial_argument"]
     ]);
-    expect(plan.agents[0].prompt).toContain(path.join(home, ".claude/skills/talking-stick/SKILL.md"));
+    expect(plan.agents[0].prompt).toContain(path.join(home, ".claude/skills/rooms/SKILL.md"));
     expect(plan.agents[0].prompt).toContain(repo);
     expect(plan.agents[0].prompt).toMatch(/Do not claim the stick/);
     expect(plan.steps.map((step) => step.argv)).toEqual([

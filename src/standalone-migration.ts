@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { FILE_SKILL_HARNESSES } from "./harness-model.js";
 import { digestDirectory, getManagedContent, recordManagedContent } from "./managed-content.js";
 import { detectInstallSource } from "./self-update.js";
-import { DEFAULT_SKILL_NAME, resolveDuplicateSkillTargetPaths, resolvePrimarySkillTargetPath } from "./skill-install.js";
+import { BUNDLED_SKILL_NAMES, LEGACY_SKILL_NAMES, resolveDuplicateSkillTargetPaths, resolvePrimarySkillTargetPath } from "./skill-install.js";
 import { standaloneInstallDir, standaloneRoot } from "./standalone-mode.js";
 
 // Moving a machine from the npm package to the standalone binary. Everything
@@ -17,6 +17,23 @@ export interface MigrationOptions {
   env?: NodeJS.ProcessEnv;
   /** The running release directory; defaults to the binary's own. */
   releaseRoot?: string;
+}
+
+/** Installs a relative alias so it follows the installer's next tt link. */
+export function installRoomsAlias(binDir: string): boolean {
+  const alias = path.join(binDir, "rooms");
+  try {
+    fs.symlinkSync("tt", alias);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+
+  try {
+    return fs.readlinkSync(alias) === "tt";
+  } catch {
+    return false;
+  }
 }
 
 export interface RepointedLink {
@@ -57,41 +74,48 @@ export function ensureCurrentLink(options: MigrationOptions = {}, force = false)
 export function advanceCurrentLink(options: MigrationOptions = {}): RepointedLink[] {
   const releaseRoot = options.releaseRoot ?? standaloneRoot();
   const env = options.env ?? process.env;
-  const currentSkill = path.join(standaloneInstallDir(releaseRoot), "current", "skills", DEFAULT_SKILL_NAME);
-  const currentResolved = safeRealpath(currentSkill);
   const pinned: RepointedLink[] = [];
-  for (const target of skillLinkTargets(options)) {
-    const from = linkDestination(target);
-    // Any route into the skill `current` serves today, aliases included.
-    if (from === null || !currentResolved || safeRealpath(target) !== currentResolved) continue;
-    const resolved = currentResolved;
-    const recorded = getManagedContent(target, { env })?.digest;
-    if (!resolved || (recorded && digestDirectory(resolved) === recorded)) continue;
-    replaceLink(target, resolved);
-    pinned.push({ path: target, from, to: resolved });
+  // Old skill names too: a release before 0.39 serves its skills under them.
+  for (const skillName of ALL_SKILL_NAMES) {
+    const currentSkill = path.join(standaloneInstallDir(releaseRoot), "current", "skills", skillName);
+    const currentResolved = safeRealpath(currentSkill);
+    if (!currentResolved) continue;
+    for (const target of skillLinkTargets(options, [skillName])) {
+      const from = linkDestination(target);
+      // Any route into the skill `current` serves today, aliases included.
+      if (from === null || safeRealpath(target) !== currentResolved) continue;
+      const recorded = getManagedContent(target, { env })?.digest;
+      if (recorded && digestDirectory(currentResolved) === recorded) continue;
+      replaceLink(target, currentResolved);
+      pinned.push({ path: target, from, to: currentResolved });
+    }
   }
   ensureCurrentLink(options, true);
   return pinned;
 }
 
+const ALL_SKILL_NAMES: readonly string[] = [...BUNDLED_SKILL_NAMES, ...LEGACY_SKILL_NAMES];
+
 /** Skill install locations that are symlinks resolving into `packageDir`. */
 export function skillLinksInto(packageDir: string, options: MigrationOptions = {}): string[] {
   const root = safeRealpath(packageDir);
   if (!root) return [];
-  return skillLinkTargets(options).filter((target) => {
+  return skillLinkTargets(options, ALL_SKILL_NAMES).filter((target) => {
     if (linkDestination(target) === null) return false;
     const resolved = safeRealpath(target);
     return resolved !== null && (resolved === root || resolved.startsWith(root + path.sep));
   });
 }
 
-function skillLinkTargets(options: MigrationOptions): string[] {
+function skillLinkTargets(options: MigrationOptions, skillNames: readonly string[]): string[] {
   const env = options.env ?? process.env;
-  const installOptions = { homeDir: options.homeDir ?? env.HOME, env };
-  return [...new Set(FILE_SKILL_HARNESSES.flatMap((harness) => [
-    resolvePrimarySkillTargetPath(harness, installOptions),
-    ...resolveDuplicateSkillTargetPaths(harness, installOptions)
-  ]).map((target) => path.resolve(target)))];
+  return [...new Set(skillNames.flatMap((skillName) => {
+    const installOptions = { homeDir: options.homeDir ?? env.HOME, env, skillName };
+    return FILE_SKILL_HARNESSES.flatMap((harness) => [
+      resolvePrimarySkillTargetPath(harness, installOptions),
+      ...resolveDuplicateSkillTargetPaths(harness, installOptions)
+    ]);
+  }).map((target) => path.resolve(target)))];
 }
 
 function linkDestination(target: string): string | null {
@@ -120,33 +144,37 @@ function replaceLink(target: string, destination: string): void {
 export function repointManagedSkillLinks(options: MigrationOptions = {}): RepointResult {
   const releaseRoot = options.releaseRoot ?? standaloneRoot();
   const installDir = standaloneInstallDir(releaseRoot);
-  const source = path.join(installDir, "current", "skills", DEFAULT_SKILL_NAME);
-  if (!fs.existsSync(path.join(source, "SKILL.md"))) return { repointed: [], unproven: [] };
   const env = options.env ?? process.env;
   const repointed: RepointedLink[] = [];
   const unproven: RepointedLink[] = [];
-  for (const target of skillLinkTargets(options)) {
-    const from = linkDestination(target);
-    if (from === null || from === source || !isManagedSkillSource(from, installDir)) continue;
-    const resolved = safeRealpath(from);
-    const recorded = getManagedContent(target, { env })?.digest;
-    if (!resolved || !isManagedSkillSource(resolved, safeRealpath(installDir) ?? installDir) ||
-        !recorded || digestDirectory(resolved) !== recorded) {
-      unproven.push({ path: target, from, to: source });
-      continue;
+  // Old names are moved by migrateLegacySkillInstalls, not re-pointed here.
+  for (const skillName of BUNDLED_SKILL_NAMES) {
+    const source = path.join(installDir, "current", "skills", skillName);
+    if (!fs.existsSync(path.join(source, "SKILL.md"))) continue;
+    for (const target of skillLinkTargets(options, [skillName])) {
+      const from = linkDestination(target);
+      if (from === null || from === source || !isManagedSkillSource(from, installDir, skillName)) continue;
+      const resolved = safeRealpath(from);
+      const recorded = getManagedContent(target, { env })?.digest;
+      if (!resolved || !isManagedSkillSource(resolved, safeRealpath(installDir) ?? installDir, skillName) ||
+          !recorded || digestDirectory(resolved) !== recorded) {
+        unproven.push({ path: target, from, to: source });
+        continue;
+      }
+      replaceLink(target, source);
+      recordManagedContent(target, "skill-copy", digestDirectory(source), { env });
+      repointed.push({ path: target, from, to: source });
     }
-    replaceLink(target, source);
-    recordManagedContent(target, "skill-copy", digestDirectory(source), { env });
-    repointed.push({ path: target, from, to: source });
   }
   return { repointed, unproven };
 }
 
-function isManagedSkillSource(source: string, installDir: string): boolean {
+function isManagedSkillSource(source: string, installDir: string, skillName: string): boolean {
   const normalized = source.split(path.sep).join("/");
-  if (/\/node_modules\/talking-stick\/skills\/talking-stick\/?$/.test(normalized)) return true;
+  if (normalized.endsWith(`/node_modules/talking-stick/skills/${skillName}`) ||
+      normalized.endsWith(`/node_modules/talking-stick/skills/${skillName}/`)) return true;
   const releases = path.join(installDir, "releases") + path.sep;
-  return source.startsWith(releases) && source.endsWith(path.join("skills", DEFAULT_SKILL_NAME));
+  return source.startsWith(releases) && source.endsWith(path.join("skills", skillName));
 }
 
 export interface NpmCopy {

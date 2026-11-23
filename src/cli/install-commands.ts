@@ -26,7 +26,8 @@ import {
   BUNDLED_SKILL_NAMES,
   planSkillUninstall,
   planSharedSkillUninstall,
-  resolveDuplicateSkillTargetPaths
+  resolveDuplicateSkillTargetPaths,
+  migrateLegacySkillInstalls
 } from "../skill-install.js";
 import {
   runSkillerCleanupDuplicates,
@@ -52,8 +53,8 @@ import {
 import { createSystemHerdrRunner, type HerdrRunner } from "../herdr.js";
 import { chatLinkArgv, installHerdrPlugin, uninstallHerdrPlugin } from "../herdr-plugin.js";
 import { shouldUseJson } from "./output.js";
-import { isInstalledRelease, isStandalone, standaloneRoot } from "../standalone-mode.js";
-import { advanceCurrentLink, findRemovableNpmCopy, repointManagedSkillLinks, skillLinksInto } from "../standalone-migration.js";
+import { isInstalledRelease, isStandalone, standaloneInstallDir, standaloneRoot } from "../standalone-mode.js";
+import { advanceCurrentLink, findRemovableNpmCopy, installRoomsAlias, repointManagedSkillLinks, skillLinksInto } from "../standalone-migration.js";
 import { acquireUpdateLock } from "../auto-update.js";
 import {
   getStringOption,
@@ -123,6 +124,7 @@ export async function runInstallCommand(parsed: ParsedCommand, cliEntryUrl: stri
   }
 
   printDeprecatedHarnessNotices(harnesses);
+  reportLegacySkillMigration();
   const skillerResults = installOptions.replace
     ? null
     : await runSkillerInstall({
@@ -307,6 +309,7 @@ export async function runInstallSkillCommand(
   }
 
   printDeprecatedHarnessNotices(harnesses);
+  reportLegacySkillMigration();
   const results = await Promise.all(actions.map((action) => runAction(action, installOptions)));
   reportInstallResults(results, "install");
 }
@@ -656,8 +659,16 @@ function printSharedSkillLeftHint(
     return;
   }
   process.stdout.write(
-    "Left ~/.agents/skills/talking-stick (shared with other agents). Run `tt uninstall --all` or `tt uninstall agents` to remove the shared skill.\n"
+    "Left ~/.agents/skills/rooms (shared with other agents). Run `tt uninstall --all` or `tt uninstall agents` to remove the shared skill.\n"
   );
+}
+
+// Skills still installed under their pre-0.39 names move to the new ones
+// before the install, so no harness ends up with both.
+function reportLegacySkillMigration(): void {
+  for (const result of migrateLegacySkillInstalls({ markOffers: false })) {
+    process.stdout.write(`${result.message}\n`);
+  }
 }
 
 function printActionPlan(action: InstallAction): void {
@@ -749,13 +760,25 @@ function formatInstallStatus(status: InstallStatus): string {
 }
 
 // Called by scripts/install.sh after it links a new release. Output is one
-// fact per line for the shell to read: `pinned`, `repointed`, `kept`,
-// `npm_copy`, and `npm_blocked`, each followed by a path.
+// fact per line for the shell to read: skill and npm records carry paths,
+// and `rooms_*` records describe the optional alias.
 export function runPostInstallCommand(binDir: string | undefined): void {
   if (!isStandalone()) throw new Error("post-install runs only from the standalone binary.");
   if (!binDir) throw new Error("Usage: tt post-install --bin-dir DIR");
   if (!isInstalledRelease()) throw new Error("post-install runs only from a release the installer placed under <install-dir>/releases/.");
   const lines = advanceCurrentLink().map((link) => `pinned ${link.path}`);
+  try {
+    lines.push(installRoomsAlias(binDir) ? "rooms_ready" : "rooms_occupied");
+  } catch {
+    lines.push("rooms_unavailable");
+  }
+  // Skills installed under their pre-0.39 names move to the new names, through
+  // `current` like every other managed link.
+  const current = path.join(standaloneInstallDir(standaloneRoot()), "current", "skills");
+  for (const result of migrateLegacySkillInstalls({ markOffers: false, linkSourceFor: (name) => path.join(current, name) })) {
+    if (result.status === "renamed") lines.push(`renamed ${result.legacyPath}`);
+    else if (result.status !== "failed") lines.push(`kept ${result.legacyPath}`);
+  }
   const { repointed, unproven } = repointManagedSkillLinks();
   lines.push(...repointed.map((link) => `repointed ${link.path}`));
   lines.push(...unproven.map((link) => `kept ${link.path}`));

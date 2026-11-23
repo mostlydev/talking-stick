@@ -226,7 +226,7 @@ class CodexHandle implements WorkerHandle {
       ...(resume ? { threadId: resume, excludeTurns: true } : {}),
       cwd: this.spec.cwd, sandbox: permissions.sandbox, approvalPolicy: permissions.approval, config,
       ...(this.spec.model ? { model: this.spec.model } : {}),
-      developerInstructions: "You are a managed Talking Stick worker. Use the talking-stick skill for coordination. " +
+      developerInstructions: "You are a managed Shrooms worker. Use the rooms skill for coordination. " +
         "Never change approval or permission settings, adopt another session, or repeat unconfirmed side effects after a crash." }, timeout);
     const thread = object(result.thread);
     const sandbox = object(result.sandbox);

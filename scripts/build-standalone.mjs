@@ -23,9 +23,14 @@ try {
   fs.cpSync("skills", path.join(stage, "skills"), { recursive: true });
   fs.mkdirSync(path.join(stage, "scripts"));
   fs.copyFileSync("scripts/install.sh", path.join(stage, "scripts/install.sh"));
+  const commands = [executable];
+  if (os === "windows") {
+    fs.writeFileSync(path.join(stage, "rooms.cmd"), '@echo off\r\n"%~dp0tt.exe" %*\r\n');
+    commands.push("rooms.cmd");
+  }
   const archive = `${name}.tar.gz`;
   // Relative paths: GNU tar reads a "C:" drive prefix as a remote host.
-  execFileSync("tar", ["-czf", archive, "-C", path.basename(stage), executable, "package.json", "LICENSE.md", "skills", "scripts"], { cwd: output });
+  execFileSync("tar", ["-czf", archive, "-C", path.basename(stage), ...commands, "package.json", "LICENSE.md", "skills", "scripts"], { cwd: output });
   const digest = createHash("sha256").update(fs.readFileSync(path.join(output, archive))).digest("hex");
   fs.writeFileSync(path.join(output, `${name}.sha256`), `${digest}  ${archive}\n`);
   console.log(path.join(output, archive));
