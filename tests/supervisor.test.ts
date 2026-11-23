@@ -83,6 +83,28 @@ describe("one-time room enrolment", () => {
     expect(store.worker("w1")?.hold_reason).toBe("bootstrap_failed");
   });
 
+  test("rebinds a new membership before checking whether bootstrap completed", async () => {
+    const { store, adapter, spec } = setup();
+    store.addWorker({ ...spec, resume_session_id: "native-first" }, "human:op", "t");
+    let joined = false;
+    let enrolled = false;
+    const bridge = { ...bootstrapBridge, isEnrolled: () => enrolled,
+      recover: () => {
+        enrolled ||= joined;
+        return { recovered: [], refused: [] };
+      } };
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone",
+      bridge, socketPath: "/tmp/bootstrap.sock", bootstrap: true });
+    supervisor.reconcileStartup();
+    await supervisor.tick();
+    const input = adapter.last.submitted[0];
+    adapter.last.emit({ type: "turn_started", native_turn_id: "enrol", input_id: input.input_id });
+    joined = true;
+    adapter.last.emit({ type: "turn_completed", native_turn_id: "enrol", outcome: "success" });
+    expect(enrolled).toBe(true);
+    expect(store.worker("w1")?.hold_reason).toBeNull();
+  });
+
   test("an enrolment reserved before a daemon crash is held, never silently replayed", async () => {
     const { store, adapter, supervisor, spec } = setup();
     store.addWorker({ ...spec, resume_session_id: "native-first" }, "human:op", "t");

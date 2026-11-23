@@ -322,6 +322,16 @@ export class Supervisor {
     });
   }
 
+  private completeEnrollment(workerId: string, handle: WorkerHandle): boolean {
+    if (this.hasEnrolled(workerId, handle)) return true;
+    const worker = this.store.worker(workerId);
+    if (!worker) return false;
+    // A native tool can join before its endpoint is available. Try the same
+    // authenticated rebind used for restarts before deciding it has no room.
+    this.recoverMembership(worker, handle);
+    return this.hasEnrolled(workerId, handle);
+  }
+
   private hasEnrolled(workerId: string, handle: WorkerHandle): boolean {
     const session = handle.sessionId();
     const token = this.deliveryTokens.get(workerId);
@@ -375,7 +385,7 @@ export class Supervisor {
         if (this.store.db.prepare(`SELECT 1 FROM inputs
           WHERE worker_id = ? AND generation = ? AND native_turn_id = ? AND source = 'bootstrap'`)
           .get(workerId, generation, event.native_turn_id) &&
-          (event.outcome !== "success" || !this.hasEnrolled(workerId, handle))) {
+          (event.outcome !== "success" || !this.completeEnrollment(workerId, handle))) {
           this.store.hold(workerId, "bootstrap_failed", at);
         }
         this.drain(workerId);
