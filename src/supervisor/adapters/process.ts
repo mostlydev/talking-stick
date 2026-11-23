@@ -27,7 +27,7 @@ export const MODEL_CREDENTIAL_MESSAGE = (name: string) =>
   `${name} would run the worker on an API key or another provider; supervised workers use the harness's own subscription login.`;
 
 export function isModelCredential(name: string): boolean {
-  return /^(ANTHROPIC|OPENAI|CODEX|XAI|GROK)_(API_KEY|AUTH_TOKEN|ADMIN_KEY|BASE_URL)$/.test(name);
+  return /^(ANTHROPIC|OPENAI|CODEX|XAI|GROK|GEMINI|GOOGLE)_(API_KEY|AUTH_TOKEN|ADMIN_KEY|BASE_URL)$/.test(name);
 }
 
 function isIdentityMarker(name: string): boolean {

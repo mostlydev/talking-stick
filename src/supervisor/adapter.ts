@@ -3,7 +3,7 @@
 // supervisor owns every decision about when to start, stop, prompt or answer.
 // See docs/supervisor.md.
 
-export type Harness = "claude" | "codex" | "grok";
+export type Harness = "claude" | "codex" | "grok" | "agy";
 
 /** What an adapter has proven it can do. False means unavailable, never assumed. */
 export interface Capabilities {
@@ -17,7 +17,8 @@ export interface Capabilities {
 export type WorkerPermissions =
   | { harness: "claude"; mode: "default" | "plan" | "bypassPermissions" }
   | { harness: "codex"; sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "untrusted" | "never" }
-  | { harness: "grok" };
+  | { harness: "grok" }
+  | { harness: "agy" };
 
 /**
  * Where a worker's environment value comes from. Specs store references and

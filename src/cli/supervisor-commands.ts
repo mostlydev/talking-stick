@@ -22,7 +22,7 @@ import { isModelCredential, MODEL_CREDENTIAL_MESSAGE } from "../supervisor/adapt
 
 export const SUPERVISOR_USAGE = [
   "tt supervisor status",
-  "tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [--model M] [--permission-mode default|plan|bypassPermissions]",
+  "tt supervisor add <worker> --harness claude|codex|grok|agy --cwd PATH [--model M] [--permission-mode default|plan|bypassPermissions]",
   "  [--sandbox read-only|workspace-write|danger-full-access --approval on-request|untrusted|never] [--env NAME[=literal:VALUE]]",
   "tt supervisor pause|resume|stop|remove <worker>",
   "tt supervisor restart <worker> [--fresh]",
@@ -72,6 +72,10 @@ function parsePermissions(parsed: ParsedCommand, harness: Harness): WorkerPermis
       fail("A Codex worker needs --approval on-request, untrusted or never.");
     }
     return { harness, sandbox, approval };
+  }
+  if (harness === "agy") {
+    if (mode || sandbox || approval) fail("An agy worker takes no permission settings. It cannot approve tools.");
+    return { harness };
   }
   if (mode || sandbox || approval) fail("A Grok worker takes no permission settings.");
   return { harness };
@@ -201,7 +205,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
       if (!WORKER_ID.test(workerId)) fail("A worker name is lowercase letters, digits, '.', '_' or '-', up to 48 characters.");
       if (store.worker(workerId)) fail(`Worker ${workerId} already exists.`);
       const harness = getStringOption(parsed, "harness") as Harness | undefined;
-      if (harness !== "claude" && harness !== "codex" && harness !== "grok") fail("--harness must be claude, codex or grok.");
+      if (harness !== "claude" && harness !== "codex" && harness !== "grok" && harness !== "agy") fail("--harness must be claude, codex, grok or agy.");
       const cwd = getStringOption(parsed, "cwd");
       if (!cwd || !path.isAbsolute(cwd) || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) fail("--cwd must be an existing absolute directory.");
       // An existing native session is never imported: nothing here can prove

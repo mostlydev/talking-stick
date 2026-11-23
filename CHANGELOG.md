@@ -14,6 +14,7 @@ changes will be called out under **Breaking changes**.
 ### Added
 
 - Use `rooms` as an optional second name for `tt`. Both commands use the same local state.
+- `tt supervisor add --harness agy` starts Antigravity on its persistent NDJSON stream. It can prompt and resume. It cannot approve tools.
 
 ### Changed
 
