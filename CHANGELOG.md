@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.36.0] — 2026-11-23
+
+Full notes: [`docs/releases/0.36.0.md`](docs/releases/0.36.0.md).
+
 ### Changed
 
 - Harness sessions with access to the supervisor can manage workers. Claude workers can opt in to `bypassPermissions`, and Codex workers can opt in to `danger-full-access` and `never` approvals.
@@ -20,6 +24,11 @@ changes will be called out under **Breaking changes**.
 ### Fixed
 
 - Codex wake calls run without cmux session hook injection. Chat and health report queue failures, and an explicit hook-flag rejection is treated as unsent.
+
+### Upgrading
+
+- On macOS, if a worker uses the service's PATH and cannot find its harness, run `tt supervisor install` from a shell where the harness is on PATH, then `tt supervisor resume WORKER`. If the worker has a saved PATH or executable override, re-add it with a corrected path. See [Supervisor setup](docs/supervisor.md#permissions-and-environment).
+- The Codex queue fix applies to the sender. A Codex thread the shared daemon reports as unloaded can still keep a message queued without starting a turn. See [#238](https://github.com/mostlydev/talking-stick/issues/238).
 
 ## [0.35.0] — 2026-11-18
 
@@ -1147,6 +1156,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.36.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.36.0
 [0.35.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.35.0
 [0.34.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.34.0
 [0.33.1]: https://github.com/mostlydev/talking-stick/releases/tag/v0.33.1
