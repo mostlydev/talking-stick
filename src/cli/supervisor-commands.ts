@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { resolveDataDir } from "../config.js";
 import type { EnvReference, Harness, WorkerPermissions, WorkerSpec } from "../supervisor/adapter.js";
 import { builtinAdapters } from "../supervisor/adapters/index.js";
-import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent } from "../supervisor/launchd.js";
+import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent, type LaunchctlRunner } from "../supervisor/launchd.js";
 import { isStandalone, isInstalledRelease, standaloneRoot } from "../standalone-mode.js";
 import { createFileLog, runSupervisor, supervisorPaths, systemProcessLiveness } from "../supervisor/run.js";
 import { acquireOwnerLock } from "../supervisor/daemon.js";
@@ -15,7 +15,7 @@ import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
 import { getStringOption, getStringOptions, hasOption, type ParsedCommand } from "./parser.js";
 import { displayText, safeDetail } from "../supervisor/approval-detail.js";
-import { inspectSupervisorState, migrateSupervisorState, prepareSupervisorRoot } from "../supervisor/root.js";
+import { inspectSupervisorState, migrateSupervisorState, prepareSupervisorRoot, type SupervisorRoot } from "../supervisor/root.js";
 import { isModelCredential, MODEL_CREDENTIAL_MESSAGE } from "../supervisor/adapters/process.js";
 
 // tt supervisor: the optional managed headless supervisor (docs/supervisor.md).
@@ -137,6 +137,19 @@ function cliEntry(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "cli.js");
 }
 
+/**
+ * Installs and starts the macOS user agent for this data directory's prepared
+ * root, as tt supervisor install does. Returns the plist path.
+ */
+export function installSupervisorService(dataDir: string, root: SupervisorRoot,
+  options: { launchctl?: LaunchctlRunner; homeDir?: string; searchPath?: string; replace?: boolean } = {}): string {
+  const program = supervisorProgram({ standalone: isStandalone(), execPath: process.execPath, cliEntry: cliEntry(),
+    releaseRoot: isStandalone() && isInstalledRelease() ? standaloneRoot() : null });
+  // The agent resolves the very root installed here, whatever its HOME or default base would be.
+  return installLaunchAgent({ program, dataDir, logPath: supervisorPaths(root.dir).launchdLog,
+    stateBase: path.dirname(root.dir), searchPath: process.env.PATH, ...options });
+}
+
 export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<void> {
   const dataDir = resolveDataDir();
   const action = parsed.positionals[0] ?? "status";
@@ -166,10 +179,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
     return;
   }
   if (action === "install") {
-    const program = supervisorProgram({ standalone: isStandalone(), execPath: process.execPath, cliEntry: cliEntry(),
-      releaseRoot: isStandalone() && isInstalledRelease() ? standaloneRoot() : null });
-    // The agent resolves the very root installed here, whatever its HOME or default base would be.
-    const file = installLaunchAgent({ program, dataDir, logPath: paths.launchdLog, stateBase: path.dirname(root.dir), searchPath: process.env.PATH });
+    const file = installSupervisorService(dataDir, root);
     printResult(parsed, { status: "installed", plist: file, log: paths.log }, () => `Installed ${file}; the supervisor now runs as a user agent.`);
     return;
   }

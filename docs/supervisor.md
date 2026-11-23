@@ -3,25 +3,57 @@
 The optional supervisor is a CLI preview for trusted local use on macOS and Linux. It starts
 and keeps its own Claude, Codex, Grok, and Antigravity workers running under your harness settings and subscription
 logins. Terminal agents and `tt up` use their existing pane workflows. The supervisor owns only
-the processes it starts. Its process groups provide lifecycle control, and permissions come
-from the harness settings.
+the processes it starts. Its process groups provide lifecycle control.
+
+New workers approve their own tool use by default and run with the OS access of the account that
+starts them, because nobody is at a headless worker's keyboard to approve a prompt. Add
+`--restricted` to keep each harness's own permission rules instead (see
+[Permissions and environment](#permissions-and-environment)).
+
+## Start a headless room
+
+One command starts a worker for each agent in a folder, and the supervisor if none is running:
+
+```sh
+tt up --headless --path ~/dev/ai/shrooms --agents claude,codex
+```
+
+- `--agents` takes `claude`, `codex`, `grok` and `agy`. Without it, `tt up` uses the agents saved
+  with `tt up --save`, or Claude and Codex where installed.
+- Workers are named after the room, such as `shrooms-claude`, and use the folder as their working
+  directory, so they join that folder's room. Running the command again leaves a worker that is
+  already set up for that folder and agent alone, under whatever name it has. A name already used
+  by a worker in another folder is refused and nothing is added; choose another with `--prefix`.
+- `--restricted` adds workers under each harness's own permission rules. `--print` previews the
+  workers and the supervisor step without changing anything.
+- On macOS, if no supervisor is running for this data directory, the command installs and starts
+  the supervisor's user agent, as `tt supervisor install` does, and says so. `tt supervisor uninstall`
+  removes it. Setup is serialized per user, and it never boots out a loaded agent. It leaves
+  alone a user agent that serves another data directory or state folder, one whose plist doesn't
+  say which, and one that is loaded and still starting. If launchctl fails, for example in a
+  sandboxed desktop app shell, the workers stay added and the result names the command to run.
+- On Linux, run `tt supervisor run` in a terminal and leave it open.
+- When the caller's PATH has no `tt`, as in some desktop app shells, the workers and the user agent
+  get `~/.local/bin` (or the running executable's folder) at the front of their PATH.
+
+A manager session with the `rooms-oversee` skill runs this command when you ask it to start a room,
+then reports on the room and sends it work without joining.
 
 ## Start and inspect a worker
 
 1. Sign in to your harness with your account. Install its `rooms` skill
-   with `tt install claude-code` or `tt install codex`. For a Claude worker, also allow
+   with `tt install claude-code` or `tt install codex`. A restricted Claude worker also needs
    `Bash(tt:*)` in your Claude settings, plus a read of the bundled skill that the worker's start
    prompt names. For a default install, allow
    `Read(~/.local/share/talking-stick/**/skills/rooms/SKILL.md)`, which covers both the
    `current` link and its release target. For a source checkout, allow
-   `Read(//<checkout>/skills/rooms/**)`. The supervisor denies anything your settings
-   don't allow, including the worker's own `tt join` (see [Claude workers](#claude-workers)).
+   `Read(//<checkout>/skills/rooms/**)`. The supervisor denies anything a restricted worker's
+   settings don't allow, including its own `tt join` (see [Claude workers](#claude-workers)).
 2. From a terminal or harness, add a worker with the absolute path of its workspace. Choose one of these examples.
 
    ```sh
-   tt supervisor add reviewer --harness claude --cwd "$(pwd -P)" --permission-mode default
-   tt supervisor add coder --harness codex --cwd "$(pwd -P)" \
-     --sandbox workspace-write --approval on-request
+   tt supervisor add reviewer --harness claude --cwd "$(pwd -P)"
+   tt supervisor add coder --harness codex --cwd "$(pwd -P)" --restricted
    ```
 
 3. Run `tt supervisor run` and leave it open. From another terminal, use
@@ -30,18 +62,13 @@ from the harness settings.
 4. Use `tt supervisor stop <worker>` when you are done. A normal restart uses the same
    conversation. Use `tt supervisor restart <worker> --fresh` to start a new one.
 
-To let one bot launch workers without a console step, give its process access to the supervisor
-state and run the same commands through that process. For explicit unattended operation:
-
-```sh
-tt supervisor add reviewer --harness claude --cwd /absolute/workspace --permission-mode bypassPermissions
-tt supervisor add coder --harness codex --cwd /absolute/workspace \
-  --sandbox danger-full-access --approval never
-```
-
-These settings let the workers run tools with the OS access of the account that starts them.
-Keep `workspace-write` and use `--approval never` if Codex should run unattended within its sandbox.
-Each worker gets the Talking Stick skill bootstrap for the room resolved from its workspace.
+The first example auto-approves tools with your account's access. The second keeps Codex in a
+workspace-write sandbox that asks on request, and the supervisor declines whatever still asks.
+Explicit options still work: `--permission-mode` for Claude, Grok and Antigravity, or
+`--sandbox` with `--approval` for Codex, for example `--sandbox workspace-write --approval never`
+to run Codex unattended inside its sandbox. To let one bot launch workers without a console step,
+give its process access to the supervisor state and run the same commands through that process.
+Each worker gets the rooms skill bootstrap for the room resolved from its workspace.
 
 `tt chat` shows each worker's state:
 
@@ -64,7 +91,7 @@ held:
 | `resume_failed` | Use `tt supervisor restart <worker> --fresh` to start a new conversation. |
 | `bootstrap_failed` | Check `tt supervisor approvals` and the worker’s permission settings. Once the worker can join, run `tt supervisor restart <worker> --fresh`. |
 
-Permission prompts are denied automatically and recorded. See
+A restricted worker's permission prompts are denied automatically and recorded. See
 [Permissions and environment](#permissions-and-environment) for worker settings, and
 [Codex](#codex) for explicit paths when using a version manager or launchd.
 
@@ -110,10 +137,14 @@ Workers use your own harness settings and logins, with these per-worker options 
 
 | Harness | Permissions |
 | --- | --- |
-| Claude | `--permission-mode default` or `plan`, `--permission-prompt-tool stdio`, and your settings (`--setting-sources user,project,local`). Choose `bypassPermissions` explicitly for unrestricted tool use. |
-| Codex | An explicit sandbox (`read-only`, `workspace-write`, or `danger-full-access`) and an approval policy (`on-request`, `untrusted` or `never`) on each thread, in your `CODEX_HOME`. |
-| Antigravity | `agy acp --stdio` with your Antigravity settings. Choose `--permission-mode bypassPermissions` explicitly to auto-approve tools. |
-| Grok | `grok agent --no-leader stdio` in your `GROK_HOME`. No leader attach, no plugin dir. |
+| Claude | Default `bypassPermissions`. `--restricted` is `default`; `--permission-mode` also takes `plan`. Runs with `--permission-prompt-tool stdio` and your settings (`--setting-sources user,project,local`). |
+| Codex | Default `danger-full-access` with approval `never`. `--restricted` is `workspace-write` with `on-request`. Or give `--sandbox` (`read-only`, `workspace-write`, `danger-full-access`) with `--approval` (`on-request`, `untrusted`, `never`). Set on each thread, in your `CODEX_HOME`. |
+| Antigravity | `agy acp --stdio` with your Antigravity settings. Default adds `--dangerously-skip-permissions`. `--restricted` leaves Antigravity's own permission rules in charge. |
+| Grok | `grok agent --no-leader stdio` in your `GROK_HOME`, with no leader attach and no plugin dir. Default adds `--always-approve`. `--restricted` leaves Grok's own permission rules in charge. |
+
+Workers added before this default keep the permissions they were added with. A Grok worker
+added before then has no mode and starts without `--always-approve`. To change a worker's
+permissions, stop and remove it, then add it again. It starts a new conversation.
 
 A worker spec stores environment references only: names passed through from the supervisor's
 own environment, and non-secret literals. No reference may name a model API key or provider
@@ -217,17 +248,18 @@ Run `tt install agy` for the skill and hooks. Add a worker with:
 tt supervisor add agy-worker --harness agy --cwd "$PWD"
 ```
 
+It starts with `--dangerously-skip-permissions`, so Antigravity approves its own tool use.
+
 The supervisor starts `agy acp --stdio`, prompts a local conversation, and resumes that
 same conversation on restart. The worker appears in `tt chat` under `/who` and in `/rooms`.
 If `agy` is outside the service's PATH, add the worker with
 `--env AGY_EXECUTABLE=literal:/absolute/path/to/agy`.
 
-By default, Antigravity's own permission rules apply. Add a `command(tt)` allow rule
+With `--restricted`, Antigravity's own permission rules apply. Add a `command(tt)` allow rule
 in Antigravity's CLI settings so the worker can join, read room instructions, and
 reply. Allow reads of the bundled `rooms/SKILL.md` if Antigravity asks for them.
 The supervisor declines any remaining prompt. Use
-`tt supervisor approvals` to see what was declined. For a worker you want to run
-with unrestricted tool use, add `--permission-mode bypassPermissions` explicitly.
+`tt supervisor approvals` to see what was declined.
 
 The worker uses your cached Google login. API-key or Google Cloud provider
 settings are refused. See [Antigravity ACP](https://antigravity.google/docs/cli/acp)
@@ -253,8 +285,9 @@ restart, and supports cancellation of an active turn. A refused resume holds the
 worker as `resume_failed`. `tt supervisor restart grok-worker --fresh` opens a new
 conversation. A missing login holds it as `auth_required`.
 
-Grok runs tools that its own settings allow. The supervisor declines native permission
-requests and records that a request was refused. Grok's approval capability remains
+A new Grok worker starts with `--always-approve`, so Grok approves its own tool use. With
+`--restricted`, Grok runs the tools its own settings allow. The supervisor declines native
+permission requests and records that a request was refused. Grok's approval capability remains
 off until the permission callback is verified with a live Grok session that asks.
 See [Grok headless mode](https://docs.x.ai/build/cli/headless-scripting).
 
@@ -413,10 +446,11 @@ histories intact but cannot run this new adapter. Preserve CODEX_HOME when retai
 
 ## Permission requests
 
-Nobody sits at a headless worker's keyboard, so the supervisor doesn't redesign approvals. Each
-harness's own settings decide what a worker may do without asking: your Claude settings and
-project allow rules, and the Codex sandbox and approval policy. Anything that still asks is
-denied at once, so a worker never waits on a prompt:
+Nobody sits at a headless worker's keyboard, so new workers approve their own tool use by
+default. For a restricted worker, each harness's own settings decide what it may do without
+asking: your Claude settings and project allow rules, the Codex sandbox and approval policy, and
+Grok's and Antigravity's own permission rules. Anything that still asks is denied at once, so a
+worker never waits on a prompt:
 
 - The request is recorded in full (`tt supervisor approvals`, and `approvals show <id>` for the
   whole request), denied, and audited as `approval_denied`.
@@ -426,8 +460,8 @@ denied at once, so a worker never waits on a prompt:
 
 There is no approve, deny, interrupt or reconcile command and no control socket. Earlier versions
 locked these behind a human gate that was never accepted; they were removed rather than kept
-locked. To let a worker do more, allow it in that harness's own settings, as you would for a
-terminal session.
+locked. To let a restricted worker do more, allow it in that harness's own settings, as you
+would for a terminal session, or add it again without `--restricted`.
 
 Plugin installs are never a direct command, and there are no permission self-grants.
 
@@ -522,13 +556,15 @@ The daemon starts a turn only for an idle worker. It steers only a Codex turn it
   opened and releases the lock.
 
 `install` and `uninstall` add and remove a macOS user agent that keeps `run` going, with a 077
-umask. Crash output that escapes the daemon goes to `logs/launchd.log`. The daemon rotates this
+umask. `tt up --headless` installs the same agent when no supervisor is running (see
+[Start a headless room](#start-a-headless-room)). Crash output that escapes the daemon goes to `logs/launchd.log`. The daemon rotates this
 log on startup once it reaches 5 MB. The agent runs `node <package>/dist/cli.js supervisor run` under Node, or an installed
 release's `<install-dir>/current/tt supervisor run`, which follows self-update.
 
 `add <worker> --harness … --cwd …`:
-- Codex needs an explicit `--sandbox` and `--approval`. Claude takes `--permission-mode
-  default|plan|bypassPermissions`.
+- New workers auto-approve tools; `--restricted` keeps the harness's own rules. Codex also takes
+  `--sandbox` with `--approval`. Claude takes `--permission-mode default|plan|bypassPermissions`,
+  and Grok and Antigravity take `--permission-mode default|bypassPermissions`.
 - `--env NAME` passes the daemon's value through; `NAME=literal:VALUE` is for non-secret values.
   A model API key or provider override is refused (see "Permissions and environment").
 - There's no `--resume`: nothing here can prove an existing session isn't running elsewhere, so a
@@ -557,9 +593,9 @@ Managed workers for Claude, Codex, Grok, and Antigravity are available on macOS 
   session is a protocol error: the supervisor holds the worker and stops it, and the running input
   stays unconfirmed.
 - **Liveness:** the stream has no cheap ping, so liveness is the exact process.
-- **Permissions:** a tool call your settings don't already allow is denied at once (see
-  "Permission requests"). So a Claude worker can do what your user and project settings allow
-  without asking. For room work, that's at least `Bash(tt:*)` and reading the rooms skill,
+- **Permissions:** a new Claude worker runs in `bypassPermissions`. In a restricted worker, a
+  tool call your settings don't already allow is denied at once (see "Permission requests"), so
+  it can do what your user and project settings allow without asking. For room work, that's at least `Bash(tt:*)` and reading the rooms skill,
   `Read(//<skill dir>/**)`. Claude's rules spell an absolute path with a leading `//`.
 
 ## What the supervisor does not prove

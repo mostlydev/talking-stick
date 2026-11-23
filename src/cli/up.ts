@@ -37,9 +37,12 @@ import { getStringOption, hasOption, parseCommand, parseWaitTimeout, type Parsed
 import type { Runtime } from "./runtime.js";
 import { RoomSelectorError, roomShortName, selectedRoom } from "./room-selector.js";
 import { pickDeepestRoom } from "./session.js";
+import { handleHeadlessUp, type HeadlessUpOptions } from "./up-headless.js";
 
-export const UP_USAGE =
-  "tt up [--agents claude,codex,grok,agy,opencode [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab | --new-workspace] [--print] [--forget] [--timeout 120s] [--json]";
+export const UP_USAGE = [
+  "tt up [--agents claude,codex,grok,agy,opencode [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab | --new-workspace] [--print] [--forget] [--timeout 120s] [--json]",
+  "tt up --headless [--path DIR] [--agents claude,codex,grok,agy] [--prefix NAME] [--restricted] [--print] [--json]"
+].join("\n");
 
 export type AgentPickerPrompt = (picker: AgentPicker, roomName: string) =>
   Promise<{ agents: LaunchAgent[]; scope: PickerScope } | null>;
@@ -56,6 +59,7 @@ export interface UpCommandOptions {
   stdoutIsTTY?: boolean;
   startLocalChat?: (runtime: Runtime, contextPath: string, roomId: string) => Promise<void>;
   pickAgents?: AgentPickerPrompt;
+  headless?: HeadlessUpOptions;
 }
 
 const pickAgentsInTerminal: AgentPickerPrompt = (picker, roomName) =>
@@ -73,6 +77,14 @@ export async function handleUpCommand(
   options: UpCommandOptions = {}
 ): Promise<void> {
   const env = options.env ?? process.env;
+  // Supervised workers have no panes, chat or launch record: a separate path.
+  if (hasOption(parsed, "headless")) {
+    await handleHeadlessUp(runtime, parsed, { env, homeDir: options.homeDir, ...options.headless });
+    return;
+  }
+  if (hasOption(parsed, "prefix") || hasOption(parsed, "restricted")) {
+    throw new Error("--prefix and --restricted apply to headless workers: add --headless.");
+  }
   const requestedAgents = getStringOption(parsed, "agents");
   const requested = requestedAgents === undefined ? undefined : parseLaunchAgents(requestedAgents);
   const choose = hasOption(parsed, "choose");

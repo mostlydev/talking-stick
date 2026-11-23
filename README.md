@@ -16,8 +16,12 @@ shrooms was called Talking Stick. Keep using `tt`; your rooms, settings, and ski
 
 ## Quickstart
 
-Use two agents you can already run locally, such as Claude Code and Codex. The standalone
-binary runs on macOS and glibc Linux (arm64 and x64), and on Windows x64. It needs no Node or Bun.
+One manager session can run several rooms of headless agents for you. It starts a room
+in a folder, sends the room work, and tells you what each room is doing. You can also sit
+in any room yourself with `tt chat`.
+
+The standalone binary runs on macOS and glibc Linux (arm64 and x64), and on Windows x64.
+It needs no Node or Bun. Headless rooms run on macOS and Linux.
 
 ### 1. Install the CLI and skills
 
@@ -32,32 +36,58 @@ tt install --all
 
 On Windows, follow the [Windows install steps](docs/install.md#install-on-windows), then
 continue below. Keep the install directory on your `PATH` for new terminals. `tt install --all`
-adds skills and hooks for supported harnesses it finds. In Codex, inspect and trust the Talking
-Stick entries in `/hooks`. Restart any agent session that was already open after installing the skill.
+adds skills and hooks for supported harnesses it finds. In Codex, inspect and trust the `tt`
+entries in `/hooks`. Restart any agent session or desktop app that was already open.
 
-### 2. Open the console and agent sessions
+Sign in to each agent you want in a room with your subscription, as you normally would:
+`claude`, `codex login`, `grok login`, or Google in `agy`. Headless agents use those logins.
 
-Open three terminal tabs or panes in the same repository. Run `tt chat` in one, `claude`
-in another, and `codex` in the third. Use your own agent commands if you picked a different pair.
-The repository is the default room.
+### 2. Ask a manager to start a room
 
-### 3. Ask each agent to join
+Open Claude Code or Codex, in its desktop app or a terminal, in any folder. Start the
+`rooms-oversee` skill: `/rooms-oversee` in Claude Code, `$rooms-oversee` in Codex. Then ask:
 
-Enter `/rooms` in Claude Code, Grok Build, or Antigravity (`agy`). In Codex, enter `$rooms`.
-In other harnesses, ask the agent to use the `rooms` skill. Wait for both joins to appear in
-`tt chat`, then send the task there. An idle agent may show `tt wait --park` running while it waits
-for your message.
+> Start a room in ~/dev/ai/shrooms with Claude and Codex.
 
-### 4. Give the room a task
+The manager runs one command, which you can also run yourself:
 
-Type this in `tt chat` and press Enter:
+```sh
+tt up --headless --path ~/dev/ai/shrooms --agents claude,codex
+```
 
-> Review this repository's setup instructions. Each agent should check them independently.
-> Agree on any missing steps and report back here. Keep this first pass read-only.
+It adds a headless Claude and a headless Codex, named `shrooms-claude` and `shrooms-codex`, which
+join the room for that folder. On macOS it also installs and starts the supervisor that runs them,
+if none is running. On Linux, run `tt supervisor run` in a terminal and leave it open.
 
-Look for the agents' replies in the transcript. The marks next to each recipient track delivery.
+Headless agents approve their own tool use and run with your account's access, since no one is
+at their keyboard to approve prompts. Ask for a restricted room (`--restricted`) to keep each
+agent's own permission rules instead.
+
+### 3. Start another room
+
+> Start another room in ~/dev/work/api with Codex and Grok.
+
+Each room has its own talking stick, members and history.
+
+### 4. Give the rooms work
+
+> Ask the shrooms room to review its setup instructions. Each agent should check them
+> independently, agree on any missing steps, and report back.
+
+> What is each room doing?
+
+The manager asks and reports through the room without joining it. To watch or steer a room
+yourself, run `tt chat ~/dev/ai/shrooms`:
 
 ![Talking Stick chat with three agents, per-recipient delivery marks, and agent status](docs/images/tt-chat.png)
+
+### Work in a room alongside visible agents
+
+You can also run agents in your own terminals. Open three tabs or panes in the same repository
+and run `tt chat`, `claude` and `codex`, one in each. Enter `/rooms` in Claude Code, Grok Build
+or Antigravity (`agy`), or `$rooms` in Codex, and wait for both joins to appear in `tt chat`.
+Then type the task in `tt chat` and press Enter. Inside Herdr or tmux, `tt up` opens the agents
+and chat for you.
 
 ## Chat controls
 
@@ -89,15 +119,16 @@ Claude Code, Codex, Grok Build, and Antigravity (`agy`) have room skills, hooks,
 workers. OpenCode can join a room as an experimental client. The harness and launch method
 determine how an idle agent is woken. [Wake and delivery reference](docs/reference.md#waking-idle-agents)
 
-To check on rooms from a separate local agent session, use the `rooms-oversee` skill.
-It can report on rooms and ask their agents questions without joining. [Visitor workflow](docs/reference.md#observing-rooms-from-outside)
+To manage rooms from a separate local agent session, use the `rooms-oversee` skill.
+It starts headless rooms, reports on rooms and asks their agents questions without joining.
+[Visitor workflow](docs/reference.md#observing-rooms-from-outside)
 
 ## Guides
 
 - [Install, update, or uninstall](docs/install.md)
 - [Operator chat, room commands, and troubleshooting](docs/reference.md)
 - [Customize collaboration instructions and roles](docs/reference.md#editable-collaboration-instructions)
-- [Managed headless workers (preview)](docs/supervisor.md)
+- [Headless rooms and the supervisor (preview)](docs/supervisor.md)
 - [Changes and release notes](CHANGELOG.md)
 
 ## Development

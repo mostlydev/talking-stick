@@ -47,6 +47,7 @@ tt status [path] [--verbose|--all]                        # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
 tt chat [path] [--in ROOM] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse] [--theme lantern|tide|dusk]
 tt up [--agents claude,codex,grok,agy,opencode [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab|--new-workspace] [--print] [--forget] [--timeout 120s] [--json] # experimental Herdr/tmux launcher
+tt up --headless [--path DIR] [--agents claude,codex,grok,agy] [--prefix NAME] [--restricted] [--print] [--json] # supervised headless workers
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--attach IMAGE]... [--path DIR]
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
 tt ack <delivery-token> [--json]                          # acknowledge a native delivery envelope
@@ -1184,15 +1185,17 @@ The supervisor is a preview. Use `tt supervisor status`, `approvals` (recent per
 requests), and `logs` to inspect managed workers. Joined workers appear in rooms like other agents.
 `tt chat` shows worker states and holds read-only: `/who` lists the room's workers with the command
 that unblocks each, `/rooms` counts headless and blocked workers per room, and the header marks a
-blocked worker in the current room. A human controls `add`, `pause`, `resume`, `stop`,
-`restart [--fresh]` and `remove`;
-`run` starts the daemon, and `install`/`uninstall` manage its macOS user agent. `tt up` and
-terminal agents work the same with or without it.
+blocked worker in the current room. A terminal or a harness with the needed OS access runs `add`,
+`pause`, `resume`, `stop`, `restart [--fresh]` and `remove`, audited under its identity;
+`run` starts the daemon, and `install`/`uninstall` manage its macOS user agent.
+`tt up --headless --path DIR --agents claude,codex` adds a worker per agent in one step and
+installs the user agent on macOS when no supervisor runs. New workers auto-approve tools;
+`--restricted` keeps each harness's own rules. Pane launches with `tt up` and terminal agents
+work the same with or without the supervisor.
 
 Claude and Codex workers are available on macOS and Linux. Both require a supported subscription
 login before taking a prompt. A signed-out Claude worker is held as `auth_required`. Codex waits
 in `auth_required` and rechecks the login. Unsupported auth modes cause `wrong_auth_mode`.
-The supervisor denies and records native permission prompts. Grok support is limited to a
-fresh session handshake.
+A restricted worker's native permission prompts are denied and recorded.
 For launchd executable paths, recovery fences and known limits, see
 [the supervisor guide](supervisor.md).

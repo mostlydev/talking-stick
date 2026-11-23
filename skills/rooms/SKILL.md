@@ -169,7 +169,7 @@ tt room replies <request-id> --timeout 30 --json
 
 ## Peers
 
-When the operator asks you to launch agents in a workspace, use `tt supervisor add <worker> --harness <harness> --cwd <absolute-dir>` for headless workers, or `tt up --path <dir> --agents <list>` for visible agents. Use the worker permissions the operator requested. The launcher supplies the Talking Stick skill prompt.
+When the operator asks you to launch agents in a workspace, use `tt up --headless --path <dir> --agents <list>` for headless workers, or `tt up --path <dir> --agents <list>` for visible agents. Headless workers approve their own tool use unless the operator asks for `--restricted`. The launcher supplies the room skill prompt; the `rooms-oversee` skill has the details.
 
 Don't start another harness to act as your counterpart on your own initiative. Don't take a turn assigned to another member.
 
