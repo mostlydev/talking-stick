@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { openSqlite, type SqliteDatabase } from "./sqlite.js";
 import { resolveDataDir } from "./config.js";
+import { RENAME_NOTICE_ID } from "./profile-notices.js";
 
 export type { SqliteDatabase } from "./sqlite.js";
 
@@ -30,6 +31,8 @@ interface Migration {
   id: number;
   name: string;
   up: string;
+  /** Runs in the same transaction; `existing` is false while a new profile is created. */
+  after?: (db: SqliteDatabase, context: { existing: boolean }) => void;
 }
 
 const migrations: Migration[] = [
@@ -581,6 +584,22 @@ const migrations: Migration[] = [
       resolution_event_seq INTEGER
     );
     CREATE INDEX room_blockers_open ON room_blockers (room_id, id) WHERE closed_at IS NULL;`
+  },
+  {
+    id: 33,
+    name: "profile_notices",
+    up: `CREATE TABLE profile_notices (
+      notice_id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      shown_at TEXT
+    );`,
+    // Only a profile that existed before this upgrade has a name change to hear
+    // about. A new install starts as Shrooms and never sees it.
+    after: (db, { existing }) => {
+      if (!existing) return;
+      db.prepare("INSERT OR IGNORE INTO profile_notices (notice_id, created_at) VALUES (?, ?)")
+        .run(RENAME_NOTICE_ID, new Date().toISOString());
+    }
   }
 ];
 
@@ -641,6 +660,18 @@ export function migrate(db: SqliteDatabase): void {
       .all()
       .map((row) => row.id)
   );
+  applyPendingMigrations(db, applied);
+}
+
+/**
+ * Applies every migration missing from `applied`, a snapshot read before any
+ * lock. Another process may apply the same migration after that read, so each
+ * one is checked again under the write lock and skipped if it already ran.
+ * @internal Exported for the concurrent-launch test.
+ */
+export function applyPendingMigrations(db: SqliteDatabase, applied: ReadonlySet<number>): void {
+  // A profile that already had migrations is being upgraded, not created.
+  const existing = applied.size > 0;
 
   for (const migration of migrations) {
     if (applied.has(migration.id)) {
@@ -648,7 +679,9 @@ export function migrate(db: SqliteDatabase): void {
     }
 
     withImmediateTransaction(db, () => {
+      if (db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(migration.id)) return;
       db.exec(migration.up);
+      migration.after?.(db, { existing });
       db.prepare(
         "INSERT INTO schema_migrations (id, name, applied_at) VALUES (?, ?, ?)"
       ).run(migration.id, migration.name, new Date().toISOString());

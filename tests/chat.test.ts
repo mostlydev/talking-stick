@@ -2330,6 +2330,31 @@ test("a room the console revisits after midnight keeps the console's own history
   }
 });
 
+test("chat shows a pending profile notice once to a person, and neither a piped chat nor a second console uses it up", async () => {
+  const { root, service } = setupService();
+  (service as unknown as { db: { prepare(sql: string): { run(...args: unknown[]): unknown } } }).db
+    .prepare("INSERT INTO profile_notices (notice_id, created_at) VALUES ('shrooms-rename', ?)").run(new Date().toISOString());
+  const open = async (profile_notices: boolean) => {
+    const input = new PassThrough();
+    const output = Object.assign(new PassThrough(), { columns: 100, rows: 24 });
+    let bytes = "";
+    output.on("data", chunk => { bytes += chunk.toString(); });
+    const session = runChatSession({
+      runtime: { commands: new TalkingStickCommands(service), close() {} },
+      identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: true,
+      color: false, history: 0, show_turn_events: false, poll_ms: 5, profile_notices
+    });
+    await until(() => bytes.includes("/ for commands"));
+    input.write("/quit\r");
+    await session;
+    return bytes;
+  };
+  // A chat that isn't a person's terminal (piped, or run by a harness) leaves it pending.
+  expect(await open(false)).not.toContain("Talking Stick is now Shrooms");
+  expect(await open(true)).toContain("Talking Stick is now Shrooms. Keep using `tt`.");
+  expect(await open(true)).not.toContain("Talking Stick is now Shrooms");
+});
+
 test("chat announces a blocker another member raises or withdraws, but not one already open", async () => {
   const { root, service } = setupService();
   const agent_id = "codex:worker";

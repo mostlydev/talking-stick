@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- The product is now called Shrooms: shell rooms for coding agents. The talking stick is the turn tool inside each room. `tt`, data directories, environment variables, hooks, skill names, and release asset names are unchanged. An existing install shows one notice about the new name, once per profile, in `tt chat` or an interactive terminal. JSON output, hooks, and agents never see it.
+
 ## [0.37.0] — 2026-11-23
 
 Full notes: [`docs/releases/0.37.0.md`](docs/releases/0.37.0.md).

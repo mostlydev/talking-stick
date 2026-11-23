@@ -1,8 +1,13 @@
-# Talking Stick
+# Shrooms
 
-Run multiple coding agents in one repository without overwriting each other's work.
-One agent holds the stick and can edit at a time.
-Agents pass work with a short handoff. You direct the work and see who holds the stick in `tt chat`.
+Shell rooms for coding agents. Run several agents in one repository without overwriting each other's work.
+
+![Glowing mushroom houses in a dark forest, linked by paths that carry messages between them](docs/images/shrooms-village.png)
+
+Each room has a talking stick: one agent holds it and can edit at a time, and agents pass work with a short handoff.
+You direct the work and see who holds the stick in `tt chat`.
+
+Shrooms was called Talking Stick. Keep using `tt`; your rooms, settings, and skills carry over.
 
 ## Quickstart
 

@@ -1,4 +1,5 @@
 import type { RoomBlocker } from "./types.js";
+import { PROFILE_NOTICES } from "./profile-notices.js";
 import { humanAttentionIdentity, isHumanDirected } from "./human-attention.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -2712,6 +2713,22 @@ export class TalkingStickService {
              closed_at, closed_by_agent_id, withdrawal_reason, resolution_event_seq
       FROM room_blockers WHERE room_id = ? AND (? OR closed_at IS NULL) ORDER BY id
     `).all(input.room_id, input.all ? 1 : 0);
+  }
+
+  /**
+   * Marks this profile's pending one-time notices as shown and returns their
+   * text. Exactly one caller gets each notice, even with several terminals open.
+   */
+  claimProfileNotices(): string[] {
+    return this.writeTransaction(() => {
+      const shown: string[] = [];
+      for (const notice of PROFILE_NOTICES) {
+        const claimed = this.db.prepare("UPDATE profile_notices SET shown_at = ? WHERE notice_id = ? AND shown_at IS NULL")
+          .run(this.now().toISOString(), notice.id);
+        if (claimed.changes === 1) shown.push(notice.text);
+      }
+      return shown;
+    });
   }
 
   getBlockerCounts(): Array<{ room_id: string; count: number }> {
