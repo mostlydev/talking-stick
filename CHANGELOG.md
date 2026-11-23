@@ -11,9 +11,17 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.38.0] — 2026-11-23
+
+Full notes: [`docs/releases/0.38.0.md`](docs/releases/0.38.0.md).
+
 ### Changed
 
 - The product is now called Shrooms: shell rooms for coding agents. The talking stick is the turn tool inside each room. `tt`, data directories, environment variables, hooks, skill names, and release asset names are unchanged. An existing install shows one notice about the new name, once per profile, in `tt chat` or an interactive terminal. JSON output, hooks, and agents never see it.
+
+### Fixed
+
+- Concurrent `tt` launches now apply each profile's pending database migrations as a single batch.
 
 ## [0.37.0] — 2026-11-23
 
@@ -1174,6 +1182,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.38.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.38.0
 [0.37.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.37.0
 [0.36.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.36.0
 [0.35.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.35.0

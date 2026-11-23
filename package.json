@@ -1,6 +1,6 @@
 {
   "name": "talking-stick",
-  "version": "0.37.0",
+  "version": "0.38.0",
   "description": "Shrooms: shell rooms for coding agents, with a talking stick for one-writer turns and handoffs.",
   "type": "module",
   "bin": {
