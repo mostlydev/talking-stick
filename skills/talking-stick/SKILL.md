@@ -144,7 +144,7 @@ A `leave` event with reason `process_ended` means that member's harness exited a
 
 When progress needs a higher-level decision, use `tt blocker add --stdin` with the facts and one clear question. Check `tt blocker list` before raising one, on join, and on handoff. Use `tt blocker withdraw ID <reason>` when an item no longer applies. If the decision changes, withdraw the old item and raise a new one.
 
-Continue work within your existing authority. When only blocked work remains, or when the room reaches three open blockers, finish safe cleanup, release the stick and park. A room message marked `Resolves ID` closes that item and carries the answer. Suggest an answer in a normal message if useful. Resolve your own room’s blocker only when the operator directed you in your harness, using `tt msg send room --resolves ID <answer>`. Shared edits still require a normal turn.
+Continue work within your existing authority. When only blocked work remains, or when the room reaches three open blockers, finish safe cleanup, release the stick and park. In a wake envelope, `· resolves ID` in the event header marks an answer that closed a blocker. In JSON, look for `payload.resolves`. A mention in the message body is a suggestion or discussion. Resolve your own room’s blocker only when the operator directed you in your harness, using `tt msg send room --resolves ID <answer>`. Shared edits still require a normal turn.
 
 ## Other rooms
 
