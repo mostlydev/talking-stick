@@ -1285,7 +1285,7 @@ export class TalkingStickService {
         // remaining agent rows, even stale ones, are left to idle purge.
         if (
           !remainingMembers.some((remaining) => !isObserverMember(remaining)) &&
-          !this.hasLiveObserver(remainingMembers) && !this.hasBlockers(input.room_id, true)
+          !this.hasLiveObserver(remainingMembers) && !this.hasOpenBlockers(input.room_id)
         ) {
           this.deleteRoom(input.room_id);
           return {
@@ -1302,7 +1302,7 @@ export class TalkingStickService {
           remaining_members: remainingMembers.length
         };
       }
-      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasBlockers(input.room_id, true)) {
+      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasOpenBlockers(input.room_id)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -1443,7 +1443,7 @@ export class TalkingStickService {
       });
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasBlockers(input.room_id, true)) {
+      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasOpenBlockers(input.room_id)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -2720,12 +2720,8 @@ export class TalkingStickService {
     `).all();
   }
 
-  private hasBlockers(roomId: string, includeHistory = false): boolean {
-    return Boolean(this.db.prepare(
-      includeHistory
-        ? "SELECT 1 FROM room_blockers WHERE room_id = ? LIMIT 1"
-        : "SELECT 1 FROM room_blockers WHERE room_id = ? AND closed_at IS NULL LIMIT 1"
-    ).get(roomId));
+  private hasOpenBlockers(roomId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM room_blockers WHERE room_id = ? AND closed_at IS NULL LIMIT 1").get(roomId));
   }
 
   private requireBlocker(roomId: string, blockerId: string): RoomBlocker {
@@ -5085,7 +5081,7 @@ export class TalkingStickService {
         throw new ProtocolError("target_active",
           `Room ${room.room_id} still has members (${agents.map((member) => member.agent_id).join(", ") || room.owner}). Ask them to leave first.`);
       }
-      if (this.hasBlockers(room.room_id)) throw new ProtocolError("room_blocked", "Resolve open blockers before removing the room.");
+      if (this.hasOpenBlockers(room.room_id)) throw new ProtocolError("room_blocked", "Resolve open blockers before removing the room.");
       this.deleteRoom(room.room_id);
       return { retired: true };
     });

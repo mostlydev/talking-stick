@@ -64,6 +64,8 @@ describe("room blockers", () => {
     expect(service.getRoomState({ room_id }).members).toEqual([]);
     expect(service.listBlockers({ room_id })).toEqual([second]);
     expect(service.joinPath({ agent_id, context_path: project }).room_id).toBe(room_id);
+    service.withdrawBlocker({ room_id, agent_id, blocker_id: second.blocker_id, reason: "Reconnection no longer needed." });
+    expect(service.leaveRoom({ room_id, agent_id }).status).toBe("room_deleted");
   });
 });
 
