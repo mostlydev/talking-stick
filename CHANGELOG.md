@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- Chat keeps supervised Claude visible after a reply by recognizing its version-named native process instead of attributing room activity to its temporary command shell.
+
 ## [0.36.0] — 2026-11-23
 
 Full notes: [`docs/releases/0.36.0.md`](docs/releases/0.36.0.md).
