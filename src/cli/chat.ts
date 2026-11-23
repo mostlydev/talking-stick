@@ -636,6 +636,8 @@ export async function runChatSession(
           const item = runtime.commands.withdrawBlocker(identity, { room_id: roomId, blocker_id: withdraw[1], reason: withdraw[2] });
           print(`Withdrawn ${item.blocker_id}.`);
         }
+        // This console already printed its own change; don't announce it twice.
+        announceBlockers(true);
         refreshStrip();
         redraw();
       } catch (error) {
@@ -1461,6 +1463,37 @@ export async function runChatSession(
     headlessMarkerForms = next;
     if (changed) composeStrip();
     return changed;
+  };
+
+  // One line when someone raises or withdraws a blocker in this room, so a new
+  // decision request shows up in the conversation, not only as a header count.
+  // A resolution needs no line here: its own message carries `resolves B#`.
+  let knownBlockers: Set<string> | null = null;
+  const blockerLine = (text: string | null) => {
+    const line = sanitizeChatText(text ?? "").split("\n")[0].replace(/\s+/g, " ").trim();
+    return line.length > 120 ? `${line.slice(0, 119)}…` : line;
+  };
+  const announceBlockers = (quiet = false) => {
+    const open = runtime.commands.listBlockers({ room_id: roomId });
+    const current = new Set(open.map((blocker) => blocker.blocker_id));
+    if (knownBlockers && !quiet) {
+      for (const blocker of open) {
+        if (!knownBlockers.has(blocker.blocker_id)) {
+          print(`${sanitizeChatText(nameOf(blocker.author_agent_id))} raised ${blocker.blocker_id}: ${blockerLine(blocker.body)} · /blockers`);
+        }
+      }
+      const gone = [...knownBlockers].filter((id) => !current.has(id));
+      if (gone.length) {
+        const history = new Map(runtime.commands.listBlockers({ room_id: roomId, all: true })
+          .map((blocker) => [blocker.blocker_id, blocker]));
+        for (const id of gone) {
+          const blocker = history.get(id);
+          if (!blocker || blocker.resolution_event_seq !== null) continue;
+          print(`${id} withdrawn by ${sanitizeChatText(nameOf(blocker.closed_by_agent_id ?? "unknown"))}: ${blockerLine(blocker.withdrawal_reason)}`);
+        }
+      }
+    }
+    knownBlockers = current;
   };
 
   const send = (to: string[], body: string, interrupt: boolean) => {
@@ -2341,6 +2374,7 @@ export async function runChatSession(
     const savedDraft = consoleState?.drafts.get(roomId);
     if (savedDraft) editor?.setDraft(savedDraft);
     refreshHeadless(true);
+    announceBlockers(true);
     if (refreshStrip() || headlessMarkerForms.length || blockerCount(roomId)) redraw();
     let busyAttempts = 0;
     let lastWakeRelay = Date.now();
@@ -2377,6 +2411,7 @@ export async function runChatSession(
         }
         const headlessChanged = refreshHeadless();
         if (Date.now() - lastStripRefresh >= STRIP_REFRESH_MS || result.events.some(event => event.payload?.resolves)) {
+          announceBlockers();
           const changed = refreshStrip();
           refreshTree();
           if (changed || headlessChanged || roomTree) redraw();

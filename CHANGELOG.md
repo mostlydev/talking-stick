@@ -14,6 +14,7 @@ changes will be called out under **Breaking changes**.
 ### Added
 
 - Rooms keep up to three open blockers. See them in chat, `tt blocker list`, and `tt room brief`. An explicit resolution message closes a blocker and stays in room history, including when sent from outside an empty room.
+- Chat prints one line when another member raises or withdraws a blocker in the current room, so a new decision request appears in the conversation as well as in the header count.
 
 ### Fixed
 
