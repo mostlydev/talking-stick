@@ -51,7 +51,7 @@ tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--attach IMAGE].
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
 tt ack <delivery-token> [--json]                          # acknowledge a native delivery envelope
 tt kick <agent_id> [path] [--reason TEXT] [--force]       # remove a member (live ones need --force)
-tt instructions show [path] [--harness claude|codex|antigravity|gemini|grok|opencode|all] [--scope effective|bundled|user|project]
+tt instructions show [path] [--harness claude|codex|antigravity|grok|opencode|all] [--scope effective|bundled|user|project]
 tt instructions edit [path] [--user|--project]            # edit user or project prompt
 tt instructions update [path] [--user|--project] [--replace]
 tt instructions reset [path] (--user|--project)           # delete a user or project prompt
@@ -459,8 +459,8 @@ keystrokes are typed and no model polls while idle.
 | Any harness in cmux | `cmux send` plus Enter, only for parked standby or an explicit interrupt | `cmux identify` |
 
 Grok Build receives events through active-turn hooks while its session is running, which is not an
-idle wake; an idle Grok session still needs a live `tt wait` or a verified cmux wake. Gemini,
-OpenCode, and Antigravity wake only through cmux.
+idle wake; an idle Grok session still needs a live `tt wait` or a verified cmux wake. OpenCode
+and Antigravity wake only through cmux.
 
 - Endpoints register automatically on `tt join`, `tt wait`, and `tt standby`. They're tied to the
   harness session and host, and removed on leave, kick, or session change. The Claude token and
@@ -922,16 +922,18 @@ or fails its version gate, `tt` uses the built-in TypeScript fallback. Set
 
 - Claude Code: copied or linked into `~/.claude/skills/<skill>`, because Claude Code does not
   read `~/.agents/skills`
-- Codex, Antigravity (`agy`), Grok Build, and OpenCode: copied or linked once into the shared
+- Codex, Grok Build, and OpenCode: copied or linked once into the shared
   `~/.agents/skills/<skill>`
+- Antigravity (`agy`): copied or linked into `~/.gemini/config/skills/<skill>`, because agy does not
+  read `~/.agents/skills`. Links that `tt` made in agy's older `~/.gemini/skills` and
+  `~/.gemini/antigravity-cli/skills` folders are removed, so the skill is listed once. While skiller
+  still maps agy to the shared folder, installs that include agy use the built-in installer.
 - Codex: also merges lifecycle (`SessionStart`, `SessionEnd`) and turn (`UserPromptSubmit`, `Stop`,
   `Interrupt`) hooks into `~/.codex/hooks.json`, leaving other entries alone. Codex runs them only
   after you trust them in `/hooks`; see [Native event delivery](#native-event-delivery).
 - Grok Build: also installs a trusted global session hook at
   `~/.grok/hooks/talking-stick-session.json`, a stop guard at `~/.grok/hooks/talking-stick-stop.json`,
   and active-turn delivery hooks at `~/.grok/hooks/talking-stick-inbox.json`
-- Gemini CLI: deprecated for skill installation; `tt install gemini` prints a deprecation notice and
-  runs cleanup only
 
 By default, `tt install` links the bundled skill so local updates are picked up immediately. Pass
 `--copy` for a standalone snapshot. `tt install --all --print` shows exactly what would change
@@ -939,7 +941,7 @@ without touching anything. During normal execution, install commands skip harnes
 present instead of failing or creating new harness config roots.
 
 Single-harness uninstalls for shared-reading harnesses leave `~/.agents/skills/rooms` in
-place because Codex, Antigravity, Grok, and OpenCode share that one skill location. Use
+place because Codex, Grok, and OpenCode share that one skill location. Use
 `tt uninstall agents` or `tt uninstall --shared` to remove only the shared skill target.
 
 ### The Herdr plugin
@@ -989,7 +991,7 @@ By default, `tt` behaves like a human CLI and resolves to `human:<username>` onl
 environment is detected. Harness-aware identity is resolved before the human fallback:
 
 - Known harness environment markers such as `CLAUDECODE=1`, `CODEX_THREAD_ID`, `GROK_AGENT=1`,
-  `ANTIGRAVITY_AGENT=1`, `ANTIGRAVITY_CONVERSATION_ID`, `ANTIGRAVITY_TRAJECTORY_ID`, `GEMINI_CLI=1`,
+  `ANTIGRAVITY_AGENT=1`, `ANTIGRAVITY_CONVERSATION_ID`, `ANTIGRAVITY_TRAJECTORY_ID`,
   `CMUX_AGENT_LAUNCH_KIND=grok`, or `OPENCODE=1` make `tt` derive a harness-style identity
   automatically. Antigravity uses `ANTIGRAVITY_CONVERSATION_ID` as the preferred session anchor,
   falling back to `ANTIGRAVITY_TRAJECTORY_ID` and then `agy` process ancestry. The cmux Grok marker is

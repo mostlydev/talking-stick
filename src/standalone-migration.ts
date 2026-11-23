@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { FILE_SKILL_HARNESSES } from "./harness-model.js";
+import { SUPPORTED_HARNESSES } from "./harness-model.js";
 import { digestDirectory, getManagedContent, recordManagedContent } from "./managed-content.js";
 import { detectInstallSource } from "./self-update.js";
 import { BUNDLED_SKILL_NAMES, LEGACY_SKILL_NAMES, resolveDuplicateSkillTargetPaths, resolvePrimarySkillTargetPath } from "./skill-install.js";
@@ -111,7 +111,7 @@ function skillLinkTargets(options: MigrationOptions, skillNames: readonly string
   const env = options.env ?? process.env;
   return [...new Set(skillNames.flatMap((skillName) => {
     const installOptions = { homeDir: options.homeDir ?? env.HOME, env, skillName };
-    return FILE_SKILL_HARNESSES.flatMap((harness) => [
+    return SUPPORTED_HARNESSES.flatMap((harness) => [
       resolvePrimarySkillTargetPath(harness, installOptions),
       ...resolveDuplicateSkillTargetPaths(harness, installOptions)
     ]);

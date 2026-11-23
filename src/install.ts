@@ -5,13 +5,11 @@ import path from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import {
   SUPPORTED_HARNESSES,
-  isDeprecatedHarness,
   type HarnessId
 } from "./harness-model.js";
 
 export {
   SUPPORTED_HARNESSES,
-  isDeprecatedHarness,
   type HarnessId
 } from "./harness-model.js";
 
@@ -274,9 +272,7 @@ function resolveHarnessConfigDirFromResolved(
     case "codex":
       return path.join(resolved.homeDir, ".codex");
     case "antigravity":
-      return path.join(resolved.homeDir, ".agents");
-    case "gemini":
-      return path.join(resolved.homeDir, ".gemini");
+      return path.join(resolved.homeDir, ".gemini", "config");
     case "grok":
       return resolveGrokConfigDirFromResolved(resolved);
     case "opencode":
@@ -767,13 +763,6 @@ export function detectHarness(harness: HarnessId, options: InstallOptions = {}):
       const bin = resolved.hooks.which("agy");
       if (bin) return { harness, detected: true, evidence: bin };
       return { harness, detected: false, evidence: "agy not on PATH" };
-    }
-    case "gemini": {
-      const bin = resolved.hooks.which("gemini");
-      if (bin) return { harness, detected: true, evidence: bin };
-      const configDir = resolveHarnessConfigDirFromResolved(harness, resolved);
-      if (resolved.hooks.pathExists(configDir)) return { harness, detected: true, evidence: configDir };
-      return { harness, detected: false, evidence: "gemini not on PATH and no config directory" };
     }
     case "grok": {
       const bin = resolved.hooks.which("grok");

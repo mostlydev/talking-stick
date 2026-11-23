@@ -138,7 +138,7 @@ describe("saved agent choice", () => {
     expect(() => readLaunchDefaults(dataDir)).toThrow(/launch\.json is not a valid tt up agent choice.*Fix or delete it/);
     expect(() => saveAgentChoice(dataDir, ["claude"], "/repo/a", "every")).toThrow(/Fix or delete it/);
     expect(fs.readFileSync(launchDefaultsPath(dataDir), "utf8")).toBe("{ not json");
-    fs.writeFileSync(launchDefaultsPath(dataDir), JSON.stringify({ agents: ["claude", "gemini"] }));
+    fs.writeFileSync(launchDefaultsPath(dataDir), JSON.stringify({ agents: ["claude", "aider"] }));
     expect(() => readLaunchDefaults(dataDir)).toThrow(/distinct agents/);
   });
 });

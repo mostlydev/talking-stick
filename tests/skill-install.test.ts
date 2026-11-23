@@ -79,18 +79,19 @@ describe("talking-stick skill install", () => {
       "/custom/config/opencode/skills/rooms"
     );
     expect(resolveSkillTargetPath("antigravity", { homeDir: "/home/u" })).toBe(
-      "/home/u/.agents/skills/rooms"
+      "/home/u/.gemini/config/skills/rooms"
+    );
+    expect(resolvePrimarySkillTargetPath("antigravity", { homeDir: "/home/u" })).toBe(
+      "/home/u/.gemini/config/skills/rooms"
     );
   });
 
   test("declares the converged skill loading model per harness", () => {
     expect(skillLoadingModel("claude-code")).toBe("proprietary");
     expect(skillLoadingModel("codex")).toBe("shared+proprietary");
-    expect(skillLoadingModel("antigravity")).toBe("shared");
+    expect(skillLoadingModel("antigravity")).toBe("proprietary");
     expect(skillLoadingModel("grok")).toBe("shared+proprietary");
     expect(skillLoadingModel("opencode")).toBe("shared+proprietary");
-    expect(skillLoadingModel("gemini")).toBe("deprecated");
-    expect(HARNESS_SKILL_MODELS.gemini.deprecated).toBe(true);
   });
 
   test("resolves proprietary duplicate cleanup targets", () => {
@@ -106,40 +107,10 @@ describe("talking-stick skill install", () => {
       "/home/u/.config/opencode/skills/rooms",
       "/home/u/.opencode/skills/rooms"
     ]);
-    expect(resolveDuplicateSkillTargetPaths("antigravity", { homeDir: "/home/u" })).toEqual([]);
-  });
-
-  test("gemini skill install is deprecated and cleanup-only", () => {
-    const linkAction = planSkillInstall("gemini", {
-      homeDir: "/home/u"
-    });
-    expect(linkAction.kind).toBe("skip");
-    expect(linkAction.description).toContain("Gemini CLI skill install is deprecated");
-    expect(linkAction.description).toContain("/home/u/.gemini/skills/rooms");
-  });
-
-  test("gemini install does not spawn the deprecated skills CLI", async () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
-    tempRoots.push(tempRoot);
-
-    const sourcePath = path.join(tempRoot, "source-skill");
-    fs.mkdirSync(sourcePath, { recursive: true });
-    fs.writeFileSync(path.join(sourcePath, "SKILL.md"), "source\n");
-    const geminiTarget = path.join(tempRoot, ".gemini", "skills", "rooms");
-    fs.mkdirSync(path.dirname(geminiTarget), { recursive: true });
-    fs.symlinkSync(sourcePath, geminiTarget);
-
-    const run = vi.fn();
-    const options = {
-      homeDir: tempRoot,
-      which: () => "/usr/local/bin/gemini",
-      run
-    };
-
-    const result = await runAction(planSkillInstall("gemini", options), options);
-
-    expect(result.status).toBe("skipped");
-    expect(run).not.toHaveBeenCalled();
+    expect(resolveDuplicateSkillTargetPaths("antigravity", { homeDir: "/home/u" })).toEqual([
+      "/home/u/.gemini/skills/rooms",
+      "/home/u/.gemini/antigravity-cli/skills/rooms"
+    ]);
   });
 
   test("default install symlinks the skill into the shared agents skill directory for Codex", () => {
@@ -368,19 +339,19 @@ describe("talking-stick skill install", () => {
     tempRoots.push(tempRoot);
     const mainSource = resolveBundledSkillPath();
     const roomsSource = resolveBundledSkillPath({ skillName: "rooms-oversee" });
-    // Claude Code and the shared folder have rooms; Gemini's folder exists without it.
+    // Claude Code and the shared folder have rooms; agy's folder exists without it.
     for (const dir of [".claude/skills", ".agents/skills"]) {
       fs.mkdirSync(path.join(tempRoot, dir), { recursive: true });
       fs.symlinkSync(mainSource, path.join(tempRoot, dir, "rooms"), "dir");
     }
-    fs.mkdirSync(path.join(tempRoot, ".gemini", "skills"), { recursive: true });
+    fs.mkdirSync(path.join(tempRoot, ".gemini", "config", "skills"), { recursive: true });
     const sync = () => syncInstalledSkills({ homeDir: tempRoot, skillName: "rooms-oversee", installBesideDefault: true });
 
     const first = sync();
     for (const dir of [".claude/skills", ".agents/skills"]) {
       expect(fs.readlinkSync(path.join(tempRoot, dir, "rooms-oversee"))).toBe(roomsSource);
     }
-    expect(fs.existsSync(path.join(tempRoot, ".gemini", "skills", "rooms-oversee"))).toBe(false);
+    expect(fs.existsSync(path.join(tempRoot, ".gemini", "config", "skills", "rooms-oversee"))).toBe(false);
     expect(first.targets.filter((target) => target.status === "updated").map((target) => target.targetPath).sort())
       .toEqual([path.join(tempRoot, ".agents/skills/rooms-oversee"), path.join(tempRoot, ".claude/skills/rooms-oversee")]);
     expect(sync().targets.filter((target) => target.status === "updated")).toEqual([]);

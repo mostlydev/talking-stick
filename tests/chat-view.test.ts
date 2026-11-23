@@ -53,7 +53,7 @@ test("release footer prioritizes work hints, preserves status, and remains visib
 });
 
 test("a crowded room keeps its owner and compresses members to make room for the notice", () => {
-  const members = ["claude:bb", "codex:aa", "grok:cc", "opencode:dd", "gemini:ee", "claude:ff", "codex:gg"]
+  const members = ["claude:bb", "codex:aa", "grok:cc", "opencode:dd", "agy:ee", "claude:ff", "codex:gg"]
     .map(agent_id => ({ agent_id, status: "active", process_liveness: "alive" }));
   const status = { members, owner: "codex:aa", owner_since: new Date(Date.now() - 12 * 60_000).toISOString(),
     reserved_for: null, now: new Date() };

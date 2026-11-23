@@ -59,7 +59,6 @@ const ENV_KEYS = [
   "CMUX_AGENT_LAUNCH_EXECUTABLE",
   "CODEX_MANAGED_BY_NPM",
   "CODEX_THREAD_ID",
-  "GEMINI_CLI",
   "GROK_AGENT",
   "GROK_HOME",
   "GROK_SESSION_ID",
@@ -2384,14 +2383,8 @@ describe("tt notes", () => {
     expect(noGuard).not.toContain(".grok/hooks/talking-stick-stop.json");
   });
 
-  test("tt install gemini --print is cleanup-only and points to Antigravity", async () => {
-    const out = await captureStdout(["install", "gemini", "--print"]);
-
-    expect(out).toContain("Gemini CLI skill install is deprecated");
-    expect(out).toContain("tt install antigravity");
-    expect(out).not.toContain("gemini skills link");
-    expect(out).not.toContain("gemini skills install");
-    expect(out).toContain(".gemini/skills/rooms");
+  test("tt install rejects agy as an unknown harness", async () => {
+    await expect(captureStdout(["install", "agy", "--print"])).rejects.toThrow(/agy/);
   });
 
   test("tt install rejects conflicting skill link modes", async () => {
@@ -2478,11 +2471,12 @@ describe("tt notes", () => {
     expect(out).toContain(".agents/skills/rooms");
   });
 
-  test("tt uninstall antigravity --print leaves the shared skill", async () => {
+  test("tt uninstall antigravity --print never touches the shared skill", async () => {
     const out = await captureStdout(["uninstall", "antigravity", "--print"]);
 
+    // agy has its own skill folder, so the shared one is neither removed nor mentioned.
     expect(out).not.toContain("remove shared agents skill");
-    expect(out).toContain("Left ~/.agents/skills/rooms");
+    expect(out).not.toContain(".agents/skills/rooms");
   });
 
   test("tt notes with unknown subcommand surfaces an error", async () => {
@@ -2723,14 +2717,14 @@ describe("tt msg", () => {
       captureStdout([
         "msg",
         "send",
-        "gemini",
+        "agy",
         "hello",
         "--agent",
         "human:sender",
         "--path",
         project
       ])
-    ).rejects.toThrow(/No active room member matches 'gemini'/);
+    ).rejects.toThrow(/No active room member matches 'agy'/);
 
     await expect(
       captureStdout([
@@ -2936,7 +2930,7 @@ describe("tt msg", () => {
     const roomId = seedCliRoomMembers(project, [
       { agent_id: "human:receiver", display_name: "receiver" },
       { agent_id: "codex:sender", display_name: "codex" },
-      { agent_id: "gemini:sender", display_name: "gemini" }
+      { agent_id: "agy:sender", display_name: "agy" }
     ]);
 
     const recvPromise = captureStdout([
@@ -2954,7 +2948,7 @@ describe("tt msg", () => {
       "--json"
     ]);
     setTimeout(() => {
-      sendCliTestMessage(roomId, "gemini:sender", "human:receiver", "ignore");
+      sendCliTestMessage(roomId, "agy:sender", "human:receiver", "ignore");
       sendCliTestMessage(roomId, "codex:sender", "human:receiver", "include");
     }, 25);
 

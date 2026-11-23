@@ -121,7 +121,6 @@ export {
   type GrokSessionRecord
 } from "./grok-session-store.js";
 export {
-  FILE_SKILL_HARNESSES,
   BUNDLED_SKILL_NAMES,
   DEFAULT_SKILL_NAME,
   removeDuplicateSkillInstalls,
@@ -137,7 +136,6 @@ export {
   resolveSkillTargetPath,
   skillLoadingModel,
   syncInstalledSkills,
-  type FileSkillHarness,
   type RemoveDuplicateSkillOptions,
   type SkillSyncResult,
   type SkillSyncTargetResult,
@@ -147,7 +145,6 @@ export {
   HARNESS_CLI_HARNESSES,
   HARNESS_COMMAND_MAPPING,
   HARNESS_SKILL_MODELS,
-  isDeprecatedHarness,
   type SkillLoadingModel
 } from "./harness-model.js";
 export {
