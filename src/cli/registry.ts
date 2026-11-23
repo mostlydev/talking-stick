@@ -1,6 +1,7 @@
 import { runGrokInboxHookCommand } from "./grok-inbox-hook.js";
 import { runCodexInboxHookCommand } from "./codex-inbox-hook.js";
 import { runSessionHookCommand } from "./session-hook.js";
+import { runAntigravityHookCommand } from "./antigravity-hook.js";
 import { runInterruptHookCommand } from "./interrupt-hook.js";
 import { handleBlockerCommand, handleRoomCommand } from "./room-admin.js";
 import { handleRolesCommand } from "./role-commands.js";
@@ -61,6 +62,11 @@ export interface CommandEntry {
 }
 
 export const COMMAND_REGISTRY: CommandEntry[] = [
+  {
+    name: "antigravity-hook", needsRuntime: false, startupMaintenance: false, internal: true,
+    usage: "tt antigravity-hook <SessionStart|PreInvocation|Stop>", description: "Deliver room events inside an Antigravity conversation.",
+    handler: ({ parsed }) => runAntigravityHookCommand(parsed.positionals[0])
+  },
   {
     name: "codex-inbox-hook", needsRuntime: false, startupMaintenance: false, internal: true,
     usage: "tt codex-inbox-hook", description: "Deliver unread room events at Codex turn end.",

@@ -279,6 +279,7 @@ export function classifyHarnessProcess(harness: string, command: string | null |
   if (!command) return null;
   if (harness === "claude") return /(^|\s)(-p|--print)(\s|$)|stream-json/.test(command) ? "shared_host" : "single_session";
   if (harness === "codex") return /(^|\s)(app-server|exec|mcp-server|daemon)(\s|$)/.test(command) ? "shared_host" : "single_session";
+  if (harness === "antigravity") return "shared_host";
   return null;
 }
 
@@ -4073,6 +4074,12 @@ export class TalkingStickService {
   // Hooks run inside an already active harness. This is receipt preparation,
   // never enrollment, turn acquisition, or evidence of an idle wake transport.
   prepareGrokHookDelivery(input: { context_path: string; harness_session_id: string; diagnostic?: (text: string) => void }): string | null {
+    return this.prepareHarnessHookDelivery({ ...input, harness: "grok" });
+  }
+
+  prepareHarnessHookDelivery(input: { context_path: string; harness_session_id: string;
+    diagnostic?: (text: string) => void } & ({ harness: "grok" } |
+    { harness: "antigravity"; pid: number; processStartedAt: string })): string | null {
     const resolved = resolveContextPath(input.context_path);
     const room = this.findDeepestRoom(roomCandidatePaths(resolved));
     if (!room || room.state === "closed") return null;
@@ -4080,17 +4087,21 @@ export class TalkingStickService {
     // for those calls; revalidate membership and pending events inside below.
     const pendingForSession = this.db.prepare(`SELECT 1 FROM room_members m
       JOIN native_event_receipts n ON n.room_id = m.room_id AND n.agent_id = m.agent_id
-      WHERE m.room_id = ? AND m.harness_session_id = ? AND m.harness_name = 'grok'
+      WHERE m.room_id = ? AND m.harness_session_id = ? AND m.harness_name = ?
         AND COALESCE(m.harness_host_id, m.host_id) = ? AND n.consumed_at IS NULL LIMIT 1`)
-      .get(room.room_id, input.harness_session_id, this.hostId);
+      .get(room.room_id, input.harness_session_id, input.harness, this.hostId);
     if (!pendingForSession) return null;
     return this.writeTransaction(() => {
-      const members = this.db.prepare<[string, string, string], RoomMemberRow>(`SELECT * FROM room_members
-        WHERE room_id = ? AND harness_session_id = ? AND harness_name = 'grok'
-          AND COALESCE(harness_host_id, host_id) = ? LIMIT 2`)
-        .all(room.room_id, input.harness_session_id, this.hostId);
+      const source = input.harness === "grok" ? "grok_hook" : "antigravity_hook";
+      const processFilter = input.harness === "antigravity"
+        ? "AND harness_pid = ? AND trim(harness_process_started_at) = ?" : "";
+      const processKey = input.harness === "antigravity" ? [input.pid, input.processStartedAt.trim()] : [];
+      const members = this.db.prepare<Array<string | number>, RoomMemberRow>(`SELECT * FROM room_members
+        WHERE room_id = ? AND harness_session_id = ? AND harness_name = ?
+          AND COALESCE(harness_host_id, host_id) = ? ${processFilter} LIMIT 2`)
+        .all(room.room_id, input.harness_session_id, input.harness, this.hostId, ...processKey);
       if (members.length !== 1) {
-        if (members.length > 1) input.diagnostic?.("Talking Stick: multiple Grok members match this session; hook delivery deferred. Check tt whoami and room membership.");
+        if (members.length > 1) input.diagnostic?.(`Talking Stick: multiple ${input.harness} members match this session; hook delivery deferred. Check tt whoami and room membership.`);
         return null;
       }
       const member = members[0];
@@ -4102,11 +4113,11 @@ export class TalkingStickService {
       const retryBefore = new Date(this.now().getTime() - 60_000).toISOString();
       const outstanding = this.db.prepare(`SELECT 1 FROM native_delivery_batches b
         WHERE b.room_id = ? AND b.agent_id = ? AND b.harness_session_id = ? AND b.host_id = ?
-          AND b.source = 'grok_hook' AND b.acknowledged_at IS NULL AND b.created_at > ?
+          AND b.source = ? AND b.acknowledged_at IS NULL AND b.created_at > ?
           AND EXISTS (SELECT 1 FROM json_each(b.event_seqs_json) j JOIN native_event_receipts n
             ON n.room_id = b.room_id AND n.agent_id = b.agent_id AND n.event_seq = j.value
             WHERE n.consumed_at IS NULL) LIMIT 1`)
-        .get(room.room_id, member.agent_id, input.harness_session_id, this.hostId, retryBefore);
+        .get(room.room_id, member.agent_id, input.harness_session_id, this.hostId, source, retryBefore);
       if (outstanding) return null;
       const pending = this.db.prepare<[string, string], RoomEventRow>(`SELECT e.* FROM room_events e
         JOIN native_event_receipts n ON n.room_id = e.room_id AND n.event_seq = e.event_seq
@@ -4136,8 +4147,8 @@ export class TalkingStickService {
           .run(token, room.room_id, member.agent_id, input.harness_session_id, this.hostId,
             JSON.stringify([pending[0].event_seq]));
       }
-      this.db.prepare("UPDATE native_delivery_batches SET source = 'grok_hook', created_at = ? WHERE token = ?")
-        .run(this.now().toISOString(), token);
+      this.db.prepare("UPDATE native_delivery_batches SET source = ?, created_at = ? WHERE token = ?")
+        .run(source, this.now().toISOString(), token);
       this.touchKnownMember(room.room_id, member.agent_id, this.now().toISOString());
       return text ?? "[talking-stick] A room event exceeds hook capacity. Run tt wait --json to read it; acquire writer authority only from a valid turn result.";
     });

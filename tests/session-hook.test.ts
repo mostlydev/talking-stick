@@ -4,7 +4,10 @@ import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { TalkingStickService } from "../src/service.js";
 import { runSessionHookCommand } from "../src/cli/session-hook.js";
-import { mergeSessionHooks } from "../src/install.js";
+import { runAntigravityHookCommand } from "../src/cli/antigravity-hook.js";
+import { mergeSessionHooks, planSessionHooks } from "../src/install.js";
+import { resolveCliIdentity } from "../src/cli/identity.js";
+import { parseCommand } from "../src/cli/parser.js";
 
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
@@ -15,7 +18,7 @@ const setupMetadata = () => ({ harness_name: "claude", harness_session_id: "harn
 function setup() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-lifecycle-"));
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
-  const service = new TalkingStickService({ dbPath: path.join(root, "state.sqlite"), hostId: "local",
+  const service = new TalkingStickService({ dbPath: path.join(root, "rooms.sqlite"), hostId: "local",
     processLivenessChecker: () => "alive", receiverLivenessChecker: () => "alive" });
   cleanup.push(() => service.close());
   const metadata = { harness_name: "claude", harness_session_id: "harness:old",
@@ -159,4 +162,62 @@ test("Grok snake-case event values bind through a shell to the Grok parent", asy
   await runSessionHookCommand("grok", { service, inspector, parentPid: 999,
     stdin: JSON.stringify({ hookEventName: "session_start", sessionId: "old" }) });
   expect(() => join("grok:old", { ...metadata, harness_name: "grok" })).not.toThrow();
+});
+
+test("Antigravity installs in a native hook group and preserves foreign groups", () => {
+  const original = '{"herdr":{"Stop":[{"type":"command","command":"herdr hook"}]}}';
+  const installed = mergeSessionHooks(original, "antigravity")!;
+  const settings = JSON.parse(installed);
+  expect(Object.keys(settings["shrooms-antigravity"])).toEqual(["SessionStart", "PreInvocation", "Stop"]);
+  expect(settings["shrooms-antigravity"].Stop[0].command).toContain("tt antigravity-hook Stop");
+  expect(mergeSessionHooks(installed, "antigravity")).toBe(installed);
+  expect(mergeSessionHooks(installed.replace("tt antigravity-hook Stop", "tt old-hook Stop"), "antigravity")).toBe(installed);
+  expect(JSON.parse(mergeSessionHooks(installed, "antigravity", true)!)).toEqual(JSON.parse(original));
+  expect(mergeSessionHooks('{"shrooms-antigravity":[]}', "antigravity")).toBeNull();
+});
+
+test("Antigravity hook setup works before the vendor config directory exists", () => {
+  const options = { homeDir: "/home/agent", skipMissing: true,
+    pathExists: () => false, which: (command: string) => command === "agy" ? "/bin/agy" : null };
+  expect(planSessionHooks("antigravity", "install", options)).toEqual([
+    expect.objectContaining({ kind: "file-patch", filePath: path.join(options.homeDir, ".gemini", "config", "hooks.json") })
+  ]);
+});
+
+test("Antigravity hooks deliver only to the exact conversation and do not end it at Stop", async () => {
+  const { service, root, room, join, metadata } = setup();
+  const agent = "agy:active";
+  join(agent, { ...metadata, harness_name: "antigravity", harness_session_id: "harness:active" });
+  join("agy:other", { ...metadata, harness_name: "antigravity", harness_session_id: "harness:other" });
+  service.sendMessage({ room_id: room.room_id, agent_id: "claude:old", to_agent_id: agent, body: "for active" });
+  const output: string[] = [];
+  const run = (event: string, id: string, startTime = "start", terminationReason = "NO_TOOL_CALL") =>
+    runAntigravityHookCommand(event, {
+      service, parentPid: 123, stdout: text => output.push(text),
+      inspector: { inspect: () => ({ pid: 123, ppid: 1, command: "agy", startTime }) },
+      stdin: JSON.stringify({ conversationId: id, cwd: root, workspacePaths: [path.dirname(root)], fullyIdle: true, terminationReason })
+    });
+  await run("SessionStart", "active");
+  await run("Stop", "other");
+  await run("Stop", "active", "different");
+  await run("Stop", "active", "start", "CANCELLED");
+  expect(output).toEqual([]);
+  await run("Stop", "active");
+  expect(JSON.parse(output[0])).toMatchObject({ decision: "continue", reason: expect.stringContaining("for active") });
+  await run("Stop", "active");
+  expect(output).toHaveLength(1);
+  expect(service.db.prepare("SELECT agent_id FROM room_members WHERE agent_id LIKE 'agy:%'").all())
+    .toEqual([{ agent_id: "agy:active" }, { agent_id: "agy:other" }]);
+});
+
+test("Antigravity keeps the old ID for an enrolled conversation without reusing it for another", () => {
+  const { service, root } = setup();
+  const parsed = parseCommand(["whoami"]);
+  const env = { ANTIGRAVITY_AGENT: "1", ANTIGRAVITY_CONVERSATION_ID: "existing", TALKING_STICK_DATA_DIR: root };
+  const { identity } = resolveCliIdentity(parsed, env);
+  const oldId = identity.agent_id.replace(/^agy:/, "antigravity:");
+  service.joinPath({ context_path: root, agent_id: oldId, process_metadata: identity.process_metadata });
+  expect(resolveCliIdentity(parsed, env).identity.agent_id).toBe(oldId);
+  expect(resolveCliIdentity(parsed, { ...env, ANTIGRAVITY_CONVERSATION_ID: "new" }).identity.agent_id)
+    .toMatch(/^agy:/);
 });

@@ -316,6 +316,7 @@ export function buildClaudeStopGuardHook(): Record<string, unknown> {
 const CODEX_HOOK_TIMEOUTS: Record<string, number> = { SessionEnd: 3, Interrupt: 3 };
 
 export function mergeSessionHooks(existing: string | null, harness: string, remove = false): string | null {
+  if (harness === "antigravity") return mergeAntigravityHooks(existing, remove);
   const marker = `talking-stick-lifecycle-${harness}`;
   // Codex clamps SessionEnd and Interrupt hooks to 3s and warns about any
   // longer timeout in /hooks; both hooks finish in milliseconds anyway.
@@ -334,6 +335,38 @@ export function mergeSessionHooks(existing: string | null, harness: string, remo
   const flags = `\${TALKING_STICK_DATA_DIR:-\${XDG_DATA_HOME:-$HOME/.local/share}/talking-stick}/interrupts`;
   return mergeMarkedHooks(lifecycle, interrupt, ["PreToolUse", "PostToolUse", "Stop", "UserPromptSubmit"],
     `: ${interrupt}; set -- "${flags}"/${harness}-*; if [ -e "$1" ] && command -v tt >/dev/null 2>&1; then tt interrupt-hook ${harness} 2>/dev/null || true; fi`, remove);
+}
+
+function mergeAntigravityHooks(existing: string | null, remove: boolean): string | null {
+  const group = "shrooms-antigravity";
+  const marker = ": shrooms-antigravity-hook;";
+  const events = ["SessionStart", "PreInvocation", "Stop"] as const;
+  const command = (event: string) =>
+    `${marker} if command -v tt >/dev/null 2>&1; then tt antigravity-hook ${event} 2>/dev/null || true; fi`;
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  try {
+    const settings: unknown = existing?.trim() ? JSON.parse(existing) : {};
+    if (!isRecord(settings)) return null;
+    const original = JSON.stringify(settings);
+    const current = settings[group];
+    if (current !== undefined && !isRecord(current)) return null;
+    const hooks = { ...current };
+    for (const event of events) {
+      const entries = hooks[event] ?? [];
+      if (!Array.isArray(entries)) return null;
+      const managedCommand = command(event);
+      const next = entries.filter(entry =>
+        !isRecord(entry) || typeof entry.command !== "string" || !entry.command.startsWith(marker));
+      if (!remove) next.push({ type: "command", command: managedCommand, timeout: 3 });
+      if (next.length) hooks[event] = next;
+      else delete hooks[event];
+    }
+    if (Object.keys(hooks).length) settings[group] = hooks;
+    else delete settings[group];
+    const serialized = JSON.stringify(settings);
+    return existing !== null && original === serialized ? existing : JSON.stringify(settings, null, 2) + "\n";
+  } catch { return null; }
 }
 
 function mergeMarkedHooks(existing: string | null, marker: string, events: string[], command: string, remove: boolean,
@@ -364,13 +397,17 @@ function mergeMarkedHooks(existing: string | null, marker: string, events: strin
 }
 
 export function planSessionHooks(harness: HarnessId, operation: "install" | "uninstall", options: InstallOptions = {}): InstallAction[] {
-  if (harness !== "claude-code" && harness !== "codex" && harness !== "grok") return [];
+  if (harness !== "claude-code" && harness !== "codex" && harness !== "grok" && harness !== "antigravity") return [];
   const resolved = resolveOptions(options);
   const configDir = harness === "codex" && resolved.env.CODEX_HOME?.trim()
     ? resolved.env.CODEX_HOME.trim() : resolveHarnessConfigDirFromResolved(harness, resolved);
-  if (resolved.skipMissing && !resolved.hooks.pathExists(configDir)) return [skipAction(harness, `config directory not found: ${configDir}`)];
+  const hookDir = harness === "antigravity" ? path.join(resolved.homeDir, ".gemini", "config") : configDir;
+  if (resolved.skipMissing && !resolved.hooks.pathExists(hookDir) &&
+      !(harness === "antigravity" && resolved.hooks.which("agy"))) {
+    return [skipAction(harness, `config directory not found: ${hookDir}`)];
+  }
   const filePath = harness === "claude-code" ? resolveClaudeSettingsPath(resolved)
-    : path.join(configDir, ...(harness === "grok" ? ["hooks", "talking-stick-lifecycle.json"] : ["hooks.json"]));
+    : path.join(hookDir, ...(harness === "grok" ? ["hooks", "talking-stick-lifecycle.json"] : ["hooks.json"]));
   const name = harness === "claude-code" ? "claude" : harness;
   return [{ kind: "file-patch", harness, filePath, operation, dedupeKey: `${filePath}:lifecycle`,
     description: `${operation} session lifecycle${harness === "claude-code" ? " and interrupt" : ""} hooks in ${filePath}${harness === "codex" && operation === "install" ? " (review and trust in /hooks)" : ""}`,

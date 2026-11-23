@@ -43,9 +43,10 @@ The repository is the default room.
 
 ### 3. Ask each agent to join
 
-In Claude Code, enter `/rooms`. In Codex, enter `$rooms`. In other
-supported harnesses, ask the agent to use the Talking Stick skill. Give each agent only the
-skill prompt. Wait for both joins to appear in `tt chat` before sending the task.
+Enter `/rooms` in Claude Code or Antigravity (`agy`), and `$rooms` in Codex.
+In other harnesses, ask the agent to use the `rooms` skill. Wait for both joins to appear in
+`tt chat`, then send the task there. An idle agent may show `tt wait --park` running while it waits
+for your message.
 
 ### 4. Give the room a task
 

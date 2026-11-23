@@ -88,6 +88,12 @@ removed by `tt uninstall`.
 - Codex gets lifecycle and turn hooks in `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`).
   Trust the entries in Codex `/hooks`.
 - Grok Build gets lifecycle, session identity, stop-guard, and active-turn delivery hooks.
+- Antigravity (`agy`) gets hooks in `~/.gemini/config/hooks.json`. An active conversation can
+  read queued room messages before a model call or at the end of a turn. When the
+  terminal is idle, keep one `tt wait --park --json` listener open to receive room work.
+  Restart Antigravity after installing the hooks. Separate conversations opened in
+  the same terminal have separate room memberships. Run `tt leave` in a conversation
+  before switching away if it should stop receiving room work.
 - `tt install herdr` adds the optional Ctrl-click shortcut for the unread bar in Herdr.
 
 ## Moving from npm
