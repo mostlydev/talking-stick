@@ -13,7 +13,7 @@ changes will be called out under **Breaking changes**.
 
 ### Changed
 
-- The repository is now github.com/mostlydev/shrooms. The installer, update check, and docs use the new address. Links to mostlydev/talking-stick keep working through GitHub's redirects, so older installs update as before. Release downloads keep their `talking-stick_*` names.
+- The repository is now github.com/mostlydev/shrooms. The installer, update check, and docs use the new address. Existing installers, update checks and release downloads still work through GitHub's redirects, so older installs update as before. Links to individual issues need the new repository path. Release downloads keep their `talking-stick_*` names.
 
 ## [0.38.0] — 2026-11-23
 
