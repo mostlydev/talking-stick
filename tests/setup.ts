@@ -10,6 +10,10 @@ export default function setup() {
   const stateDir = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "tt-svs-"));
   process.env.TT_SUPERVISOR_STATE_DIR = stateDir;
   process.env.TT_NO_AUTO_UPDATE = "1";
+  // A test shell inside Antigravity should not supply a live conversation ID.
+  for (const name of ["ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_TRAJECTORY_ID"]) {
+    delete process.env[name];
+  }
   // Terminal-mode chat tests drive Node's readline directly, and readline
   // silently disables line editing under TERM=dumb (as in Grok tool shells).
   // Pin a capable terminal so those tests do not depend on the caller's TERM;

@@ -22,7 +22,7 @@ import { isModelCredential, MODEL_CREDENTIAL_MESSAGE } from "../supervisor/adapt
 
 export const SUPERVISOR_USAGE = [
   "tt supervisor status",
-  "tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [--model M] [--permission-mode default|plan|bypassPermissions]",
+  "tt supervisor add <worker> --harness claude|codex|grok|agy --cwd PATH [--model M] [--permission-mode default|plan|bypassPermissions]",
   "  [--sandbox read-only|workspace-write|danger-full-access --approval on-request|untrusted|never] [--env NAME[=literal:VALUE]]",
   "tt supervisor pause|resume|stop|remove <worker>",
   "tt supervisor restart <worker> [--fresh]",
@@ -72,6 +72,13 @@ function parsePermissions(parsed: ParsedCommand, harness: Harness): WorkerPermis
       fail("A Codex worker needs --approval on-request, untrusted or never.");
     }
     return { harness, sandbox, approval };
+  }
+  if (harness === "antigravity") {
+    if (sandbox || approval) fail("--sandbox and --approval are Codex settings.");
+    if (mode !== undefined && mode !== "default" && mode !== "bypassPermissions") {
+      fail("An Antigravity worker needs --permission-mode default or bypassPermissions.");
+    }
+    return { harness, mode: mode ?? "default" };
   }
   if (mode || sandbox || approval) fail("A Grok worker takes no permission settings.");
   return { harness };
@@ -200,8 +207,10 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
       const workerId = workerArg(parsed);
       if (!WORKER_ID.test(workerId)) fail("A worker name is lowercase letters, digits, '.', '_' or '-', up to 48 characters.");
       if (store.worker(workerId)) fail(`Worker ${workerId} already exists.`);
-      const harness = getStringOption(parsed, "harness") as Harness | undefined;
-      if (harness !== "claude" && harness !== "codex" && harness !== "grok") fail("--harness must be claude, codex or grok.");
+      const name = getStringOption(parsed, "harness");
+      const harness = name === "agy" ? "antigravity" : name;
+      if (harness !== "claude" && harness !== "codex" && harness !== "grok" && harness !== "antigravity") fail("--harness must be claude, codex, grok or agy.");
+      if (harness === "antigravity" && getStringOption(parsed, "model")) fail("Set the model in Antigravity settings.");
       const cwd = getStringOption(parsed, "cwd");
       if (!cwd || !path.isAbsolute(cwd) || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) fail("--cwd must be an existing absolute directory.");
       // An existing native session is never imported: nothing here can prove

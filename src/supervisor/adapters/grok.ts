@@ -10,63 +10,7 @@ import { spawnManagedProcess, UnsentInputError, workerEnvironment, type ManagedP
 // approvals are unproven, so all four stay false on every platform. The child
 // runs in the user's own GROK_HOME, with their config and subscription login.
 
-type Json = Record<string, unknown>;
-function object(value: unknown): Json {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
-}
-
-class RpcError extends Error {
-  constructor(message: string) { super(message); }
-}
-
-function authenticationError(value: unknown): boolean {
-  return /unauth|authentication|not logged|401|login required/i.test(JSON.stringify(value ?? {}));
-}
-
-/** One JSON-RPC connection to the Grok process this handle owns. */
-class Rpc {
-  process: ManagedProcess | null = null;
-  private id = 0;
-  private pending = new Map<number, { resolve(value: Json): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
-  request(method: string, params: Json, timeoutMs: number): Promise<Json> {
-    if (!this.process?.alive()) return Promise.reject(new RpcError("Grok is not connected."));
-    if (this.pending.size >= 64) return Promise.reject(new RpcError("Grok has too many pending requests."));
-    const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new RpcError("Grok request is unconfirmed."));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.process!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params })).catch((error) => {
-        const waiting = this.pending.get(id);
-        if (!waiting) return;
-        clearTimeout(timer);
-        this.pending.delete(id);
-        reject(error instanceof UnsentInputError ? new RpcError("Grok request was not sent.") : new RpcError("Grok write is unconfirmed."));
-      });
-    });
-  }
-  complete(message: Json): void {
-    if (typeof message.id !== "number") return;
-    const pending = this.pending.get(message.id);
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    this.pending.delete(message.id);
-    if (message.error !== undefined) {
-      // A raw server error can carry user or auth data; keep only its kind.
-      pending.reject(new RpcError(authenticationError(message.error) ? "Grok authentication failed." : "Grok rejected the protocol request."));
-    } else if (message.result !== undefined) pending.resolve(object(message.result));
-    else pending.reject(new RpcError("Grok returned an invalid response."));
-  }
-  close(): void {
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(new RpcError("Grok connection ended."));
-    }
-    this.pending.clear();
-  }
-}
+import { AcpRpc, acpObject as object, type AcpObject as Json } from "./acp-rpc.js";
 
 export interface GrokAdapterOptions {
   /** Injectable executable and prefix for deterministic protocol fixtures. */
@@ -150,7 +94,7 @@ export class GrokAdapter implements HarnessAdapter {
 
 class GrokHandle implements WorkerHandle {
   private child: ManagedProcess | null = null;
-  private readonly rpc = new Rpc();
+  private readonly rpc = new AcpRpc();
   private session: string | null = null;
   private listeners: Array<(event: WorkerEvent) => void> = [];
   private queued: WorkerEvent[] = [];

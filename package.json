@@ -30,12 +30,14 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
+    "hjson": "^3.2.2",
     "string-width": "^8.2.2",
     "ws": "^8.22.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
+    "@types/hjson": "^2.4.6",
     "@types/node": "^25.6.0",
     "@types/ws": "^8.18.1",
     "@xterm/headless": "^6.0.0",

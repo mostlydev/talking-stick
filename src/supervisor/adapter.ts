@@ -3,7 +3,7 @@
 // supervisor owns every decision about when to start, stop, prompt or answer.
 // See docs/supervisor.md.
 
-export type Harness = "claude" | "codex" | "grok";
+export type Harness = "claude" | "codex" | "grok" | "antigravity";
 
 /** What an adapter has proven it can do. False means unavailable, never assumed. */
 export interface Capabilities {
@@ -17,7 +17,8 @@ export interface Capabilities {
 export type WorkerPermissions =
   | { harness: "claude"; mode: "default" | "plan" | "bypassPermissions" }
   | { harness: "codex"; sandbox: "read-only" | "workspace-write" | "danger-full-access"; approval: "on-request" | "untrusted" | "never" }
-  | { harness: "grok" };
+  | { harness: "grok" }
+  | { harness: "antigravity"; mode: "default" | "bypassPermissions" };
 
 /**
  * Where a worker's environment value comes from. Specs store references and
@@ -53,7 +54,7 @@ export interface WorkerSpec {
 }
 
 export class WorkerExecutableError extends Error {
-  constructor(readonly envName: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE", message: string) {
+  constructor(readonly envName: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE" | "AGY_EXECUTABLE", message: string) {
     super(message);
     this.name = "WorkerExecutableError";
   }
