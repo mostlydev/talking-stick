@@ -1,4 +1,4 @@
 interface:
-  display_name: "Talking Stick Rooms"
-  short_description: "Check on and question Talking Stick rooms on this machine"
-  default_prompt: "Use $talking-stick-rooms to see what the Talking Stick rooms on this machine are doing, or to ask a room's agents something."
+  display_name: "Shrooms Rooms"
+  short_description: "Check on and question Shrooms rooms on this machine"
+  default_prompt: "Use $talking-stick-rooms to see what the Shrooms rooms on this machine are doing, or to ask a room's agents something."

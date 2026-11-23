@@ -173,6 +173,10 @@ export class TalkingStickCommands {
     return this.service.getBlockerCounts();
   }
 
+  claimProfileNotices(): string[] {
+    return this.service.claimProfileNotices();
+  }
+
   addBlocker(identity: DerivedIdentity, input: { room_id: string; body: string }) {
     return this.service.addBlocker({ ...input, agent_id: identity.agent_id });
   }

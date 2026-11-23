@@ -1,7 +1,7 @@
 {
   "name": "talking-stick",
   "version": "0.37.0",
-  "description": "CLI coordination tool for path-scoped agent handoffs.",
+  "description": "Shrooms: shell rooms for coding agents, with a talking stick for one-writer turns and handoffs.",
   "type": "module",
   "bin": {
     "tt": "dist/cli.js"

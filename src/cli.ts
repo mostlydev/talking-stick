@@ -11,6 +11,8 @@ import { runStartupMaintenance } from "./cli/startup-maintenance.js";
 import { isStandalone, standaloneRoot } from "./standalone-mode.js";
 import { detectInstallSource, isPackageManager, resolveCurrentBinaryPath, STANDALONE_MIGRATION_NOTICE } from "./self-update.js";
 import { runStartupUpdate } from "./cli/startup-update.js";
+import { profileNoticeAllowed } from "./profile-notices.js";
+import { runningInsideHarness } from "./identity.js";
 
 export { checkGuardianLiveness } from "./cli/guardian.js";
 export { parseHandoffJson } from "./cli/handoff.js";
@@ -61,6 +63,14 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   const runtime = createRuntime();
   try {
     await command.handler({ parsed, runtime, cliEntryUrl: import.meta.url });
+    // After the command's own output, so a notice never mixes into it.
+    if (profileNoticeAllowed({ json: shouldUseJson(parsed), stdoutTTY: Boolean(process.stdout.isTTY),
+      stderrTTY: Boolean(process.stderr.isTTY), internal: command.internal, command: command.name,
+      insideHarness: () => runningInsideHarness() })) {
+      try {
+        for (const text of runtime.commands.claimProfileNotices()) process.stderr.write(`\n${text}\n`);
+      } catch { /* A notice must never fail the command it follows. */ }
+    }
   } finally {
     try { await runtime.commands.flushWakes(); } finally { runtime.close(); }
   }

@@ -2100,6 +2100,27 @@ describe("tt notes", () => {
     expect(status.coordination_prompt).toBeUndefined();
   });
 
+  test("a run whose output isn't a terminal, like an agent's, leaves the profile notice pending", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const service = new TalkingStickService();
+    const db = (service as unknown as { db: { prepare(sql: string): { run(...args: unknown[]): unknown; get(): unknown } } }).db;
+    try {
+      db.prepare("INSERT INTO profile_notices (notice_id, created_at) VALUES ('shrooms-rename', '2026-11-23T00:00:00.000Z')").run();
+    } finally {
+      service.close();
+    }
+    await captureStdout(["join", project, "--agent", "human:notice-test"]);
+    const output = await captureStdout(["state", project, "--agent", "human:notice-test", "--text"]);
+    expect(output).not.toContain("now Shrooms");
+    const after = new TalkingStickService();
+    try {
+      expect((after as unknown as { db: { prepare(sql: string): { get(): unknown } } }).db
+        .prepare("SELECT shown_at FROM profile_notices WHERE notice_id = 'shrooms-rename'").get()).toEqual({ shown_at: null });
+    } finally {
+      after.close();
+    }
+  });
+
   test("tt health shows the safe error detail on an unconfirmed Codex wake", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     const service = new TalkingStickService();

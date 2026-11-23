@@ -64,7 +64,8 @@ import type { Readable, Writable } from "node:stream";
 import { resolveDataDir } from "../config.js";
 import { ProtocolError, isSqliteBusy } from "../errors.js";
 import { hasHookInterrupt, requestHookInterrupt } from "../interrupt-flags.js";
-import { deriveHumanCliIdentity, type DerivedIdentity } from "../identity.js";
+import { deriveHumanCliIdentity, runningInsideHarness, type DerivedIdentity } from "../identity.js";
+import { shouldUseJson } from "./output.js";
 import {
   HUMAN_CHAT_SESSION_KIND,
   type EventType,
@@ -176,6 +177,11 @@ export interface ChatSessionOptions {
   room_id?: string;
   /** Multi-room state; without it chat stays in one room. */
   console?: ChatConsoleState;
+  /**
+   * Show and use up pending one-time profile notices. Only a person at a real
+   * terminal qualifies; a piped or harness-run chat leaves them pending.
+   */
+  profile_notices?: boolean;
   input: Readable;
   output: Writable;
   terminal: boolean;
@@ -263,6 +269,7 @@ export async function handleChatCommand(
     output: process.stdout,
     terminal,
     color: terminal && !process.env.NO_COLOR,
+    profile_notices: terminal && !shouldUseJson(parsed) && runningInsideHarness() === null,
     theme_source: themeSource,
     history: parseOptionalInteger(parsed, "history") ?? DEFAULT_HISTORY,
     show_turn_events: hasOption(parsed, "events"),
@@ -2392,6 +2399,13 @@ export async function runChatSession(
     if (savedDraft) editor?.setDraft(savedDraft);
     refreshHeadless(true);
     announceBlockers({ quiet: true });
+    // A one-time profile notice, such as the Shrooms rename, shown once per
+    // profile across every console and terminal.
+    if (options.profile_notices) {
+      try {
+        for (const text of runtime.commands.claimProfileNotices()) print(sanitizeChatText(text), "info");
+      } catch { /* Chat still opens if the notice can't be read. */ }
+    }
     if (refreshStrip() || headlessMarkerForms.length || blockerCount(roomId)) redraw();
     let busyAttempts = 0;
     let lastWakeRelay = Date.now();

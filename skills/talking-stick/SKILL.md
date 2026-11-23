@@ -1,11 +1,11 @@
 ---
 name: talking-stick
-description: Use when working in a Talking Stick room - joining it, coordinating with other agents, taking turns, handing off work, or messaging peers with tt. To check on or question rooms from outside, use talking-stick-rooms instead.
+description: Use when working in a Shrooms room (formerly Talking Stick) - joining it, coordinating with other agents, taking turns, handing off work, or messaging peers with tt. To check on or question rooms from outside, use talking-stick-rooms instead.
 ---
 
-# Talking Stick
+# Shrooms
 
-Talking Stick gives several harnesses one shared-writer turn and one room event stream. Use the `tt` CLI.
+Shrooms (formerly Talking Stick) gives several harnesses a shared room: one event stream, and a talking stick that grants one shared-writer turn at a time. Use the `tt` CLI.
 
 If the task is only to check on rooms or ask another room's agents something, use the `talking-stick-rooms` skill and do not join anything. If you are already in a room, stay in it; looking into other rooms never changes your membership.
 
