@@ -49,6 +49,11 @@ test("an ACP prompt can finish after a long-running turn", async () => {
     rpc.complete({ id: 1, result: { stopReason: "end_turn" } });
     await result;
     expect(completed).toHaveBeenCalledWith({ stopReason: "end_turn" });
+
+    write.mockImplementationOnce(() => new Promise(() => {}));
+    const stalled = rpc.request("session/prompt", {}, undefined).catch(error => error);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(stalled).resolves.toMatchObject({ phase: "uncertain" });
   } finally {
     vi.useRealTimers();
   }

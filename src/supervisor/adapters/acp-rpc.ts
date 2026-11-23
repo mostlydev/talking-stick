@@ -19,18 +19,23 @@ function authenticationError(value: unknown): boolean {
 export class AcpRpc {
   process: ManagedProcess | null = null;
   private id = 0;
-  private pending = new Map<number, { resolve(value: AcpObject): void; reject(error: Error): void; timer?: NodeJS.Timeout }>();
+  private pending = new Map<number, { resolve(value: AcpObject): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   request(method: string, params: AcpObject, timeoutMs: number | undefined, onWritten?: () => void): Promise<AcpObject> {
     if (!this.process?.alive()) return Promise.reject(new AcpError("ACP is not connected.", "unsent"));
     if (this.pending.size >= 64) return Promise.reject(new AcpError("ACP has too many pending requests.", "unsent"));
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+      const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new AcpError("ACP request is unconfirmed.", "uncertain"));
-      }, timeoutMs);
+      }, timeoutMs ?? 10_000);
       this.pending.set(id, { resolve, reject, timer });
-      this.process!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params })).then(onWritten).catch((error) => {
+      this.process!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params })).then(() => {
+        // Streaming prompt response is the turn's completion, which can be
+        // much later. Bound sending the request, then wait for exit or reply.
+        if (timeoutMs === undefined) clearTimeout(timer);
+        onWritten?.();
+      }).catch((error) => {
         const waiting = this.pending.get(id);
         if (!waiting) return;
         clearTimeout(timer);
