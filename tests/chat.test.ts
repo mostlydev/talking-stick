@@ -2315,6 +2315,14 @@ test("chat announces a blocker another member raises or withdraws, but not one a
     await until(() => bytes.includes(`raised ${raised.blocker_id}: CI passed on abc. · /blockers`), 6_000);
     service.withdrawBlocker({ room_id, agent_id, blocker_id: raised.blocker_id, reason: "Publication is no longer needed." });
     await until(() => bytes.includes(`${raised.blocker_id} withdrawn by `) && bytes.includes("Publication is no longer needed."), 6_000);
+    // A peer's blocker that lands just before this console adds its own is
+    // still announced; only the console's own item is left unannounced.
+    const peer = service.addBlocker({ room_id, agent_id, body: "Keys rotated. Reconnect?" });
+    input.write("/blockers add Console question?\r");
+    await until(() => bytes.includes("Open blocker "), 6_000);
+    await until(() => bytes.includes(`raised ${peer.blocker_id}: Keys rotated. Reconnect?`), 6_000);
+    const own = service.listBlockers({ room_id }).find((blocker) => blocker.body === "Console question?")!;
+    expect(bytes).not.toContain(`raised ${own.blocker_id}:`);
     expect(bytes).not.toContain("raised B1:");
   } finally {
     input.write("/quit\r");
