@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// The supervisor as a macOS user agent. Install and uninstall are explicit;
-// nothing installs it implicitly.
+// The supervisor as a macOS user agent. It is installed by tt supervisor
+// install, or by tt up --headless when no supervisor runs for that data
+// directory; only tt supervisor uninstall removes it.
 
 export const LAUNCHD_LABEL = "com.talking-stick.supervisor";
 
@@ -69,10 +70,15 @@ ${args}
 
 export type LaunchctlRunner = (args: string[]) => void;
 
-const systemLaunchctl: LaunchctlRunner = (args) => { execFileSync("launchctl", args, { stdio: "ignore" }); };
+export const systemLaunchctl: LaunchctlRunner = (args) => { execFileSync("launchctl", args, { stdio: "ignore" }); };
 
+/**
+ * Writes the plist and bootstraps it. By default a loaded agent is booted out
+ * first, so an explicit install replaces it; replace: false never ejects a
+ * loaded supervisor, and bootstrapping then fails if one is loaded.
+ */
 export function installLaunchAgent(input: { program: string[]; dataDir: string; logPath: string; stateBase?: string; searchPath?: string; homeDir?: string;
-  launchctl?: LaunchctlRunner }): string {
+  launchctl?: LaunchctlRunner; replace?: boolean }): string {
   if (process.platform !== "darwin" && !input.launchctl) throw new Error("tt supervisor install supports macOS launchd only.");
   // The agent must run something that exists, not report installed and fail at login.
   const [executable, script] = input.program;
@@ -84,7 +90,9 @@ export function installLaunchAgent(input: { program: string[]; dataDir: string; 
   fs.writeFileSync(file, launchAgentPlist(input), { mode: 0o644 });
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const launchctl = input.launchctl ?? systemLaunchctl;
-  try { launchctl(["bootout", `${domain}/${LAUNCHD_LABEL}`]); } catch { /* not loaded */ }
+  if (input.replace !== false) {
+    try { launchctl(["bootout", `${domain}/${LAUNCHD_LABEL}`]); } catch { /* not loaded */ }
+  }
   launchctl(["bootstrap", domain, file]);
   return file;
 }

@@ -1,6 +1,6 @@
 ---
 name: rooms-oversee
-description: Use to oversee shrooms rooms (formerly the talking-stick-rooms skill) on this machine from outside them - check what a room is doing, ask its agents questions, give them instructions or approvals for the user, and follow up. Never joins a room.
+description: Use to manage shrooms rooms (formerly the talking-stick-rooms skill) on this machine from outside them - start a room of headless agents in a folder, check what a room is doing, ask its agents questions, give them instructions or approvals for the user, and follow up. Never joins a room.
 ---
 
 # Oversee shrooms rooms
@@ -16,15 +16,29 @@ EOF
 tt room replies <request-id> --timeout 30 --json   # answers, plus each recipient's delivery, receipt, and reply state
 ```
 
-Do not run `tt join`, `tt wait`, `tt standby`, `tt take`, `tt release`, or `tt msg send` for this work, and never edit files in another room's checkout. If `tt` is not available, say so; do not guess at a room's state.
+Do not run `tt join`, `tt wait`, `tt standby`, `tt take`, `tt release`, or `tt msg send` for this work, and never edit files in another room's checkout. A desktop app's shell may not load the operator's terminal PATH: if `tt` is not found, use `$HOME/.local/bin/tt`. If neither works, say so; do not guess at a room's state.
 
-## Launch a room when the operator asks
+## Start a room when the operator asks
 
-Use `tt supervisor add <worker> --harness <harness> --cwd <absolute-dir>` for each headless worker, or `tt up --path <dir> --agents <list>` for visible agents. Use the worker permissions the operator requested. The launcher supplies the Talking Stick skill prompt. Check `tt supervisor status` for headless startup and `tt room list --all --json` for room joins. You can do this from your existing session without joining the new room yourself.
+To start headless agents in a folder, run one command from your own session:
+
+```sh
+tt up --headless --path <dir> --agents claude,codex --json
+```
+
+- `--agents` takes any of `claude`, `codex`, `grok` and `agy`. Leave it out for the operator's saved choice, else Claude and Codex where installed.
+- The folder must exist. If the operator names a new one, create it with `mkdir -p` and say so.
+- Each agent becomes a worker named `<room>-<agent>`, for example `shrooms-claude`, and joins the room for that folder. A worker already set up for that folder and agent is left as it is. If a name is taken by a worker in another folder, the command adds nothing; run it again with `--prefix <name>`.
+- New workers approve their own tool use and run with the operator's account access, because nobody can approve prompts in a headless session. Add `--restricted` when the operator asks for workers to keep each harness's own permission rules.
+- On macOS the command installs and starts the supervisor's user service if none is running, and says so. On Linux, or if `service.state` is `not_started` or `unknown`, give the operator the `service.remedy` line and the `next_steps` from the result.
+- Add `--print` to preview the workers and service without changing anything.
+- After a minute, check `tt supervisor status --json` for startup and `tt room list --all --json` for the joins. Report each worker by name, with anything that blocks it.
+
+For visible agents in Herdr or tmux panes instead, use `tt up --path <dir> --agents <list>`. Starting rooms never joins one or changes your membership.
 
 ## Status: what is a room doing?
 
-1. `tt room list --all --json`. Match what the user said against each room's `name` or the end of its `canonical_path`; if several match, ask which. A room only appears while an agent or console is in it.
+1. `tt room list --all --json`. Match what the user said against each room's `name` or the end of its `canonical_path`; if several match, ask which. A room appears while an agent or console is in it, or while it has open blockers.
 2. `tt room brief <room> --json`, then summarize, citing event numbers (`#25203`) for specific claims:
    - Who holds the stick (`owner`), or who it is reserved for. `state: "stale_owner"` means the lease expired: not a current writer lease, but whether the agent is still active is unknown.
    - The latest handoff's `status` and `next_action`: what its author reported as done and next, as of its `created_at`. Later messages may have moved on.

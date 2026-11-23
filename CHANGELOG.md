@@ -16,6 +16,8 @@ changes will be called out under **Breaking changes**.
 - Use `rooms` as an optional second name for `tt`. Both commands use the same local state.
 - Antigravity hooks deliver room messages to active conversations. Use `tt up --agents agy` for pane launches.
 - The supervisor can prompt and resume Antigravity and Grok workers over ACP. Both support cancellation.
+- `tt up --headless --path DIR --agents claude,codex` starts a room of headless agents in one step. It adds a supervised worker per agent, named after the room (`shrooms-claude`), and on macOS installs and starts the supervisor's user agent when none is running. Running it again leaves existing workers alone. `--restricted` keeps each harness's own permission rules, and `--print` previews.
+- The quickstart starts from a manager session: Claude Code or Codex, in a desktop app or terminal, with the `rooms-oversee` skill starts headless rooms in folders, sends them work, and reports on them.
 
 ### Changed
 

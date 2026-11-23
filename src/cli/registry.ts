@@ -142,7 +142,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: false,
     internal: false,
     usage: UP_USAGE,
-    description: "Launch agents and a chat console in Herdr or tmux (--print previews).",
+    description: "Launch agents and a chat console in Herdr or tmux, or supervised headless workers with --headless (--print previews).",
     handler: ({ parsed, runtime }) => handleUpCommand(runtime!, parsed)
   },
   {

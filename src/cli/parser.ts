@@ -29,6 +29,7 @@ const BOOLEAN_FLAGS = new Set([
   "new-workspace",
   "inline",
   "fullscreen",
+  "headless",
   "operator-requested",
   "park",
   "print",

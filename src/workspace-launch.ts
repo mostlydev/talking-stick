@@ -454,7 +454,7 @@ function executableCheck(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.
 
 // Windows resolves a bare command through PATHEXT (tt.exe, codex.cmd), and a
 // copied environment keeps its original "Path" spelling.
-function findOnPath(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
+export function findOnPath(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string | null {
   const windows = platform === "win32";
   const searchPath = env.PATH ?? (windows ? env.Path : undefined) ?? "";
   const extensions = windows ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean) : [""];
