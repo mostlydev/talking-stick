@@ -2295,6 +2295,41 @@ test.each([40, 80])("chat opens a blocker and sends the selected answer at %s co
   }
 });
 
+test("chat announces a blocker another member raises or withdraws, but not one already open", async () => {
+  const { root, service } = setupService();
+  const agent_id = "codex:worker";
+  const { room_id } = service.joinPath({ agent_id, context_path: root });
+  service.addBlocker({ room_id, agent_id, body: "Already open before the console started?" });
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 80, rows: 24 });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); });
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: true,
+    color: false, history: 0, show_turn_events: false, poll_ms: 5
+  });
+  try {
+    await until(() => bytes.includes("1 blocker"));
+    const raised = service.addBlocker({ room_id, agent_id, body: "CI passed on abc.\nMay I publish it?" });
+    await until(() => bytes.includes(`raised ${raised.blocker_id}: CI passed on abc. · /blockers`), 6_000);
+    service.withdrawBlocker({ room_id, agent_id, blocker_id: raised.blocker_id, reason: "Publication is no longer needed." });
+    await until(() => bytes.includes(`${raised.blocker_id} withdrawn by `) && bytes.includes("Publication is no longer needed."), 6_000);
+    // A peer's blocker that lands just before this console adds its own is
+    // still announced; only the console's own item is left unannounced.
+    const peer = service.addBlocker({ room_id, agent_id, body: "Keys rotated. Reconnect?" });
+    input.write("/blockers add Console question?\r");
+    await until(() => bytes.includes("Open blocker "), 6_000);
+    await until(() => bytes.includes(`raised ${peer.blocker_id}: Keys rotated. Reconnect?`), 6_000);
+    const own = service.listBlockers({ room_id }).find((blocker) => blocker.body === "Console question?")!;
+    expect(bytes).not.toContain(`raised ${own.blocker_id}:`);
+    expect(bytes).not.toContain("raised B1:");
+  } finally {
+    input.write("/quit\r");
+    await session;
+  }
+}, 15_000);
+
 test("a dumb terminal falls back to plain line mode", () => {
   const tty = { isTTY: true };
   expect(chatTerminalCapable(tty, tty, { TERM: "xterm-256color" })).toBe(true);
