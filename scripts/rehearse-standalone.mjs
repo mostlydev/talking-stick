@@ -25,7 +25,7 @@ execFileSync("git", ["init", "-q", project]);
 
 // An isolated HOME keeps startup maintenance away from real installs, and no
 // inherited harness marker may decide the identity instead of the explicit one.
-const harnessMarker = /^(TT_|TALKING_STICK_|CLAUDE|CODEX_|GROK_|CMUX_|ANTIGRAVITY_|GEMINI_CLI|OPENCODE|HERDR_)/;
+const harnessMarker = /^(TT_|TALKING_STICK_|CLAUDE|CODEX_|GROK_|CMUX_|ANTIGRAVITY_|OPENCODE|HERDR_)/;
 const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !harnessMarker.test(name))),
   HOME: home, USERPROFILE: home, APPDATA: path.join(home, "AppData", "Roaming"),

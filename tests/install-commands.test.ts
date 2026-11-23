@@ -58,7 +58,7 @@ describe("reportCleanupResults", () => {
         target_type: "skill"
       },
       {
-        harness: "gemini",
+        harness: "grok",
         action: "failed",
         message: "could not remove duplicate",
         target_type: "skill"
@@ -71,7 +71,7 @@ describe("reportCleanupResults", () => {
     expect(stdout.lines()).toEqual([
       "[codex] skill-cleanup removed: removed duplicate skill",
       "[opencode] skill-cleanup preserved: custom skill left in place",
-      "[gemini] skill-cleanup failed: could not remove duplicate"
+      "[grok] skill-cleanup failed: could not remove duplicate"
     ]);
   });
 });

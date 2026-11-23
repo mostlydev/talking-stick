@@ -176,7 +176,7 @@ export function deriveHarnessCliIdentity(
       pid: processRef.pid,
       process_started_at: processRef.inspection?.startTime ?? null,
       session_kind: "harness_cli",
-      display_name: options.displayName ?? signal.harness,
+      display_name: options.displayName ?? (signal.harness === "antigravity" ? "agy" : signal.harness),
       harness_name: signal.harness,
       harness_session_id: sessionId,
       harness_host_id: hostId,
@@ -192,7 +192,8 @@ function harnessAgentId(
   hostId: string,
   username: string
 ): string {
-  return `${harness}:${hashIdentityParts([
+  const prefix = harness === "antigravity" ? "agy" : harness;
+  return `${prefix}:${hashIdentityParts([
     harness,
     hostId,
     sessionId,
@@ -417,9 +418,6 @@ function detectHarnessSignal(env: NodeJS.ProcessEnv): HarnessSignal | null {
         nonEmpty(env.ANTIGRAVITY_TRAJECTORY_ID),
       pidHint: null
     };
-  }
-  if (env.GEMINI_CLI === "1") {
-    return { harness: "gemini", sessionId: null, pidHint: null };
   }
   if (env.OPENCODE === "1") {
     return {

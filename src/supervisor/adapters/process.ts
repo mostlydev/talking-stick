@@ -36,7 +36,7 @@ function isIdentityMarker(name: string): boolean {
     name === "CODEX_THREAD_ID" || name === "CODEX_MANAGED_BY_NPM" || name === "CLAUDECODE" ||
     name.startsWith("CLAUDE_CODE_") || name === "CLAUDE_SESSION_ID" || name.startsWith("CMUX_") ||
     name.startsWith("HERDR_") || name === "GROK_AGENT" || name === "GROK_SESSION_ID" ||
-    name === "GEMINI_CLI" || name.startsWith("ANTIGRAVITY_") || name === "OPENCODE";
+    name.startsWith("ANTIGRAVITY_") || name === "OPENCODE";
 }
 
 /** Only a check performed before calling write may prove an input unsent. */

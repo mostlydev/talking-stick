@@ -313,19 +313,6 @@ describe("deriveHarnessCliIdentity", () => {
     expect(identity!.agent_id).toMatch(/^codex:[0-9a-f]{8}$/);
   });
 
-  test("detects Gemini via GEMINI_CLI=1 and falls back to PID-based identity", () => {
-    const identity = deriveHarnessCliIdentity({
-      env: { GEMINI_CLI: "1" },
-      username: "alice",
-      parentPid: 9000,
-      hostId: "test-host",
-      inspector
-    });
-    expect(identity!.agent_id).toMatch(/^gemini:[0-9a-f]{8}$/);
-    expect(identity!.process_metadata.session_kind).toBe("harness_cli");
-    expect(identity!.process_metadata.display_name).toBe("gemini");
-  });
-
   test("detects Antigravity and prefers conversation id over trajectory id", () => {
     const first = deriveHarnessCliIdentity({
       env: {
@@ -349,10 +336,10 @@ describe("deriveHarnessCliIdentity", () => {
       inspector
     });
 
-    expect(first!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(first!.agent_id).toMatch(/^agy:[0-9a-f]{8}$/);
     expect(first!.agent_id).toBe(second!.agent_id);
     expect(first!.process_metadata).toMatchObject({
-      display_name: "antigravity",
+      display_name: "agy",
       harness_name: "antigravity",
       harness_session_id: "harness:conversation-a"
     });
@@ -367,7 +354,7 @@ describe("deriveHarnessCliIdentity", () => {
       inspector
     });
 
-    expect(identity!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(identity!.agent_id).toMatch(/^agy:[0-9a-f]{8}$/);
     expect(identity!.process_metadata.harness_session_id).toBe(
       "harness:trajectory-a"
     );
@@ -395,9 +382,9 @@ describe("deriveHarnessCliIdentity", () => {
       inspector: agyInspector
     });
 
-    expect(identity!.agent_id).toMatch(/^antigravity:[0-9a-f]{8}$/);
+    expect(identity!.agent_id).toMatch(/^agy:[0-9a-f]{8}$/);
     expect(identity!.process_metadata).toMatchObject({
-      display_name: "antigravity",
+      display_name: "agy",
       harness_name: "antigravity",
       harness_session_id: "harness:pid:100@Sat Jun 13 14:00:00 2026",
       harness_pid: 100,
@@ -807,11 +794,11 @@ describe("deriveHarnessCliIdentity", () => {
     expect(identity!.process_metadata.display_name).toBe("claude");
   });
 
-  test("uses a terminal-emulator session id as sessionId fallback for Gemini", () => {
+  test("uses a terminal-emulator session id as sessionId fallback when agy has no conversation id", () => {
     const identity = deriveHarnessCliIdentity({
       env: {
         TT_HARNESS_EXPORT: "1",
-        GEMINI_CLI: "1",
+        ANTIGRAVITY_AGENT: "1",
         ITERM_SESSION_ID: "w0t0p0:ABCDEF"
       },
       username: "alice",
@@ -819,19 +806,19 @@ describe("deriveHarnessCliIdentity", () => {
       hostId: "test-host",
       inspector
     });
-    expect(identity!.agent_id).toMatch(/^gemini:[0-9a-f]{8}$/);
+    expect(identity!.agent_id).toMatch(/^agy:[0-9a-f]{8}$/);
   });
 
   test("terminal-emulator fallback keeps identity stable across invocations in the same tab", () => {
     const a = deriveHarnessCliIdentity({
-      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1", CMUX_TAB_ID: "tab-abc" },
+      env: { TT_HARNESS_EXPORT: "1", ANTIGRAVITY_AGENT: "1", CMUX_TAB_ID: "tab-abc" },
       username: "alice",
       parentPid: 9000,
       hostId: "test-host",
       inspector
     });
     const b = deriveHarnessCliIdentity({
-      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1", CMUX_TAB_ID: "tab-abc" },
+      env: { TT_HARNESS_EXPORT: "1", ANTIGRAVITY_AGENT: "1", CMUX_TAB_ID: "tab-abc" },
       username: "alice",
       parentPid: 9001,
       hostId: "test-host",
@@ -842,14 +829,14 @@ describe("deriveHarnessCliIdentity", () => {
 
   test("different terminal tabs produce different identities within the same harness", () => {
     const a = deriveHarnessCliIdentity({
-      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1", CMUX_TAB_ID: "tab-one" },
+      env: { TT_HARNESS_EXPORT: "1", ANTIGRAVITY_AGENT: "1", CMUX_TAB_ID: "tab-one" },
       username: "alice",
       parentPid: 9000,
       hostId: "test-host",
       inspector
     });
     const b = deriveHarnessCliIdentity({
-      env: { TT_HARNESS_EXPORT: "1", GEMINI_CLI: "1", CMUX_TAB_ID: "tab-two" },
+      env: { TT_HARNESS_EXPORT: "1", ANTIGRAVITY_AGENT: "1", CMUX_TAB_ID: "tab-two" },
       username: "alice",
       parentPid: 9000,
       hostId: "test-host",

@@ -278,7 +278,7 @@ describe("chat rendering", () => {
     expect(resolveChatRecipient("CLAUDE", members, "human:op")).toEqual({
       agent_ids: ["claude:bb", "claude:cc"]
     });
-    expect(resolveChatRecipient("gemini", members, "human:op")).toHaveProperty(
+    expect(resolveChatRecipient("agy", members, "human:op")).toHaveProperty(
       "error"
     );
     expect(resolveChatRecipients(["codex", "claude", "claude:c"], members, "human:op")).toEqual({
@@ -301,13 +301,13 @@ describe("chat rendering", () => {
     expect(resolveChatRecipients(["everyone"], [
       { agent_id: "codex:aa", status: "active", session_kind: "harness_cli" },
       { agent_id: "claude:bb", status: "active", session_kind: "harness_cli" },
-      { agent_id: "gemini:dd", status: "inactive", session_kind: "harness_cli" },
+      { agent_id: "agy:dd", status: "inactive", session_kind: "harness_cli" },
       { agent_id: "human:op:chat:2", status: "active", session_kind: "human_chat" },
       { agent_id: "human:op", status: "active", session_kind: "human_chat" }
     ] as never, "human:op")).toEqual({ agent_ids: ["codex:aa", "claude:bb"] });
-    expect(resolveChatRecipients(["codex", "gemini", "grok"], members, "human:op")).toEqual({
-      error: "No room member matches '@gemini', '@grok'.",
-      unmatched: ["gemini", "grok"]
+    expect(resolveChatRecipients(["codex", "agy", "grok"], members, "human:op")).toEqual({
+      error: "No room member matches '@agy', '@grok'.",
+      unmatched: ["agy", "grok"]
     });
   });
 });
@@ -334,7 +334,7 @@ describe("chat status line", () => {
 
   test("summarizes agents with holder first and hides observers", () => {
     const members = [
-      member({ agent_id: "gemini:cc", last_seen_at: minutesAgo(90) }),
+      member({ agent_id: "agy:cc", last_seen_at: minutesAgo(90) }),
       member({ agent_id: "claude:bb", last_seen_at: minutesAgo(4) }),
       member({ agent_id: "codex:aa" }),
       member({ agent_id: "grok:dd", status: "inactive" }),
@@ -356,7 +356,7 @@ describe("chat status line", () => {
         context(ids)
       )
     ).toBe(
-      "codex holding 12m · claude up next · gemini idle 1h · opencode standby · grok away"
+      "codex holding 12m · claude up next · agy idle 1h · opencode standby · grok away"
     );
   });
 
@@ -364,7 +364,7 @@ describe("chat status line", () => {
     const members = [
       member({ agent_id: "codex:aa", status: "inactive", process_liveness: "alive", last_seen_at: minutesAgo(180) }),
       member({ agent_id: "claude:bb", status: "inactive", process_liveness: "gone", last_seen_at: minutesAgo(30) }),
-      member({ agent_id: "gemini:cc", status: "inactive", process_liveness: "unknown", last_seen_at: minutesAgo(30) }),
+      member({ agent_id: "agy:cc", status: "inactive", process_liveness: "unknown", last_seen_at: minutesAgo(30) }),
       member({ agent_id: "grok:dd", status: "inactive", process_liveness: "unknown", standby_transport: "manual" })
     ];
     const ids = members.map((row: { agent_id: string }) => row.agent_id);
@@ -373,7 +373,7 @@ describe("chat status line", () => {
         { members, owner: null, owner_since: null, reserved_for: null, now, columns: 200 },
         context(ids)
       )
-    ).toBe("codex idle 3h · gemini away · grok standby");
+    ).toBe("codex idle 3h · agy away · grok standby");
   });
 
   test("transient interrupt indicators replace member state without changing the transcript", () => {
@@ -391,7 +391,7 @@ describe("chat status line", () => {
   });
 
   test("fits the terminal width and counts what it had to drop", () => {
-    const members = ["codex:aa", "claude:bb", "gemini:cc"].map((agent_id) =>
+    const members = ["codex:aa", "claude:bb", "agy:cc"].map((agent_id) =>
       member({ agent_id })
     );
     const line = formatChatStatus(

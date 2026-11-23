@@ -161,7 +161,7 @@ export function launchUnavailableReason(agent: LaunchAgent, env: NodeJS.ProcessE
   platform: NodeJS.Platform = process.platform): string | null {
   const adapter = LAUNCH_ADAPTERS[agent];
   if (findOnPath(adapter.executable, env, platform) === null) return "not installed";
-  const skillPath = resolvePrimarySkillTargetPath(adapter.harness as Exclude<HarnessId, "gemini">, { homeDir });
+  const skillPath = resolvePrimarySkillTargetPath(adapter.harness as HarnessId, { homeDir });
   return fs.existsSync(path.join(skillPath, "SKILL.md")) ? null : `skill missing · tt install ${adapter.harness}`;
 }
 
@@ -226,7 +226,7 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
 
   const agents = input.agents.map((agent): LaunchAgentPlan => {
     const adapter = LAUNCH_ADAPTERS[agent];
-    const skillPath = resolvePrimarySkillTargetPath(adapter.harness as Exclude<HarnessId, "gemini">, { homeDir: input.homeDir });
+    const skillPath = resolvePrimarySkillTargetPath(adapter.harness as HarnessId, { homeDir: input.homeDir });
     const skillFile = path.join(skillPath, "SKILL.md");
     if (fs.existsSync(skillFile)) {
       checks.push({ name: `${agent} skill`, status: "ok", detail: skillFile });

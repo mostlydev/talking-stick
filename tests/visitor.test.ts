@@ -94,13 +94,13 @@ describe("visitor requests", () => {
 
   test("asking leaves a member's own presence alone and counts only live agents", async () => {
     const { service, roomId } = room();
-    for (const [agentId, session] of [["gemini:quiet", "unknown-quiet"], ["opencode:busy", "unknown-busy"], ["agy:parked", "agy-parked"]]) {
+    for (const [agentId, session] of [["agy:quiet", "unknown-quiet"], ["opencode:busy", "unknown-busy"], ["agy:parked", "agy-parked"]]) {
       service.joinPath({ agent_id: agentId, context_path: service.listRooms({}).rooms[0].canonical_path, process_metadata: metadata(session) });
     }
     const db = (service as unknown as { db: { prepare(sql: string): { run(...args: unknown[]): unknown } } }).db;
     // Long silent: unknown liveness drops out, a running process stays in.
     db.prepare("UPDATE room_members SET last_seen_at = ?, last_wait_at = NULL WHERE agent_id IN (?, ?)")
-      .run("2001-01-01T00:00:00.000Z", "gemini:quiet", "agy:parked");
+      .run("2001-01-01T00:00:00.000Z", "agy:quiet", "agy:parked");
     const before = members(service, roomId);
 
     const asked = await service.askRoom({ agent_id: "claude:aa", room_id: roomId, to: "room", body: "who is around?" });

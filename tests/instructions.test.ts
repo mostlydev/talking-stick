@@ -278,7 +278,7 @@ describe("collaboration instructions", () => {
     expect(resolveInstructionHarness("claude", identity)).toBe("claude");
   });
 
-  test("bundled instructions include Antigravity and retain Gemini alias support", () => {
+  test("bundled instructions include Antigravity", () => {
     const antigravity = showInstructions({
       harness: "agy",
       scope: "bundled"
@@ -286,7 +286,6 @@ describe("collaboration instructions", () => {
     expect(antigravity.harness).toBe("antigravity");
     expect(antigravity.text).toContain("Working agreement");
 
-    expect(resolveInstructionHarness("gemini")).toBe("gemini");
   });
 });
 

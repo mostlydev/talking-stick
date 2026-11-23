@@ -31,7 +31,6 @@ type SkillerOperation =
   | "uninstall"
   | "cleanup-duplicates"
   | "sync";
-type FileSkillHarness = Exclude<HarnessId, "gemini">;
 
 interface SkillerAvailability {
   ok: boolean;
@@ -100,9 +99,6 @@ interface ChildResult {
   stderr: string;
 }
 
-const FILE_SKILL_HARNESSES: FileSkillHarness[] = SUPPORTED_HARNESSES.filter(
-  (harness): harness is FileSkillHarness => harness !== "gemini"
-);
 
 export function resolveSkiller(
   options: InstallOptions = {}
@@ -194,7 +190,7 @@ export async function runSkillerSyncInstalledSkills(
     sourcePath,
     sourceDigest: "",
     targets: (result.actions ?? []).map((action) => ({
-      harness: harnessFromAction(action) as Exclude<HarnessId, "gemini">,
+      harness: harnessFromAction(action) as HarnessId,
       targetPath: action.target?.path ?? "",
       status: skillSyncStatus(action),
       message: skillerActionMessage(action)
@@ -218,6 +214,14 @@ async function runSkiller(
   if (!availability.ok) {
     if (availability.required) {
       throw new Error(`skiller unavailable: ${availability.reason}`);
+    }
+    return null;
+  }
+  // skiller's catalog still installs agy skills in ~/.agents/skills, which agy
+  // does not read; the built-in installer handles any run that includes agy.
+  if (requestedHarnesses(options).includes("antigravity")) {
+    if (availability.required) {
+      throw new Error("skiller unavailable: it does not install agy skills in ~/.gemini/config/skills");
     }
     return null;
   }
@@ -302,11 +306,12 @@ function renderManifest(targets: string[], options: SkillerRunOptions): string {
   return lines.join("\n");
 }
 
+function requestedHarnesses(options: SkillerRunOptions): readonly HarnessId[] {
+  return options.harnesses === "all" ? SUPPORTED_HARNESSES : options.harnesses ?? SUPPORTED_HARNESSES;
+}
+
 function skillerTargets(options: SkillerRunOptions): string[] {
-  const harnesses =
-    options.harnesses === "all" ? FILE_SKILL_HARNESSES : options.harnesses ?? FILE_SKILL_HARNESSES;
-  const targets = harnesses
-    .filter((harness): harness is FileSkillHarness => harness !== "gemini")
+  const targets = requestedHarnesses(options)
     .filter((harness) => !shouldSkipSkillerHarness(harness, options))
     .map(skillerTargetForHarness);
   if (options.removeShared && targets.length === 0) {
@@ -316,7 +321,7 @@ function skillerTargets(options: SkillerRunOptions): string[] {
 }
 
 function shouldSkipSkillerHarness(
-  harness: FileSkillHarness,
+  harness: HarnessId,
   options: SkillerRunOptions
 ): boolean {
   if (!options.skipMissing) return false;
@@ -327,7 +332,7 @@ function shouldSkipSkillerHarness(
   return !pathExists(harnessRoot);
 }
 
-function skillerTargetForHarness(harness: FileSkillHarness): string {
+function skillerTargetForHarness(harness: HarnessId): string {
   return harness === "claude-code" ? "claude-code" : harness;
 }
 
@@ -479,11 +484,11 @@ function harnessFromAction(action: SkillerAction): HarnessId {
     const harness = normalizeHarness(value);
     if (harness) return harness;
   }
-  return "antigravity";
+  return "codex";
 }
 
 function normalizeHarness(value: string): HarnessId | null {
-  if (value === "agents") return "antigravity";
+  if (value === "agents") return "codex";
   if (value.endsWith("-duplicate")) {
     return normalizeHarness(value.slice(0, -"-duplicate".length));
   }

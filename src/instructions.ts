@@ -128,7 +128,6 @@ export const HARNESS_ALIASES: Record<string, InstructionHarness> = {
   antigravity: "antigravity",
   agy: "antigravity",
   codex: "codex",
-  gemini: "gemini",
   grok: "grok",
   "grok-build": "grok",
   opencode: "opencode"
@@ -308,7 +307,7 @@ export function normalizeInstructionHarness(value: string): InstructionHarness {
   const normalized = HARNESS_ALIASES[normalizeKey(value)];
   if (!normalized) {
     throw new Error(
-      `--harness must be one of claude, codex, antigravity, gemini, grok, opencode, all (got ${value}).`
+      `--harness must be one of claude, codex, antigravity, grok, opencode, all (got ${value}).`
     );
   }
   return normalized;
@@ -467,7 +466,6 @@ function parseHarnessHeader(line: string): InstructionHarness | null {
   if (key.startsWith("claude")) return "claude";
   if (key.startsWith("codex")) return "codex";
   if (key.startsWith("antigravity") || key === "agy") return "antigravity";
-  if (key.startsWith("gemini")) return "gemini";
   if (key.startsWith("grok")) return "grok";
   if (key.startsWith("opencode")) return "opencode";
   return null;

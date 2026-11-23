@@ -18,7 +18,7 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(options: { executables?: string[]; skills?: Array<"claude" | "shared"> } = {}) {
+function fixture(options: { executables?: string[]; skills?: Array<"claude" | "shared" | "agy"> } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tt-up-")));
   tempRoots.push(root);
   const home = path.join(root, "home");
@@ -31,8 +31,8 @@ function fixture(options: { executables?: string[]; skills?: Array<"claude" | "s
     const file = process.platform === "win32" && !path.extname(name) ? `${name}.cmd` : name;
     fs.writeFileSync(path.join(bin, file), "#!/bin/sh\n", { mode: 0o755 });
   }
-  const skillDirs = { claude: [".claude", "skills"], shared: [".agents", "skills"] };
-  for (const kind of options.skills ?? ["claude", "shared"]) {
+  const skillDirs = { claude: [".claude", "skills"], shared: [".agents", "skills"], agy: [".gemini", "config", "skills"] };
+  for (const kind of options.skills ?? ["claude", "shared", "agy"]) {
     const dir = path.join(home, ...skillDirs[kind], "rooms");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "SKILL.md"), "# skill\n");
@@ -89,7 +89,7 @@ describe("tt up planning", () => {
     expect(parseLaunchAgents("claude, codex")).toEqual(["claude", "codex"]);
     expect(() => parseLaunchAgents(undefined)).toThrow(/--agents is required/);
     expect(() => parseLaunchAgents("claude,claude")).toThrow(/more than once/);
-    expect(() => parseLaunchAgents("gemini")).toThrow(/Unsupported agent "gemini"/);
+    expect(() => parseLaunchAgents("aider")).toThrow(/Unsupported agent "aider"/);
   });
 
   test("topology flags are booleans that never swallow the next argument", () => {
