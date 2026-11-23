@@ -32,6 +32,10 @@ Use `tt supervisor add <worker> --harness <harness> --cwd <absolute-dir>` for ea
    - Members with `live: false` are inactive or gone. An event with `request_id` is a visitor's question; one with `in_reply_to` answers one.
    - A clipped event has `truncated: true` and a `full` command; `older` pages back; `updates_since` reads what arrived later. Run those only when needed.
 
+## Room blockers
+
+`tt room list --all --json` includes rooms with open blockers even if everyone has left. `tt room brief <room> --json` lists the open items with their facts and questions. To deliver an operator’s answer to a blocker, use `tt room send <room> --resolves ID --stdin`. Include the answer and any limits in the message. It closes the item and records the answer in the room transcript without joining. Use `tt room ask` when you need a reply.
+
 ## Questions, instructions, and approvals
 
 Use `tt room ask` for anything you send: a question, a follow-up, a task, or an approval. Address a named agent (`--to codex`, or an exact id) when you can; the stick holder usually knows the most. `--to room` reaches every live agent.

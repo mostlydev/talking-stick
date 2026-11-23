@@ -1149,17 +1149,17 @@ test("agent and human interrupts inject the same way", async () => {
 
 // Parses the compact envelope back into the fields tests assert on.
 function envelope(request: NativeWakeRequest): { delivery_token: string; events: Array<{ event_seq: number; event_type: string;
-  from_agent_id: string; route?: string; urgent: boolean; payload?: { body: string }; handoff?: { status?: string; next_action?: string } }> } {
+  from_agent_id: string; route?: string; urgent: boolean; resolves?: string; payload?: { body: string }; handoff?: { status?: string; next_action?: string } }> } {
   const lines = request.text.split("\n");
   // Short, look-alike-free, and the whole command: harness calls print JSON by default.
   const token = lines[0].match(/ · ack: tt ack ([a-km-np-z2-9]{8})$/)![1];
   expect(lines.at(-1)).toMatch(/^\[\/talking-stick\]/);
   const events: ReturnType<typeof envelope>["events"] = [];
   for (const line of lines.slice(1, -1)) {
-    const header = line.match(/^#(\d+) (?:([a-z_]+) )?(\S+)(?: → (.+?))?( ‼ urgent)?$/);
+    const header = line.match(/^#(\d+) (?:([a-z_]+) )?(\S+)(?: → (.+?))?( ‼ urgent)?(?: · resolves (B[1-9]\d*))?$/);
     if (header) {
       events.push({ event_seq: Number(header[1]), event_type: header[2] ?? "message_sent", from_agent_id: header[3],
-        route: header[4], urgent: Boolean(header[5]) });
+        route: header[4], urgent: Boolean(header[5]), ...(header[6] ? { resolves: header[6] } : {}) });
       continue;
     }
     const current = events.at(-1)!;
@@ -1486,6 +1486,24 @@ test.each([false, true])("normal operator delivery steers Claude and still coale
   expect(nativeRequests[0]).toMatchObject({ steer: true, interrupt: false });
   await send("and this");
   expect(nativeRequests).toHaveLength(1);
+});
+
+test("an outside blocker resolution wakes the room with an explicit resolution marker", async () => {
+  const { service, project, nativeRequests } = harness();
+  const roomId = joinPair(service, project);
+  const blocker = service.addBlocker({ room_id: roomId, agent_id: "claude:aa", body: "May I continue?" });
+  const input = { agent_id: "codex:manager", room_id: roomId, resolves: blocker.blocker_id, body: "Continue." };
+  const sent = await service.sendMessageAndWake(input);
+  expect(nativeRequests).toHaveLength(1);
+  expect(nativeRequests[0]).toMatchObject({ steer: true, transport: "claude_inbox" });
+  expect(envelope(nativeRequests[0]).events[0]).toMatchObject({ event_seq: sent.event_seq, resolves: blocker.blocker_id,
+    payload: { body: "Continue." } });
+  expect(await service.sendMessageAndWake(input)).toMatchObject({ deduplicated: true, event_seq: sent.event_seq });
+  expect(nativeRequests).toHaveLength(1);
+  acknowledge(service, nativeRequests[0]);
+  await service.sendMessageAndWake({ room_id: roomId, agent_id: "human:op:chat:1", body: `· resolves ${blocker.blocker_id}` });
+  expect(envelope(nativeRequests[1]).events[0]).toMatchObject({ payload: { body: `· resolves ${blocker.blocker_id}` } });
+  expect(envelope(nativeRequests[1]).events[0].resolves).toBeUndefined();
 });
 
 test("normal peer delivery does not steer Claude", async () => {

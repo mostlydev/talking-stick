@@ -2264,6 +2264,37 @@ test.each([false, true])("inline delivery replaces pending status with delivered
   }
 });
 
+test.each([40, 80])("chat opens a blocker and sends the selected answer at %s columns", async (columns) => {
+  const { root, service } = setupService();
+  const agent_id = "codex:worker";
+  const { room_id } = service.joinPath({ agent_id, context_path: root });
+  const blocker = service.addBlocker({ room_id, agent_id, body: "The build passed. Ship it?" });
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns, rows: 24 });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); });
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline: true,
+    color: false, history: 0, show_turn_events: false, poll_ms: 5
+  });
+  try {
+    await until(() => bytes.includes("1 blocker"));
+    input.write("/blockers\r");
+    await until(() => bytes.includes(`› ${blocker.blocker_id}  The build passed.`));
+    input.write("\r");
+    await until(() => bytes.includes(`/resolve ${blocker.blocker_id}`));
+    input.write("Ship the reviewed build.\r");
+    await until(() => service.listBlockers({ room_id }).length === 0);
+    const message = service.getRecentRoomEvents({ room_id, limit: 20 })
+      .find(event => event.payload?.resolves === blocker.blocker_id);
+    expect(message?.payload?.body).toBe("Ship the reviewed build.");
+  } finally {
+    input.write("/quit\r");
+    await session;
+  }
+});
+
 test("a dumb terminal falls back to plain line mode", () => {
   const tty = { isTTY: true };
   expect(chatTerminalCapable(tty, tty, { TERM: "xterm-256color" })).toBe(true);

@@ -2005,6 +2005,27 @@ describe("tt notes", () => {
     }
   });
 
+  test("outside room send resolves a blocker without joining", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const call = async (...args: string[]) => JSON.parse(await captureStdout([...args, "--json"]));
+    const member = ["--agent", "claude:blocker"];
+    const outsider = ["--agent", "codex:manager"];
+    const { room_id } = await call("join", project, ...member);
+    const blocker = await call("blocker", "add", "--in", room_id, ...member, "Ship the reviewed build?");
+    await call("leave", project, ...member);
+    const result = await call("room", "list", "--all");
+    expect(result.rooms).toContainEqual(expect.objectContaining({ room_id, open_blockers: 1, agents: [] }));
+    const brief = await call("room", "brief", room_id);
+    expect(brief.blockers).toEqual([blocker]);
+    const resolution = await call("room", "send", room_id, "--resolves", blocker.blocker_id, ...outsider, "Ship it.");
+    const after = await call("room", "brief", room_id);
+    expect(after.members).toEqual([]);
+    expect(after.blockers).toEqual([]);
+    expect(after.recent).toContainEqual(expect.objectContaining({
+      event_seq: resolution.event_seq, from_agent_id: "codex:manager", resolves: blocker.blocker_id, body: "Ship it."
+    }));
+  });
+
   test("tt health is non-authoritative and tt status aliases it", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     await captureStdout(["join", project, "--agent", "human:health-test"]);

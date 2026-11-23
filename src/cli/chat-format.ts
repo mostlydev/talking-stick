@@ -296,7 +296,9 @@ function formatCurrentChatEvent(event: RoomEvent, context: ChatFormatContext): s
       event.payload?.delivery_hint === "interrupt"
         ? ` ${paint(context, `1;${themeStyle("error", context.color_mode)}`, "‼ interrupt")}`
         : "";
-    const header = `${sender}${route}${marker}  ${paint(context, "2", time)}`;
+    const resolves = event.payload?.resolves;
+    const resolution = resolves && /^B[1-9]\d*$/.test(resolves) ? ` ${paint(context, "2", `resolves ${resolves}`)}` : "";
+    const header = `${sender}${route}${marker}${resolution}  ${paint(context, "2", time)}`;
     const styled = context.color
       ? highlightChatBody(body, { paint: (code, text) => paint(context, code, text), agent_color: agentColor,
         agent_style: name => agentStyle(name, context.color_mode), color_mode: context.color_mode })

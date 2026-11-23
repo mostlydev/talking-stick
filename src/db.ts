@@ -565,6 +565,22 @@ const migrations: Migration[] = [
           JOIN native_event_receipts n ON n.room_id = b.room_id AND n.agent_id = b.agent_id AND n.event_seq = j.value
           WHERE b.token = OLD.batch_id AND b.delivery_mode IN ('steering', 'steered', 'uncertain', 'recovering', 'recovery_uncertain', 'managed_writing', 'managed_written') AND n.consumed_at IS NULL)
       BEGIN SELECT RAISE(IGNORE); END;`
+  },
+  {
+    id: 32,
+    name: "room_blockers",
+    up: `CREATE TABLE room_blockers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      author_agent_id TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      closed_at TEXT,
+      closed_by_agent_id TEXT,
+      withdrawal_reason TEXT,
+      resolution_event_seq INTEGER
+    );
+    CREATE INDEX room_blockers_open ON room_blockers (room_id, id) WHERE closed_at IS NULL;`
   }
 ];
 

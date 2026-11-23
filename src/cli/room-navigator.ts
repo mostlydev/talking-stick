@@ -17,6 +17,7 @@ export interface NavigatorRoom extends TreeRoom {
   /** Supervisor workers in this room, and how many of them are blocked. */
   headless?: number;
   blocked?: number;
+  open_blockers?: number;
   /** False for a headless worker's room that isn't open yet; Enter opens it from `open_path`. */
   open?: boolean;
   /** An existing directory that resolves to this room, when `path` itself may not exist. */
@@ -163,13 +164,14 @@ export class RoomNavigator {
       const label = room ? accent(name) : paintStyle(color, themeStyle("muted"), name + hidden);
       const warn = (text: string) => paintStyle(color, themeStyle("warn"), text);
       const headless = room?.headless ? ` · ${room.headless} headless${room.blocked ? warn(` · ${room.blocked} blocked`) : ""}` : "";
+      const blockers = room?.open_blockers ? warn(` · ${room.open_blockers} blocker${room.open_blockers === 1 ? "" : "s"}`) : "";
       const counts = !room ? ""
         : room.open === false ? ` · not open${headless}${fs.existsSync(room.open_path ?? room.path) ? "" : " (unavailable)"}`
         : `${row.path === this.current ? " *" : ""} · ${room.agents} agents · ${room.consoles} consoles${headless}${room.unread ? ` · ${room.unread} for you` : ""}${fs.existsSync(room.path) ? "" : " (unavailable)"}${room.last_activity_at ? ` · ${formatRelativeTime(room.last_activity_at)}` : " · no events"}`;
       const blockedBelow = row.blocked - (room?.blocked ?? 0);
       const rollup = !row.expanded && row.children.length
         ? ` · +${row.agents - (room?.agents ?? 0)} agents · ${row.consoles - (room?.consoles ?? 0)} consoles${row.unread - (room?.unread ?? 0) ? ` · ${row.unread - (room?.unread ?? 0)} for you` : ""}${blockedBelow ? warn(` · ${blockedBelow} blocked`) : ""} below` : "";
-      return `${row.path === selected?.path ? accent("›") : " "} ${"  ".repeat(row.depth)}${row.children.length ? row.expanded ? "▾" : "▸" : "·"} ${label}${counts}${rollup}`;
+      return `${row.path === selected?.path ? accent("›") : " "} ${"  ".repeat(row.depth)}${row.children.length ? row.expanded ? "▾" : "▸" : "·"} ${label}${blockers}${counts}${rollup}`;
     });
     if (!lines.length) lines.push("No matching rooms.");
     return [`Rooms · ${this.allOpen ? "All open" : "Active"} · sort: ${this.sort} · ${list.length} rooms`,

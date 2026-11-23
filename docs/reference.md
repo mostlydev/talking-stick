@@ -62,6 +62,11 @@ tt take [path] [--reason TEXT] [--operator-requested]     # deliberate claim whe
 tt takeover [path] [--reason TEXT] [--operator-requested] # alias for take
 tt notes add <body> [--turn N] [--path DIR] [--stdin]     # leave an async note
 tt notes list [--all] [--after ID] [--limit N] [--path DIR]
+tt blocker add <facts and question> [--stdin] [--in ROOM]  # raise a decision for the room
+tt blocker list [--all] [--in ROOM]                        # open items by default
+tt blocker withdraw <id> <reason> [--stdin] [--in ROOM]    # clear a stale item
+tt msg send room --resolves <id> <answer>                  # close an item from inside
+tt room send <room> --resolves <id> <answer> [--stdin]     # close an item without joining
 tt install <harness...|herdr> | --all [--print] [--copy] [--link] [--replace] [--no-guard]
 tt uninstall <harness...|agents|herdr> | --all | --shared [--print]
 tt self-update [--print] [--manager npm|pnpm|yarn|bun]

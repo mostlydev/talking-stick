@@ -2,12 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { ROOM_DECLARATION_FILE, insideNestedRepository, isWithinOrSame, readDeclaration, resolveContextPath } from "../path-resolution.js";
 import { HUMAN_CHAT_SESSION_KIND } from "../types.js";
-import type { PathRoom, RoomActivity, RoomMember } from "../types.js";
+import type { PathRoom, RoomActivity, RoomBlocker, RoomMember } from "../types.js";
 import { formatRelativeTime, printResult } from "./output.js";
 import { getStringOption, hasOption, parseOptionalInteger, type ParsedCommand } from "./parser.js";
 import { resolveRoomSelector, roomShortName, selectedRoom } from "./room-selector.js";
 import type { Runtime } from "./runtime.js";
+import { deriveCliIdentity } from "./identity.js";
+import { readAllStdin } from "./handoff.js";
 import { askRoom, readReplies } from "./visitor-commands.js";
+import { sanitizeChatText } from "./chat-format.js";
 
 // `tt room create|list|adopt|remove`. Declarations are files in the checkout;
 // the database row for a declared room appears on its first join.
@@ -15,9 +18,11 @@ export function handleRoomCommand(runtime: Runtime, parsed: ParsedCommand): void
   const [action, target, ...rest] = parsed.positionals;
   switch (action) {
     case "ask":
+      if (hasOption(parsed, "resolves")) throw new Error("Use tt room send <room> --resolves <id> to answer a blocker.");
       if (!target) throw new Error("Usage: tt room ask <room> --to <agent[,agent]|room> <body...> [--stdin] [--request-key KEY]");
       return askRoom(runtime, parsed, briefTarget(runtime, parsed, target), rest);
     case "replies": return readReplies(runtime, parsed, target);
+    case "send": return sendResolution(runtime, parsed, target, rest);
     case "create": return createRoom(runtime, parsed, target);
     case "ensure": return ensureRoom(runtime, parsed, target);
     case "list": return hasOption(parsed, "all") ? listHostRooms(runtime, parsed) : listRooms(runtime, parsed, target);
@@ -25,8 +30,55 @@ export function handleRoomCommand(runtime: Runtime, parsed: ParsedCommand): void
     case "adopt": return adoptRoom(runtime, parsed, target);
     case "remove": return removeRoom(runtime, parsed, target);
     default:
-      throw new Error("Usage: tt room create [path] [--name NAME] | ensure <path> [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> | replies <request-id> [--timeout S] | adopt [path] | remove [path]");
+      throw new Error("Usage: tt room create [path] [--name NAME] | ensure <path> [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> | send <room> --resolves <id> <body> | replies <request-id> [--timeout S] | adopt [path] | remove [path]");
   }
+}
+
+async function blockerText(parsed: ParsedCommand, parts: string[]): Promise<string> {
+  return parts.length ? parts.join(" ") : hasOption(parsed, "stdin") ? readAllStdin() : "";
+}
+
+async function sendResolution(runtime: Runtime, parsed: ParsedCommand, target: string | undefined, rest: string[]): Promise<void> {
+  const resolves = getStringOption(parsed, "resolves");
+  if (!target || !resolves) throw new Error("Usage: tt room send <room> --resolves <id> <text...> [--stdin]");
+  const room = briefTarget(runtime, parsed, target);
+  const result = await runtime.commands.sendMessageAndWake(deriveCliIdentity(parsed), {
+    room_id: room.room_id, body: await blockerText(parsed, rest), resolves
+  });
+  printResult(parsed, result, () => `${result.deduplicated ? "Already resolved" : "Resolved"} ${result.resolves} in message #${result.event_seq}.`);
+}
+
+function formatBlocker(blocker: RoomBlocker): string {
+  let status = "open";
+  if (blocker.resolution_event_seq !== null) status = `resolved in #${blocker.resolution_event_seq}`;
+  else if (blocker.closed_at) status = "withdrawn";
+  return `${blocker.blocker_id} (${status})  ${sanitizeChatText(blocker.body)}`;
+}
+
+export async function handleBlockerCommand(runtime: Runtime, parsed: ParsedCommand): Promise<void> {
+  const [action, ...rest] = parsed.positionals;
+  const room = briefTarget(runtime, parsed, undefined);
+  if (action === "list") {
+    const blockers = runtime.commands.listBlockers({ room_id: room.room_id, all: hasOption(parsed, "all") });
+    printResult(parsed, { room_id: room.room_id, blockers }, () => blockers.length
+      ? blockers.map(formatBlocker).join("\n")
+      : "No blockers.");
+    return;
+  }
+  const identity = deriveCliIdentity(parsed);
+  if (action === "add") {
+    const blocker = runtime.commands.addBlocker(identity, { room_id: room.room_id, body: await blockerText(parsed, rest) });
+    printResult(parsed, blocker, () => `Open blocker ${blocker.blocker_id}.`);
+    return;
+  }
+  if (action === "withdraw" && rest[0]) {
+    const blocker = runtime.commands.withdrawBlocker(identity, {
+      room_id: room.room_id, blocker_id: rest[0], reason: await blockerText(parsed, rest.slice(1))
+    });
+    printResult(parsed, blocker, () => `Withdrawn ${blocker.blocker_id}.`);
+    return;
+  }
+  throw new Error("Usage: tt blocker add <facts and question> | list [--all] | withdraw <id> <reason> [--in ROOM] [--stdin]");
 }
 
 function declarationFile(directory: string): string {
@@ -179,6 +231,7 @@ function excerpt(text: string): string {
 // Every room on this host with someone in it, newest activity first, for an
 // observer outside any repository. Reads only: it never joins a room.
 function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
+  const counts = new Map(runtime.commands.getBlockerCounts().map(row => [row.room_id, row.count]));
   const rooms = runtime.commands.listRooms({}).rooms
     .filter((room) => room.state !== "closed")
     .map((room) => {
@@ -191,6 +244,7 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
         canonical_path: room.canonical_path,
         state: room.state,
         owner: room.owner,
+        open_blockers: counts.get(room.room_id) ?? 0,
         agents: members.filter((member) => member.session_kind !== HUMAN_CHAT_SESSION_KIND).map((member) => member.agent_id),
         consoles: members.filter((member) => member.session_kind === HUMAN_CHAT_SESSION_KIND).map((member) => member.agent_id),
         // Room activity, not conversation progress: the row also changes on
@@ -207,15 +261,16 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
         }
       };
     })
-    .filter((room) => room.agents.length > 0 || room.consoles.length > 0)
+    .filter((room) => room.agents.length > 0 || room.consoles.length > 0 || room.open_blockers > 0)
     .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at));
   printResult(parsed, { rooms }, () => rooms.length === 0
-    ? "No rooms on this host have live members."
+    ? "No rooms on this host have live members or open blockers."
     : rooms.map((room) => {
       const who = [room.agents.join(", ") || "no agents", room.consoles.length > 0 ? `${room.consoles.length} console${room.consoles.length === 1 ? "" : "s"}` : null]
         .filter(Boolean).join(", ");
       const lines = [`#${room.name}  ${who}${room.owner ? `  stick=${room.owner}${room.state === "stale_owner" ? " (stale)" : ""}` : ""}  active ${formatRelativeTime(room.last_activity_at)}`,
         `  ${room.canonical_path}  ${room.room_id}`];
+      if (room.open_blockers) lines.push(`  ${room.open_blockers} open blocker${room.open_blockers === 1 ? "" : "s"}`);
       if (room.last_handoff) {
         lines.push(`  last handoff ${formatRelativeTime(room.last_handoff.created_at)} from ${room.last_handoff.from_agent_id ?? "unknown"}: ${room.last_handoff.status}`);
       }
@@ -293,6 +348,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
       // its to is null like a room message).
       ...(event.payload?.request_id ? { request_id: event.payload.request_id } : {}),
       ...(event.payload?.in_reply_to ? { in_reply_to: event.payload.in_reply_to } : {}),
+      ...(event.payload?.resolves ? { resolves: event.payload.resolves } : {}),
       ...(truncated ? { truncated: true, full: readOne(event.event_seq) } : {})
     };
   });
@@ -322,6 +378,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
       body: clip(note.body, BRIEF_BODY_CHARS).text
     })),
     notes_total: notes.total,
+    blockers: runtime.commands.listBlockers({ room_id: room.room_id }),
     recent,
     older: hasOlder ? `tt room brief ${room.room_id} --before ${oldest} --limit ${limit} --json` : null,
     cursor_event_seq: cursor,
@@ -335,8 +392,9 @@ function formatBrief(brief: {
   members: { agent_id: string; kind: string; live: boolean; process_liveness: string }[];
   last_handoff: RoomActivity["last_handoff"];
   notes: { author_agent_id: string; body: string }[]; notes_total: number;
+  blockers: RoomBlocker[];
   recent: { event_seq: number; event_type: string; from_agent_id: string | null; to: unknown; created_at: string;
-    body?: string; status?: string; next_action?: string; full?: string; request_id?: string; in_reply_to?: string }[];
+    body?: string; status?: string; next_action?: string; full?: string; request_id?: string; in_reply_to?: string; resolves?: string }[];
   older: string | null; updates_since: string;
 }): string {
   const lines = [`#${brief.name}  ${brief.canonical_path}  ${brief.room_id}`];
@@ -345,6 +403,8 @@ function formatBrief(brief: {
   lines.push(`stick: ${stick}`);
   lines.push(`members: ${brief.members.map((member) =>
     `${member.agent_id}${member.kind === "console" ? " (console)" : ""}${memberPresence(member)}`).join(", ") || "none"}`);
+  if (brief.blockers.length) lines.push("", "Open blockers",
+    ...brief.blockers.map(blocker => `  ${blocker.blocker_id} (${sanitizeChatText(blocker.author_agent_id)})  ${sanitizeChatText(blocker.body).replace(/\s+/g, " ")}`));
   const handoff = brief.last_handoff;
   if (handoff) {
     lines.push("", `last handoff ${formatRelativeTime(handoff.created_at)}, ${handoff.event_type} from ${handoff.from_agent_id ?? "unknown"}${handoff.to_agent_id ? ` to ${handoff.to_agent_id}` : ""}:`,
@@ -360,7 +420,7 @@ function formatBrief(brief: {
       const to = event.in_reply_to ? `visitor (reply to request ${event.in_reply_to})`
         : Array.isArray(event.to) ? event.to.join(", ") : event.to ?? "room";
       const kind = event.request_id ? "visitor " : event.event_type === "message_sent" ? "" : `${event.event_type} `;
-      lines.push(`  #${event.event_seq} ${formatRelativeTime(event.created_at)} ${kind}${event.from_agent_id ?? "unknown"} → ${to}${event.request_id ? ` (request ${event.request_id})` : ""}`);
+      lines.push(`  #${event.event_seq} ${formatRelativeTime(event.created_at)} ${kind}${event.from_agent_id ?? "unknown"} → ${to}${event.request_id ? ` (request ${event.request_id})` : ""}${event.resolves ? ` (resolves ${event.resolves})` : ""}`);
       const text = event.body ?? [event.status, event.next_action && `next: ${event.next_action}`].filter(Boolean).join(" ");
       if (text.trim()) lines.push(...text.trimEnd().split("\n").map((line) => `    ${line}`));
       if (event.full) lines.push(`    (clipped; full: ${event.full})`);

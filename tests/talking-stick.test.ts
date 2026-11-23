@@ -30,6 +30,45 @@ afterEach(() => {
   }
 });
 
+describe("room blockers", () => {
+  test("retains the empty room and atomically posts a single outside resolution", async () => {
+    const { service, tempRoot } = createHarness();
+    const project = createProject(tempRoot);
+    const agent_id = "codex:raiser";
+    const { room_id } = service.joinPath({ agent_id, context_path: project });
+    const add = (body: string) => service.addBlocker({ room_id, agent_id, body });
+    const first = add("CI passed. Publish SHA abc?");
+    expect(add(first.body)).toEqual(first);
+    const second = add("Keys rotated. Reconnect?");
+    const third = add("Test complete. Deploy?");
+    expect(() => add("Fourth blocker")).toThrow(/three open blockers/);
+    service.withdrawBlocker({ room_id, agent_id, blocker_id: third.blocker_id, reason: "No deploy needed." });
+    expect(() => service.sendMessage({ room_id, agent_id: "codex:outside", resolves: third.blocker_id, body: "Yes" }))
+      .toThrow(/withdrawn/);
+    service.sendMessage({ room_id, agent_id, body: `Suggest yes on ${first.blocker_id}.` });
+    expect(service.listBlockers({ room_id })).toHaveLength(2);
+    service.leaveRoom({ room_id, agent_id });
+    expect(service.getRoomState({ room_id }).members).toEqual([]);
+    expect(() => service.retireUnoccupiedRoom({ room_id })).toThrow(/open blockers/);
+
+    const resolve = () => service.sendMessageAndWake({
+      room_id, agent_id: "codex:outside", resolves: first.blocker_id, body: "Yes. Publish SHA abc."
+    });
+    const [sent, retry] = await Promise.all([resolve(), resolve()]);
+    expect(retry).toMatchObject({ deduplicated: true, event_seq: sent.event_seq });
+    const matches = service.getRecentRoomEvents({ room_id, event_types: ["message_sent"], limit: 20 })
+      .filter(event => event.payload?.resolves === first.blocker_id);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ from_agent_id: "codex:outside", to_agent_id: null,
+      payload: { resolves: first.blocker_id, body: "Yes. Publish SHA abc." } });
+    expect(service.getRoomState({ room_id }).members).toEqual([]);
+    expect(service.listBlockers({ room_id })).toEqual([second]);
+    expect(service.joinPath({ agent_id, context_path: project }).room_id).toBe(room_id);
+    service.withdrawBlocker({ room_id, agent_id, blocker_id: second.blocker_id, reason: "Reconnection no longer needed." });
+    expect(service.leaveRoom({ room_id, agent_id }).status).toBe("room_deleted");
+  });
+});
+
 describe("talking-stick vertical slice", () => {
   test("join_path -> wait_for_turn open claim -> release_stick handoff -> second agent claims", async () => {
     const harness = createHarness();
