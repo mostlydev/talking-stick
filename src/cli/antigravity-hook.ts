@@ -37,8 +37,8 @@ export async function runAntigravityHookCommand(event: string | undefined, optio
         processStartedAt: root.startTime, event, processKind: "shared_host" });
       return;
     }
-    if (!Array.isArray(input.workspacePaths)) return;
-    for (const workspace of input.workspacePaths) {
+    const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths : [];
+    for (const workspace of new Set([input.cwd, ...workspaces])) {
       if (typeof workspace !== "string" || !workspace.trim()) continue;
       const text = service.prepareHarnessHookDelivery({ harness: "antigravity", context_path: workspace,
         harness_session_id: `harness:${sessionId}`, pid: root.pid, processStartedAt: root.startTime });

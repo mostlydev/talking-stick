@@ -4101,7 +4101,7 @@ export class TalkingStickService {
           AND COALESCE(harness_host_id, host_id) = ? ${processFilter} LIMIT 2`)
         .all(room.room_id, input.harness_session_id, input.harness, this.hostId, ...processKey);
       if (members.length !== 1) {
-        if (members.length > 1) input.diagnostic?.("Talking Stick: multiple Grok members match this session; hook delivery deferred. Check tt whoami and room membership.");
+        if (members.length > 1) input.diagnostic?.(`Talking Stick: multiple ${input.harness} members match this session; hook delivery deferred. Check tt whoami and room membership.`);
         return null;
       }
       const member = members[0];

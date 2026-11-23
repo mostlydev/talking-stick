@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, test } from "vitest";
 import { TalkingStickService } from "../src/service.js";
 import { runSessionHookCommand } from "../src/cli/session-hook.js";
 import { runAntigravityHookCommand } from "../src/cli/antigravity-hook.js";
@@ -10,10 +10,7 @@ import { resolveCliIdentity } from "../src/cli/identity.js";
 import { parseCommand } from "../src/cli/parser.js";
 
 const cleanup: Array<() => void> = [];
-afterEach(() => {
-  vi.unstubAllEnvs();
-  for (const fn of cleanup.splice(0).reverse()) fn();
-});
+afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
 const setupMetadata = () => ({ harness_name: "claude", harness_session_id: "harness:old",
   harness_host_id: "local", harness_pid: 123, harness_process_started_at: "start" });
@@ -174,6 +171,7 @@ test("Antigravity installs in a native hook group and preserves foreign groups",
   expect(Object.keys(settings["shrooms-antigravity"])).toEqual(["SessionStart", "PreInvocation", "Stop"]);
   expect(settings["shrooms-antigravity"].Stop[0].command).toContain("tt antigravity-hook Stop");
   expect(mergeSessionHooks(installed, "antigravity")).toBe(installed);
+  expect(mergeSessionHooks(installed.replace("tt antigravity-hook Stop", "tt old-hook Stop"), "antigravity")).toBe(installed);
   expect(JSON.parse(mergeSessionHooks(installed, "antigravity", true)!)).toEqual(JSON.parse(original));
   expect(mergeSessionHooks('{"shrooms-antigravity":[]}', "antigravity")).toBeNull();
 });
@@ -197,7 +195,7 @@ test("Antigravity hooks deliver only to the exact conversation and do not end it
     runAntigravityHookCommand(event, {
       service, parentPid: 123, stdout: text => output.push(text),
       inspector: { inspect: () => ({ pid: 123, ppid: 1, command: "agy", startTime }) },
-      stdin: JSON.stringify({ conversationId: id, workspacePaths: [root], fullyIdle: true, terminationReason })
+      stdin: JSON.stringify({ conversationId: id, cwd: root, workspacePaths: [path.dirname(root)], fullyIdle: true, terminationReason })
     });
   await run("SessionStart", "active");
   await run("Stop", "other");
@@ -214,9 +212,8 @@ test("Antigravity hooks deliver only to the exact conversation and do not end it
 
 test("Antigravity keeps the old ID for an enrolled conversation without reusing it for another", () => {
   const { service, root } = setup();
-  vi.stubEnv("TALKING_STICK_DATA_DIR", root);
   const parsed = parseCommand(["whoami"]);
-  const env = { ANTIGRAVITY_AGENT: "1", ANTIGRAVITY_CONVERSATION_ID: "existing" };
+  const env = { ANTIGRAVITY_AGENT: "1", ANTIGRAVITY_CONVERSATION_ID: "existing", TALKING_STICK_DATA_DIR: root };
   const { identity } = resolveCliIdentity(parsed, env);
   const oldId = identity.agent_id.replace(/^agy:/, "antigravity:");
   service.joinPath({ context_path: root, agent_id: oldId, process_metadata: identity.process_metadata });

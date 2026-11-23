@@ -339,9 +339,10 @@ export function mergeSessionHooks(existing: string | null, harness: string, remo
 
 function mergeAntigravityHooks(existing: string | null, remove: boolean): string | null {
   const group = "shrooms-antigravity";
+  const marker = ": shrooms-antigravity-hook;";
   const events = ["SessionStart", "PreInvocation", "Stop"] as const;
   const command = (event: string) =>
-    `if command -v tt >/dev/null 2>&1; then tt antigravity-hook ${event} 2>/dev/null || true; fi`;
+    `${marker} if command -v tt >/dev/null 2>&1; then tt antigravity-hook ${event} 2>/dev/null || true; fi`;
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value);
   try {
@@ -355,7 +356,8 @@ function mergeAntigravityHooks(existing: string | null, remove: boolean): string
       const entries = hooks[event] ?? [];
       if (!Array.isArray(entries)) return null;
       const managedCommand = command(event);
-      const next = entries.filter(entry => !isRecord(entry) || entry.command !== managedCommand);
+      const next = entries.filter(entry =>
+        !isRecord(entry) || typeof entry.command !== "string" || !entry.command.startsWith(marker));
       if (!remove) next.push({ type: "command", command: managedCommand, timeout: 3 });
       if (next.length) hooks[event] = next;
       else delete hooks[event];

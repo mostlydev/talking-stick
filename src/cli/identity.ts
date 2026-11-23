@@ -4,6 +4,7 @@ import {
   type DerivedIdentity
 } from "../index.js";
 import { resolveDatabasePath } from "../db.js";
+import { resolveDataDir } from "../config.js";
 import { openSqlite } from "../sqlite.js";
 import {
   getStringOption,
@@ -56,7 +57,7 @@ export function resolveCliIdentity(
     // An existing membership keeps its ID through the rename so pending
     // deliveries, leases and recovery can still reach that conversation.
     if (harnessIdentity.process_metadata.harness_name === "antigravity") {
-      harnessIdentity.agent_id = existingAntigravityMember(harnessIdentity);
+      harnessIdentity.agent_id = existingAntigravityMember(harnessIdentity, env);
     }
 
     if (env.TT_HARNESS_EXPORT === "1" || env.TT_HARNESS_EXPORT?.toLowerCase() === "true") {
@@ -92,12 +93,12 @@ export function resolveCliIdentity(
   };
 }
 
-function existingAntigravityMember(identity: DerivedIdentity): string {
+function existingAntigravityMember(identity: DerivedIdentity, env: NodeJS.ProcessEnv): string {
   const { harness_session_id, harness_host_id } = identity.process_metadata;
   if (!harness_session_id || !harness_host_id) return identity.agent_id;
   const legacyId = identity.agent_id.replace(/^agy:/, "antigravity:");
   try {
-    const db = openSqlite(resolveDatabasePath(), { readonly: true, timeout: 500 });
+    const db = openSqlite(resolveDatabasePath({ dataDir: resolveDataDir({ env }) }), { readonly: true, timeout: 500 });
     try {
       const legacy = db.prepare(`SELECT 1 FROM room_members
         WHERE agent_id = ? AND harness_name = 'antigravity' AND harness_session_id = ? AND harness_host_id = ?
