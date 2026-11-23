@@ -17,7 +17,7 @@ Full notes: [`docs/releases/0.36.0.md`](docs/releases/0.36.0.md).
 
 ### Changed
 
-- Harness sessions with access to the supervisor can manage workers. Claude workers can opt in to `bypassPermissions`, and Codex workers can opt in to `danger-full-access` and `never` approvals.
+- Harness sessions with OS access to the supervisor can run its commands, including `install`, `uninstall`, and `migrate`. Commands that change state still reject `--agent`. Claude workers can opt in to `bypassPermissions`, and Codex workers can opt in to `danger-full-access` and `never` approvals.
 - The supervisor keeps the caller's executable search path on worker registration and service installation. Missing executables hold the worker immediately and show the cause in `tt supervisor status` and chat `/who`.
 - Claude workers use the local username to locate the existing subscription login.
 
