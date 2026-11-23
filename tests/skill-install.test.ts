@@ -500,6 +500,38 @@ describe("talking-stick skill install", () => {
     expect(fs.existsSync(path.join(tempRoot, ".agents", "skills"))).toBe(true);
   });
 
+  test("duplicate cleanup keeps agy's old link until agy's own folder holds the skill", () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
+    tempRoots.push(tempRoot);
+    const sourcePath = resolveBundledSkillPath();
+    const old = path.join(tempRoot, ".gemini", "skills", "rooms");
+    const primary = path.join(tempRoot, ".gemini", "config", "skills", "rooms");
+    fs.mkdirSync(path.dirname(old), { recursive: true });
+    fs.symlinkSync(sourcePath, old, "dir");
+    const cleanup = () => removeDuplicateSkillInstalls({
+      harnesses: ["antigravity"], reason: "manual", homeDir: tempRoot, sourcePath, audit: { append: () => {} }
+    });
+
+    // Nothing installed in agy's folder: the old link is agy's only copy.
+    expect(cleanup()).toEqual([
+      expect.objectContaining({ harness: "antigravity", action: "preserved", message: expect.stringContaining("does not hold the skill") }),
+      expect.objectContaining({ harness: "antigravity", action: "absent" })
+    ]);
+    expect(fs.lstatSync(old).isSymbolicLink()).toBe(true);
+
+    // Something else occupies agy's folder: still kept.
+    fs.mkdirSync(primary, { recursive: true });
+    fs.writeFileSync(path.join(primary, "SKILL.md"), "someone else's\n");
+    expect(cleanup()[0]).toMatchObject({ action: "preserved" });
+    expect(fs.lstatSync(old).isSymbolicLink()).toBe(true);
+
+    // Once agy's folder holds the skill, the old link goes.
+    fs.rmSync(primary, { recursive: true });
+    fs.symlinkSync(sourcePath, primary, "dir");
+    expect(cleanup()[0]).toMatchObject({ action: "removed" });
+    expect(fs.lstatSync(old, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
   test("duplicate cleanup removes only symlinks pointing at the bundled skill", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talking-stick-skill-"));
     tempRoots.push(tempRoot);
@@ -524,6 +556,10 @@ describe("talking-stick skill install", () => {
     );
     fs.mkdirSync(path.dirname(legacyOpencodeDuplicate), { recursive: true });
     fs.symlinkSync(sourcePath, legacyOpencodeDuplicate, "dir");
+    // Codex and OpenCode already read the skill from the shared folder.
+    const shared = path.join(tempRoot, ".agents", "skills", "rooms");
+    fs.mkdirSync(path.dirname(shared), { recursive: true });
+    fs.symlinkSync(sourcePath, shared, "dir");
 
     const audit: unknown[] = [];
     const results = removeDuplicateSkillInstalls({

@@ -496,8 +496,12 @@ export function removeDuplicateSkillInstalls(
       continue;
     }
 
+    // A duplicate is the only copy a harness has until its own location holds
+    // the skill, so it stays when that install was skipped, refused, or failed.
+    const primaryPath = resolvePrimarySkillTargetPath(harness, options);
+    const primary = { path: primaryPath, holdsSkill: holdsBundledSkill(primaryPath, sourcePath, options) };
     for (const targetPath of targets) {
-      const result = cleanupDuplicateSkillTarget(harness, targetPath, sourcePath);
+      const result = cleanupDuplicateSkillTarget(harness, targetPath, sourcePath, primary);
       results.push(result);
       appendSkillCleanupAudit(options, result, targetPath);
     }
@@ -518,10 +522,25 @@ function dedupePaths(paths: string[]): string[] {
   return result;
 }
 
+/** Whether a location holds this skill: a link to it, or a copy of it or of what was recorded there. */
+function holdsBundledSkill(targetPath: string, sourcePath: string, options: SkillInstallOptions): boolean {
+  try {
+    const stat = fs.lstatSync(targetPath, { throwIfNoEntry: false });
+    if (!stat) return false;
+    if (stat.isSymbolicLink()) return fs.realpathSync(targetPath) === fs.realpathSync(sourcePath);
+    if (!stat.isDirectory()) return false;
+    const digest = digestDirectory(targetPath);
+    return digest === digestDirectory(sourcePath) || digest === getManagedContent(targetPath, options)?.digest;
+  } catch {
+    return false;
+  }
+}
+
 function cleanupDuplicateSkillTarget(
   harness: HarnessId,
   targetPath: string,
-  sourcePath: string
+  sourcePath: string,
+  primary: { path: string; holdsSkill: boolean }
 ): CleanupResult {
   try {
     const stat = fs.lstatSync(targetPath);
@@ -541,6 +560,15 @@ function cleanupDuplicateSkillTarget(
         harness,
         action: "preserved",
         message: `${targetPath} points at ${resolvedCurrentTarget}; left in place.`,
+        target_type: "skill"
+      };
+    }
+
+    if (!primary.holdsSkill) {
+      return {
+        harness,
+        action: "preserved",
+        message: `${targetPath} left in place: ${primary.path} does not hold the skill yet.`,
         target_type: "skill"
       };
     }

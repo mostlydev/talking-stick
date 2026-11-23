@@ -2312,6 +2312,51 @@ describe("tt notes", () => {
     );
   });
 
+  async function installWithHome(home: string, argv: string[]): Promise<string> {
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      return await captureStdout(argv);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  }
+
+  test("tt install agy puts the skill in agy's config folder and drops the old link", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
+    tempDirs.push(home);
+    const bundled = path.resolve("skills", "rooms");
+    const old = path.join(home, ".gemini", "skills", "rooms");
+    fs.mkdirSync(path.join(home, ".gemini", "config"), { recursive: true });
+    fs.mkdirSync(path.dirname(old), { recursive: true });
+    fs.symlinkSync(bundled, old, "dir");
+
+    await installWithHome(home, ["install", "agy"]);
+
+    expect(fs.realpathSync(path.join(home, ".gemini", "config", "skills", "rooms"))).toBe(fs.realpathSync(bundled));
+    expect(fs.lstatSync(old, { throwIfNoEntry: false })).toBeUndefined();
+    expect(fs.existsSync(path.join(home, ".agents", "skills", "rooms"))).toBe(false);
+  });
+
+  test("tt install agy keeps the old link when agy's folder holds something else", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
+    tempDirs.push(home);
+    const bundled = path.resolve("skills", "rooms");
+    const old = path.join(home, ".gemini", "skills", "rooms");
+    const occupied = path.join(home, ".gemini", "config", "skills", "rooms");
+    fs.mkdirSync(occupied, { recursive: true });
+    fs.writeFileSync(path.join(occupied, "SKILL.md"), "someone else's\n");
+    fs.mkdirSync(path.dirname(old), { recursive: true });
+    fs.symlinkSync(bundled, old, "dir");
+
+    // The install itself may report the occupied folder; either way the old link stays.
+    await installWithHome(home, ["install", "agy"]).catch(() => "");
+
+    expect(fs.readFileSync(path.join(occupied, "SKILL.md"), "utf8")).toBe("someone else's\n");
+    expect(fs.realpathSync(old)).toBe(fs.realpathSync(bundled));
+  });
+
   test("tt install --print includes skill actions", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "tt-install-home-"));
     tempDirs.push(home);
@@ -2383,8 +2428,8 @@ describe("tt notes", () => {
     expect(noGuard).not.toContain(".grok/hooks/talking-stick-stop.json");
   });
 
-  test("tt install rejects agy as an unknown harness", async () => {
-    await expect(captureStdout(["install", "agy", "--print"])).rejects.toThrow(/agy/);
+  test("tt install rejects gemini as an unknown harness", async () => {
+    await expect(captureStdout(["install", "gemini", "--print"])).rejects.toThrow(/Unknown harness: gemini/);
   });
 
   test("tt install rejects conflicting skill link modes", async () => {

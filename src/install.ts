@@ -1022,10 +1022,10 @@ function isAlreadyAbsentMessage(message: string): boolean {
 export function parseHarnessList(values: string[]): HarnessId[] {
   const result: HarnessId[] = [];
   for (const value of values) {
-    const normalized = value === "claude" ? "claude-code" : value;
+    const normalized = value === "claude" ? "claude-code" : value === "agy" ? "antigravity" : value;
     if (!(SUPPORTED_HARNESSES as readonly string[]).includes(normalized)) {
       throw new Error(
-        `Unknown harness: ${value}. Supported: ${SUPPORTED_HARNESSES.join(", ")} (claude aliases claude-code)`
+        `Unknown harness: ${value}. Supported: ${SUPPORTED_HARNESSES.join(", ")} (claude aliases claude-code, agy aliases antigravity)`
       );
     }
     if (!result.includes(normalized as HarnessId)) {

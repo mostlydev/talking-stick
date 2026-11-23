@@ -971,11 +971,13 @@ blocked.
 
 ### Skill sync and duplicate cleanup
 
-For harnesses that previously had proprietary skill copies, `tt` prunes duplicate `talking-stick`
-entries conservatively: it removes only symlinks that resolve to the bundled Talking Stick skill, and
-preserves copied directories, foreign symlinks, or hand-authored entries. OpenCode cleanup checks
-both `~/.config/opencode/skills/rooms` (honoring `XDG_CONFIG_HOME`) and the older
-`~/.opencode/skills/rooms` location.
+For harnesses that previously had proprietary skill copies, `tt` prunes duplicate `rooms`
+entries conservatively: it removes only symlinks that resolve to the bundled skill, and only once
+the harness's own skill location holds the skill, so a skipped or failed install never leaves a
+harness without it. Copied directories, foreign symlinks, and hand-authored entries stay. OpenCode
+cleanup checks both `~/.config/opencode/skills/rooms` (honoring `XDG_CONFIG_HOME`) and the older
+`~/.opencode/skills/rooms` location; agy cleanup checks `~/.gemini/skills/rooms` and
+`~/.gemini/antigravity-cli/skills/rooms`.
 
 Automatic skill sync records the digest of managed copied skills. A known unedited copy updates
 automatically; an unknown or edited copy is preserved and the CLI offers
