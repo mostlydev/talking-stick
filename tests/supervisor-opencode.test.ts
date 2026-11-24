@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { AuthModeError, type WorkerEvent } from "../src/supervisor/adapter.js";
+import { OpencodeAdapter } from "../src/supervisor/adapters/opencode.js";
 import { OpencodeWorkerHandle, parseAnnouncedUrl, SseParser, startOpencodeWorker,
   type OpencodeServerAccess, type OpencodeStartOptions } from "../src/supervisor/adapters/opencode-worker.js";
 
@@ -314,4 +315,45 @@ test("escapes invisible characters in permission detail", async () => {
   const event = events.find((event) => event.type === "approval_requested");
   expect(event?.detail).toContain(String.raw`\u202e`);
   expect(JSON.parse(event!.detail).message).toBe("Run\u202Els");
+});
+
+test.each([null, "provider.use", "integration.use", "*"])("the adapter enforces its complete provider policy (%s)", async (foreignAction) => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tt-opencode-adapter-")));
+  cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, "requests.jsonl");
+  const executable = path.join(dir, "opencode");
+  const shellLiteral = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
+  fs.writeFileSync(executable, `#!/bin/sh
+if [ "$1" = "--version" ]; then echo 2.4.1; exit 0; fi
+exec ${shellLiteral(process.execPath)} ${shellLiteral(fixture)} "$@"
+`, { mode: 0o700 });
+  const workdir = path.join(dir, "work");
+  const link = path.join(dir, "link");
+  fs.mkdirSync(workdir);
+  fs.symlinkSync(workdir, link, "dir");
+  const started = new OpencodeAdapter().start({
+    harness: "opencode", worker_id: "fixture", cwd: link, state_dir: path.join(dir, "state"),
+    permissions: { harness: "opencode", mode: "default" }, model: "anthropic/claude-sonnet",
+    env: Object.entries({ OPENCODE_EXECUTABLE: executable, FAKE_OPENCODE_LOG: log, FAKE_OPENCODE_STOCK: "1",
+      ...(foreignAction ? { FAKE_OPENCODE_FOREIGN_RULE: foreignAction } : {}) })
+      .map(([name, value]) => ({ name, value, from: "literal" }))
+  }, 1, () => {});
+  const handle = foreignAction ? null : await started;
+  if (foreignAction) await expect(started).rejects.toMatchObject({ reason: "wrong_auth_mode" });
+  if (handle) cleanup.push(() => handle.stop(500));
+  const requests = fs.readFileSync(log, "utf8").trim().split("\n").map((entry) => JSON.parse(entry));
+  const policy = requests.find((entry) => entry.policyFile);
+  expect(policy).toMatchObject({ mode: 0o600, policy: { policies: [
+    { action: "provider.use", resource: "*", effect: "deny" },
+    { action: "provider.use", resource: "anthropic", effect: "allow" }
+  ] } });
+  const opened = requests.find((entry) => entry.method === "POST" && entry.path === "/api/session");
+  if (handle) {
+    expect(requests.filter((entry) => entry.path === "/api/integration")).toHaveLength(2);
+    expect(opened?.body).toEqual({ location: { directory: workdir }, model: { providerID: "anthropic", id: "claude-sonnet" } });
+    await handle.stop(500);
+  } else {
+    expect(opened).toBeUndefined();
+  }
+  expect(fs.existsSync(policy.policyFile)).toBe(false);
 });

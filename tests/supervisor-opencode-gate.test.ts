@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { AuthModeError, type WorkerSpec } from "../src/supervisor/adapter.js";
+import { decideOpenCodeRoute } from "../src/supervisor/adapters/opencode.js";
 import { builtinAdapters } from "../src/supervisor/adapters/index.js";
 import {
   OPENCODE_RESTRICTED_PERMISSION_REPLY,
@@ -115,6 +116,7 @@ function stockSurface(overrides: Partial<OpenCodeGateSurface> = {}): OpenCodeGat
       }
     ],
     configOverrides: [],
+    allowedPolicyResources: [],
     ...overrides
   };
 }
@@ -622,7 +624,8 @@ test.skipIf(process.env.TT_TEST_OPENCODE_LIVE_CATALOG !== "1" || !localV2 || pro
       providers,
       defaultModel: anthropicModels[0],
       models,
-      configOverrides: []
+      configOverrides: [],
+      allowedPolicyResources: []
     };
 
     for (const model of [...anthropicModels, ...openaiModels]) {
@@ -637,3 +640,37 @@ test.skipIf(process.env.TT_TEST_OPENCODE_LIVE_CATALOG !== "1" || !localV2 || pro
     expect(verifyOpenCodeSubscriptionRoute(surface, `${variant!.providerID}/${variant!.id}`).id).toBe(variant!.id);
   }
 );
+
+describe("OpenCode adapter route decision", () => {
+  test("rejects policy allows outside the worker's providers", () => {
+    for (const resource of ["*", "openrouter", "openai"]) {
+      expect(() => decideOpenCodeRoute(stockSurface({ allowedPolicyResources: [resource] }), ["anthropic"]))
+        .toThrow(/configuration allows another model provider/);
+    }
+  });
+
+  test("waits for integrations and a catalog restricted to the named provider", () => {
+    expect(decideOpenCodeRoute(stockSurface({ integrations: [], models: [] }), ["anthropic"])).toBeNull();
+    expect(decideOpenCodeRoute(stockSurface(), ["anthropic"], "anthropic/claude-sonnet-4-6")).toBeNull();
+    const surface = stockSurface({ models: stockSurface().models.filter((model) => model.providerID === "anthropic") });
+    expect(decideOpenCodeRoute(surface, ["anthropic"], "anthropic/claude-sonnet-4-6"))
+      .toMatchObject({ providerID: "anthropic", id: "claude-sonnet-4-6" });
+  });
+
+  test("checks every selectable route and reports an authenticated provider's API-key mode", () => {
+    const original = stockSurface();
+    const models = original.models.filter((model) => ["anthropic", "openai"].includes(model.providerID));
+    const unsafeModel = { ...models[0], id: "alternate", baseURL: "https://example.invalid" };
+    expect(() => decideOpenCodeRoute(stockSurface({ models: [...models, unsafeModel] }), ["anthropic", "openai"]))
+      .toThrow(/stock OAuth endpoint/);
+    const integrations = original.integrations.map((integration) => integration.id === "openai"
+      ? { ...integration, connections: [{ type: "credential", method: "key" }] } : integration);
+    expect(() => decideOpenCodeRoute(stockSurface({ models, integrations }), ["anthropic", "openai"]))
+      .toThrow(/non-OAuth/);
+  });
+
+  test("reports a loaded but signed-out profile as auth_required", () => {
+    const surface = stockSurface({ integrations: [{ id: "anthropic", connections: [] }], models: [], defaultModel: null });
+    expect(() => decideOpenCodeRoute(surface, ["anthropic"])).toThrow(expect.objectContaining({ reason: "auth_required" }));
+  });
+});

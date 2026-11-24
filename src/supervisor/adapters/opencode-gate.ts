@@ -145,7 +145,7 @@ export interface OpenCodeGateSurface {
   /** Whether any resolved config document declared V2 `permissions` rules. */
   hasConfigPermissions?: boolean;
   /** Resources explicitly allowed by higher-level native provider policies. */
-  allowedPolicyResources?: string[];
+  allowedPolicyResources: readonly string[];
 }
 
 export interface OpenCodeModelRef {
@@ -381,7 +381,7 @@ export function projectOpenCodeConfigDocuments(rawDocuments: readonly unknown[])
       if (!Array.isArray(policies)) continue;
       for (const rawRule of policies) {
         const rule = asRecord(rawRule);
-        if (rule?.effect === "allow" && [ "provider.use", "integration.use", "*" ].includes(String(rule.action))) {
+        if (rule?.effect === "allow" && ["provider.use", "integration.use", "*"].includes(String(rule.action))) {
           allowedPolicyResources.add(typeof rule.resource === "string" ? rule.resource : "*");
         }
       }
@@ -834,7 +834,8 @@ export async function readOpenCodeServerGateSurface(
     const projected = projectOpenCodeModel(entry);
     return projected ? [projected] : [];
   });
-  const { overrides: configOverrides, hasPermissions: hasConfigPermissions } = projectOpenCodeConfigDocuments(configRaw);
+  const { overrides: configOverrides, hasPermissions: hasConfigPermissions, allowedPolicyResources } =
+    projectOpenCodeConfigDocuments(configRaw);
 
-  return { integrations, providers, defaultModel, models, configOverrides, hasConfigPermissions };
+  return { integrations, providers, defaultModel, models, configOverrides, hasConfigPermissions, allowedPolicyResources };
 }

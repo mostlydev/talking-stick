@@ -21,8 +21,17 @@ for (const id of (process.env.FAKE_OPENCODE_EXISTING ?? "").split(",").filter(Bo
 const clients = new Set();
 let inbox = 0;
 let running = null;
+let catalogReads = 0;
+const model = {
+  providerID: "anthropic", id: "claude-sonnet",
+  package: "@opencode/ai/providers/anthropic", settings: { baseURL: "https://api.anthropic.com/v1" }
+};
 const record = (entry) => { if (log) fs.appendFileSync(log, JSON.stringify(entry) + "\n"); };
 record({ argv: process.argv.slice(2) });
+if (process.env.FAKE_OPENCODE_STOCK) {
+  const file = process.env.OPENCODE_CONFIG;
+  record({ policyFile: file, policy: JSON.parse(fs.readFileSync(file, "utf8")), mode: fs.statSync(file).mode & 0o777 });
+}
 
 const emit = (type, data) => {
   const frame = `data: ${JSON.stringify(process.env.FAKE_OPENCODE_WRAP ? { event: { type, data } } : { type, data })}\n\n`;
@@ -49,6 +58,24 @@ const server = http.createServer((request, response) => {
       clients.add(response);
       response.on("close", () => clients.delete(response));
       return;
+    }
+    if (process.env.FAKE_OPENCODE_STOCK && request.method === "GET") {
+      const location = { directory: url.searchParams.get("location[directory]") };
+      if (url.pathname === "/api/integration") {
+        const data = catalogReads++ === 0 ? [] : [{ id: "anthropic", connections: [{ type: "credential", method: "oauth" }] }];
+        return json(response, 200, { location, data });
+      }
+      if (url.pathname === "/api/provider") return json(response, 200, {
+        location, data: [{ ...model, id: "anthropic", integrationID: "anthropic", activation: "auto" }]
+      });
+      if (url.pathname === "/api/model/default") return json(response, 200, { location, data: model });
+      if (url.pathname === "/api/model") return json(response, 200, { location, data: [model] });
+      if (url.pathname === "/api/config") {
+        const foreignAction = process.env.FAKE_OPENCODE_FOREIGN_RULE;
+        return json(response, 200, foreignAction ? [{ type: "document",
+          info: { policies: [{ action: foreignAction, resource: "*", effect: "allow" }] }
+        }] : []);
+      }
     }
     if (request.method === "POST" && url.pathname === "/api/session") {
       const id = "ses_fake1";

@@ -4,9 +4,26 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createProcessEvidence } from "../../supervisor-process-evidence.js";
 import { AuthModeError, type Capabilities, type HarnessAdapter, type SpawnedProcess, type WorkerHandle, type WorkerSpec } from "../adapter.js";
 import { OPENCODE_STOCK_OAUTH_PROVIDERS, openCodePermissionEnv, parseOpenCodeModelRef,
-  readOpenCodeServerGateSurface, resolveOpenCodeV2Executable, verifyOpenCodeSubscriptionRoute } from "./opencode-gate.js";
+  readOpenCodeServerGateSurface, resolveOpenCodeV2Executable, verifyOpenCodeSubscriptionRoute,
+  type OpenCodeGateSurface, type VerifiedOpenCodeRoute } from "./opencode-gate.js";
 import { startOpencodeWorker } from "./opencode-worker.js";
 import { workerEnvironment } from "./process.js";
+
+/** Null means the native directory has yet to publish a policy-filtered catalog. */
+export function decideOpenCodeRoute(surface: OpenCodeGateSurface, allowedProviders: readonly string[],
+  model?: string): VerifiedOpenCodeRoute | null {
+  if (surface.allowedPolicyResources.some((resource) => !allowedProviders.includes(resource))) {
+    throw new AuthModeError("wrong_auth_mode", "An OpenCode configuration allows another model provider. Use a subscription-only provider policy for this worker.");
+  }
+  if (!surface.integrations.length || surface.models.some((row) => !allowedProviders.includes(row.providerID))) return null;
+  const route = verifyOpenCodeSubscriptionRoute(surface, model);
+  for (const row of surface.models) {
+    if (row.providerID !== route.providerID || row.id !== route.id) {
+      verifyOpenCodeSubscriptionRoute(surface, `${row.providerID}/${row.id}`);
+    }
+  }
+  return route;
+}
 
 export class OpencodeAdapter implements HarnessAdapter {
   readonly harness = "opencode" as const;
@@ -72,21 +89,9 @@ export class OpencodeAdapter implements HarnessAdapter {
               baseUrl: url, authHeader: authorization, directory: cwd, signal,
               timeoutMs: Math.max(1, deadline - Date.now())
             });
-            if (surface.allowedPolicyResources?.some((resource) => !allowedProviders.includes(resource))) {
-              throw new AuthModeError("wrong_auth_mode", "An OpenCode configuration allows another model provider. Use a subscription-only provider policy for this worker.");
-            }
-            // The server announces its socket before it has loaded the
-            // directory's integrations and applied native provider policy.
-            if (surface.integrations.length && surface.models.every((model) => allowedProviders.includes(model.providerID))) {
-              const { providerID, id } = verifyOpenCodeSubscriptionRoute(surface, spec.model);
-              // OpenCode can select another model for a native subagent.
-              for (const model of surface.models) {
-                if (model.providerID !== providerID || model.id !== id) {
-                  verifyOpenCodeSubscriptionRoute(surface, `${model.providerID}/${model.id}`);
-                }
-              }
-              return { model: { providerID, id } };
-            }
+            // Native startup serves HTTP before directory integrations and policy are ready.
+            const route = decideOpenCodeRoute(surface, allowedProviders, spec.model);
+            if (route) return { model: { providerID: route.providerID, id: route.id } };
             if (Date.now() >= deadline) {
               throw new AuthModeError("wrong_auth_mode", "OpenCode did not publish a catalog limited to the worker's subscription policy.");
             }
