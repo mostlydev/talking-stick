@@ -17,6 +17,10 @@ changes will be called out under **Breaking changes**.
 
 - OpenCode 2.4+ can run as a supervised headless worker on an Anthropic or OpenAI OAuth login.
 
+### Fixed
+
+- A supervised Codex worker is one room member again. Codex runs internal threads, such as memory consolidation, in the worker's app-server with the worker's environment, and one of them could join the room as a second member, take the stick, and share the worker's wake endpoint, so each message reached the worker twice with a token it couldn't acknowledge. The supervisor now records the worker's own conversation, `tt` refuses every other conversation in that process with `not_worker_session`, and the service admits only one conversation per supervised worker process. ([#271](https://github.com/mostlydev/shrooms/issues/271))
+
 ### Changed
 
 - `rooms --help` and `tt --help` name themselves after the command you ran, and group the commands into managing rooms, working inside a room (the talking stick), and setup. `--version` and the unknown-command error use the same name.

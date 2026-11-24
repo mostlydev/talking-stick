@@ -3021,6 +3021,21 @@ export class TalkingStickService {
           { agent_id: input.agent_id }
         );
       }
+      // Two conversations in one supervised process can both join before
+      // either registers. The address names one worker generation, so a second
+      // session claiming it would get the worker's wakes too.
+      if (input.transport === "supervisor") {
+        const holder = this.db.prepare<[string, string, string], { agent_id: string }>(
+          `SELECT e.agent_id FROM member_wake_endpoints e
+           JOIN room_members m ON m.room_id = e.room_id AND m.agent_id = e.agent_id
+           WHERE e.transport = 'supervisor' AND e.host_id = ? AND e.address = ? AND e.harness_session_id != ? LIMIT 1`
+        ).get(input.host_id, input.address, input.harness_session_id);
+        if (holder) {
+          throw new ProtocolError("not_worker_session",
+            `This supervised worker's endpoint already belongs to ${holder.agent_id}, another conversation in its process. ` +
+            "Only the worker's own conversation is woken through it.", { agent_id: holder.agent_id });
+        }
+      }
       const timestamp = this.now().toISOString();
       const existing = this.getNativeWakeEndpoint(
         input.room_id,
@@ -5524,6 +5539,8 @@ export class TalkingStickService {
       return;
     }
 
+    this.assertOneSupervisedSession(normalized);
+
     const nextOrdinal =
       this.db
         .prepare<[string], { next_ordinal: number | null }>(
@@ -5576,6 +5593,30 @@ export class TalkingStickService {
         normalized.harness_pid,
         normalized.harness_process_started_at
       );
+  }
+
+  /**
+   * A supervised worker's process runs one room conversation. Another
+   * conversation in that exact process, such as a harness's internal memory or
+   * summary thread, would share the worker's wake endpoint: each message would
+   * wake the worker twice, with a token it cannot acknowledge. The first
+   * conversation to join keeps the process; the supervisor's session binding
+   * in the CLI decides which one that is before either reaches the service.
+   */
+  private assertOneSupervisedSession(process: RequiredProcessMetadata): void {
+    if (!process.harness_session_id || !process.harness_pid || !process.harness_process_started_at?.trim()) return;
+    const worker = this.db.prepare<[string | null, number, string, string], { agent_id: string; room_id: string }>(
+      `SELECT m.agent_id, m.room_id FROM room_members m
+       JOIN member_wake_endpoints e ON e.room_id = m.room_id AND e.agent_id = m.agent_id AND e.transport = 'supervisor'
+       WHERE m.harness_host_id IS ? AND m.harness_pid = ? AND trim(m.harness_process_started_at) = ?
+         AND m.harness_session_id != ? LIMIT 1`
+    ).get(process.harness_host_id, process.harness_pid,
+      process.harness_process_started_at.trim(), process.harness_session_id);
+    if (worker) {
+      throw new ProtocolError("not_worker_session",
+        `This process is a supervised worker, and its own conversation is already ${worker.agent_id}. ` +
+        "Another conversation in it cannot become a room member.", { agent_id: worker.agent_id, room_id: worker.room_id });
+    }
   }
 
   /**

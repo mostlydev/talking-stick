@@ -132,13 +132,16 @@ export class CodexAdapter implements HarnessAdapter {
         generation, harness: "codex", endpoint: spec.supervisor_env.TT_SUPERVISOR_ENDPOINT,
         token: spec.supervisor_env.TT_SUPERVISOR_TOKEN }) : null;
     if (evidence) env.TT_SUPERVISOR_PROCESS_FILE = evidence.file;
-    const handle = new CodexHandle(spec, generation, this.options);
+    // One app-server process runs more than this worker's conversation: Codex
+    // also starts internal threads (memory consolidation, summaries, sub-agents)
+    // that inherit its environment. Only the bound conversation is a member.
+    const handle = new CodexHandle(spec, generation, this.options, evidence ? (session) => evidence.bindSession(session) : undefined);
     try {
       const command = this.options.command ?? resolveCodexExecutable(env);
       const child = await spawnManagedProcess({ command,
         args: [...(this.options.argsPrefix ?? []), "app-server", "--listen", "stdio://"], cwd: spec.cwd, env, signal,
         onSpawn: (process) => {
-          evidence?.record(process);
+          evidence?.record(process, null);
           onSpawn(process);
         }, onLine: (line) => handle.receive(line), onExit: (code, exitSignal) => {
           evidence?.clear();
@@ -177,7 +180,8 @@ class CodexHandle implements WorkerHandle {
   private resumeFailed = false;
   private reloading: Promise<boolean> | null = null;
   readonly generation: number;
-  constructor(private readonly spec: WorkerSpec, generation: number, private readonly options: CodexAdapterOptions) {
+  constructor(private readonly spec: WorkerSpec, generation: number, private readonly options: CodexAdapterOptions,
+    private readonly bindSession?: (session: string) => void) {
     this.generation = generation;
     this.rpc = new Rpc((message) => this.notification(message));
   }
@@ -243,6 +247,8 @@ class CodexHandle implements WorkerHandle {
       throw new Error("Codex did not establish the explicit Talking Stick metadata writable root.");
     }
     if (object(thread.status).type !== "idle") throw new Error("Codex did not establish an idle owned session.");
+    // Bound before any prompt, so the worker's first tt command finds it.
+    this.bindSession?.(thread.id);
     this.thread = thread.id;
     this.emit({ type: "session", session_id: this.thread });
   }

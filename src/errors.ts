@@ -45,7 +45,8 @@ export type ProtocolErrorCode =
   | "duplicate_listener"
   | "recipient_unreachable"
   | "invalid_wait_mode"
-  | "holds_turn_elsewhere";
+  | "holds_turn_elsewhere"
+  | "not_worker_session";
 
 export interface ProtocolErrorDetails {
   field?: string;
