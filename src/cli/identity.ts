@@ -6,6 +6,8 @@ import {
 import { resolveDatabasePath } from "../db.js";
 import { resolveDataDir } from "../config.js";
 import { openSqlite } from "../sqlite.js";
+import { ProtocolError } from "../errors.js";
+import { readSupervisedSession } from "../supervisor-process-evidence.js";
 import {
   getStringOption,
   hasOption,
@@ -54,6 +56,8 @@ export function resolveCliIdentity(
       };
     }
 
+    assertSupervisedConversation(harnessIdentity, env);
+
     // An existing membership keeps its ID through the rename so pending
     // deliveries, leases and recovery can still reach that conversation.
     if (harnessIdentity.process_metadata.harness_name === "antigravity") {
@@ -91,6 +95,26 @@ export function resolveCliIdentity(
     source: "human_cli_default",
     detail: "Defaulted to stable human CLI identity."
   };
+}
+
+/**
+ * A supervised worker process can run conversations its supervisor did not
+ * start, such as Codex's memory consolidation thread. They inherit the
+ * worker's environment, so without this they would join as a second member,
+ * take the stick and share the worker's wake endpoint. Once the supervisor
+ * has bound the worker's own conversation, every other one is refused.
+ */
+function assertSupervisedConversation(identity: DerivedIdentity, env: NodeJS.ProcessEnv): void {
+  const bound = readSupervisedSession(env);
+  const harness = identity.process_metadata.harness_name;
+  if (!bound || bound.harness !== harness) return;
+  const session = identity.process_metadata.harness_session_id;
+  if (bound.session !== null && session === `harness:${bound.session}`) return;
+  throw new ProtocolError("not_worker_session", bound.session === null
+    ? `This ${harness} worker's own conversation is not set up yet, so no conversation in its process can use rooms. Try again once the supervisor has started it.`
+    : `This ${harness} conversation is not the one the supervisor runs for this worker; it may be an internal memory, summary or sub-agent thread. ` +
+      "Only the worker's own conversation is a room member. This one cannot join, wait, take the stick or send room messages, " +
+      "and it needs no stick to edit its own files.", { reason: session ?? "no session" });
 }
 
 function existingAntigravityMember(identity: DerivedIdentity, env: NodeJS.ProcessEnv): string {

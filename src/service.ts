@@ -5524,6 +5524,8 @@ export class TalkingStickService {
       return;
     }
 
+    this.assertOneSupervisedSession(normalized);
+
     const nextOrdinal =
       this.db
         .prepare<[string], { next_ordinal: number | null }>(
@@ -5576,6 +5578,30 @@ export class TalkingStickService {
         normalized.harness_pid,
         normalized.harness_process_started_at
       );
+  }
+
+  /**
+   * A supervised worker's process runs one room conversation. Another
+   * conversation in that exact process, such as a harness's internal memory or
+   * summary thread, would share the worker's wake endpoint: each message would
+   * wake the worker twice, with a token it cannot acknowledge. The first
+   * conversation to join keeps the process; the supervisor's session binding
+   * in the CLI decides which one that is before either reaches the service.
+   */
+  private assertOneSupervisedSession(process: RequiredProcessMetadata): void {
+    if (!process.harness_session_id || !process.harness_pid || !process.harness_process_started_at?.trim()) return;
+    const worker = this.db.prepare<[string | null, number, string, string], { agent_id: string; room_id: string }>(
+      `SELECT m.agent_id, m.room_id FROM room_members m
+       JOIN member_wake_endpoints e ON e.room_id = m.room_id AND e.agent_id = m.agent_id AND e.transport = 'supervisor'
+       WHERE m.harness_host_id IS ? AND m.harness_pid = ? AND trim(m.harness_process_started_at) = ?
+         AND m.harness_session_id != ? LIMIT 1`
+    ).get(process.harness_host_id, process.harness_pid,
+      process.harness_process_started_at.trim(), process.harness_session_id);
+    if (worker) {
+      throw new ProtocolError("not_worker_session",
+        `This process is a supervised worker, and its own conversation is already ${worker.agent_id}. ` +
+        "Another conversation in it cannot become a room member.", { agent_id: worker.agent_id, room_id: worker.room_id });
+    }
   }
 
   /**

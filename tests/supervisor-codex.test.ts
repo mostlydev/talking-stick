@@ -7,7 +7,7 @@ import { CodexAdapter, resolveCodexExecutable } from "../src/supervisor/adapters
 import { workerEnvironment } from "../src/supervisor/adapters/process.js";
 import type { WorkerEvent, WorkerHandle, WorkerSpec } from "../src/supervisor/adapter.js";
 import { createSystemProcessInspector } from "../src/process-utils.js";
-import { createProcessEvidence, readProcessStartEvidence } from "../src/supervisor-process-evidence.js";
+import { createProcessEvidence, readProcessStartEvidence, readSupervisedSession } from "../src/supervisor-process-evidence.js";
 import { Supervisor } from "../src/supervisor/daemon.js";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
 
@@ -102,6 +102,36 @@ describe.skipIf(process.platform === "win32")("owned Codex app-server", () => {
     expect(fs.existsSync(path.join(f.spec.state_dir!, "workers/w1/codex"))).toBe(false);
     expect(fs.existsSync(f.home)).toBe(false);
     expect(fs.existsSync(path.join(f.spec.supervisor_env!.TALKING_STICK_DATA_DIR, "supervisor"))).toBe(false);
+  });
+  test("binds only its own conversation: pending at spawn, then the started or resumed thread", async () => {
+    const f = fixture();
+    const env = (file: string) => ({ TT_SUPERVISOR_PROCESS_FILE: file,
+      TT_SUPERVISOR_ENDPOINT: f.spec.supervisor_env!.TT_SUPERVISOR_ENDPOINT, TT_SUPERVISOR_TOKEN: f.spec.supervisor_env!.TT_SUPERVISOR_TOKEN });
+    const file = path.join(f.spec.state_dir!, "workers/w1/process-1.json");
+    let atSpawn: unknown;
+    const h = await f.adapter.start(f.spec, 1, () => { atSpawn = readSupervisedSession(env(file)); });
+    cleanup.push(() => h.stop(100));
+    // No thread in the process is a member before the worker's own is bound.
+    expect(atSpawn).toEqual({ harness: "codex", session: null });
+    expect(readSupervisedSession(env(file))).toEqual({ harness: "codex", session: "owned-thread" });
+    expect(readSupervisedSession({ ...env(file), TT_SUPERVISOR_TOKEN: "other" })).toBeNull();
+    expect(readProcessStartEvidence(env(file), "codex", h.pid)).toBe(h.processStartedAt);
+
+    const resumed = fixture(); resumed.spec.resume_session_id = "native-old";
+    await resumed.start();
+    expect(readSupervisedSession(env(path.join(resumed.spec.state_dir!, "workers/w1/process-1.json"))))
+      .toEqual({ harness: "codex", session: "native-old" });
+  });
+  test("older evidence binds no conversation", () => {
+    const { root } = fixture();
+    const evidence = createProcessEvidence({ stateDir: root, workerId: "w1", generation: 1,
+      harness: "codex", endpoint: "/tmp/owned.sock#w1@1", token: "token" });
+    evidence.record({ pid: 123, processStartedAt: "start" });
+    const env = { TT_SUPERVISOR_PROCESS_FILE: evidence.file, TT_SUPERVISOR_ENDPOINT: "/tmp/owned.sock#w1@1", TT_SUPERVISOR_TOKEN: "token" };
+    expect(readSupervisedSession(env)).toBeNull();
+    evidence.bindSession("thread-a");
+    expect(readSupervisedSession(env)).toEqual({ harness: "codex", session: "thread-a" });
+    expect(readProcessStartEvidence(env, "codex", 123)).toBe("start");
   });
   test("accepts an explicitly unrestricted thread with approvals disabled", async () => {
     const f = fixture();

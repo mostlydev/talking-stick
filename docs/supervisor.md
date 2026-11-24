@@ -234,6 +234,14 @@ When sandboxed `ps` cannot read a process start time, the supervisor writes priv
 evidence before the handshake. The CLI fills only the missing start time of its already selected
 PID, with matching endpoint and delivery-token hash. A stale or mismatched file leaves it unknown;
 the file is removed on exit when possible, and a stale file cannot match a later generation's credential. This does not select a new PID or renew a room lease.
+The same file names the worker's own conversation. It is pending from spawn until `thread/start`
+or `thread/resume` confirms the thread, which happens before any prompt. Codex runs other threads
+in the same app-server (memory consolidation, summaries, sub-agents), and they inherit the
+worker's environment. `tt` refuses every conversation but the bound one with `not_worker_session`:
+it cannot join, wait, take the stick or send room messages, and it needs no stick to edit its
+own files. Evidence from an earlier supervisor names no conversation and is not checked. As a
+backstop for every harness, the service refuses a second conversation in a process whose member
+already has a supervisor endpoint.
 Native history remains in CODEX_HOME. Missing resume history holds the worker; no replacement
 conversation is started implicitly. An idle thread that reports `notLoaded` or `thread/closed`
 is resumed by exact ID in the same owned process during a non-model probe, with the same verified
