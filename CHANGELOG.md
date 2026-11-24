@@ -24,16 +24,13 @@ changes will be called out under **Breaking changes**.
 ### Fixed
 
 - A supervised Codex worker is one room member again. Codex runs internal threads, such as memory consolidation, in the worker's app-server with the worker's environment, and one of them could join the room as a second member, take the stick, and share the worker's wake endpoint, so each message reached the worker twice with a token it couldn't acknowledge. The supervisor now records the worker's own conversation, `tt` refuses every other conversation in that process with `not_worker_session`, and the service admits only one conversation per supervised worker process. ([#271](https://github.com/mostlydev/shrooms/issues/271))
+- The supervisor checks pinned executable paths before adding a worker, clears retry times under holds, and identifies old executable failures that are ready to resume. ([#270](https://github.com/mostlydev/shrooms/issues/270))
 
 ### Changed
 
 - `rooms --help` and `tt --help` name themselves after the command you ran, and group the commands into managing rooms, working inside a room (the talking stick), and setup. `--version` and the unknown-command error use the same name.
 - The README opens with a Names section: the project, a room, the talking stick, the `rooms` and `tt` commands, the `/rooms` skill versus `/rooms` in chat, and the manager skill. Commands a person types are written with `rooms`; agents, hooks and scripts keep using `tt`.
 - Codex now lists the skills as `rooms` and `rooms-oversee`, the same names the other harnesses show, instead of "shrooms" and "Oversee rooms".
-
-### Fixed
-
-- The supervisor checks pinned executable paths before adding a worker, clears retry times under holds, and identifies old executable failures that are ready to resume.
 
 ## [0.39.0] — 2026-11-24
 
