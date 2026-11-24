@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { openSqlite, type SqliteDatabase } from "../sqlite.js";
 import { withImmediateTransaction } from "../db.js";
+import { hasSharedGeneration } from "./membership-gc.js";
 import type { InputMode, InputOutcome, WorkerSpec } from "./adapter.js";
 
 // The supervisor's durable desired and observed state, in its own database
@@ -16,7 +17,7 @@ export type GenerationState =
 
 export type HoldReason =
   | "crash_loop" | "prior_generation_alive" | "prior_generation_unknown"
-  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed"
+  | "resume_failed" | "overflow" | "start_failed" | "executable_ready" | "protocol_error" | "bootstrap_failed"
   /** Not on a subscription login: not signed in, or signed in with an API key or another provider. */
   | "auth_required" | "wrong_auth_mode"
   /** A permission prompt's denial couldn't be delivered, so the worker may still be waiting on it. */
@@ -54,6 +55,11 @@ export interface GenerationRow {
   last_model_activity_at: string | null;
   delivery_token_hash: string | null;
 }
+
+/** A room departure retires this generation's conversation across later pause/stop requests. */
+export const MEMBERSHIP_STOP_REASON_SQL = `(SELECT json_extract(a.detail, '$.reason') FROM audit a
+  WHERE a.worker_id = g.worker_id AND a.action = 'membership_stop'
+    AND json_extract(a.detail, '$.generation') = g.generation ORDER BY a.id DESC LIMIT 1)`;
 
 export interface InputRow {
   input_id: string;
@@ -260,6 +266,7 @@ export class SupervisorStore {
   /** A control change: bumps the version so any in-flight action on the old one loses. */
   setDesired(workerId: string, desired: DesiredState, actor: string, at: string, clearHold = false): WorkerRow {
     return this.transaction(() => {
+      if (desired === "running") this.requireFreshAfterDeparture(workerId);
       const changed = this.db.prepare(`UPDATE workers SET desired = ?, desired_version = desired_version + 1
         ${clearHold ? ", hold_reason = NULL, next_start_at = NULL" : ""} WHERE worker_id = ?`).run(desired, workerId);
       if (changed.changes !== 1) throw new Error(`No worker named ${workerId}.`);
@@ -268,8 +275,50 @@ export class SupervisorStore {
     });
   }
 
+  private membershipStopReason(workerId: string): string | null {
+    return this.db.prepare<[string], { reason: string | null }>(`SELECT ${MEMBERSHIP_STOP_REASON_SQL} AS reason
+      FROM generations g WHERE g.worker_id = ? ORDER BY g.generation DESC LIMIT 1`).get(workerId)?.reason ?? null;
+  }
+
+  private requireFreshAfterDeparture(workerId: string): void {
+    if (this.membershipStopReason(workerId)) {
+      throw new Error(`Worker ${workerId} stopped after its room membership ended. Run tt supervisor restart ${workerId} --fresh.`);
+    }
+  }
+
+  /** Older CLI clients can change desired state without checking the departure audit. */
+  refuseDepartedResume(worker: WorkerRow, at: string): boolean {
+    return this.transaction(() => {
+      const current = this.worker(worker.worker_id);
+      if (!current || current.desired_version !== worker.desired_version || current.desired !== "running") return true;
+      if (current.fresh_next || !this.membershipStopReason(worker.worker_id)) return false;
+      this.db.prepare(`UPDATE workers SET desired = 'stopped', desired_version = desired_version + 1,
+        restart_next = 0, next_start_at = NULL WHERE worker_id = ?`).run(worker.worker_id);
+      this.audit(at, "supervisor", "membership_resume_refused", worker.worker_id);
+      return true;
+    });
+  }
+
+  /** Request a stop only while the exact generation still owns this process. */
+  requestGenerationStop(target: { worker_id: string; generation: number; pid: number; process_started_at: string;
+    desired_version: number }, actor: string, at: string, detail: { reason: string; room_id: string; agent_id: string }): boolean {
+    return this.transaction(() => {
+      const worker = this.worker(target.worker_id);
+      const current = this.latestGeneration(target.worker_id);
+      if (!worker || worker.desired !== "running" || worker.restart_next || worker.hold_reason?.startsWith("prior_generation_") ||
+          worker.desired_version !== target.desired_version ||
+          !current || current.ended_at || current.generation !== target.generation || current.pid !== target.pid ||
+          current.process_started_at?.trim() !== target.process_started_at.trim() ||
+          hasSharedGeneration(this.liveGenerations(), current)) return false;
+      this.db.prepare(`UPDATE workers SET desired = 'stopped', desired_version = desired_version + 1,
+        next_start_at = NULL WHERE worker_id = ?`).run(target.worker_id);
+      this.audit(at, actor, "membership_stop", target.worker_id, { ...detail, generation: target.generation, pid: target.pid, desired_version: worker.desired_version + 1 });
+      return true;
+    });
+  }
+
   hold(workerId: string, reason: HoldReason, at: string): void {
-    this.db.prepare("UPDATE workers SET hold_reason = ? WHERE worker_id = ?").run(reason, workerId);
+    this.db.prepare("UPDATE workers SET hold_reason = ?, next_start_at = NULL WHERE worker_id = ?").run(reason, workerId);
     this.audit(at, "supervisor", "hold", workerId, { reason });
   }
 
@@ -390,6 +439,7 @@ export class SupervisorStore {
    */
   requestRestart(workerId: string, fresh: boolean, actor: string, at: string): WorkerRow {
     return this.transaction(() => {
+      if (!fresh) this.requireFreshAfterDeparture(workerId);
       const changed = this.db.prepare(`UPDATE workers SET desired = 'running', desired_version = desired_version + 1,
         hold_reason = NULL, next_start_at = NULL, restart_next = 1, fresh_next = ? WHERE worker_id = ?`).run(fresh ? 1 : 0, workerId);
       if (changed.changes !== 1) throw new Error(`No worker named ${workerId}.`);

@@ -10,7 +10,7 @@ import type { NavigatorRoom } from "./room-navigator.js";
 // resumes or restarts a worker.
 
 /** Holds the operator clears with resume, per docs/supervisor.md. */
-const RESUME_HOLDS: ReadonlySet<HoldReason> = new Set(["auth_required", "wrong_auth_mode", "deny_undelivered", "crash_loop"]);
+const RESUME_HOLDS: ReadonlySet<HoldReason> = new Set(["auth_required", "wrong_auth_mode", "deny_undelivered", "crash_loop", "executable_ready"]);
 /** Holds that need a new conversation. */
 const FRESH_HOLDS: ReadonlySet<HoldReason> = new Set(["resume_failed", "bootstrap_failed"]);
 
@@ -125,7 +125,7 @@ export function workerState(worker: SupervisorWorkerStatus, daemon: SupervisorDa
       remedy: holdRemedy(worker.worker_id, worker.hold_reason) };
   }
   if (worker.desired === "paused") return { state: "paused", held: null, blocked: false, remedy: null };
-  if (worker.desired === "stopped") return { state: "stopped", held: null, blocked: false, remedy: null };
+  if (worker.desired === "stopped") return { state: worker.stop_reason ? `stopped: ${worker.stop_reason.replace(/_/g, " ")}` : "stopped", held: null, blocked: false, remedy: null };
   if (daemon === "stopped") return { state: "supervisor not running", held: null, blocked: true, remedy: "tt supervisor run" };
   if (daemon === "unknown") return { state: "supervisor state unknown", held: null, blocked: false, remedy: "tt supervisor status" };
   const generation = worker.generation;

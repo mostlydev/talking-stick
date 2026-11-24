@@ -31,7 +31,7 @@ describe("headless worker state", () => {
       auth_required: "tt supervisor resume w1",
       wrong_auth_mode: "tt supervisor resume w1",
       deny_undelivered: "tt supervisor resume w1",
-      crash_loop: "tt supervisor resume w1",
+      crash_loop: "tt supervisor resume w1", executable_ready: "tt supervisor resume w1",
       resume_failed: "tt supervisor restart w1 --fresh",
       bootstrap_failed: "tt supervisor restart w1 --fresh",
       prior_generation_alive: "tt supervisor status",

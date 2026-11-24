@@ -17,6 +17,7 @@ const BOOLEAN_FLAGS = new Set([
   "force-new",
   "fresh",
   "drop",
+  "dry-run",
   "resend",
   "help",
   "interrupt",

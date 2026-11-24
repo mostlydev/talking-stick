@@ -22,6 +22,7 @@ import {
   type SqliteDatabase
 } from "./db.js";
 import { ProtocolError } from "./errors.js";
+import { recordManagedDeparture, recordManagedMembership } from "./supervisor/membership-gc.js";
 import { validateAttachments } from "./attachments.js";
 import { HUMAN_CHAT_SESSION_KIND } from "./types.js";
 import type { WakeTransport } from "./wake.js";
@@ -783,6 +784,7 @@ export class TalkingStickService {
       const keep = input.harness !== "grok";
       for (const member of members) {
         const room = this.requireRoom(member.room_id);
+        this.markManagedDeparture(member.room_id, member.agent_id, "lost", timestamp);
         const snapshot = keep ? {
           member_json: JSON.stringify(member),
           state_json: JSON.stringify(Object.fromEntries(LOST_MEMBER_STATE_TABLES.map((table) => [table,
@@ -1259,6 +1261,7 @@ export class TalkingStickService {
         // Leaving is final, for a lost membership too.
         const lost = this.getLostMember(input.room_id, input.agent_id);
         if (lost) {
+          this.markManagedDeparture(input.room_id, input.agent_id, "left", timestamp);
           this.revokeLostMember(lost, input.agent_id, timestamp);
           this.appendEvent({ room_id: input.room_id, turn_id: room.turn_id, event_type: "leave",
             from_agent_id: input.agent_id, to_agent_id: null, handoff: null, reason: null, created_at: timestamp });
@@ -1271,6 +1274,7 @@ export class TalkingStickService {
           { agent_id: input.agent_id }
         );
       }
+      this.markManagedDeparture(input.room_id, input.agent_id, "left", timestamp);
       this.forgetLostMember(input.room_id, input.agent_id);
 
       this.db
@@ -1398,6 +1402,7 @@ export class TalkingStickService {
       const lostTarget = target ? null : this.getLostMember(input.room_id, input.target_agent_id);
       if (lostTarget) {
         // A kick is final: the lost session can no longer recover or rejoin.
+        this.markManagedDeparture(input.room_id, input.target_agent_id, "kicked", timestamp);
         this.revokeLostMember(lostTarget, input.agent_id, timestamp);
         this.appendEvent({ room_id: input.room_id, turn_id: room.turn_id, event_type: "kick",
           from_agent_id: input.agent_id, to_agent_id: input.target_agent_id, handoff: null,
@@ -1426,6 +1431,7 @@ export class TalkingStickService {
         }
       }
 
+      this.markManagedDeparture(input.room_id, input.target_agent_id, "kicked", timestamp);
       const targetWasOwner = room.owner === input.target_agent_id;
       const targetWasReservedFor = room.reserved_for === input.target_agent_id;
 
@@ -3033,6 +3039,7 @@ export class TalkingStickService {
         );
       }
       const timestamp = this.now().toISOString();
+      if (input.transport === "supervisor") recordManagedMembership(this.db, input);
       const existing = this.getNativeWakeEndpoint(
         input.room_id,
         input.agent_id,
@@ -6626,6 +6633,7 @@ export class TalkingStickService {
           return;
         }
         for (const member of ended) {
+          this.markManagedDeparture(room.room_id, member.agent_id, "lost", now.toISOString());
           this.db.prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
             .run(room.room_id, member.agent_id);
           if (!isObserverMember(member)) {
@@ -6739,7 +6747,16 @@ export class TalkingStickService {
     return latest;
   }
 
+  private markManagedDeparture(roomId: string, agentId: string | null, departure: Parameters<typeof recordManagedDeparture>[3], at: string): void {
+    // Upgrade support: capture an existing endpoint even if this version has not registered it yet.
+    const endpoints = this.db.prepare<unknown[], NativeWakeEndpointRow>(`SELECT * FROM member_wake_endpoints
+      WHERE transport = 'supervisor' AND room_id = ? AND (? IS NULL OR agent_id = ?)`).all(roomId, agentId, agentId);
+    for (const endpoint of endpoints) recordManagedMembership(this.db, endpoint);
+    recordManagedDeparture(this.db, roomId, agentId, departure, at);
+  }
+
   private deleteRoom(roomId: string): void {
+    this.markManagedDeparture(roomId, null, "room_removed", this.now().toISOString());
     this.db.prepare("DELETE FROM visitor_replies WHERE request_id IN (SELECT request_id FROM visitor_requests WHERE room_id = ?)").run(roomId);
     this.db.prepare("DELETE FROM visitor_requests WHERE room_id = ?").run(roomId);
     this.db.prepare("DELETE FROM room_roles WHERE room_id = ?").run(roomId);

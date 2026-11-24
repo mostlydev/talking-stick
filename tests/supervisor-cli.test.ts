@@ -44,6 +44,12 @@ function setup() {
   // Run as a plain shell would: no harness in the environment, so the actor is human:<user>.
   for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "OPENCODE", "TT_HARNESS_AGENT_ID"]) vi.stubEnv(key, "");
   cleanup.push(() => { vi.unstubAllEnvs(); });
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  for (const name of ["claude", "codex", "grok", "agy"]) {
+    fs.symlinkSync(process.execPath, path.join(bin, name));
+  }
+  vi.stubEnv("PATH", bin);
   const output: string[] = [];
   const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
     output.push(String(chunk));
@@ -71,6 +77,14 @@ function setup() {
 }
 
 describe("tt supervisor add", () => {
+  test("refuses a missing pinned executable before adding a worker", async () => {
+    const { root, cwd, run, store } = setup();
+    await expect(run(["add", "w1"], { harness: "claude", cwd,
+      env: `CLAUDE_EXECUTABLE=literal:${path.join(root, "missing")}` })).rejects.toThrow(/Cannot find the Claude Code executable/);
+    expect(store().worker("w1")).toBeNull();
+    expect(await run(["add", "w2"], { harness: "claude", cwd, env: "PATH" })).toMatchObject({ status: "added" });
+  });
+
   test("records explicit permissions and environment references, never values it wasn't given", async () => {
     const { cwd, run, store } = setup();
     expect(await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "on-request",
@@ -171,6 +185,31 @@ describe("controls", () => {
     await expect(run(["stop", "w2"], { agent: "human:someone" }, "codex")).rejects.toThrow("does not accept --agent");
   });
 
+  test("a membership-stopped worker requires a fresh conversation even after another stop", async () => {
+    const { cwd, run, store } = setup();
+    await run(["add", "w1"], { harness: "claude", cwd });
+    const db = store();
+    const now = new Date().toISOString();
+    const generation = { worker_id: "w1", generation: 1, pid: 12, process_started_at: "started",
+      pgid: 12, session_id: "native-1", state: "idle" as const, started_at: now };
+    db.recordGeneration(generation);
+    expect(db.requestGenerationStop({ ...generation, desired_version: 1 }, "supervisor", now,
+      { reason: "kicked", room_id: "room", agent_id: "claude:test" })).toBe(true);
+    db.endGeneration("w1", 1, now, { reason: "stopped" });
+    await run(["stop", "w1"]);
+    expect((await run(["status"])).workers[0]).toMatchObject({ desired: "stopped", stop_reason: "kicked" });
+    await expect(run(["resume", "w1"])).rejects.toThrow("tt supervisor restart w1 --fresh");
+    await expect(run(["restart", "w1"])).rejects.toThrow("tt supervisor restart w1 --fresh");
+    expect(await run(["restart", "w1"], { fresh: true })).toMatchObject({ fresh: true });
+    expect(db.worker("w1")).toMatchObject({ desired: "running", fresh_next: 1 });
+  });
+
+  test("GC dry-run can inspect an empty profile without preparing supervisor state", async () => {
+    const { run } = setup();
+    await expect(run(["gc"])).rejects.toThrow("Use tt supervisor gc --dry-run");
+    expect(await run(["gc"], { "dry-run": true })).toEqual({ workers: [], guardians: [] });
+  });
+
   test("status keeps its worker JSON shape and omits the chat process binding", async () => {
     const { cwd, run, store } = setup();
     await run(["add", "w1"], { harness: "claude", cwd, restricted: true });
@@ -192,8 +231,11 @@ describe("controls", () => {
     ["PATH=literal:/usr/bin:/bin", "--env CODEX_EXECUTABLE=literal:/absolute/executable"]
   ])("status shows the right recovery for missing Codex with %s", async (env, remedy) => {
     const { cwd, run, store } = setup();
-    await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "never", env });
     const db = store();
+    db.addWorker({ worker_id: "w1", harness: "codex", cwd,
+      permissions: { harness: "codex", sandbox: "workspace-write", approval: "never" },
+      env: [parseEnvReference(env)]
+    }, "human:test", "started");
     db.recordGeneration({ worker_id: "w1", generation: 1, pid: null, process_started_at: null,
       pgid: null, session_id: null, state: "starting", started_at: "started" });
     db.endGeneration("w1", 1, "ended", { reason: "start_failed", error: "Error: Cannot find a native Codex executable." });

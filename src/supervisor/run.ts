@@ -120,7 +120,7 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
     if (options.signal?.aborted) stopRequested();
     const supervisor = new Supervisor({ store, adapters: options.adapters, processLiveness: liveness,
       bridge: createRoomBridge(service, { dataDir: options.dataDir }), socketPath: paths.socket, dataDir: options.dataDir, bootstrap: true,
-      stateDir: root.dir });
+      stateDir: root.dir, guardInspector: createSystemProcessInspector({ cacheTtlMs: 0 }) });
     cleanups.push(() => supervisor.shutdown());
     const server = await startIntakeServer(paths.socket, (message) => supervisor.acceptIntake(message));
     cleanups.push(() => server.close());

@@ -17,7 +17,7 @@ export interface AntigravityAdapterOptions {
   startTimeoutMs?: number;
 }
 
-function resolveExecutable(env: NodeJS.ProcessEnv): string {
+export function resolveAntigravityExecutable(env: NodeJS.ProcessEnv): string {
   const explicit = env.AGY_EXECUTABLE;
   if (explicit && !path.isAbsolute(explicit)) {
     throw new WorkerExecutableError("AGY_EXECUTABLE", "AGY_EXECUTABLE must be an absolute executable path.");
@@ -87,7 +87,7 @@ export class AntigravityAdapter implements HarnessAdapter {
     });
     try {
       const child = await spawnManagedProcess({
-        command: this.options.command ?? resolveExecutable(env),
+        command: this.options.command ?? resolveAntigravityExecutable(env),
         args: [...(this.options.argsPrefix ?? []), "acp", "--stdio",
           ...(spec.permissions.mode === "bypassPermissions" ? ["--dangerously-skip-permissions"] : [])],
         cwd: spec.cwd,

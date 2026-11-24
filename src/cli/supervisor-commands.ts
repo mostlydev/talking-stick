@@ -1,16 +1,21 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveDataDir } from "../config.js";
 import type { EnvReference, Harness, WorkerPermissions, WorkerSpec } from "../supervisor/adapter.js";
 import { parseOpenCodeModelRef } from "../supervisor/adapters/opencode-gate.js";
+import { preflightWorkerExecutable } from "../supervisor/executable.js";
 import { builtinAdapters } from "../supervisor/adapters/index.js";
 import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent, type LaunchctlRunner } from "../supervisor/launchd.js";
 import { isStandalone, isInstalledRelease, standaloneRoot } from "../standalone-mode.js";
 import { createFileLog, runSupervisor, supervisorPaths, systemProcessLiveness } from "../supervisor/run.js";
 import { acquireOwnerLock } from "../supervisor/daemon.js";
-import { getCurrentProcessStartedAt } from "../process-utils.js";
-import { SupervisorStore } from "../supervisor/state.js";
+import { createSystemProcessInspector, getCurrentProcessStartedAt } from "../process-utils.js";
+import { SupervisorStore, type GenerationRow } from "../supervisor/state.js";
+import { findWorkerGcTarget, hasSharedGeneration, listReleasedManagedGuards } from "../supervisor/membership-gc.js";
+import { resolveDatabasePath } from "../db.js";
+import { openSqlite } from "../sqlite.js";
 import { hasUnrestrictedPermissions, readSupervisorDaemonStatus, readSupervisorWorkers } from "../supervisor/snapshot.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
@@ -22,7 +27,7 @@ import { isModelCredential, MODEL_CREDENTIAL_MESSAGE } from "../supervisor/adapt
 // tt supervisor: the optional managed headless supervisor (docs/supervisor.md).
 
 export const SUPERVISOR_USAGE = [
-  "tt supervisor status",
+  "tt supervisor status | gc --dry-run",
   "tt supervisor add <worker> --harness claude|codex|grok|agy|opencode --cwd PATH [--model M] [--restricted | --permission-mode default|plan|bypassPermissions]",
   "  [--sandbox read-only|workspace-write|danger-full-access --approval on-request|untrusted|never] [--env NAME[=literal:VALUE]]",
   "  Headless workers bypass tool prompts by default. Use --restricted for standard harness permissions.",
@@ -35,7 +40,7 @@ export const SUPERVISOR_USAGE = [
 export class SupervisorCommandError extends Error {}
 
 const WORKER_ID = /^[a-z0-9][a-z0-9._-]{0,47}$/;
-const KNOWN_ACTIONS = new Set(["status", "approvals", "logs", "add", "pause", "resume", "stop", "restart", "remove",
+const KNOWN_ACTIONS = new Set(["status", "approvals", "logs", "gc", "add", "pause", "resume", "stop", "restart", "remove",
   "run", "install", "uninstall", "migrate"]);
 /** Removed with the human gate: a headless worker's prompts are denied at once, and nothing is left to decide. */
 const REMOVED_ACTIONS = new Set(["approve", "deny", "interrupt", "reconcile"]);
@@ -151,6 +156,35 @@ export function installSupervisorService(dataDir: string, root: SupervisorRoot,
     stateBase: path.dirname(root.dir), searchPath: process.env.PATH, ...options });
 }
 
+function previewMembershipGc(dataDir: string, paths: ReturnType<typeof supervisorPaths>) {
+  const empty = { workers: [], guardians: [] };
+  const dbPath = resolveDatabasePath({ dataDir });
+  if (!fs.existsSync(dbPath) || !fs.existsSync(paths.database) || readSupervisorDaemonStatus(paths.lock) !== "running") return empty;
+  const rooms = openSqlite(dbPath, { readonly: true, timeout: 1_000 });
+  try {
+    if (!rooms.prepare("SELECT 1 FROM sqlite_schema WHERE name = 'managed_room_memberships'").get()) return empty;
+    const supervisor = openSqlite(paths.database, { readonly: true, timeout: 1_000 });
+    try {
+      const generations = supervisor.prepare<[], GenerationRow & { desired: string; restart_next: number }>(`
+        SELECT g.*, w.desired, w.restart_next FROM generations g JOIN workers w ON w.worker_id = g.worker_id
+        WHERE g.ended_at IS NULL ORDER BY g.worker_id`).all();
+      const host = os.hostname();
+      const liveness = systemProcessLiveness();
+      const inspector = createSystemProcessInspector({ cacheTtlMs: 0 });
+      const workers = generations.flatMap(generation => {
+        if (generation.desired !== "running" || generation.restart_next || hasSharedGeneration(generations, generation)) return [];
+        const target = findWorkerGcTarget(rooms, host, paths.socket, generation, new Date());
+        return target && liveness(target.pid, target.process_started_at) === "alive" ? [target] : [];
+      });
+      const guardians = listReleasedManagedGuards(rooms, host, paths.socket).filter(guard => {
+        const current = inspector.inspect(guard.pid);
+        return current?.ppid === 1 && current.startTime?.trim() === guard.process_started_at;
+      });
+      return { workers, guardians };
+    } finally { supervisor.close(); }
+  } finally { rooms.close(); }
+}
+
 export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<void> {
   const dataDir = resolveDataDir();
   const action = parsed.positionals[0] ?? "status";
@@ -162,12 +196,12 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
       "so nothing waits on a decision. See `tt supervisor approvals` for what was denied.");
   }
   if (!KNOWN_ACTIONS.has(action)) fail(`Unknown supervisor action ${action}.\n${SUPERVISOR_USAGE}`);
-  if (!["status", "approvals", "logs"].includes(action) && getStringOption(parsed, "agent")) {
+  if (!["status", "approvals", "logs", "gc"].includes(action) && getStringOption(parsed, "agent")) {
     fail(`Change the supervisor (${action}) does not accept --agent.`);
   }
   // Reading never creates state; writing prepares the protected root, and both
   // refuse while older state in the data directory still waits to move.
-  const readOnly = ["status", "approvals", "logs"].includes(action);
+  const readOnly = ["status", "approvals", "logs", "gc"].includes(action);
   const state = inspectSupervisorState(dataDir);
   if (readOnly && (state.kind === "legacy" || state.kind === "migrating")) {
     fail(`Supervisor state in ${state.root.dataDir} must move to ${state.root.dir} first: run \`tt supervisor migrate\`.`);
@@ -175,6 +209,15 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
   const root = readOnly || action === "migrate" || action === "uninstall" ? state.root : prepareSupervisorRoot(dataDir);
   const paths = supervisorPaths(root.dir);
 
+  if (action === "gc") {
+    if (!hasOption(parsed, "dry-run") || parsed.positionals.length !== 1) fail("Use tt supervisor gc --dry-run to preview automatic cleanup.");
+    const result = previewMembershipGc(dataDir, paths);
+    printResult(parsed, result, () => [
+      ...result.workers.map(target => `${target.worker_id}#${target.generation} (pid ${target.pid}) · ${target.reason}`),
+      ...result.guardians.map(guard => `Guardian for ${guard.agent_id} (pid ${guard.pid}) · lease ended`)
+    ].join("\n") || "No eligible worker or orphaned guardian.");
+    return;
+  }
   if (action === "run") {
     await runSupervisor({ dataDir, adapters: builtinAdapters(), log: createFileLog(paths.log) });
     return;
@@ -238,8 +281,8 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
         ? (status.recent_requests.map((a) => `${a.approval_id}  ${a.worker_id}#${a.generation}  ${a.status}  ${displayText(a.tool, 80)}: ${displayText(a.summary, 500)}`)
           .join("\n") || "No permission requests.")
         : (status.workers.map((w) => `${w.worker_id}  ${w.harness}  ${w.desired}${w.hold_reason ? ` (held: ${w.hold_reason})` : ""}  ` +
-            `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}` +
-            `${w.unrestricted ? " · unrestricted" : ""}${w.start_error ? ` · ${w.start_error} ${w.start_remedy}` : ""}` +
+            `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}${w.stop_reason ? ` · ${w.stop_reason}` : ""}` +
+            `${w.unrestricted ? " · unrestricted" : ""}${w.start_remedy ? ` · ${[w.start_error, w.start_remedy].filter(Boolean).join(" ")}` : ""}` +
             `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}` +
             `${w.denied_requests ? `  ${w.denied_requests} denied` : ""}`).join("\n") || "No workers."));
       return;
@@ -269,6 +312,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
       const spec: WorkerSpec = { worker_id: workerId, harness, cwd, permissions: parsePermissions(parsed, harness),
         ...(model ? { model } : {}),
         env };
+      preflightWorkerExecutable(spec);
       const row = store.addWorker(spec, actor, now());
       const unrestricted = hasUnrestrictedPermissions(spec.permissions);
       printResult(parsed, { status: "added", worker: row.worker_id, desired: row.desired,
