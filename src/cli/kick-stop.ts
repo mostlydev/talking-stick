@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { resolveDataDir } from "../config.js";
 import { createSystemHerdrRunner, listHerdrAgents, readPaneProcesses, runHerdrJson, type HerdrRunner } from "../herdr.js";
@@ -76,8 +78,8 @@ async function observeSignal(ref: ProcessRef, inspector: ProcessInspector, descr
   return `${description} Exit is unconfirmed.`;
 }
 
-function runLocal(file: string, args: string[]): string {
-  return execFileSync(file, args, { encoding: "utf8", timeout: 2_000, maxBuffer: 32_768, stdio: ["ignore", "pipe", "ignore"] }).trim();
+function runLocal(file: string, args: string[], env?: NodeJS.ProcessEnv): string {
+  return execFileSync(file, args, { env, encoding: "utf8", timeout: 2_000, maxBuffer: 32_768, stdio: ["ignore", "pipe", "ignore"] }).trim();
 }
 
 function ownsSocket(pid: number, args: string[], name?: string): boolean {
@@ -85,6 +87,21 @@ function ownsSocket(pid: number, args: string[], name?: string): boolean {
     const files = runLocal("lsof", ["-a", "-p", String(pid), "-Fn", ...args]);
     return name ? files.split("\n").includes(`n${name}`) : files.split("\n").some(line => line.startsWith("n"));
   } catch { return false; }
+}
+
+function openCodeService(pid: number): { url: string; port: string; password: string } | null {
+  const stateHome = process.env.XDG_STATE_HOME?.trim() || path.join(os.homedir(), ".local", "state");
+  try {
+    const fd = fs.openSync(path.join(stateHome, "opencode", "service.json"), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || stat.size > 4096) return null;
+      const entry = JSON.parse(fs.readFileSync(fd, "utf8")) as { url?: string; pid?: number; password?: string };
+      const port = typeof entry.url === "string" ? /^http:\/\/127\.0\.0\.1:(\d{1,5})$/.exec(entry.url)?.[1] : undefined;
+      return port && entry.url && entry.pid === pid && typeof entry.password === "string" && entry.password
+        ? { url: entry.url, port, password: entry.password } : null;
+    } finally { fs.closeSync(fd); }
+  } catch { return null; }
 }
 
 function prepareSessionStop(member: RoomMember, ref: ProcessRef, command: string): (() => Promise<string>) | null {
@@ -105,17 +122,20 @@ function prepareSessionStop(member: RoomMember, ref: ProcessRef, command: string
   if (member.harness_name !== "opencode" || !/\bserve\s+--service\b/.test(command) || !/^ses_[a-zA-Z0-9]+$/.test(session)) return null;
   const executable = command.trim().split(/\s+/, 1)[0];
   if (!executable.startsWith("/") || !executable.endsWith("/opencode")) return null;
-  try {
-    const url = runLocal(executable, ["service", "status"]);
-    const port = /^http:\/\/127\.0\.0\.1:(\d+)$/.exec(url)?.[1];
-    if (!port || !ownsSocket(ref.pid, ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN"])) return null;
-    return async () => {
-      if (!ownsSocket(ref.pid, ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN"])) return "OpenCode server no longer owns the selected port.";
-      const reply = JSON.parse(runLocal(executable, ["api", "--server", url, "POST", `/api/session/${session}/interrupt`, "--data", "{}"])) as { interrupted?: boolean };
-      return reply.interrupted === true ? "OpenCode confirmed the selected session was interrupted."
-        : reply.interrupted === false ? "The selected OpenCode session had no active execution." : "OpenCode did not confirm cancellation.";
-    };
-  } catch { return null; }
+  const service = openCodeService(ref.pid);
+  if (!service || !ownsSocket(ref.pid, ["-nP", `-iTCP:${service.port}`, "-sTCP:LISTEN"])) return null;
+  return async () => {
+    const current = openCodeService(ref.pid);
+    if (!current || current.url !== service.url || !ownsSocket(ref.pid, ["-nP", `-iTCP:${current.port}`, "-sTCP:LISTEN"]))
+      return "OpenCode server no longer owns the selected port.";
+    // The service credential stays in the native client's environment. No
+    // endpoint discovery or credential fallback can start another server.
+    const reply = JSON.parse(runLocal(executable, ["api", "--server", current.url, "POST",
+      `/api/session/${session}/interrupt`, "--data", "{}"], { HOME: process.env.HOME, PATH: process.env.PATH,
+        NO_PROXY: "127.0.0.1", OPENCODE_PASSWORD: current.password })) as { interrupted?: boolean };
+    return reply.interrupted === true ? "OpenCode confirmed the selected session was interrupted."
+      : reply.interrupted === false ? "The selected OpenCode session had no active execution." : "OpenCode did not confirm cancellation.";
+  };
 }
 
 function prepareOwnedPane(member: RoomMember, roomPath: string, dataDir: string, inspector: ProcessInspector,
