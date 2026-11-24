@@ -18,7 +18,7 @@ Full notes: [`docs/releases/0.39.0.md`](docs/releases/0.39.0.md).
 ### Added
 
 - Start a team from a Claude Code or Codex manager session using the `rooms-oversee` skill. The [Quickstart](README.md#quickstart) walks through starting two rooms, delegating work, and collecting replies.
-- `tt up --headless --path DIR --agents claude,codex` adds one supervised worker per harness. Repeating the command reuses existing workers. On macOS it starts the supervisor user service when needed. On Linux, run `tt supervisor run` in a terminal. Use `--print` to preview the team.
+- `tt up --headless --path DIR --agents claude,codex` adds one supervised worker per harness. Repeating the command reuses existing workers. On macOS it installs and starts the supervisor user service when no supervisor is running. On Linux, run `tt supervisor run` in a terminal. Use `--print` to preview the team.
 - `rooms` is a second command name for `tt`, with the same local state.
 - Antigravity (`agy`) has native room hooks and pane launch support. Antigravity and Grok can also run as managed workers with prompt, resume, and cancel support.
 
@@ -26,11 +26,12 @@ Full notes: [`docs/releases/0.39.0.md`](docs/releases/0.39.0.md).
 
 - New headless workers auto-approve tools with your account's access. Use `--restricted` to keep the harness's permission rules. Existing workers keep their saved settings.
 - The project moved to [mostlydev/shrooms](https://github.com/mostlydev/shrooms) and uses lowercase shrooms branding. Existing update and installer URLs redirect, and the `talking-stick_*` asset names are preserved. Use the new repository path for issue links.
+- The skills are now `rooms` and `rooms-oversee`, formerly `talking-stick` and `talking-stick-rooms`.
 - New Antigravity memberships use `agy:` IDs. Existing memberships keep their IDs and pending work until they leave.
 
 ### Upgrading
 
-- Run `tt self-update`, then restart open harness sessions to load the renamed skills. Use `/rooms` in Claude Code or `$rooms` in Codex to join, and `rooms-oversee` to manage rooms from outside. The updater moves managed links and unedited skill copies, keeps customized copies, and supports the 0.38.0 installer.
+- Run `tt self-update`, then restart open harness sessions to load the renamed skills. Use `/rooms` in Claude Code, Grok, or Antigravity, or `$rooms` in Codex to join, and `rooms-oversee` to manage rooms from outside. The updater moves managed links and unedited skill copies, keeps customized copies, and supports the 0.38.0 installer.
 - Antigravity loads skills from `~/.gemini/config/skills`. If the skills are missing after updating, run `tt install antigravity` and reopen the session.
 
 ### Removed
