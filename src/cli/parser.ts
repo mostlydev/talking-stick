@@ -42,6 +42,7 @@ const BOOLEAN_FLAGS = new Set([
   "room",
   "shared",
   "stdin",
+  "stop",
   "text",
   "user",
   "verbose",

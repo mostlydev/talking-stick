@@ -17,6 +17,7 @@ import type {
   HeartbeatResult,
   JoinPathResult,
   KickMemberResult,
+  KickMemberInput,
   LeaveRoomResult,
   ListNotesResult,
   ListRoomsInput,
@@ -278,15 +279,31 @@ export class TalkingStickCommands {
 
   kickMember(
     identity: DerivedIdentity,
-    input: KickMemberCommandInput
+    input: KickMemberCommandInput & Pick<KickMemberInput, "stop_target">
   ): KickMemberResult {
     return this.service.kickMember({
       agent_id: identity.agent_id,
       room_id: input.room_id,
       target_agent_id: input.target_agent_id,
       force: input.force,
-      reason: input.reason
+      reason: input.reason,
+      stop_target: input.stop_target
     });
+  }
+
+  kickTarget(roomId: string, agentId: string) { return this.service.kickTarget(roomId, agentId); }
+
+  kickProcessPeers(host: string, pid: number, startedAt: string, roomId: string, agentId: string): string[] {
+    return this.service.kickProcessPeers(host, pid, startedAt, roomId, agentId);
+  }
+
+  withKickProcessPeers<T>(host: string, pid: number, startedAt: string, roomId: string, agentId: string,
+    action: (peers: string[]) => T): T {
+    return this.service.withKickProcessPeers(host, pid, startedAt, roomId, agentId, action);
+  }
+
+  recordKickStop(identity: DerivedIdentity, roomId: string, target: string, description: string): void {
+    this.service.recordKickStop(roomId, identity.agent_id, target, description);
   }
 
   waitForTurn(

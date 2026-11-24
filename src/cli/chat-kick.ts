@@ -3,14 +3,15 @@ import { HUMAN_CHAT_SESSION_KIND, type RoomMember } from "../types.js";
 export function resolveChatKick(args: string, members: RoomMember[], selfId: string): {
   target: RoomMember;
   force: boolean;
+  stop?: true;
   reason?: string;
 } {
-  const match = /^(?:(--force)\s+)?(@?\S+)(?:\s+([\s\S]*))?$/.exec(args.trim());
+  const match = /^(?:(--force|--stop)\s+)?(@?\S+)(?:\s+([\s\S]*))?$/.exec(args.trim());
   if (!match || match[2].startsWith("--")) {
-    throw new Error("Usage: /kick [--force] <agent> [reason]");
+    throw new Error("Usage: /kick [--force | --stop] <agent> [reason]");
   }
   const selector = match[2].replace(/^@/, "").toLowerCase();
-  if (!selector) throw new Error("Usage: /kick [--force] <agent> [reason]");
+  if (!selector) throw new Error("Usage: /kick [--force | --stop] <agent> [reason]");
   const exact = members.find((member) => member.agent_id.toLowerCase() === selector);
   const matches = exact ? [exact] : members.filter((member) =>
     member.agent_id.toLowerCase().startsWith(selector) ||
@@ -21,5 +22,5 @@ export function resolveChatKick(args: string, members: RoomMember[], selfId: str
   if (target.agent_id === selfId || target.session_kind === HUMAN_CHAT_SESSION_KIND) {
     throw new Error("Chat consoles cannot be kicked here. Use /quit to leave your console.");
   }
-  return { target, force: Boolean(match[1]), reason: match[3]?.trim() || undefined };
+  return { target, force: Boolean(match[1]), ...(match[1] === "--stop" ? { stop: true as const } : {}), reason: match[3]?.trim() || undefined };
 }

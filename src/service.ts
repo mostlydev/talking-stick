@@ -1377,6 +1377,44 @@ export class TalkingStickService {
     });
   }
 
+  kickTarget(roomId: string, agentId: string) {
+    const room = this.requireRoom(roomId);
+    const live = this.getMember(roomId, agentId);
+    const lost = live ? null : this.getLostMember(roomId, agentId);
+    const member = live ?? (lost ? JSON.parse(lost.member_json) as RoomMemberRow : null);
+    const endpoint = live ? this.getNativeWakeEndpoint(roomId, agentId, "supervisor")
+      : lost ? (JSON.parse(lost.state_json) as LostMemberState).member_wake_endpoints
+        ?.find(row => row.transport === "supervisor") : undefined;
+    return { canonical_path: room.canonical_path, member: member ? this.mapMember(member, this.now()) : null,
+      managed: typeof endpoint?.address === "string" ? { address: endpoint.address,
+        secret: typeof endpoint.secret === "string" ? endpoint.secret : null } : null };
+  }
+
+  kickProcessPeers(host: string, pid: number, startedAt: string, roomId: string, agentId: string): string[] {
+    return this.db.prepare<unknown[], { agent_id: string }>(`SELECT DISTINCT agent_id FROM room_members
+      WHERE ((harness_host_id = ? AND harness_pid = ? AND trim(harness_process_started_at) = ?)
+          OR (host_id = ? AND pid = ? AND trim(process_started_at) = ?))
+        AND (room_id != ? OR agent_id != ?)
+      UNION SELECT agent_id FROM lost_room_members
+        WHERE host_id = ? AND pid = ? AND trim(process_started_at) = ?
+          AND (room_id != ? OR agent_id != ?) ORDER BY agent_id`)
+      .all(host, pid, startedAt, host, pid, startedAt, roomId, agentId,
+        host, pid, startedAt, roomId, agentId).map(row => row.agent_id);
+  }
+
+  withKickProcessPeers<T>(host: string, pid: number, startedAt: string, roomId: string, agentId: string,
+    action: (peers: string[]) => T): T {
+    return this.writeTransaction(() => action(this.kickProcessPeers(host, pid, startedAt, roomId, agentId)));
+  }
+
+  recordKickStop(roomId: string, actor: string, target: string, description: string): void {
+    this.writeTransaction(() => {
+      const room = this.requireRoom(roomId);
+      this.appendEvent({ room_id: roomId, turn_id: room.turn_id, event_type: "kick_stop",
+        from_agent_id: actor, to_agent_id: target, handoff: null, reason: description, created_at: this.now().toISOString() });
+    });
+  }
+
   kickMember(input: KickMemberInput): KickMemberResult {
     assertNonEmpty(input.agent_id, "agent_id");
     assertNonEmpty(input.room_id, "room_id");
@@ -1400,6 +1438,12 @@ export class TalkingStickService {
 
       const target = this.getMember(input.room_id, input.target_agent_id);
       const lostTarget = target ? null : this.getLostMember(input.room_id, input.target_agent_id);
+      if (input.stop_target) {
+        const selected = target ?? (lostTarget ? JSON.parse(lostTarget.member_json) as RoomMemberRow : null);
+        if (!selected || Object.entries(input.stop_target).some(([key, value]) => selected[key as keyof RoomMemberRow] !== value)) {
+          throw new ProtocolError("invalid_input", "The selected member changed before the kick. Inspect it again.");
+        }
+      }
       if (lostTarget) {
         // A kick is final: the lost session can no longer recover or rejoin.
         this.markManagedDeparture(input.room_id, input.target_agent_id, "kicked", timestamp);
@@ -1435,6 +1479,17 @@ export class TalkingStickService {
       const targetWasOwner = room.owner === input.target_agent_id;
       const targetWasReservedFor = room.reserved_for === input.target_agent_id;
 
+      // A kick is final for this session, whether or not the process is still
+      // alive. A later join of the same harness session is member_revoked.
+      if (target.harness_session_id) {
+        this.db.prepare(`INSERT OR REPLACE INTO revoked_room_members
+          (room_id, agent_id, harness_session_id, revoked_at, revoked_by)
+          VALUES (?, ?, ?, ?, ?)`).run(input.room_id, input.target_agent_id,
+          target.harness_session_id, timestamp, input.agent_id);
+      }
+      this.db.prepare("DELETE FROM member_credentials WHERE room_id = ? AND agent_id = ?")
+        .run(input.room_id, input.target_agent_id);
+
       this.db
         .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
         .run(input.room_id, input.target_agent_id);
@@ -1451,7 +1506,7 @@ export class TalkingStickService {
       });
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasOpenBlockers(input.room_id)) {
+      if (!input.stop_target && !this.shouldKeepRoom(remainingMembers, now) && !this.hasOpenBlockers(input.room_id)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",

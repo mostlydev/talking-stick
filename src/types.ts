@@ -145,6 +145,7 @@ export type EventType =
   | "takeover"
   | "close"
   | "kick"
+  | "kick_stop"
   | "session_superseded"
   | "reservation_expired"
   | "message_sent";
@@ -258,12 +259,17 @@ export interface LeaveRoomResult {
   remaining_members: number;
 }
 
+export type KickMemberProof = Pick<RoomMember,
+  "joined_at" | "harness_session_id" | "harness_host_id" | "harness_pid" | "harness_process_started_at" |
+  "host_id" | "pid" | "process_started_at">;
+
 export interface KickMemberInput {
   agent_id: AgentId;
   room_id: string;
   target_agent_id: AgentId;
   force?: boolean;
   reason?: string;
+  stop_target?: KickMemberProof;
 }
 
 export interface KickMemberResult {

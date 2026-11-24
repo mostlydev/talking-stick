@@ -7,8 +7,9 @@ export interface MemberMenu {
   selected: number;
   target: string | null;
   phase: "members" | "actions" | "confirm";
+  stop?: { detail: string; confirmation: string; reason?: string };
 }
-export type MemberMenuAction = "none" | "close" | "message" | "kick";
+export type MemberMenuAction = "none" | "close" | "message" | "kick" | "preview_stop" | "kick_stop";
 
 export function createMemberMenu(agents: string[], target?: string): MemberMenu {
   return { agents, selected: 0, target: target ?? null, phase: target ? "actions" : "members" };
@@ -16,7 +17,7 @@ export function createMemberMenu(agents: string[], target?: string): MemberMenu 
 
 export function memberMenuKey(state: MemberMenu, key: ChatModalKey): MemberMenuAction {
   if (key === "escape") return "close";
-  const count = state.phase === "members" ? state.agents.length : 2;
+  const count = state.phase === "members" ? state.agents.length : state.phase === "actions" ? 3 : 2;
   if (key === "up" || key === "down") {
     state.selected = count ? (state.selected + (key === "up" ? -1 : 1) + count) % count : 0;
     return "none";
@@ -31,11 +32,12 @@ export function memberMenuKey(state: MemberMenu, key: ChatModalKey): MemberMenuA
   }
   if (state.phase === "actions") {
     if (state.selected === 0) return "message";
+    if (state.selected === 2) return "preview_stop";
     state.phase = "confirm";
     state.selected = 0;
     return "none";
   }
-  return state.selected === 1 ? "kick" : "close";
+  return state.selected === 1 ? state.stop ? "kick_stop" : "kick" : "close";
 }
 
 export function renderMemberMenu(state: MemberMenu, maxLines: number, nameOf: (id: string) => string = id => id,
@@ -45,8 +47,10 @@ export function renderMemberMenu(state: MemberMenu, maxLines: number, nameOf: (i
     (nameOf(id) === id ? "" : paint(themeStyle("muted", options.color_mode), ` · ${sanitizeChatText(id)}`));
   const title = state.phase === "members" ? paint(`1;${themeStyle("accent", options.color_mode)}`, "Room members") : label(state.target ?? "");
   const choices = state.phase === "members" ? state.agents.map(label) : state.phase === "actions"
-    ? [paint(themeStyle("command", options.color_mode), "Message"), paint(themeStyle("warn", options.color_mode), "Remove from room…")]
-    : [paint(themeStyle("command", options.color_mode), "Cancel"), paint(themeStyle("error", options.color_mode), "Remove from room (harness keeps running)")];
+    ? [paint(themeStyle("command", options.color_mode), "Message"), paint(themeStyle("warn", options.color_mode), "Remove from room…"),
+      paint(themeStyle("warn", options.color_mode), "Kick and stop…")]
+    : [paint(themeStyle("command", options.color_mode), "Cancel"), paint(themeStyle("error", options.color_mode),
+      state.stop ? sanitizeChatText(state.stop.detail) : "Remove from room only")];
   const capacity = Math.max(1, maxLines - 2);
   const start = Math.max(0, state.selected - capacity + 1);
   return [title, ...choices.slice(start, start + capacity).map((choice, i) => {

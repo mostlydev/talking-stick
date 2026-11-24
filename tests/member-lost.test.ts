@@ -197,6 +197,19 @@ describe("a SessionEnd for an open session", () => {
   });
 });
 
+describe("explicit removal of a live member", () => {
+  test("a forced kick keeps that harness session out while it is still alive", () => {
+    const { service, roomId, join } = setup();
+    join("claude:keeper", metadata("claude", "keeper"));
+    join("codex:live", metadata("codex", "s1"));
+    expect(service.kickMember({
+      room_id: roomId, agent_id: OP, target_agent_id: "codex:live", force: true
+    }).status).toBe("kicked");
+    expect(() => join("codex:live", metadata("codex", "s1"))).toThrow(expect.objectContaining({ code: "member_revoked" }));
+    expect(() => join("codex:next", metadata("codex", "s9"))).not.toThrow();
+  });
+});
+
 describe("explicit removal of a lost member", () => {
   test.each(["kick", "leave"] as const)("%s is final: no recovery, even after the session starts again", (removal) => {
     const { service, roomId, join, hook, lost } = setup();

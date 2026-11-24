@@ -42,6 +42,14 @@ describe("tmux backend", () => {
     expect(paneExists(runner, "%8")).toBe(false);
   });
 
+  test("closes only the exact pane and refuses a missing target", () => {
+    const { exec, calls } = fakeTmux({ "tmux display-message -p -t %3": "%3\t/dev/ttys011\n" });
+    const runner = createTmuxHerdrRunner({ exec });
+    expect(runHerdrJson(runner, ["pane", "close", "%3"])).toEqual({});
+    expect(() => runHerdrJson(runner, ["pane", "close", "%9"])).toThrow("can't find pane %9");
+    expect(calls.filter(call => call[1] === "kill-pane")).toEqual([["tmux", "kill-pane", "-t", "%3"]]);
+  });
+
   test("creates a workspace, splits with the new pane's share, and pins the room", () => {
     const { exec, calls } = fakeTmux({
       "tmux has-session": refused("can't find session: repo"),
