@@ -508,11 +508,16 @@ describe("headless membership cleanup", () => {
   });
 
   test("leaves a shared host alive until its other member leaves", async () => {
-    const { service, supervisor, workerJoins, startWorker, roomId, project, identity } = await setup({ gcClock: true });
+    const { service, supervisor, startWorker, roomId, project, identity } = await setup({ gcClock: true });
     const handle = await startWorker();
-    workerJoins(handle);
+    const worker = identity(handle);
+    service.joinPath({ agent_id: worker.agent_id, context_path: project, process_metadata: worker.process_metadata });
+    // The other member is already present when the worker registers its supervisor endpoint.
     service.joinPath({ agent_id: "claude:other", context_path: project,
-      process_metadata: { ...identity(handle).process_metadata, harness_session_id: "harness:other" } });
+      process_metadata: { ...worker.process_metadata, harness_session_id: "harness:other" } });
+    new TalkingStickCommands(service).registerNativeWakeEndpoints(worker, {
+      room_id: roomId, env: handle.spec.supervisor_env ?? {}, host_id: HOST
+    });
     service.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
     await supervisor.tick();
     expect(handle.stopped).toBe(false);

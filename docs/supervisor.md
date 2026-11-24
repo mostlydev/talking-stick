@@ -60,8 +60,12 @@ before running `tt up`, or pass `--env OPENCODE_EXECUTABLE=literal:/absolute/pat
 
 The supervisor stops an enrolled worker when it leaves or is kicked, or its room is
 removed. Lost memberships get two minutes to recover. Restarting or rebinding a
-worker keeps the new generation running. A different enrolled session on the same
-host process keeps that process alive until it leaves.
+worker keeps the new generation running. If another room member already shares
+the same host process, cleanup waits until that member leaves.
+
+To move a worker to another room without stopping it, join the destination
+directly with `tt join --in <room>`. A separate `tt leave` can stop the worker
+before it joins the destination.
 
 Run `tt supervisor gc --dry-run` to see eligible worker generations and detached
 guardians whose lease ended. The same checks run automatically. Supervisor status
