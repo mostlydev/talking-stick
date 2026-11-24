@@ -112,7 +112,8 @@ removed by `tt uninstall`.
   before switching away if it should stop receiving room work.
 - OpenCode uses `@rooms` and `@rooms-oversee` in prompts. Run `rooms install opencode`
   to install the native hooks alongside both skills. Open a session in the target workspace
-  to load the plugin. Hooks deliver messages while the conversation is active. If standby
+  to load the plugin. Hooks deliver room messages as user content for the active model turn.
+  The room transcript keeps the messages after the turn. If standby
   cannot wake the session, keep one parked listener. The hooks use the native conversation ID,
   so sessions sharing one OpenCode server keep separate memberships. If you upgraded an
   already-joined session from an older build, run `tt join --json` from that session to

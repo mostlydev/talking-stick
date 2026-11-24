@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -5,6 +6,7 @@ import { afterEach, expect, test } from "vitest";
 import { runOpencodeHookCommand } from "../src/cli/opencode-hook.js";
 import { deriveHarnessCliIdentity, type ProcessInspector } from "../src/index.js";
 import { planSessionHooks, runAction } from "../src/install.js";
+import { OPENCODE_V1_PLUGIN, OPENCODE_V2_PLUGIN } from "../src/opencode-plugin.js";
 import { TalkingStickService } from "../src/service.js";
 
 const cleanup: Array<() => void> = [];
@@ -83,4 +85,53 @@ test("OpenCode installer manages both native plugin generations and keeps unrela
   fs.writeFileSync(foreign.filePath, "// foreign plugin");
   expect((await runAction(foreign, options)).status).toBe("failed");
   expect(fs.readFileSync(foreign.filePath, "utf8")).toBe("// foreign plugin");
+});
+
+
+test.skipIf(process.platform === "win32")("native plugins keep delivery as user content through one turn", () => {
+  const root = profile();
+  const executable = path.join(root, "tt");
+  fs.writeFileSync(executable, `#!/bin/sh
+if [ "$2" = delivery ] && [ ! -e "$OPENCODE_TEST_DELIVERY" ]; then
+  touch "$OPENCODE_TEST_DELIVERY"
+  printf 'queued room message'
+fi
+`, { mode: 0o755 });
+  const file = path.join(root, "test.mjs");
+  fs.writeFileSync(file, `
+import assert from "node:assert/strict";
+const plugin = async source => (await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"))).default;
+const [v1, v2] = JSON.parse(process.argv[2]);
+const hooks = await (await plugin(v1))({ directory: process.cwd() });
+const message = id => ({ info: { id, role: "user", sessionID: "session" }, parts: [] });
+for (const id of ["turn1", "turn1", "turn2"]) {
+  const user = message(id);
+  await hooks["experimental.chat.messages.transform"]({}, { messages: [user] });
+  assert.equal(user.parts.length, id === "turn1" ? 1 : 0);
+  if (user.parts.length) assert.match(user.parts[0].text, /queued room message/);
+}
+process.env.OPENCODE_TEST_DELIVERY += ".v2";
+const registered = {};
+const cleanup = await (await plugin(v2)).setup({
+  location: { directory: process.cwd() },
+  session: { hook: async (name, callback) => { registered[name] = callback; } },
+  event: { subscribe: async function* () {} }
+});
+for (const id of ["turn1", "turn1", "turn2"]) {
+  const messages = [{ id, role: "user", content: [] }];
+  const system = [];
+  await registered.context({ sessionID: "session", messages, system });
+  assert.equal(system.length, 0);
+  assert.equal(messages.length, id === "turn1" ? 2 : 1);
+  if (messages.length > 1) {
+    assert.equal(messages[1].role, "user");
+    assert.match(messages[1].content[0].text, /queued room message/);
+  }
+}
+cleanup();
+`);
+  execFileSync(process.execPath, [file, JSON.stringify([OPENCODE_V1_PLUGIN, OPENCODE_V2_PLUGIN])], {
+    cwd: root, env: { ...process.env, PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
+      OPENCODE_TEST_DELIVERY: path.join(root, "delivered") }
+  });
 });
