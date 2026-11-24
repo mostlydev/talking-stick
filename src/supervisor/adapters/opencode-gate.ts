@@ -144,6 +144,8 @@ export interface OpenCodeGateSurface {
   configOverrides: readonly OpenCodeConfigProviderOverride[];
   /** Whether any resolved config document declared V2 `permissions` rules. */
   hasConfigPermissions?: boolean;
+  /** Resources explicitly allowed by higher-level native provider policies. */
+  allowedPolicyResources?: string[];
 }
 
 export interface OpenCodeModelRef {
@@ -363,9 +365,11 @@ function mergeConfigSettings(entry: Record<string, unknown>): {
 export function projectOpenCodeConfigDocuments(rawDocuments: readonly unknown[]): {
   overrides: OpenCodeConfigProviderOverride[];
   hasPermissions: boolean;
+  allowedPolicyResources: string[];
 } {
   const overrides: OpenCodeConfigProviderOverride[] = [];
   let hasPermissions = false;
+  const allowedPolicyResources = new Set<string>();
 
   for (const rawDoc of rawDocuments) {
     const doc = asRecord(rawDoc);
@@ -373,6 +377,15 @@ export function projectOpenCodeConfigDocuments(rawDocuments: readonly unknown[])
     const info = asRecord(doc.info);
     if (!info) continue;
     if (Array.isArray(info.permissions) && info.permissions.length > 0) hasPermissions = true;
+    for (const policies of [info.policies, asRecord(info.experimental)?.policies]) {
+      if (!Array.isArray(policies)) continue;
+      for (const rawRule of policies) {
+        const rule = asRecord(rawRule);
+        if (rule?.effect === "allow" && [ "provider.use", "integration.use", "*" ].includes(String(rule.action))) {
+          allowedPolicyResources.add(typeof rule.resource === "string" ? rule.resource : "*");
+        }
+      }
+    }
 
     for (const providersField of ["providers", "provider"] as const) {
       const providers = asRecord(info[providersField]);
@@ -410,7 +423,7 @@ export function projectOpenCodeConfigDocuments(rawDocuments: readonly unknown[])
       }
     }
   }
-  return { overrides, hasPermissions };
+  return { overrides, hasPermissions, allowedPolicyResources: [...allowedPolicyResources] };
 }
 
 function assertStockEndpoint(

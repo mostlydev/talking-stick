@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveDataDir } from "../config.js";
 import type { EnvReference, Harness, WorkerPermissions, WorkerSpec } from "../supervisor/adapter.js";
+import { parseOpenCodeModelRef } from "../supervisor/adapters/opencode-gate.js";
 import { builtinAdapters } from "../supervisor/adapters/index.js";
 import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent, type LaunchctlRunner } from "../supervisor/launchd.js";
 import { isStandalone, isInstalledRelease, standaloneRoot } from "../standalone-mode.js";
@@ -22,7 +23,7 @@ import { isModelCredential, MODEL_CREDENTIAL_MESSAGE } from "../supervisor/adapt
 
 export const SUPERVISOR_USAGE = [
   "tt supervisor status",
-  "tt supervisor add <worker> --harness claude|codex|grok|agy --cwd PATH [--model M] [--restricted | --permission-mode default|plan|bypassPermissions]",
+  "tt supervisor add <worker> --harness claude|codex|grok|agy|opencode --cwd PATH [--model M] [--restricted | --permission-mode default|plan|bypassPermissions]",
   "  [--sandbox read-only|workspace-write|danger-full-access --approval on-request|untrusted|never] [--env NAME[=literal:VALUE]]",
   "  Headless workers bypass tool prompts by default. Use --restricted for standard harness permissions.",
   "tt supervisor pause|resume|stop|remove <worker>",
@@ -99,10 +100,10 @@ function parsePermissions(parsed: ParsedCommand, harness: Harness): WorkerPermis
     }
     return { harness, sandbox, approval };
   }
-  if (harness === "antigravity") {
+  if (harness === "antigravity" || harness === "opencode") {
     if (sandbox || approval) fail("--sandbox and --approval are Codex settings.");
     if (mode !== undefined && mode !== "default" && mode !== "bypassPermissions") {
-      fail("An Antigravity worker needs --permission-mode default or bypassPermissions.");
+      fail(`A ${harness} worker needs --permission-mode default or bypassPermissions.`);
     }
     return { harness, mode: mode ?? "bypassPermissions" };
   }
@@ -249,8 +250,13 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
       if (store.worker(workerId)) fail(`Worker ${workerId} already exists.`);
       const name = getStringOption(parsed, "harness");
       const harness = name === "agy" ? "antigravity" : name;
-      if (harness !== "claude" && harness !== "codex" && harness !== "grok" && harness !== "antigravity") fail("--harness must be claude, codex, grok or agy.");
+      if (harness !== "claude" && harness !== "codex" && harness !== "grok" && harness !== "antigravity" && harness !== "opencode") fail("--harness must be claude, codex, grok, agy or opencode.");
       if (harness === "antigravity" && getStringOption(parsed, "model")) fail("Set the model in Antigravity settings.");
+      const model = getStringOption(parsed, "model");
+      if (harness === "opencode" && hasOption(parsed, "model")) {
+        if (!model) fail("--model needs a value.");
+        parseOpenCodeModelRef(model);
+      }
       const cwd = getStringOption(parsed, "cwd");
       if (!cwd || !path.isAbsolute(cwd) || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) fail("--cwd must be an existing absolute directory.");
       // An existing native session is never imported: nothing here can prove
@@ -261,7 +267,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
         env.push({ name: "PATH", from: "literal", value: process.env.PATH });
       }
       const spec: WorkerSpec = { worker_id: workerId, harness, cwd, permissions: parsePermissions(parsed, harness),
-        ...(getStringOption(parsed, "model") ? { model: getStringOption(parsed, "model") } : {}),
+        ...(model ? { model } : {}),
         env };
       const row = store.addWorker(spec, actor, now());
       const unrestricted = hasUnrestrictedPermissions(spec.permissions);

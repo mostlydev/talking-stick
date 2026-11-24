@@ -243,6 +243,16 @@ describe("tt up --headless", () => {
     expect(process.exitCode).toBe(1);
   });
 
+  test("pins the OpenCode 2.4+ executable for a restricted worker", async () => {
+    const t = setup({ installed: [] });
+    const binary = path.join(t.bin, "opencode");
+    fs.writeFileSync(binary, "#!/bin/sh\necho 2.4.1\n", { mode: 0o755 });
+    const result = await t.up(["--agents", "opencode", "--restricted"]);
+    expect(result.workers).toMatchObject([{ agent: "opencode", action: "added", unrestricted: false }]);
+    expect(t.spec("shrooms-opencode")).toMatchObject({ harness: "opencode", permissions: { harness: "opencode", mode: "default" },
+      env: expect.arrayContaining([{ name: "OPENCODE_EXECUTABLE", from: "literal", value: binary }]) });
+  });
+
   test("Linux prints how to run the supervisor instead of installing one", async () => {
     const t = setup();
     const result = await t.up(["--agents", "claude"], { platform: "linux" });
@@ -250,10 +260,10 @@ describe("tt up --headless", () => {
     expect(t.installs).toHaveLength(0);
   });
 
-  test("refuses pane-only flags, OpenCode, Windows, a missing folder and an agent that is not installed", async () => {
+  test("refuses pane-only flags, older OpenCode, Windows, a missing folder and an agent that is not installed", async () => {
     const t = setup({ installed: ["claude", "codex"] });
     await expect(t.up(["--new-tab"])).rejects.toThrow("--new-tab is for panes");
-    await expect(t.up(["--agents", "opencode"])).rejects.toThrow("OpenCode has no headless worker");
+    await expect(t.up(["--agents", "opencode"])).rejects.toThrow("OpenCode 2.4+ is required");
     await expect(t.up([], { platform: "win32" })).rejects.toThrow("macOS and Linux");
     await expect(t.up(["--agents", "grok"])).rejects.toThrow("Cannot start grok (not installed) here.");
     await expect(t.up(["--prefix", "Bad Name"])).rejects.toThrow("--prefix is lowercase");

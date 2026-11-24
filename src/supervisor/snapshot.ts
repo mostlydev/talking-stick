@@ -1,5 +1,5 @@
 import { openSqlite, type SqliteDatabase } from "../sqlite.js";
-import type { WorkerPermissions, WorkerSpec } from "./adapter.js";
+import type { WorkerExecutableError, WorkerPermissions, WorkerSpec } from "./adapter.js";
 import { readSupervisorOwnerLock, type ProcessLivenessReader } from "./daemon.js";
 import { inspectSupervisorState } from "./root.js";
 import { supervisorPaths, systemProcessLiveness } from "./run.js";
@@ -19,7 +19,7 @@ interface WorkerStatusRow {
   session_id: string | null;
   started_at: string | null;
   ended_at: string | null;
-  executable_error: "CLAUDE_EXECUTABLE" | "CODEX_EXECUTABLE" | null;
+  executable_error: WorkerExecutableError["envName"] | null;
   uncertain_inputs: number;
   denied_requests: number;
 }
@@ -41,6 +41,8 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
            g.started_at, g.ended_at,
            CASE WHEN json_valid(g.exit_json) THEN
              CASE
+               WHEN json_extract(g.exit_json, '$.executable_env') = 'OPENCODE_EXECUTABLE'
+                 THEN 'OPENCODE_EXECUTABLE'
                WHEN json_extract(g.exit_json, '$.executable_env') = 'CODEX_EXECUTABLE' OR
                     json_extract(g.exit_json, '$.error') LIKE 'Error: Cannot find a native Codex executable.%'
                  THEN 'CODEX_EXECUTABLE'

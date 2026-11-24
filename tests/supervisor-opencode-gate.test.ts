@@ -120,8 +120,8 @@ function stockSurface(overrides: Partial<OpenCodeGateSurface> = {}): OpenCodeGat
 }
 
 describe("OpenCode V2 executable and environment guards", () => {
-  test("does not publicly register opencode in builtinAdapters yet", () => {
-    expect(builtinAdapters().opencode).toBeUndefined();
+  test("registers the OpenCode headless adapter", () => {
+    expect(builtinAdapters().opencode?.harness).toBe("opencode");
   });
 
   test("enforces OpenCode 2.4+ floor and skips older shims shadowing 2.4+ on PATH", () => {

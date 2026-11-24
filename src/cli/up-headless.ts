@@ -5,7 +5,9 @@ import { resolveDataDir } from "../config.js";
 import { DEFAULT_AGENT_PAIR, readLaunchDefaults, resolveAgentChoice } from "../launch-defaults.js";
 import { acquireLaunchLock } from "../launch-record.js";
 import { resolveContextPath } from "../path-resolution.js";
-import type { Harness, WorkerSpec } from "../supervisor/adapter.js";
+import { resolvePrimarySkillTargetPath } from "../skill-install.js";
+import { resolveOpenCodeV2Executable } from "../supervisor/adapters/opencode-gate.js";
+import type { WorkerSpec } from "../supervisor/adapter.js";
 import type { ProcessLivenessReader } from "../supervisor/daemon.js";
 import { LAUNCHD_LABEL, launchAgentPath, systemLaunchctl, type LaunchctlRunner } from "../supervisor/launchd.js";
 import { inspectSupervisorState, prepareSupervisorRoot, type SupervisorRoot } from "../supervisor/root.js";
@@ -81,11 +83,6 @@ export interface HeadlessUpResult {
   skipped: string[];
   service: HeadlessService;
   next_steps: string[];
-}
-
-function harnessFor(agent: LaunchAgent): Harness {
-  if (agent === "opencode") throw new Error("OpenCode has no headless worker. Choose from claude, codex, grok and agy.");
-  return agent;
 }
 
 function agentLabel(agent: LaunchAgent): string {
@@ -208,7 +205,6 @@ export async function handleHeadlessUp(runtime: Runtime, parsed: ParsedCommand, 
   const restricted = hasOption(parsed, "restricted");
   const requestedAgents = getStringOption(parsed, "agents");
   const requested = requestedAgents === undefined ? undefined : parseLaunchAgents(requestedAgents);
-  requested?.forEach(harnessFor);
   const prefixOption = getStringOption(parsed, "prefix");
   if (prefixOption !== undefined && !PREFIX.test(prefixOption)) {
     throw new Error("--prefix is lowercase letters, digits, '.', '_' or '-', starting with a letter or digit, up to 40 characters.");
@@ -230,20 +226,32 @@ export async function handleHeadlessUp(runtime: Runtime, parsed: ParsedCommand, 
   const searchPath = workerSearchPath(env, options.homeDir, platform);
   // Agents are looked up on the PATH the workers will run with, which may add tt's folder.
   const workerEnv = { ...env, PATH: searchPath };
-  const launchable = installedLaunchAgents(workerEnv, options.homeDir, true, platform).filter((agent) => agent !== "opencode");
-  const choice = resolveAgentChoice({ requested, defaults: requested ? {} : readLaunchDefaults(dataDir), roomKey: roomPath, launchable });
+  const defaults = requested ? {} : readLaunchDefaults(dataDir);
+  const launchable: LaunchAgent[] = installedLaunchAgents(workerEnv, options.homeDir, true, platform).filter((agent) => agent !== "opencode");
+  let openCodeExecutable: string | undefined;
+  let openCodeReason = "OpenCode 2.4+ is required";
+  if (!requested || requested.includes("opencode")) {
+    const skill = resolvePrimarySkillTargetPath("opencode", { homeDir: options.homeDir });
+    if (!fs.existsSync(path.join(skill, "SKILL.md"))) {
+      openCodeReason = "skill missing · tt install opencode";
+    } else {
+      try {
+        openCodeExecutable = resolveOpenCodeV2Executable(workerEnv);
+        launchable.push("opencode");
+      } catch { /* The availability reason above covers missing and older executables. */ }
+    }
+  }
+  const choice = resolveAgentChoice({ requested, defaults, roomKey: roomPath, launchable });
   if (requested) {
     const missing = requested.flatMap((agent) => {
-      const reason = launchUnavailableReason(agent, workerEnv, options.homeDir, platform);
+      const reason = agent === "opencode" ? openCodeExecutable ? null : openCodeReason
+        : launchUnavailableReason(agent, workerEnv, options.homeDir, platform);
       return reason ? [`${agentLabel(agent)} (${reason})`] : [];
     });
     if (missing.length > 0) throw new Error(`Cannot start ${missing.join(", ")} here.`);
   }
-  const agents = choice.agents.filter((agent) => agent !== "opencode");
-  const skipped = [
-    ...choice.unavailable.map((agent) => `${agentLabel(agent)}: saved for tt up but cannot run headless here`),
-    ...(choice.agents.includes("opencode") ? ["opencode: no headless worker"] : [])
-  ];
+  const agents = choice.agents;
+  const skipped = choice.unavailable.map((agent) => `${agentLabel(agent)}: saved for tt up but cannot run headless here`);
   if (agents.length === 0) {
     throw new Error(choice.source === "pair"
       ? `Neither ${DEFAULT_AGENT_PAIR.join(" nor ")} is installed with its rooms skill. Install one, or name agents with --agents.`
@@ -258,7 +266,7 @@ export async function handleHeadlessUp(runtime: Runtime, parsed: ParsedCommand, 
   const plan = (existing: readonly SupervisorWorkerStatus[]): HeadlessWorker[] => {
     const conflicts: string[] = [];
     const planned = agents.map((agent): HeadlessWorker => {
-      const harness = harnessFor(agent);
+      const harness = agent;
       const same = existing.find((worker) => worker.harness === harness && realDirectory(worker.cwd) === cwd);
       if (same) {
         return { agent, worker: same.worker_id, action: "exists", unrestricted: same.unrestricted === true,
@@ -314,10 +322,14 @@ export async function handleHeadlessUp(runtime: Runtime, parsed: ParsedCommand, 
       const planned = plan(readSupervisorWorkers(store.db));
       for (const worker of planned) {
         if (worker.action !== "add") continue;
-        const harness = harnessFor(worker.agent);
+        const harness = worker.agent;
         const spec: WorkerSpec = { worker_id: worker.worker, harness, cwd,
           permissions: defaultWorkerPermissions(harness, { restricted }),
-          env: searchPath ? [{ name: "PATH", from: "literal", value: searchPath }] : [] };
+          env: [
+            ...(searchPath ? [{ name: "PATH", from: "literal" as const, value: searchPath }] : []),
+            ...(harness === "opencode" && openCodeExecutable
+              ? [{ name: "OPENCODE_EXECUTABLE", from: "literal" as const, value: openCodeExecutable }] : [])
+          ] };
         store.addWorker(spec, actor, at);
         worker.action = "added";
       }
