@@ -212,8 +212,7 @@ export class Supervisor {
       if (current === null || (current?.startTime && current.startTime.trim() !== guard.process_started_at)) {
         this.bridge.forgetGuard?.(guard);
       } else if (current?.ppid === 1 && terminateKnownProcess(guard, { inspector: this.guardInspector, signaler: this.guardSignaler })) {
-        this.store.audit(this.at(), "supervisor", "orphan_guard_stop", null, guard);
-        this.bridge.forgetGuard?.(guard);
+        this.store.audit(this.at(), "supervisor", "orphan_guard_term_sent", null, guard);
       }
     }
   }

@@ -569,8 +569,10 @@ describe("headless membership cleanup", () => {
   test("reaps only a detached guardian whose recorded lease and exact process have ended", async () => {
     const signals: { pid: number; signal: NodeJS.Signals }[] = [];
     let parent = 4321;
+    let guardExited = false;
     const { service, store, supervisor, startWorker, workerJoins, roomId, socketPath } = await setup({ gcClock: true,
-      inspect: pid => ({ pid, ppid: parent, startTime: pid === 12345 ? "guard-start" : "reused-pid", command: "tt guard" }),
+      inspect: pid => pid === 12345 && guardExited ? null
+        : { pid, ppid: parent, startTime: pid === 12345 ? "guard-start" : "reused-pid", command: "tt guard" },
       signal: (pid, signal) => signals.push({ pid, signal }) });
     const handle = await startWorker();
     workerJoins(handle);
@@ -591,7 +593,10 @@ describe("headless membership cleanup", () => {
     parent = 1;
     await supervisor.tick();
     expect(signals).toEqual([{ pid: guard.pid, signal: "SIGTERM" }]);
+    expect(listReleasedManagedGuards(service.db, HOST, socketPath)).toEqual([guard]);
+    guardExited = true;
+    await supervisor.tick();
     expect(listReleasedManagedGuards(service.db, HOST, socketPath)).toEqual([]);
-    expect(store.auditRows().filter(row => row.action === "orphan_guard_stop")).toHaveLength(1);
+    expect(store.auditRows().filter(row => row.action === "orphan_guard_term_sent")).toHaveLength(1);
   });
 });
