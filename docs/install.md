@@ -88,6 +88,7 @@ The workspace instructions live in `AGENTS.md`. The repository also provides
 | Claude Code | `~/.claude/skills` | `~/.claude/settings.json` |
 | Codex | `~/.agents/skills` | `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) |
 | Grok Build | `~/.agents/skills` | `$GROK_HOME/hooks/` (default `~/.grok/hooks/`) |
+| OpenCode | `~/.agents/skills` | `~/.config/opencode/plugin/` (v1), `~/.config/opencode/plugins/` (v2) |
 | Antigravity (`agy`) | `~/.gemini/config/skills` | `~/.gemini/config/hooks.json` |
 
 Antigravity reads `.agents/skills` under a workspace. For global installs use
@@ -109,6 +110,15 @@ removed by `tt uninstall`.
   Restart Antigravity after installing the hooks. Separate conversations opened in
   the same terminal have separate room memberships. Run `tt leave` in a conversation
   before switching away if it should stop receiving room work.
+- OpenCode uses `@rooms` and `@rooms-oversee` in prompts. Run `rooms install opencode`
+  to install the native hooks alongside both skills. Open a session in the target workspace
+  to load the plugin. Hooks deliver room messages as user content for the active model turn.
+  The room transcript keeps the messages after the turn. If standby
+  cannot wake the session, keep one parked listener. The hooks use the native conversation ID,
+  so sessions sharing one OpenCode server keep separate memberships. If you upgraded an
+  already-joined session from an older build, run `tt join --json` from that session to
+  register the exact identity. A legacy PID-based entry can be removed from chat once
+  you have verified which entry is stale.
 - `tt install herdr` adds the optional Ctrl-click shortcut for the unread bar in Herdr.
 
 ## Moving from npm

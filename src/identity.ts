@@ -422,7 +422,7 @@ function detectHarnessSignal(env: NodeJS.ProcessEnv): HarnessSignal | null {
   if (env.OPENCODE === "1") {
     return {
       harness: "opencode",
-      sessionId: nonEmpty(env.OPENCODE_RUN_ID) ?? nonEmpty(env.OPENCODE_PID),
+      sessionId: nonEmpty(env.OPENCODE_SESSION_ID) ?? nonEmpty(env.OPENCODE_RUN_ID) ?? nonEmpty(env.OPENCODE_PID),
       pidHint: null
     };
   }
@@ -568,6 +568,7 @@ function deriveCommandLabel(command: string | null): string {
   const basename = executableName(token).replace(/\.(exe|cmd|bat)$/i, "");
   // The Grok installer stores a versioned native download behind the grok link.
   if (/^grok-\d+\.\d+\.\d+(?:-[\w.]+)?-(?:macos|linux|windows)-(?:aarch64|arm64|x86_64|x64)$/.test(basename)) return "grok";
+  if (basename === ".opencode") return "opencode";
   const sanitized = sanitizeIdentityComponent(basename);
   return sanitized || "harness";
 }

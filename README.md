@@ -129,8 +129,8 @@ and chat for you.
   to preview it. Herdr needs the session integration for each agent. [Launcher setup](docs/reference.md#herdr-launch-tt-up)
 
 Claude Code, Codex, Grok Build, and Antigravity (`agy`) have room skills, hooks, and managed
-workers. OpenCode can join a room as an experimental client. The harness and launch method
-determine how an idle agent is woken. [Wake and delivery reference](docs/reference.md#waking-idle-agents)
+workers. OpenCode has room skills and native session hooks for interactive rooms. The harness
+and launch method determine how an idle agent is woken. [Wake and delivery reference](docs/reference.md#waking-idle-agents)
 
 To manage rooms from a separate local agent session, use the `rooms-oversee` skill.
 It starts headless rooms, reports on rooms and asks their agents questions without joining.
