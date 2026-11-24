@@ -88,6 +88,23 @@ describe("the service", () => {
     expect(join("codex:other", "other", 601).room_id).toBe(roomId);
   });
 
+  test("gives a supervised endpoint to one conversation when two joined before either registered", () => {
+    const { service, join } = setup();
+    const roomId = join("codex:worker", "worker").room_id;
+    join("codex:memory", "memory");
+    const register = (agent: string, session: string, address = "/tmp/sv.sock#w1@1") =>
+      service.registerNativeWakeEndpoint({ agent_id: agent, room_id: roomId, transport: "supervisor",
+        address, secret: "gen-token", harness_session_id: `harness:${session}`, host_id: HOST });
+    register("codex:worker", "worker");
+    expect(() => register("codex:memory", "memory")).toThrow(expect.objectContaining({ code: "not_worker_session",
+      message: expect.stringContaining("codex:worker") }));
+    // Re-registering the same session stays idempotent; a new generation's address moves with it.
+    expect(register("codex:worker", "worker").status).toBe("native_wake_endpoint_registered");
+    expect(register("codex:worker", "worker", "/tmp/sv.sock#w1@2").status).toBe("native_wake_endpoint_registered");
+    expect(service.db.prepare("SELECT agent_id, address FROM member_wake_endpoints WHERE transport = 'supervisor'").all())
+      .toEqual([{ agent_id: "codex:worker", address: "/tmp/sv.sock#w1@2" }]);
+  });
+
   test("still admits several conversations of an unsupervised shared host", () => {
     const { join } = setup();
     const roomId = join("codex:desktop-a", "a").room_id;
