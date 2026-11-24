@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
+import { OPENCODE_PLUGIN_MARKER, OPENCODE_V1_PLUGIN, OPENCODE_V2_PLUGIN } from "./opencode-plugin.js";
 import {
   SUPPORTED_HARNESSES,
   type HarnessId
@@ -35,6 +36,7 @@ export interface InstallerHooks {
   run?: (command: string, args: string[], options?: SpawnOptions) => Promise<ExecResult>;
   readFile?: (filePath: string) => string | null;
   writeFile?: (filePath: string, data: string) => void;
+  removeFile?: (filePath: string) => void;
   ensureDir?: (dirPath: string) => void;
   pathExists?: (filePath: string) => boolean;
   which?: (binary: string) => string | null;
@@ -148,6 +150,7 @@ function resolveOptions(options: InstallOptions = {}): ResolvedOptions {
       run: options.run ?? defaultRun,
       readFile: options.readFile ?? defaultReadFile,
       writeFile: options.writeFile ?? defaultWriteFile,
+      removeFile: options.removeFile ?? ((filePath) => fs.rmSync(filePath, { force: true })),
       ensureDir: options.ensureDir ?? defaultEnsureDir,
       pathExists: options.pathExists ?? defaultPathExists,
       which: options.which ?? ((binary) => defaultWhich(binary, { env, platform }))
@@ -392,8 +395,44 @@ function mergeMarkedHooks(existing: string | null, marker: string, events: strin
   } catch { return null; }
 }
 
+function planOpencodePlugin(operation: InstallOperation, options: InstallOptions): InstallAction[] {
+  const harness = "opencode";
+  const resolved = resolveOptions(options);
+  const configDir = resolveOpencodeConfigDirFromResolved(resolved);
+  if (resolved.skipMissing && !resolved.hooks.pathExists(configDir) && !resolved.hooks.which("opencode")) {
+    return [skipAction(harness, `config directory not found: ${configDir}`)];
+  }
+  // OpenCode 1 discovers direct files in plugin/ and plugins/. OpenCode 2
+  // discovers packages in plugins/; a nested entry keeps V1 from importing V2.
+  return [
+    { filePath: path.join(configDir, "plugin", "shrooms-session.js"), source: OPENCODE_V1_PLUGIN },
+    { filePath: path.join(configDir, "plugins", "shrooms-session", "index.js"), source: OPENCODE_V2_PLUGIN }
+  ].map(({ filePath, source }): FilePatchAction => ({
+    kind: "file-patch", harness, filePath, operation,
+    description: `${operation} OpenCode session hooks in ${filePath}`,
+    inspect: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      if (existing === null) return "absent";
+      if (operation === "uninstall") return "present";
+      return existing === source ? "present" : "different";
+    },
+    apply: () => {
+      const existing = resolved.hooks.readFile(filePath);
+      if (existing !== null && !existing.startsWith(OPENCODE_PLUGIN_MARKER + "\n")) {
+        throw new Error(`Refusing to replace or remove an unmanaged OpenCode plugin: ${filePath}`);
+      }
+      if (operation === "uninstall") {
+        if (existing !== null) resolved.hooks.removeFile(filePath);
+      } else if (existing !== source) {
+        resolved.hooks.ensureDir(path.dirname(filePath));
+        resolved.hooks.writeFile(filePath, source);
+      }
+    }
+  }));
+}
+
 export function planSessionHooks(harness: HarnessId, operation: "install" | "uninstall", options: InstallOptions = {}): InstallAction[] {
-  if (harness !== "claude-code" && harness !== "codex" && harness !== "grok" && harness !== "antigravity") return [];
+  if (harness === "opencode") return planOpencodePlugin(operation, options);
   const resolved = resolveOptions(options);
   const configDir = harness === "codex" && resolved.env.CODEX_HOME?.trim()
     ? resolved.env.CODEX_HOME.trim() : resolveHarnessConfigDirFromResolved(harness, resolved);

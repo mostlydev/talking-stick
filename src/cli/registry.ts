@@ -1,3 +1,4 @@
+import { runOpencodeHookCommand } from "./opencode-hook.js";
 import { runGrokInboxHookCommand } from "./grok-inbox-hook.js";
 import { runCodexInboxHookCommand } from "./codex-inbox-hook.js";
 import { runSessionHookCommand } from "./session-hook.js";
@@ -82,6 +83,11 @@ export function helpGroups(): Array<{ title: string; usages: string[] }> {
 }
 
 export const COMMAND_REGISTRY: CommandEntry[] = [
+  {
+    name: "opencode-hook", needsRuntime: false, startupMaintenance: false, internal: true,
+    usage: "tt opencode-hook <start|end|delivery>", description: "Bridge a native OpenCode conversation.",
+    handler: ({ parsed }) => runOpencodeHookCommand(parsed.positionals[0])
+  },
   {
     name: "antigravity-hook", needsRuntime: false, startupMaintenance: false, internal: true,
     usage: "tt antigravity-hook <SessionStart|PreInvocation|Stop>", description: "Deliver room events inside an Antigravity conversation.",

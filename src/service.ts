@@ -4079,9 +4079,24 @@ export class TalkingStickService {
 
   prepareHarnessHookDelivery(input: { context_path: string; harness_session_id: string;
     diagnostic?: (text: string) => void } & ({ harness: "grok" } |
-    { harness: "antigravity"; pid: number; processStartedAt: string })): string | null {
+    { harness: "antigravity" | "opencode"; pid: number; processStartedAt: string })): string | null {
     const resolved = resolveContextPath(input.context_path);
-    const room = this.findDeepestRoom(roomCandidatePaths(resolved));
+    const contextRoom = this.findDeepestRoom(roomCandidatePaths(resolved));
+    // An OpenCode server can run the tool in a different cwd from a pinned room.
+    // The exact conversation identifies its room when it is enrolled in only one.
+    const roomForSession = () => {
+      if (input.harness !== "opencode") return contextRoom;
+      const matches = this.db.prepare<Array<string | number>, PathRoomRow>(`
+        SELECT r.* FROM room_members m JOIN path_rooms r ON r.room_id = m.room_id
+        WHERE r.state != 'closed' AND m.harness_name = 'opencode' AND m.harness_session_id = ?
+          AND COALESCE(m.harness_host_id, m.host_id) = ? AND m.harness_pid = ?
+          AND trim(m.harness_process_started_at) = ?
+        ORDER BY CASE WHEN r.room_id = ? THEN 0 ELSE 1 END LIMIT 2
+      `).all(input.harness_session_id, this.hostId, input.pid, input.processStartedAt.trim(), contextRoom?.room_id ?? "");
+      if (matches[0]?.room_id === contextRoom?.room_id || matches.length === 1) return matches[0];
+      return undefined;
+    };
+    const room = roomForSession();
     if (!room || room.state === "closed") return null;
     // Most tool calls have no pending room work. Do not acquire a write lock
     // for those calls; revalidate membership and pending events inside below.
@@ -4092,10 +4107,11 @@ export class TalkingStickService {
       .get(room.room_id, input.harness_session_id, input.harness, this.hostId);
     if (!pendingForSession) return null;
     return this.writeTransaction(() => {
-      const source = input.harness === "grok" ? "grok_hook" : "antigravity_hook";
-      const processFilter = input.harness === "antigravity"
-        ? "AND harness_pid = ? AND trim(harness_process_started_at) = ?" : "";
-      const processKey = input.harness === "antigravity" ? [input.pid, input.processStartedAt.trim()] : [];
+      if (input.harness === "opencode" && roomForSession()?.room_id !== room.room_id) return null;
+      const source = `${input.harness}_hook`;
+      const processFilter = input.harness === "grok"
+        ? "" : "AND harness_pid = ? AND trim(harness_process_started_at) = ?";
+      const processKey = "pid" in input ? [input.pid, input.processStartedAt.trim()] : [];
       const members = this.db.prepare<Array<string | number>, RoomMemberRow>(`SELECT * FROM room_members
         WHERE room_id = ? AND harness_session_id = ? AND harness_name = ?
           AND COALESCE(harness_host_id, host_id) = ? ${processFilter} LIMIT 2`)

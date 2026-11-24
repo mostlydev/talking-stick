@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- OpenCode installs native room hooks. Running sessions receive room messages and keep separate memberships by conversation ID, even when one OpenCode server hosts several sessions.
+
 ### Changed
 
 - `rooms --help` and `tt --help` name themselves after the command you ran, and group the commands into managing rooms, working inside a room (the talking stick), and setup. `--version` and the unknown-command error use the same name.
