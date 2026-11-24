@@ -11,27 +11,31 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.39.0] — 2026-11-24
+
+Full notes: [`docs/releases/0.39.0.md`](docs/releases/0.39.0.md).
+
 ### Added
 
-- Use `rooms` as an optional second name for `tt`. Both commands use the same local state.
-- Antigravity hooks deliver room messages to active conversations. Use `tt up --agents agy` for pane launches.
-- The supervisor can prompt and resume Antigravity and Grok workers over ACP. Both support cancellation.
-- `tt up --headless --path DIR --agents claude,codex` starts a room of headless agents in one step. It adds a supervised worker per agent, named after the room (`shrooms-claude`), and on macOS installs and starts the supervisor's user agent when none is running. Running it again leaves existing workers alone. `--restricted` keeps each harness's own permission rules, and `--print` previews.
-- The quickstart starts from a manager session: Claude Code or Codex, in a desktop app or terminal, with the `rooms-oversee` skill starts headless rooms in folders, sends them work, and reports on them.
+- Start a team from a Claude Code or Codex manager session using the `rooms-oversee` skill. The [Quickstart](README.md#quickstart) walks through starting two rooms, delegating work, and collecting replies.
+- `tt up --headless --path DIR --agents claude,codex` adds one supervised worker per harness. Repeating the command reuses existing workers. On macOS it starts the supervisor user service when needed. On Linux, run `tt supervisor run` in a terminal. Use `--print` to preview the team.
+- `rooms` is a second command name for `tt`, with the same local state.
+- Antigravity (`agy`) has native room hooks and pane launch support. Antigravity and Grok can also run as managed workers with prompt, resume, and cancel support.
 
 ### Changed
 
-- New headless workers auto-approve tools with your account's access. Use `--restricted` for standard harness permissions or set explicit permission options. Existing workers keep their saved permissions.
+- New headless workers auto-approve tools with your account's access. Use `--restricted` to keep the harness's permission rules. Existing workers keep their saved settings.
+- The project moved to [mostlydev/shrooms](https://github.com/mostlydev/shrooms) and uses lowercase shrooms branding. Existing update and installer URLs redirect, and the `talking-stick_*` asset names are preserved. Use the new repository path for issue links.
+- New Antigravity memberships use `agy:` IDs. Existing memberships keep their IDs and pending work until they leave.
 
-- The repository is now github.com/mostlydev/shrooms. The installer, update check, and docs use the new address. Existing installers, update checks and release downloads still work through GitHub's redirects, so older installs update as before. Links to individual issues need the new repository path. Release downloads keep their `talking-stick_*` names.
-- The skills are now `rooms` (`/rooms` in Claude Code, `$rooms` in Codex) and `rooms-oversee`, formerly `talking-stick` and `talking-stick-rooms`. Updating moves installs under the old names when they are unedited links or copies made by shrooms, and leaves customized ones in place. Release archives keep a short `skills/talking-stick` stub that points to `rooms`, because installers from 0.38.0 and earlier check for it.
-- The name is now written in lowercase, shrooms, in the README, docs, skills, and messages. The README opens with the shrooms wordmark, in dark and light versions for GitHub's themes.
-- New Antigravity memberships use `agy:` IDs. An existing membership keeps its ID and pending work until it leaves the room.
-- `tt install antigravity` now puts the skill in `~/.gemini/config/skills`, where agy loads global skills, instead of `~/.agents/skills`, which agy never read. Updating moves an old-name link that `tt` made in agy's older `~/.gemini/skills` or `~/.gemini/antigravity-cli/skills` folder to the new folder, and `tt install` removes current-name links there, so the skill appears once. If agy had no such link, run `tt install antigravity` after updating.
+### Upgrading
+
+- Run `tt self-update`, then restart open harness sessions to load the renamed skills. Use `/rooms` in Claude Code or `$rooms` in Codex to join, and `rooms-oversee` to manage rooms from outside. The updater moves managed links and unedited skill copies, keeps customized copies, and supports the 0.38.0 installer.
+- Antigravity loads skills from `~/.gemini/config/skills`. If the skills are missing after updating, run `tt install antigravity` and reopen the session.
 
 ### Removed
 
-- Gemini CLI support. Google no longer ships the Gemini CLI, and its skill install was already deprecated. `tt install gemini` and `--harness gemini` are now rejected as unknown harnesses, and `GEMINI_CLI` no longer marks an agent. Antigravity (`agy`) replaces it.
+- Gemini CLI support, including `tt install gemini`, `--harness gemini`, and identity detection through `GEMINI_CLI`. Use Antigravity (`agy`) for Google's harness.
 
 ## [0.38.0] — 2026-11-23
 
@@ -1204,6 +1208,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.39.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.39.0
 [0.38.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.38.0
 [0.37.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.37.0
 [0.36.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.36.0
