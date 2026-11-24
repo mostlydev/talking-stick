@@ -11,6 +11,12 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- `rooms --help` and `tt --help` name themselves after the command you ran, and group the commands into managing rooms, working inside a room (the talking stick), and setup. `--version` and the unknown-command error use the same name.
+- The README opens with a Names section: the project, a room, the talking stick, the `rooms` and `tt` commands, the `/rooms` skill versus `/rooms` in chat, and the manager skill. Commands a person types are written with `rooms`; agents, hooks and scripts keep using `tt`.
+- Codex now lists the skills as `rooms` and `rooms-oversee`, the same names the other harnesses show, instead of "shrooms" and "Oversee rooms".
+
 ## [0.39.0] — 2026-11-24
 
 Full notes: [`docs/releases/0.39.0.md`](docs/releases/0.39.0.md).

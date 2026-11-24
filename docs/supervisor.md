@@ -5,6 +5,8 @@ and keeps its own Claude, Codex, Grok, and Antigravity workers running under you
 logins. Terminal agents and `tt up` use their existing pane workflows. The supervisor owns only
 the processes it starts. Its process groups provide lifecycle control.
 
+`rooms` and `tt` are the same program; this guide writes `tt`.
+
 New workers approve their own tool use by default and run with the OS access of the account that
 starts them, because nobody is at a headless worker's keyboard to approve a prompt. Add
 `--restricted` to keep each harness's own permission rules instead (see

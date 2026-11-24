@@ -61,6 +61,26 @@ export interface CommandEntry {
   handler: (context: CommandContext) => void | Promise<void>;
 }
 
+/** How help groups the public commands: managing rooms, taking turns inside one, and setup. */
+export const HELP_GROUPS = [
+  { title: "Manage rooms",
+    commands: ["chat", "up", "room", "list", "roles", "supervisor", "blocker", "kick"] },
+  { title: "Inside a room (the talking stick)",
+    commands: ["join", "leave", "wait", "standby", "try", "take", "release", "pass", "assign", "msg", "ack", "notes",
+      "state", "health", "events"] },
+  { title: "Setup", commands: ["install", "uninstall", "self-update", "instructions", "whoami"] }
+] as const;
+
+export function helpGroups(): Array<{ title: string; usages: string[] }> {
+  return HELP_GROUPS.map((group) => ({
+    title: group.title,
+    usages: group.commands.flatMap((name) => {
+      const entry = COMMAND_REGISTRY.find((candidate) => candidate.name === name && !candidate.internal);
+      return entry ? [entry.usage] : [];
+    })
+  }));
+}
+
 export const COMMAND_REGISTRY: CommandEntry[] = [
   {
     name: "antigravity-hook", needsRuntime: false, startupMaintenance: false, internal: true,
