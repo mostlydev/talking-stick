@@ -44,6 +44,7 @@ export interface OpencodeStartOptions {
   /** The model to require when no beforeSession supplies one. */
   model?: OpencodeModelRef;
   onSpawn(process: SpawnedProcess): void;
+  onExit?(): void;
   signal?: AbortSignal;
   startTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -553,7 +554,10 @@ export async function startOpencodeWorker(options: OpencodeStartOptions): Promis
       signal: options.signal,
       onSpawn: options.onSpawn,
       onLine: (line) => handle.receive(line),
-      onExit: (code, signal) => handle.exit(code, signal),
+      onExit: (code, signal) => {
+        options.onExit?.();
+        handle.exit(code, signal);
+      },
       onOverflow: () => handle.fail({ type: "overflow" })
     });
     handle.attach(child);
