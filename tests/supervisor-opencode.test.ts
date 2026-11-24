@@ -2,18 +2,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import type { WorkerEvent } from "../src/supervisor/adapter.js";
+import { AuthModeError, type WorkerEvent } from "../src/supervisor/adapter.js";
 import { OpencodeWorkerHandle, parseAnnouncedUrl, SseParser, startOpencodeWorker,
-  type OpencodeStartOptions } from "../src/supervisor/adapters/opencode-worker.js";
+  type OpencodeServerAccess, type OpencodeStartOptions } from "../src/supervisor/adapters/opencode-worker.js";
 
 const fixture = path.resolve("tests/fixtures/fake-opencode-serve.mjs");
+const sonnet = { providerID: "anthropic", id: "claude-sonnet" };
 const cleanup: Array<() => Promise<void> | void> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
-async function start(env: Record<string, string> = {}, options: Partial<OpencodeStartOptions> = {}) {
+function workspace() {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tt-opencode-worker-")));
-  const log = path.join(dir, "requests.jsonl");
   cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+async function start(env: Record<string, string> = {}, options: Partial<OpencodeStartOptions> = {}) {
+  const dir = workspace();
+  const log = path.join(dir, "requests.jsonl");
   const spawned: number[] = [];
   const events: WorkerEvent[] = [];
   const handle = await startOpencodeWorker({
@@ -32,41 +38,57 @@ async function start(env: Record<string, string> = {}, options: Partial<Opencode
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   };
-  return { handle, events, requests, until, spawned, dir };
+  const turns = () => events.filter((event) => event.type === "turn_started" || event.type === "turn_completed");
+  return { handle, events, requests, until, spawned, dir, turns };
 }
 
 describe("OpenCode worker transport", () => {
-  test("starts a private loopback server in its own group and opens a conversation with the given settings", async () => {
-    const { handle, events, requests, spawned, dir } = await start({}, {
-      session: { permissions: [{ action: "*", resource: "*", effect: "allow" }], model: { providerID: "anthropic", id: "claude-sonnet" } }
-    });
+  test("starts a private loopback server in its own group and opens a conversation on the pinned model", async () => {
+    const { handle, events, requests, spawned, dir } = await start({}, { model: sonnet });
     expect(spawned).toEqual([handle.pgid]);
     expect(handle.pgid).toBe(handle.pid);
     expect(handle.sessionId()).toBe("ses_fake1");
     expect(events).toContainEqual({ type: "session", session_id: "ses_fake1" });
     const log = requests();
     expect(log[0].argv).toEqual(["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"]);
-    expect(log.filter((entry) => entry.method)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ method: "GET", path: "/api/event", authorized: true }),
-      expect.objectContaining({ method: "POST", path: "/api/session", authorized: true, body: {
-        location: { directory: dir },
-        permissions: [{ action: "*", resource: "*", effect: "allow" }],
-        model: { providerID: "anthropic", id: "claude-sonnet" }
-      } })
-    ]));
+    const calls = log.filter((entry) => entry.method);
+    expect(calls.every((entry) => entry.authorized)).toBe(true);
+    expect(calls.find((entry) => entry.path === "/api/session")?.body).toEqual({ location: { directory: dir }, model: sonnet });
     // The event stream opened before the conversation, so none of its events are missed.
-    const order = log.filter((entry) => entry.method).map((entry) => `${entry.method} ${entry.path}`);
+    const order = calls.map((entry) => `${entry.method} ${entry.path}`);
     expect(order.indexOf("GET /api/event")).toBeLessThan(order.indexOf("POST /api/session"));
     expect(handle.password).toMatch(/^[0-9a-f]{48}$/);
   });
 
+  test("a gate sees the authenticated server before any conversation, and its model is pinned", async () => {
+    const seen: OpencodeServerAccess[] = [];
+    const { handle, requests } = await start({}, { beforeSession: async (server) => { seen.push(server); return { model: sonnet }; } });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toBe(handle.url);
+    expect(seen[0].authorization).toBe(handle.authorizationHeader);
+    expect(seen[0].signal.aborted).toBe(false);
+    expect(requests().find((entry) => entry.path === "/api/session")?.body.model).toEqual(sonnet);
+  });
+
+  test("a gate that refuses stops the server before any conversation exists", async () => {
+    const dir = workspace();
+    const log = path.join(dir, "requests.jsonl");
+    let pgid = 0;
+    await expect(startOpencodeWorker({ command: process.execPath, argsPrefix: [fixture], cwd: dir, generation: 1,
+      env: { PATH: process.env.PATH, FAKE_OPENCODE_LOG: log }, onSpawn: (child) => { pgid = child.pgid; },
+      beforeSession: async () => { throw new AuthModeError("wrong_auth_mode", "API key route"); } }))
+      .rejects.toBeInstanceOf(AuthModeError);
+    expect(() => process.kill(-pgid, 0)).toThrow();
+    expect(fs.readFileSync(log, "utf8")).not.toContain('"/api/session"');
+  });
+
   test("one prompt is written, starts a turn on its exact inbox item and completes; a second is refused meanwhile", async () => {
-    const { handle, events, until, requests } = await start();
+    const { handle, until, requests, turns } = await start();
     expect(await handle.submit({ input_id: "in1", text: "hello", mode: "start_turn" })).toBe("written");
     expect(await handle.submit({ input_id: "in2", text: "again", mode: "start_turn" })).toBe("rejected");
     expect(await handle.submit({ input_id: "in3", text: "steer", mode: "steer" })).toBe("rejected");
-    await until(() => events.some((event) => event.type === "turn_completed"));
-    expect(events.filter((event) => event.type.startsWith("turn_"))).toEqual([
+    await until(() => turns().length === 2);
+    expect(turns()).toEqual([
       { type: "turn_started", native_turn_id: "inbox_1", input_id: "in1" },
       { type: "turn_completed", native_turn_id: "inbox_1", outcome: "success" }
     ]);
@@ -74,12 +96,52 @@ describe("OpenCode worker transport", () => {
     expect(await handle.submit({ input_id: "in4", text: "next", mode: "start_turn" })).toBe("written");
   });
 
-  test("a permission request is journalled, denied once with the note, and resolved", async () => {
+  test("delivery and completion that arrive before the prompt's response are attributed to that prompt", async () => {
+    const { handle, until, turns } = await start({ FAKE_OPENCODE_EARLY: "1" });
+    expect(await handle.submit({ input_id: "in1", text: "hello", mode: "start_turn" })).toBe("written");
+    await until(() => turns().length === 2);
+    expect(turns()).toEqual([
+      { type: "turn_started", native_turn_id: "inbox_1", input_id: "in1" },
+      { type: "turn_completed", native_turn_id: "inbox_1", outcome: "success" }
+    ]);
+  });
+
+  test("work in the conversation that no prompt started is never attributed, and its permission request is refused", async () => {
+    const { handle, events, until, requests, turns } = await start();
+    expect(await handle.submit({ input_id: "in1", text: "stray then hello", mode: "start_turn" })).toBe("written");
+    await until(() => turns().length === 2);
+    expect(turns()).toEqual([
+      { type: "turn_started", native_turn_id: "inbox_1", input_id: "in1" },
+      { type: "turn_completed", native_turn_id: "inbox_1", outcome: "success" }
+    ]);
+    expect(events).toContainEqual({ type: "request_refused", method: "permission.asked" });
+    expect(events.some((event) => event.type === "approval_requested")).toBe(false);
+    await until(() => requests().some((entry) => entry.path?.endsWith("/permission/per_stray/reply")));
+    expect(requests().find((entry) => entry.path?.endsWith("/permission/per_stray/reply"))?.body.decision).toBe("reject");
+  });
+
+  test("an admission that may have happened is journalled uncertain and ends the generation", async () => {
+    const { handle, events, until } = await start({}, { requestTimeoutMs: 300 });
+    expect(await handle.submit({ input_id: "in1", text: "hang-post", mode: "start_turn" })).toBe("uncertain");
+    expect(events).toContainEqual({ type: "input", input_id: "in1", outcome: "uncertain" });
+    expect(events).toContainEqual({ type: "protocol_error" });
+    await until(() => events.some((event) => event.type === "exited"));
+    expect(await handle.submit({ input_id: "in2", text: "hello", mode: "start_turn" })).toBe("rejected");
+  });
+
+  test("the event stream outlives the start timeout", async () => {
+    const { handle, events, until, turns } = await start({}, { startTimeoutMs: 300 });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(events.some((event) => event.type === "protocol_error")).toBe(false);
+    expect(await handle.submit({ input_id: "in1", text: "hello", mode: "start_turn" })).toBe("written");
+    await until(() => turns().length === 2);
+  });
+
+  test("a permission request of the running turn is journalled, denied once with the note, and resolved", async () => {
     const { handle, events, until, requests } = await start();
     await handle.submit({ input_id: "in1", text: "ask", mode: "start_turn" });
     await until(() => events.some((event) => event.type === "approval_requested"));
-    const asked = events.find((event) => event.type === "approval_requested")!;
-    expect(asked).toMatchObject({ native_request_id: "per_1", tool: "OpenCode bash", summary: "Run ls" });
+    expect(events.find((event) => event.type === "approval_requested")).toMatchObject({ native_request_id: "per_1", tool: "OpenCode bash", summary: "Run ls" });
     await expect(handle.answerApproval("per_1", "allow")).rejects.toThrow("no matching denial");
     await handle.answerApproval("per_1", "deny", "Nobody can approve prompts here.");
     await expect(handle.answerApproval("per_1", "deny")).rejects.toThrow("no matching denial");
@@ -100,19 +162,39 @@ describe("OpenCode worker transport", () => {
     expect(events.at(-1)).toEqual({ type: "turn_completed", native_turn_id: "inbox_1", outcome: "interrupted" });
   });
 
-  test("resumes only a conversation the server has, and wrapped event frames work too", async () => {
-    const { handle, events, until } = await start({ FAKE_OPENCODE_EXISTING: "ses_old", FAKE_OPENCODE_WRAP: "1" }, { resumeSessionId: "ses_old" });
+  test("resumes only the server's conversation in this folder on the exact model and variant", async () => {
+    const existing = { FAKE_OPENCODE_EXISTING: "ses_old", FAKE_OPENCODE_WRAP: "1",
+      FAKE_OPENCODE_EXISTING_MODEL: JSON.stringify({ ...sonnet, variant: "high" }) };
+    const { handle, until, turns } = await start(existing, { resumeSessionId: "ses_old", model: { ...sonnet, variant: "high" } });
     expect(handle.sessionId()).toBe("ses_old");
     await handle.submit({ input_id: "in1", text: "hello", mode: "start_turn" });
-    await until(() => events.some((event) => event.type === "turn_completed"));
+    await until(() => turns().length === 2);
+    await expect(start(existing, { resumeSessionId: "ses_old", model: sonnet })).rejects.toBeInstanceOf(AuthModeError);
     await expect(start({}, { resumeSessionId: "ses_missing" })).rejects.toThrow("could not find the conversation");
-    await expect(start({ FAKE_OPENCODE_EXISTING: "ses_old", FAKE_OPENCODE_EXISTING_DIR: "/somewhere/else" }, { resumeSessionId: "ses_old" }))
+    await expect(start({ ...existing, FAKE_OPENCODE_EXISTING_DIR: "/somewhere/else" }, { resumeSessionId: "ses_old" }))
       .rejects.toThrow("belongs to another folder");
+    await expect(start({ FAKE_OPENCODE_IGNORE_MODEL: "1" }, { model: sonnet })).rejects.toBeInstanceOf(AuthModeError);
   });
 
-  test("refuses a conversation that did not take the requested model", async () => {
-    await expect(start({ FAKE_OPENCODE_IGNORE_MODEL: "1" }, { session: { model: { providerID: "anthropic", id: "claude-sonnet" } } }))
-      .rejects.toThrow("did not set the requested model");
+  test("a model required without a variant matches OpenCode's stored default variant, and only that", async () => {
+    const stored = (variant: string) => ({ FAKE_OPENCODE_EXISTING: "ses_old", FAKE_OPENCODE_EXISTING_MODEL: JSON.stringify({ ...sonnet, variant }) });
+    const { handle } = await start(stored("default"), { resumeSessionId: "ses_old", model: sonnet });
+    expect(handle.sessionId()).toBe("ses_old");
+    await expect(start(stored("high"), { resumeSessionId: "ses_old", model: sonnet })).rejects.toBeInstanceOf(AuthModeError);
+  });
+
+  test("a model switched after start is caught before the next prompt", async () => {
+    const { handle, events } = await start({}, { model: sonnet });
+    const switched = await fetch(`${handle.url}/api/session/ses_fake1/model`, { method: "POST",
+      headers: { Authorization: handle.authorizationHeader, "Content-Type": "application/json" },
+      body: JSON.stringify({ providerID: "openrouter", id: "cheap" }) });
+    expect(switched.status).toBe(200);
+    expect(await handle.submit({ input_id: "in1", text: "hello", mode: "start_turn" })).toBe("rejected");
+    expect(events).toContainEqual({ type: "state", state: "wrong_auth_mode" });
+  });
+
+  test("never follows a redirect", async () => {
+    await expect(start({ FAKE_OPENCODE_REDIRECT: "1" })).rejects.toThrow();
   });
 
   test("probe checks the exact process and conversation; stop ends the whole group on stdin EOF", async () => {
@@ -134,14 +216,17 @@ describe("OpenCode worker transport", () => {
     }
   });
 
-  test("the event parser takes data lines, ignores the rest, and bounds a runaway line", () => {
+  test("the event parser takes data lines, ignores the rest, and refuses an oversized line, complete or not", () => {
     const frames: unknown[] = [];
-    let overflowed = false;
-    const parser = new SseParser((frame) => frames.push(frame), () => { overflowed = true; });
+    let overflows = 0;
+    const parser = new SseParser((frame) => frames.push(frame), () => { overflows++; });
     parser.push(": comment\nevent: x\ndata: {\"type\":\"a\"}\n\ndata: {\"event\":{\"type\":\"b\"}}\r\ndata: not json\n");
     expect(frames).toEqual([{ type: "a" }, { type: "b" }]);
+    parser.push("data: {\"type\":\"" + "x".repeat(300 * 1024) + "\"}\n");
+    expect(overflows).toBe(1);
+    expect(frames).toHaveLength(2);
     parser.push("data: " + "x".repeat(300 * 1024));
-    expect(overflowed).toBe(true);
+    expect(overflows).toBe(2);
   });
 
   test("a handle refuses work before it has a conversation", async () => {

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createSystemProcessInspector } from "../../process-utils.js";
-import type { InputOutcome, SpawnedProcess, WorkerEvent, WorkerHandle } from "../adapter.js";
+import { AuthModeError, type InputOutcome, type SpawnedProcess, type WorkerEvent, type WorkerHandle } from "../adapter.js";
 import { approvalSummary } from "../approval-detail.js";
 import { spawnManagedProcess, type ManagedProcess } from "./process.js";
 
@@ -17,11 +17,12 @@ export interface OpencodeModelRef {
   variant?: string;
 }
 
-/** One OpenCode permission rule, as session.create takes them. */
-export interface OpencodePermissionRule {
-  action: string;
-  resource: string;
-  effect: "allow" | "deny" | "ask";
+/** The authenticated server, offered to a gate before any conversation is opened. */
+export interface OpencodeServerAccess {
+  url: string;
+  authorization: string;
+  cwd: string;
+  signal: AbortSignal;
 }
 
 export interface OpencodeStartOptions {
@@ -33,8 +34,15 @@ export interface OpencodeStartOptions {
   generation: number;
   /** Resume this conversation; a start that cannot find it fails. */
   resumeSessionId?: string;
-  /** Applied to a new conversation only; a resumed one keeps its own. */
-  session?: { permissions?: OpencodePermissionRule[]; model?: OpencodeModelRef };
+  /**
+   * Runs against this generation's authenticated server before any
+   * conversation is opened. Throwing (an AuthModeError) refuses the start;
+   * a model it returns is pinned on a new conversation and must match a
+   * resumed one, before every prompt.
+   */
+  beforeSession?: (server: OpencodeServerAccess) => Promise<{ model?: OpencodeModelRef } | void>;
+  /** The model to require when no beforeSession supplies one. */
+  model?: OpencodeModelRef;
   onSpawn(process: SpawnedProcess): void;
   signal?: AbortSignal;
   startTimeoutMs?: number;
@@ -43,13 +51,16 @@ export interface OpencodeStartOptions {
 
 interface Turn {
   inputId: string;
-  inboxId: string;
-  started: boolean;
+  /** Null while the prompt's admission is in flight; then the exact inbox item. */
+  inboxId: string | null;
+  /** Set only by session.inbox.delivered for that inbox item. */
+  running: boolean;
 }
 
 type Json = Record<string, unknown>;
 
 const MAX_PENDING_APPROVALS = 32;
+const MAX_HELD_EVENTS = 256;
 const MAX_EVENT_BYTES = 256 * 1024;
 
 function object(value: unknown): Json {
@@ -75,6 +86,11 @@ export class SseParser {
     while ((index = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, index).replace(/\r$/, "");
       this.buffer = this.buffer.slice(index + 1);
+      if (line.length > MAX_EVENT_BYTES) {
+        this.buffer = "";
+        this.onOverflow();
+        return;
+      }
       if (!line.startsWith("data:")) continue;
       let frame: unknown;
       try { frame = JSON.parse(line.slice(5).trimStart()); } catch { continue; }
@@ -102,6 +118,9 @@ export class OpencodeWorkerHandle implements WorkerHandle {
   private terminal = false;
   private readonly events = new AbortController();
   private announced?: (url: string | null) => void;
+  /** This conversation's events that arrived while a prompt's admission was in flight. */
+  private held: Json[] = [];
+  private expected?: { cwd: string; model?: OpencodeModelRef };
 
   constructor(generation: number, readonly password: string, private readonly requestTimeoutMs = 10_000) {
     this.generation = generation;
@@ -111,6 +130,8 @@ export class OpencodeWorkerHandle implements WorkerHandle {
   get pid(): number { return this.child!.pid; }
   get processStartedAt(): string { return this.child!.processStartedAt; }
   get pgid(): number { return this.child!.pgid; }
+  get url(): string | undefined { return this.baseUrl; }
+  get authorizationHeader(): string { return this.authorization; }
   sessionId(): string | null { return this.session; }
   attach(child: ManagedProcess): void { this.child = child; }
 
@@ -166,6 +187,7 @@ export class OpencodeWorkerHandle implements WorkerHandle {
       method,
       headers: { Authorization: this.authorization, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
+      redirect: "error",
       signal: AbortSignal.timeout(timeoutMs)
     });
     const text = await response.text();
@@ -176,15 +198,27 @@ export class OpencodeWorkerHandle implements WorkerHandle {
 
   /** Opens the event stream before any conversation exists, so no event of it is missed. */
   async subscribe(timeoutMs: number): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/api/event`, {
-      headers: { Authorization: this.authorization, Accept: "text/event-stream" },
-      signal: AbortSignal.any([this.events.signal, AbortSignal.timeout(timeoutMs)])
-    });
+    // The timer bounds only the connection: a fetch signal would also end the
+    // body, so it is cleared once the stream answers, and only stop() ends it.
+    const connection = new AbortController();
+    const stop = () => connection.abort();
+    if (this.events.signal.aborted) stop();
+    else this.events.signal.addEventListener("abort", stop, { once: true });
+    const timer = setTimeout(stop, timeoutMs);
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/api/event`, {
+        headers: { Authorization: this.authorization, Accept: "text/event-stream" },
+        redirect: "error",
+        signal: connection.signal
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     if (response.status === 401) throw new Error("OpenCode refused this generation's credentials.");
     if (!response.ok || !response.body) throw new Error(`OpenCode's event stream answered ${response.status}.`);
     const parser = new SseParser((frame) => this.handle(frame), () => this.fail({ type: "overflow" }));
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-    // The timeout above bounds only the connection; the stream itself stays open.
     void (async () => {
       try {
         for (;;) {
@@ -199,46 +233,75 @@ export class OpencodeWorkerHandle implements WorkerHandle {
     })();
   }
 
-  async openSession(cwd: string, resume: string | undefined, settings: OpencodeStartOptions["session"]): Promise<void> {
+  async openSession(cwd: string, resume: string | undefined, model: OpencodeModelRef | undefined): Promise<void> {
     let id: string;
     if (resume) {
       id = resume;
     } else {
-      const created = await this.request("POST", "/api/session", {
-        location: { directory: cwd },
-        ...(settings?.permissions ? { permissions: settings.permissions } : {}),
-        ...(settings?.model ? { model: settings.model } : {})
-      });
+      const created = await this.request("POST", "/api/session", { location: { directory: cwd }, ...(model ? { model } : {}) });
       const createdId = object(created.json.data).id;
       if (created.status !== 200 || typeof createdId !== "string" || !createdId) throw new Error(`OpenCode did not create a conversation (${created.status}).`);
       id = createdId;
     }
-    // Read it back: the conversation must be exactly this one, in this
-    // worker's folder, on the requested model, before it takes any input.
-    const found = await this.request("GET", `/api/session/${encodeURIComponent(id)}`);
-    const info = object(found.json.data);
-    if (found.status !== 200 || info.id !== id) {
+    this.expected = { cwd, ...(model ? { model } : {}) };
+    const problem = await this.checkSession(id);
+    if (problem === "missing") {
       throw new Error(resume ? "OpenCode could not find the conversation to resume." : "OpenCode lost the conversation it created.");
     }
-    if (object(info.location).directory !== cwd) throw new Error("The OpenCode conversation belongs to another folder.");
-    const model = object(info.model);
-    if (!resume && settings?.model && (model.providerID !== settings.model.providerID || model.id !== settings.model.id)) {
-      throw new Error("OpenCode did not set the requested model on the conversation.");
-    }
+    if (problem === "folder") throw new Error("The OpenCode conversation belongs to another folder.");
+    if (problem === "model") throw new AuthModeError("wrong_auth_mode", "The OpenCode conversation is not on the verified subscription model.");
     this.session = id;
     this.emit({ type: "session", session_id: id });
+  }
+
+  /**
+   * Reads the conversation back: exactly this one, in this worker's folder,
+   * and on the verified provider, model and variant when one is required.
+   */
+  private async checkSession(id: string): Promise<"ok" | "missing" | "folder" | "model"> {
+    const found = await this.request("GET", `/api/session/${encodeURIComponent(id)}`);
+    const info = object(found.json.data);
+    if (found.status !== 200 || info.id !== id) return "missing";
+    if (object(info.location).directory !== this.expected?.cwd) return "folder";
+    const required = this.expected?.model;
+    if (required) {
+      const model = object(info.model);
+      // OpenCode stores a model without a variant as its "default" variant.
+      if (model.providerID !== required.providerID || model.id !== required.id ||
+          (model.variant ?? "default") !== (required.variant ?? "default")) return "model";
+    }
+    return "ok";
   }
 
   private handle(event: Json): void {
     if (this.terminal) return;
     const data = object(event.data);
-    if (data.sessionID !== this.session || !this.session) return;
+    if (!this.session || data.sessionID !== this.session) return;
+    // Until the admission response names the inbox item, nothing can be
+    // attributed to it: hold this conversation's events and apply them after.
+    if (this.turn && this.turn.inboxId === null) {
+      if (this.held.length >= MAX_HELD_EVENTS) { this.fail({ type: "overflow" }); return; }
+      this.held.push(event);
+      return;
+    }
+    this.apply(event, data);
+  }
+
+  private release(): void {
+    for (const event of this.held.splice(0)) {
+      if (this.terminal) return;
+      this.apply(event, object(event.data));
+    }
+  }
+
+  private apply(event: Json, data: Json): void {
+    const turn = this.turn;
     switch (event.type) {
       case "session.inbox.delivered":
-        if (this.turn && data.inboxID === this.turn.inboxId) this.started(this.turn);
-        return;
-      case "session.execution.started":
-        if (this.turn) this.started(this.turn);
+        if (turn && !turn.running && turn.inboxId !== null && data.inboxID === turn.inboxId) {
+          turn.running = true;
+          this.emit({ type: "turn_started", native_turn_id: turn.inboxId, input_id: turn.inputId });
+        }
         return;
       case "session.execution.succeeded":
         this.finish("success");
@@ -252,8 +315,9 @@ export class OpencodeWorkerHandle implements WorkerHandle {
       case "permission.asked": {
         const id = data.id;
         if (typeof id !== "string" || !id || this.pending.has(id)) return;
+        // Only the running, correlated turn can ask; anything else is refused at once.
+        if (!turn?.running) { void this.refuse(id); return; }
         if (this.pending.size >= MAX_PENDING_APPROVALS) { this.fail({ type: "protocol_error" }); return; }
-        if (this.turn) this.started(this.turn);
         this.pending.add(id);
         const action = typeof data.action === "string" ? data.action : "tool";
         const message = typeof data.message === "string" ? data.message : `OpenCode asks to ${action}.`;
@@ -274,16 +338,22 @@ export class OpencodeWorkerHandle implements WorkerHandle {
     }
   }
 
-  private started(turn: Turn): void {
-    if (turn.started) return;
-    turn.started = true;
-    this.emit({ type: "turn_started", native_turn_id: turn.inboxId, input_id: turn.inputId });
+  private async refuse(requestId: string): Promise<void> {
+    this.emit({ type: "request_refused", method: "permission.asked" });
+    try {
+      const result = await this.request("POST",
+        `/api/session/${encodeURIComponent(this.session!)}/permission/${encodeURIComponent(requestId)}/reply`,
+        { decision: "reject", message: "No supervised turn asked for this." });
+      if (result.status !== 204 && result.status !== 200) this.fail({ type: "protocol_error" });
+    } catch {
+      this.fail({ type: "protocol_error" });
+    }
   }
 
+  /** Only a turn its own inbox item started can end. */
   private finish(outcome: "success" | "error" | "interrupted"): void {
     const turn = this.turn;
-    if (!turn) return;
-    this.started(turn);
+    if (!turn?.running || turn.inboxId === null) return;
     this.turn = undefined;
     for (const id of this.pending) this.emit({ type: "approval_resolved", native_request_id: id });
     this.pending.clear();
@@ -292,33 +362,54 @@ export class OpencodeWorkerHandle implements WorkerHandle {
 
   async submit(input: { input_id: string; text: string; mode: "start_turn" | "steer" }): Promise<InputOutcome> {
     if (input.mode !== "start_turn" || this.turn || !this.session || this.terminal || !this.baseUrl) return "rejected";
-    const placeholder: Turn = { inputId: input.input_id, inboxId: "", started: false };
-    this.turn = placeholder;
+    const turn: Turn = { inputId: input.input_id, inboxId: null, running: false };
+    this.turn = turn;
+    const refused = (): InputOutcome => {
+      this.turn = undefined;
+      this.release();
+      return "rejected";
+    };
+    // Every prompt goes to the same verified conversation, folder and model.
+    let check: Awaited<ReturnType<OpencodeWorkerHandle["checkSession"]>>;
+    try { check = await this.checkSession(this.session); } catch { return refused(); }
+    if (check !== "ok") {
+      const result = refused();
+      this.fail(check === "model" ? { type: "state", state: "wrong_auth_mode" } : { type: "protocol_error" });
+      return result;
+    }
+    // It may have been admitted: record that, then end this generation so no
+    // later work in the conversation is attributed to another input.
+    const uncertain = (): InputOutcome => {
+      this.turn = undefined;
+      this.held = [];
+      this.emit({ type: "input", input_id: input.input_id, outcome: "uncertain" });
+      this.fail({ type: "protocol_error" });
+      return "uncertain";
+    };
     let result: { status: number; json: Json };
     try {
       result = await this.request("POST", `/api/session/${encodeURIComponent(this.session)}/prompt`,
         { text: input.text, delivery: "queue" });
     } catch (error) {
       // A refused connection sent nothing; any other failure may have.
-      const code = (error as { cause?: { code?: string } }).cause?.code;
-      if (code === "ECONNREFUSED") { this.turn = undefined; return "rejected"; }
-      this.turn = undefined;
-      this.emit({ type: "input", input_id: input.input_id, outcome: "uncertain" });
-      return "uncertain";
+      return (error as { cause?: { code?: string } }).cause?.code === "ECONNREFUSED" ? refused() : uncertain();
     }
     const inbox = object(result.json.data);
     if (result.status === 200 && typeof inbox.id === "string" && inbox.id && inbox.sessionID === this.session) {
-      if (this.turn === placeholder) placeholder.inboxId = inbox.id;
+      turn.inboxId = inbox.id;
+      this.release();
       return "written";
     }
-    this.turn = undefined;
-    if (result.status === 401) this.fail({ type: "protocol_error" });
-    return result.status >= 400 && result.status < 500 ? "rejected" : "uncertain";
+    if (result.status === 401) {
+      this.fail({ type: "protocol_error" });
+      return refused();
+    }
+    return result.status >= 400 && result.status < 500 ? refused() : uncertain();
   }
 
   async interrupt(expectedTurnId?: string): Promise<"interrupted" | "not_busy" | "unsupported"> {
     const turn = this.turn;
-    if (!turn || !this.session || (expectedTurnId && turn.inboxId !== expectedTurnId)) return "not_busy";
+    if (!turn?.running || !this.session || (expectedTurnId && turn.inboxId !== expectedTurnId)) return "not_busy";
     const result = await this.request("POST", `/api/session/${encodeURIComponent(this.session)}/interrupt`);
     return result.status === 200 && result.json.interrupted === true ? "interrupted" : "not_busy";
   }
@@ -378,9 +469,14 @@ export async function startOpencodeWorker(options: OpencodeStartOptions): Promis
       onOverflow: () => handle.fail({ type: "overflow" })
     });
     handle.attach(child);
-    await announced;
+    const url = await announced;
     await handle.subscribe(timeout);
-    await handle.openSession(options.cwd, options.resumeSessionId, options.session);
+    const decided = options.beforeSession
+      ? await options.beforeSession({ url, authorization: handle.authorizationHeader, cwd: options.cwd,
+        signal: options.signal ?? new AbortController().signal })
+      : undefined;
+    if (options.signal?.aborted) throw new Error("OpenCode start aborted.");
+    await handle.openSession(options.cwd, options.resumeSessionId, decided?.model ?? options.model);
     if (options.signal?.aborted) throw new Error("OpenCode start aborted.");
     return handle;
   } catch (error) {
