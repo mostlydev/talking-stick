@@ -61,8 +61,10 @@ const SAFE_MODEL_SETTING_KEYS = new Set(["baseURL", "compaction", "cache", "enco
 const SAFE_CONFIG_PROVIDER_KEYS = new Set([
   "name", "activation", "package", "integrationID", "settings", "options", "models", "whitelist", "blacklist"
 ]);
+// Configured variants are refused until custom variant routing/header/body
+// inspection is supported (V2 merges variant headers and body into requests).
 const SAFE_CONFIG_MODEL_KEYS = new Set([
-  "name", "disabled", "package", "settings", "options", "variants"
+  "name", "disabled", "package", "settings", "options"
 ]);
 
 /** Exact V2 Permission.Reply decision used for restricted workers. */
@@ -171,10 +173,21 @@ function isStockProviderId(value: string): value is StockOpenCodeOAuthProvider["
   return Object.prototype.hasOwnProperty.call(OPENCODE_STOCK_OAUTH_PROVIDERS, value);
 }
 
-/** Parses an OpenCode `--version` line and returns its major version, or null if unrecognizable. */
-export function parseOpenCodeMajorVersion(output: string): number | null {
+export interface OpenCodeVersion {
+  major: number;
+  minor: number;
+  patch: number;
+}
+
+/** Parses an OpenCode `--version` line into semver parts, or null if unrecognizable. */
+export function parseOpenCodeVersion(output: string): OpenCodeVersion | null {
   const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)\b/.exec(output.trim());
-  return match ? Number(match[1]) : null;
+  return match ? { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) } : null;
+}
+
+/** OpenCode 2.4+ is the tested floor for direct V2 `serve --stdio` supervision. */
+export function isSupportedOpenCodeVersion(version: OpenCodeVersion | null): boolean {
+  return version !== null && (version.major > 2 || (version.major === 2 && version.minor >= 4));
 }
 
 export type OpenCodeExecSync = (file: string, args: readonly string[], options: {
@@ -206,7 +219,7 @@ export function resolveOpenCodeV2Executable(
   const candidates = explicit
     ? [explicit]
     : (env.PATH ?? "").split(path.delimiter).filter(Boolean).map((dir) => path.join(dir, "opencode"));
-  let sawV1 = false;
+  let sawOlder = false;
   const seen = new Set<string>();
   for (const candidate of candidates) {
     let real: string;
@@ -228,20 +241,20 @@ export function resolveOpenCodeV2Executable(
       }
       continue;
     }
-    const major = parseOpenCodeMajorVersion(versionOut);
-    if (major !== null && major >= 2) return real;
-    if (major !== null && major < 2) {
-      sawV1 = true;
+    const version = parseOpenCodeVersion(versionOut);
+    if (isSupportedOpenCodeVersion(version)) return real;
+    if (version !== null) {
+      sawOlder = true;
       if (explicit) {
-        throw new WorkerExecutableError("OPENCODE_EXECUTABLE", "OPENCODE_EXECUTABLE must point to OpenCode v2 or newer.");
+        throw new WorkerExecutableError("OPENCODE_EXECUTABLE", "OPENCODE_EXECUTABLE must point to OpenCode 2.4 or newer.");
       }
     }
   }
   throw new WorkerExecutableError(
     "OPENCODE_EXECUTABLE",
-    sawV1
-      ? "OpenCode v2 or newer is required for headless workers (only v1 was found on PATH). Set OPENCODE_EXECUTABLE to your v2 binary."
-      : "Cannot find an OpenCode v2 executable. Set OPENCODE_EXECUTABLE to its absolute path."
+    sawOlder
+      ? "OpenCode 2.4 or newer is required for headless workers (only an older version was found on PATH). Set OPENCODE_EXECUTABLE to your 2.4+ binary."
+      : "Cannot find an OpenCode 2.4+ executable. Set OPENCODE_EXECUTABLE to its absolute path."
   );
 }
 
@@ -689,6 +702,7 @@ async function fetchGateJson(
   try {
     const response = await fetchImpl(url, {
       headers: { Authorization: authHeader, Accept: "application/json" },
+      redirect: "error",
       signal: controller.signal
     });
     if (!response.ok) {

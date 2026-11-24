@@ -8,8 +8,9 @@ import { builtinAdapters } from "../src/supervisor/adapters/index.js";
 import {
   OPENCODE_RESTRICTED_PERMISSION_REPLY,
   OPENCODE_STOCK_OAUTH_PROVIDERS,
+  isSupportedOpenCodeVersion,
   openCodePermissionEnv,
-  parseOpenCodeMajorVersion,
+  parseOpenCodeVersion,
   parseOpenCodeModelRef,
   projectOpenCodeConfigDocuments,
   projectOpenCodeModel,
@@ -123,29 +124,35 @@ describe("OpenCode V2 executable and environment guards", () => {
     expect(builtinAdapters().opencode).toBeUndefined();
   });
 
-  test("parses v1 and v2 version outputs and skips v1 shims shadowing v2 on PATH", () => {
-    expect(parseOpenCodeMajorVersion("1.3.3")).toBe(1);
-    expect(parseOpenCodeMajorVersion("opencode v2.4.1\n")).toBe(2);
-    expect(parseOpenCodeMajorVersion("unknown")).toBeNull();
+  test("enforces OpenCode 2.4+ floor and skips older shims shadowing 2.4+ on PATH", () => {
+    expect(parseOpenCodeVersion("1.3.3")).toEqual({ major: 1, minor: 3, patch: 3 });
+    expect(parseOpenCodeVersion("opencode v2.4.1\n")).toEqual({ major: 2, minor: 4, patch: 1 });
+    expect(parseOpenCodeVersion("unknown")).toBeNull();
+    expect(isSupportedOpenCodeVersion(parseOpenCodeVersion("1.3.3"))).toBe(false);
+    expect(isSupportedOpenCodeVersion(parseOpenCodeVersion("opencode v2.3.9"))).toBe(false);
+    expect(isSupportedOpenCodeVersion(parseOpenCodeVersion("opencode v2.4.0"))).toBe(true);
+    expect(isSupportedOpenCodeVersion(parseOpenCodeVersion("opencode v3.0.0"))).toBe(true);
 
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-oc-bin-"));
     cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
     const v1Dir = path.join(root, "v1");
-    const v2Dir = path.join(root, "v2");
-    fs.mkdirSync(v1Dir);
-    fs.mkdirSync(v2Dir);
+    const v23Dir = path.join(root, "v23");
+    const v24Dir = path.join(root, "v24");
+    for (const d of [v1Dir, v23Dir, v24Dir]) fs.mkdirSync(d);
     const v1Bin = path.join(v1Dir, "opencode");
-    const v2Bin = path.join(v2Dir, "opencode");
-    fs.writeFileSync(v1Bin, "#!/bin/sh\necho 1.3.3\n", { mode: 0o755 });
-    fs.writeFileSync(v2Bin, "#!/bin/sh\necho opencode v2.4.1\n", { mode: 0o755 });
+    const v23Bin = path.join(v23Dir, "opencode");
+    const v24Bin = path.join(v24Dir, "opencode");
+    for (const b of [v1Bin, v23Bin, v24Bin]) fs.writeFileSync(b, "#!/bin/sh\n", { mode: 0o755 });
 
     const realV1 = fs.realpathSync(v1Bin);
-    const realV2 = fs.realpathSync(v2Bin);
-    const fakeExec = (file: string) => file === realV1 ? "1.3.3\n" : "opencode v2.4.1\n";
+    const realV23 = fs.realpathSync(v23Bin);
+    const realV24 = fs.realpathSync(v24Bin);
+    const fakeExec = (file: string) =>
+      file === realV1 ? "1.3.3\n" : file === realV23 ? "opencode v2.3.9\n" : "opencode v2.4.1\n";
 
-    expect(resolveOpenCodeV2Executable({ PATH: `${v1Dir}${path.delimiter}${v2Dir}` }, fakeExec)).toBe(realV2);
-    expect(() => resolveOpenCodeV2Executable({ PATH: v1Dir }, fakeExec)).toThrow(/OpenCode v2 or newer is required/);
-    expect(() => resolveOpenCodeV2Executable({ OPENCODE_EXECUTABLE: v1Bin }, fakeExec)).toThrow(/v2 or newer/);
+    expect(resolveOpenCodeV2Executable({ PATH: [v1Dir, v23Dir, v24Dir].join(path.delimiter) }, fakeExec)).toBe(realV24);
+    expect(() => resolveOpenCodeV2Executable({ PATH: [v1Dir, v23Dir].join(path.delimiter) }, fakeExec)).toThrow(/OpenCode 2\.4 or newer/);
+    expect(() => resolveOpenCodeV2Executable({ OPENCODE_EXECUTABLE: v23Bin }, fakeExec)).toThrow(/2\.4 or newer/);
     expect(() => resolveOpenCodeV2Executable({ OPENCODE_EXECUTABLE: "opencode" }, fakeExec)).toThrow(/absolute/);
   });
 
@@ -310,6 +317,32 @@ describe("OpenCode V2 fail-closed subscription and override gate", () => {
     expect(JSON.stringify(projected)).not.toContain("secret-m");
     expect(() => verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: projected.overrides }))).toThrow(AuthModeError);
 
+    // Configured model variants (which merge headers and body into requests) must fail closed
+    const variantOverride = projectOpenCodeConfigDocuments([
+      {
+        type: "document",
+        path: "/proj/opencode.json",
+        info: {
+          providers: {
+            anthropic: {
+              models: {
+                "claude-sonnet-4-6": {
+                  variants: {
+                    high: {
+                      headers: { Authorization: "Bearer variant-secret" },
+                      body: { routing: "proxy" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]);
+    expect(JSON.stringify(variantOverride)).not.toContain("variant-secret");
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: variantOverride.overrides }))).toThrow(/variants/);
+
     // Benign permission-only document passes cleanly
     const benign = projectOpenCodeConfigDocuments([
       { type: "document", info: { permissions: [{ action: "*", resource: "*", effect: "allow" }] } }
@@ -336,13 +369,15 @@ describe("OpenCode V2 fail-closed subscription and override gate", () => {
     expect(() => readRedactedOpenCodeConfigOverrides("/bin/opencode", "/tmp", {}, () => { throw new Error("boom"); })).toThrow(AuthModeError);
   });
 
-  test("readOpenCodeServerGateSurface scopes every request with location[directory] and rejects location mismatch", async () => {
+  test("readOpenCodeServerGateSurface scopes every request with location[directory], enforces redirect:error, and rejects location mismatch", async () => {
     const urls: string[] = [];
+    const redirects: Array<string | undefined> = [];
     const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-oc-loc-"));
     cleanup.push(() => fs.rmSync(targetDir, { recursive: true, force: true }));
-    const makeFetch = (returnedDir: string) => (async (input: string | URL) => {
+    const makeFetch = (returnedDir: string) => (async (input: string | URL, init?: RequestInit) => {
       const url = String(input);
       urls.push(url);
+      redirects.push(init?.redirect);
       if (url.includes("/api/integration")) {
         return new Response(JSON.stringify({ location: { directory: returnedDir }, data: [{ id: "anthropic", connections: [{ type: "credential", method: "oauth" }] }] }));
       }
@@ -371,6 +406,7 @@ describe("OpenCode V2 fail-closed subscription and override gate", () => {
       fetchImpl: makeFetch(targetDir)
     });
     expect(urls.every((u) => u.includes(`location%5Bdirectory%5D=${encodeURIComponent(targetDir)}`))).toBe(true);
+    expect(redirects.every((r) => r === "error")).toBe(true);
     expect(urls.some((u) => u.includes("/api/credential"))).toBe(false);
     expect(JSON.stringify(surface)).not.toContain("sk-live-secret-never-keep");
 
@@ -483,28 +519,24 @@ test.skipIf(!localV2 || process.platform === "win32")(
   }
 );
 
-test.skipIf(!localV2 || process.platform === "win32")(
-  "live positive metadata check against actual stock provider/model catalog (overlaying only synthetic redacted OAuth connections)",
+// Explicit opt-in live catalog test (set TT_TEST_OPENCODE_LIVE_CATALOG=1 when a
+// local OpenCode 2.4+ service with stock Anthropic/OpenAI catalogs is running).
+// Fails hard on CLI/query errors or empty catalogs rather than silently passing.
+test.skipIf(process.env.TT_TEST_OPENCODE_LIVE_CATALOG !== "1" || !localV2 || process.platform === "win32")(
+  "opt-in live positive metadata check against actual stock provider/model catalog",
   () => {
-    let rawProviders: unknown;
-    let rawModels: unknown;
-    try {
-      const loc = `location[directory]=${os.homedir()}`;
-      rawProviders = JSON.parse(execFileSync(localV2!, ["api", "provider.list", "--param", loc], { encoding: "utf8", timeout: 6_000 }));
-      rawModels = JSON.parse(execFileSync(localV2!, ["api", "model.list", "--param", loc], { encoding: "utf8", timeout: 6_000 }));
-    } catch {
-      return; // Skip cleanly when no local OpenCode v2 service is running (e.g. CI).
-    }
-    const providers = ((rawProviders as { data?: unknown[] }).data ?? [])
-      .map(projectOpenCodeProvider)
-      .filter((p): p is NonNullable<typeof p> => p !== null);
-    const models = ((rawModels as { data?: unknown[] }).data ?? [])
-      .map(projectOpenCodeModel)
-      .filter((m): m is NonNullable<typeof m> => m !== null);
+    const loc = `location[directory]=${os.homedir()}`;
+    const rawProviders = JSON.parse(execFileSync(localV2!, ["api", "provider.list", "--param", loc], { encoding: "utf8", timeout: 6_000 })) as { data?: unknown[] };
+    const rawModels = JSON.parse(execFileSync(localV2!, ["api", "model.list", "--param", loc], { encoding: "utf8", timeout: 6_000 })) as { data?: unknown[] };
+    const providers = (rawProviders.data ?? []).map(projectOpenCodeProvider).filter((p): p is NonNullable<typeof p> => p !== null);
+    const models = (rawModels.data ?? []).map(projectOpenCodeModel).filter((m): m is NonNullable<typeof m> => m !== null);
 
     const anthropicModels = models.filter((m) => m.providerID === "anthropic");
     const openaiModels = models.filter((m) => m.providerID === "openai");
-    if (anthropicModels.length === 0 && openaiModels.length === 0) return;
+    expect(providers.some((p) => p.id === "anthropic")).toBe(true);
+    expect(providers.some((p) => p.id === "openai")).toBe(true);
+    expect(anthropicModels.length).toBeGreaterThan(0);
+    expect(openaiModels.length).toBeGreaterThan(0);
 
     const surface: OpenCodeGateSurface = {
       integrations: [
@@ -512,12 +544,11 @@ test.skipIf(!localV2 || process.platform === "win32")(
         { id: "openai", connections: [{ type: "credential", method: "oauth" }] }
       ],
       providers,
-      defaultModel: anthropicModels[0] ?? openaiModels[0] ?? null,
+      defaultModel: anthropicModels[0],
       models,
       configOverrides: []
     };
 
-    // Every actual stock Anthropic and OpenAI model (including id !== modelID fast variants) must pass!
     for (const model of [...anthropicModels, ...openaiModels]) {
       expect(verifyOpenCodeSubscriptionRoute(surface, `${model.providerID}/${model.id}`)).toEqual({
         providerID: model.providerID,
@@ -525,10 +556,8 @@ test.skipIf(!localV2 || process.platform === "win32")(
         integrationID: model.providerID
       });
     }
-    // Verify id vs modelID distinction on any real variant where id !== modelID
     const variant = [...anthropicModels, ...openaiModels].find((m) => m.modelID && m.id !== m.modelID);
-    if (variant) {
-      expect(verifyOpenCodeSubscriptionRoute(surface, `${variant.providerID}/${variant.id}`).id).toBe(variant.id);
-    }
+    expect(variant).toBeDefined();
+    expect(verifyOpenCodeSubscriptionRoute(surface, `${variant!.providerID}/${variant!.id}`).id).toBe(variant!.id);
   }
 );
