@@ -47,7 +47,7 @@ export interface ChatCommandInfo {
 
 export const CHAT_COMMANDS: ChatCommandInfo[] = [
   { name: "quit", usage: "/quit", description: "leave the chat" },
-  { name: "members", usage: "/members", description: "choose a member to message or remove (right-click status with --fullscreen --mouse)" },
+  { name: "members", usage: "/members", description: "choose a member to message, remove, or stop (right-click status with --fullscreen --mouse)" },
   { name: "blockers", usage: "/blockers [show ID | add <question> | withdraw ID <reason>]", description: "manage room blockers" },
   { name: "resolve", usage: "/resolve ID <answer>", description: "post a room message and close a blocker" },
   { name: "who", usage: "/who", description: "members and who has the stick" },
@@ -57,7 +57,7 @@ export const CHAT_COMMANDS: ChatCommandInfo[] = [
   { name: "attach", usage: "/attach <file>", description: "add an image to the draft (Ctrl+V pastes the clipboard's image)" },
   { name: "older", usage: "/older", description: "load an earlier page of saved messages" },
   { name: "clear", usage: "/clear", description: "clear this room view and remember where to resume" },
-  { name: "kick", usage: "/kick <agent>", description: "remove a member; --force for a live agent" },
+  { name: "kick", usage: "/kick <agent>", description: "remove a member, --force for a live agent, --stop to preview stopping it" },
   {
     name: "to",
     usage: "/to <agent> <text>",
@@ -833,7 +833,7 @@ export function getChatCompletions(draft: ChatDraft, names: string[], kickMember
       return { label: entry.usage, description: entry.description, draft: { line: text + tail, cursor: text.length } };
     });
   }
-  const kick = /^(\/kick\s+(?:--force\s+)?@?)([^\s]*)$/i.exec(before);
+  const kick = /^(\/kick\s+(?:(?:--force|--stop)\s+)?@?)([^\s]*)$/i.exec(before);
   if (kick) {
     const typed = kick[2].toLowerCase();
     const tail = after.replace(/^\S*/, "");

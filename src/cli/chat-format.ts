@@ -347,6 +347,8 @@ function describeSystemEvent(
         : `${name(event.from_agent_id)} left`;
     case "kick":
       return `${name(event.to_agent_id)} was removed by ${name(event.from_agent_id)}`;
+    case "kick_stop":
+      return `${name(event.to_agent_id)} · ${sanitizeChatText(event.reason ?? "Stop result recorded")}`;
     case "close":
       return "room closed";
     case "session_superseded":

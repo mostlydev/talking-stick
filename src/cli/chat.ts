@@ -38,6 +38,7 @@ import {
 } from "./chat-supervisor.js";
 import { createDeclaredRoom } from "./room-admin.js";
 import { resolveChatKick } from "./chat-kick.js";
+import { kickAndStop, previewKickStop } from "./kick-stop.js";
 import {
   ChatTranscript,
   renderChatScreen,
@@ -614,6 +615,14 @@ export async function runChatSession(
     else if (action === "message" && target) {
       closeMemberMenu();
       editor?.setDraft(`@${target} ${editor.draft.line}`);
+    } else if (action === "preview_stop" && target) {
+      confirmMemberStop(target);
+    } else if (action === "kick_stop" && target && memberMenu.stop) {
+      const { confirmation, reason } = memberMenu.stop;
+      closeMemberMenu();
+      void kickAndStop(runtime, identity, { room_id: roomId, target_agent_id: target, confirmed: confirmation, reason })
+        .then(result => { refreshMembers(); print(`Removed ${sanitizeChatText(target)}. ${sanitizeChatText(result.stop.result)}`, "ok"); })
+        .catch(error => print(`! ${sanitizeChatText(error instanceof Error ? error.message : String(error))}`));
     } else if (action === "kick" && target) {
       closeMemberMenu();
       // The operator confirmed the exact session. The existing kick path
@@ -635,6 +644,21 @@ export async function runChatSession(
     memberMenu = createMemberMenu(agents, target);
     editor?.setModal(onMemberMenuKey);
     redraw();
+  };
+  const confirmMemberStop = (target: string, reason?: string) => {
+    try {
+      const plan = previewKickStop(runtime, roomId, target, selfId);
+      if (!editor) {
+        print(`${sanitizeChatText(plan.description)}. Use tt kick ${sanitizeChatText(target)} --stop to continue.`);
+        return;
+      }
+      memberMenu = createMemberMenu([target], target);
+      memberMenu.phase = "confirm";
+      memberMenu.stop = { detail: plan.method === "none" ? `Kick only · ${plan.description}` : plan.description,
+        confirmation: plan.confirmation, reason };
+      editor.setModal(onMemberMenuKey);
+      redraw();
+    } catch (error) { print(`! ${sanitizeChatText(error instanceof Error ? error.message : String(error))}`); }
   };
   let blockersPanel: { rows: ReturnType<typeof runtime.commands.listBlockers>; selected: number } | null = null;
   const openBlockers = (args: string) => {
@@ -1917,7 +1941,8 @@ export async function runChatSession(
       }
       case "kick": {
         refreshMembers();
-        const { target, force, reason } = resolveChatKick(args, members, selfId);
+        const { target, force, stop, reason } = resolveChatKick(args, members, selfId);
+        if (stop) { confirmMemberStop(target.agent_id, reason); return; }
         let ownershipNote = "";
         try {
           const result = runtime.commands.kickMember(identity, { room_id: roomId, target_agent_id: target.agent_id, force, reason });
@@ -1933,7 +1958,7 @@ export async function runChatSession(
           throw error;
         }
         refreshMembers();
-        print(`Removed ${sanitizeChatText(target.agent_id)} from the room.${ownershipNote} The harness was not stopped.`, "ok");
+        print(`Removed ${sanitizeChatText(target.agent_id)} from the room.${ownershipNote}`, "ok");
         return;
       }
       case "unread":

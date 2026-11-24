@@ -33,6 +33,7 @@ import {
   resolveSessionForReads,
   upsertSessionFromJoin
 } from "./session.js";
+import { kickAndStop, previewKickStop } from "./kick-stop.js";
 import { registerNativeWake, type Runtime } from "./runtime.js";
 
 export function handleListCommand(
@@ -121,10 +122,10 @@ export function handleLeaveCommand(
   });
 }
 
-export function handleKickCommand(
+export async function handleKickCommand(
   runtime: Runtime,
   parsed: ParsedCommand
-): void {
+): Promise<void> {
   const [target, ...rest] = parsed.positionals;
   if (!target) {
     throw new Error("Missing required argument: <agent_id>");
@@ -132,12 +133,24 @@ export function handleKickCommand(
   const sessionParsed: ParsedCommand = { ...parsed, positionals: rest };
   const identity = deriveCliIdentity(sessionParsed);
   const session = resolveSessionForReads(runtime, sessionParsed, identity);
-  const result = runtime.commands.kickMember(identity, {
-    room_id: session.room_id,
-    target_agent_id: target,
-    force: hasOption(parsed, "force"),
-    reason: getStringOption(parsed, "reason")
-  });
+  const stop = hasOption(parsed, "stop");
+  const sharedConfirmation = getStringOption(parsed, "stop-shared");
+  const confirmed = getStringOption(parsed, "confirm");
+  if (hasOption(parsed, "confirm") && (!stop || !confirmed)) throw new Error("Use --stop --confirm <token> from the stop preview.");
+  if (hasOption(parsed, "stop-shared") && (!stop || !sharedConfirmation))
+    throw new Error("Use --stop --stop-shared <token> from the matching --stop --print preview.");
+  if (stop && hasOption(parsed, "print")) {
+    const plan = previewKickStop(runtime, session.room_id, target, identity.agent_id);
+    printResult(parsed, plan, () => [plan.description, ...(plan.affected_members.length
+      ? [`Other members on this process: ${plan.affected_members.join(", ")}.`] : []),
+      ...(plan.method !== "none" ? [`Use --confirm ${plan.confirmation} to require this exact plan.`] : []),
+      ...(plan.shared_confirmation ? [`To signal shared PID ${plan.shared_pid}, explicitly pass --stop-shared ${plan.shared_confirmation}.`] : [])].join("\n"));
+    return;
+  }
+  const input = { room_id: session.room_id, target_agent_id: target, reason: getStringOption(parsed, "reason") };
+  const stopped = stop ? await kickAndStop(runtime, identity, { ...input,
+    confirmed, sharedConfirmation }) : null;
+  const result = stopped ?? runtime.commands.kickMember(identity, { ...input, force: hasOption(parsed, "force") });
 
   const sessionPath = resolveCliSessionPath();
   if (result.status === "room_deleted") {
@@ -147,6 +160,7 @@ export function handleKickCommand(
   }
 
   printResult(parsed, result, () => {
+    if (stopped) return `Kicked ${result.kicked_agent_id}. ${stopped.stop.result}`;
     if (result.status === "room_deleted") {
       return `Kicked ${result.kicked_agent_id}; room deleted.`;
     }

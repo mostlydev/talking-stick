@@ -275,8 +275,8 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt kick <agent_id> [path] [--reason TEXT] [--force]",
-    description: "Kick an idle member out of the room.",
+    usage: "tt kick <agent_id> [path] [--reason TEXT] [--force | --stop [--print | --confirm TOKEN | --stop-shared TOKEN]]",
+    description: "Remove a member. Use --force for a live member, or --stop to also stop the exact process, pane, session or supervisor worker. Preview with --stop --print.",
     handler: ({ runtime, parsed }) => handleKickCommand(requireRuntime(runtime), parsed)
   },
   {

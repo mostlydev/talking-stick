@@ -2609,7 +2609,7 @@ test.each([true, false])("/members confirms exact-session removal without sendin
   input.write("/members\r");
   await until(() => out.includes("Room members"));
   input.write("\u001b[B\r\u001b[B\r");
-  await until(() => out.includes("harness keeps running"));
+  await until(() => out.includes("Remove from room only"));
   expect(service.getRoomState({ room_id: joined.room_id }).members.some(m => m.agent_id === "codex:bb")).toBe(true);
   input.write("\u001b[B\r");
   await until(() => !service.getRoomState({ room_id: joined.room_id }).members.some(m => m.agent_id === "codex:bb"));
@@ -2617,6 +2617,34 @@ test.each([true, false])("/members confirms exact-session removal without sendin
   expect(service.getRecentRoomEvents({ room_id: joined.room_id, limit: 30 }).filter(e => e.event_type === "message_sent")).toHaveLength(0);
   input.write("/quit\r");
   await session;
+});
+
+test("chat kick-stop confirms the exact action before recording its result", async () => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:aa", context_path: root });
+  const input = new PassThrough();
+  const output = Object.assign(new PassThrough(), { columns: 40, rows: 20 });
+  let out = "";
+  output.on("data", chunk => { out += chunk.toString(); });
+  const session = runChatSession({
+    runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output,
+    terminal: true, inline: true, color: false, history: 0, show_turn_events: false, poll_ms: 5
+  });
+  try {
+    await until(() => out.includes("Room"));
+    input.write("/members\r");
+    await until(() => out.includes("Room members"));
+    input.write("\r\u001b[B\u001b[B\r");
+    await until(() => out.includes("Kick only"));
+    expect(service.getRoomState({ room_id: joined.room_id }).members.some(m => m.agent_id === "codex:aa")).toBe(true);
+    input.write("\u001b[B\r");
+    await until(() => service.getRecentRoomEvents({ room_id: joined.room_id, limit: 30 }).some(e =>
+      e.event_type === "kick_stop" && e.to_agent_id === "codex:aa"));
+  } finally {
+    input.write("/quit\r");
+    await session;
+  }
 });
 
 test("status hit offsets exclude truncation and include wide display names", () => {

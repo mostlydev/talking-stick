@@ -104,6 +104,11 @@ function perform(
       ...size, ...at("-P", "-F", "#{pane_id}"));
     return { pane: { pane_id: paneId } };
   }
+  if (group === "pane" && verb === "close") {
+    describe(args[2], "#{pane_tty}");
+    tmux("kill-pane", "-t", args[2]);
+    return {};
+  }
   if (group === "pane" && verb === "run") {
     tmux("send-keys", "-t", args[2], "-l", args[3]);
     tmux("send-keys", "-t", args[2], "Enter");

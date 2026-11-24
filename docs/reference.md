@@ -55,7 +55,8 @@ tt up --headless [--path DIR] [--agents claude,codex,grok,agy,opencode] [--prefi
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--attach IMAGE]... [--path DIR]
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
 tt ack <delivery-token> [--json]                          # acknowledge a native delivery envelope
-tt kick <agent_id> [path] [--reason TEXT] [--force]       # remove a member (live ones need --force)
+tt kick <agent_id> [path] [--reason TEXT] [--force]      # revoke a room membership
+tt kick <agent_id> [path] --stop [--print | --confirm TOKEN | --stop-shared TOKEN]
 tt instructions show [path] [--harness claude|codex|antigravity|grok|opencode|all] [--scope effective|bundled|user|project]
 tt instructions edit [path] [--user|--project]            # edit user or project prompt
 tt instructions update [path] [--user|--project] [--replace]
@@ -632,8 +633,8 @@ it. Scrolling, selection, and copying stay with the terminal.
 | `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case. Mention several agents anywhere in the text: `@claude @codex, review this`. `@everyone` (or `@all`) addresses every agent in the room. Leading mentions are stripped from the message; an unknown `@name` blocks the whole send; email addresses and `` `code` `` spans are not mentions |
 | `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Steer an agent now. A busy Claude Code session gets the prompt at its next tool step and changes course without stopping; Codex steers its active daemon-backed turn, or queues when steering is definitely unavailable. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
 | `/who` | Show members, the current stick holder, and this room's headless workers with their state and fix |
-| `/members` | Choose an exact member with ↑↓ and Enter, then message or remove it. Removal requires confirmation and does not stop the harness |
-| `/kick [--force] <agent> [reason]` | Remove one exact ID or unique prefix from the room. Live or unconfirmed processes require `--force`; consoles cannot be kicked. Kicking only removes room membership: the harness keeps running, and its next `tt wait` can rejoin it |
+| `/members` | Choose a member to message, remove, or **Kick and stop**. The confirmation names the stop target |
+| `/kick [--force] <agent> [reason]` | Remove one exact ID or unique prefix from the room. Live or unconfirmed processes require `--force`; consoles cannot be kicked. A kicked native session cannot rejoin this room. Use `/kick --stop <agent>` to preview and confirm a stop |
 | `/events` | Toggle turn and handoff events, hidden by default |
 | `/help`, `/help keys` | Show chat commands, or keyboard shortcuts |
 | `/older` | Print an earlier page of saved messages; in fullscreen, scroll into older history |
@@ -1145,7 +1146,18 @@ Override with `TALKING_STICK_DATA_DIR` if you want to keep per-project state.
 
 ### Member actions with the mouse
 
-Run `tt chat --fullscreen --mouse` to right-click a visible member in the bottom status bar. The menu identifies the exact session; use ↑↓ and Enter to choose Message or Remove, and Escape to cancel. Removal asks for confirmation and leaves the harness running. `/members` opens the same picker in fullscreen or inline mode, including members that do not fit in the status bar.
+Use `tt kick <agent> --stop --print` to preview the exact stop target from a shell.
+A normal stop uses the supervisor for a managed worker, closes a verified pane
+launched by `tt up`, interrupts work in a verified OpenCode or Codex session on
+a shared host, or signals a verified local standalone process. A session
+interrupt preserves the conversation and server. If no safe stop is available,
+the kick still revokes membership and the room records the refusal. To signal
+a shared process deliberately, pass the `--stop-shared` token from the preview.
+The preview lists the other enrolled members that share the selected PID.
+Managed workers stop through the supervisor, including automatic cleanup
+after a plain kick.
+
+Run `tt chat --fullscreen --mouse` to right-click a visible member in the bottom status bar. The menu identifies the exact session; use ↑↓ and Enter to choose **Message**, **Remove from room**, or **Kick and stop**. Escape cancels. **Kick and stop** names the exact control before asking for confirmation. `/members` opens the same picker in fullscreen or inline mode, including members that do not fit in the status bar.
 
 In Herdr, choose **Send right-clicks to pane** from its pane menu, or run `herdr pane input --current --right-click pane` in the chat pane before starting chat. Right-click the pane frame to reach Herdr's menu. Alternatively configure `ui.right_click_passthrough_modifier = "ctrl"` and use Ctrl-right-click. Mouse capture remains opt-in; inline mode retains native selection.
 
