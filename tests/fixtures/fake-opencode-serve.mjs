@@ -63,6 +63,8 @@ const server = http.createServer((request, response) => {
         response.writeHead(307, { Location: "http://127.0.0.1:1/elsewhere" });
         return response.end();
       }
+      const slow = process.env.FAKE_OPENCODE_SLOW_CHILD && sessions.get(sessionID)?.parentID;
+      if (slow) return later(() => json(response, 200, { data: sessions.get(sessionID) }), 200);
       return json(response, 200, { data: sessions.get(sessionID) });
     }
     if (request.method === "POST" && action === "model") {
@@ -83,10 +85,16 @@ const server = http.createServer((request, response) => {
         if (text.includes("child-ask")) {
           sessions.set("ses_grandchild", { id: "ses_grandchild", parentID: "ses_child" });
           sessions.set("ses_child", { id: "ses_child", parentID: sessionID });
-          emit("permission.asked", { id: "per_child", sessionID: "ses_grandchild", action: "bash", resources: ["ls"], message: "Subagent runs ls" });
+          const asked = { id: "per_child", sessionID: "ses_grandchild", action: "bash", resources: ["ls"], message: "Subagent runs ls" };
+          emit("permission.asked", asked);
+          emit("permission.asked", asked); // the same request, repeated before any lookup finishes
+          emit("permission.replied", { sessionID: "ses_other", requestID: "per_child", reply: "once" });
+          if (text.includes("late")) { running = null; emit("session.execution.succeeded", { sessionID }); }
         } else if (text.includes("foreign-ask")) {
           sessions.set("ses_foreign", { id: "ses_foreign" });
-          emit("permission.asked", { id: "per_foreign", sessionID: "ses_foreign", action: "bash", resources: ["rm"], message: "Foreign" });
+          const asked = { id: "per_foreign", sessionID: "ses_foreign", action: "bash", resources: ["rm"], message: "Foreign" };
+          emit("permission.asked", asked);
+          later(() => emit("permission.asked", asked), 80); // repeated after it was refused
         } else if (text.includes("ask")) emit("permission.asked", { id: "per_1", sessionID, action: "bash", resources: ["ls"], message: "Run ls" });
         else if (!text.includes("hang")) {
           const succeed = () => { running = null; emit("session.execution.succeeded", { sessionID }); };

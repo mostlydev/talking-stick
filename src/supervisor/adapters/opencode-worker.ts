@@ -119,6 +119,10 @@ export class OpencodeWorkerHandle implements WorkerHandle {
   private queued: WorkerEvent[] = [];
   /** Pending permission requests: request id to the asking conversation, the root or a descendant. */
   private readonly pending = new Map<string, string>();
+  /** Requests whose asking conversation is still being checked; they count toward the cap. */
+  private readonly reserved = new Map<string, string>();
+  /** Recently answered request ids, so a repeated frame is never answered twice. */
+  private readonly answered = new Set<string>();
   private ackTimer?: ReturnType<typeof setTimeout>;
   private terminal = false;
   private readonly events = new AbortController();
@@ -333,7 +337,10 @@ export class OpencodeWorkerHandle implements WorkerHandle {
         void this.ask(data);
         return;
       case "permission.replied":
-        if (typeof data.requestID === "string" && this.pending.delete(data.requestID)) {
+        // Only the conversation that owns the pending request can settle it.
+        if (typeof data.requestID === "string" && this.pending.get(data.requestID) === data.sessionID) {
+          this.pending.delete(data.requestID);
+          this.settled(data.requestID);
           this.emit({ type: "approval_resolved", native_request_id: data.requestID });
         }
         return;
@@ -352,11 +359,21 @@ export class OpencodeWorkerHandle implements WorkerHandle {
   private async ask(data: Json): Promise<void> {
     const id = data.id;
     const sessionId = data.sessionID;
-    if (typeof id !== "string" || !id || typeof sessionId !== "string" || !sessionId || this.pending.has(id)) return;
-    const ours = sessionId === this.session || await this.descends(sessionId);
+    if (typeof id !== "string" || !id || typeof sessionId !== "string" || !sessionId) return;
+    // One answer per request, however many frames repeat it: reserve it before any lookup.
+    if (this.pending.has(id) || this.reserved.has(id) || this.answered.has(id)) return;
+    if (this.pending.size + this.reserved.size >= MAX_PENDING_APPROVALS) { this.fail({ type: "protocol_error" }); return; }
+    this.reserved.set(id, sessionId);
+    // The turn it would belong to is fixed now; a slow lookup cannot hand it to a later turn.
+    const turn = this.turn;
+    let ours: boolean;
+    try {
+      ours = sessionId === this.session || await this.descends(sessionId);
+    } finally {
+      this.reserved.delete(id);
+    }
     if (this.terminal) return;
-    if (!ours || !this.turn?.running) { await this.refuse(sessionId, id); return; }
-    if (this.pending.size >= MAX_PENDING_APPROVALS) { this.fail({ type: "protocol_error" }); return; }
+    if (!ours || !turn?.running || this.turn !== turn) { await this.refuse(sessionId, id); return; }
     this.pending.set(id, sessionId);
     const action = typeof data.action === "string" ? data.action : "tool";
     const message = typeof data.message === "string" ? data.message : `OpenCode asks to ${action}.`;
@@ -368,9 +385,16 @@ export class OpencodeWorkerHandle implements WorkerHandle {
   private async descends(sessionId: string): Promise<boolean> {
     let current = sessionId;
     for (let depth = 0; depth < MAX_ANCESTRY; depth++) {
-      let parent: unknown;
-      try { parent = object((await this.request("GET", `/api/session/${encodeURIComponent(current)}`)).json.data).parentID; }
-      catch { return false; }
+      let info: Json;
+      try {
+        const found = await this.request("GET", `/api/session/${encodeURIComponent(current)}`);
+        if (found.status !== 200) return false;
+        info = object(found.json.data);
+      } catch {
+        return false;
+      }
+      if (info.id !== current) return false;
+      const parent = info.parentID;
       if (typeof parent !== "string" || !parent) return false;
       if (parent === this.session) return true;
       current = parent;
@@ -378,7 +402,13 @@ export class OpencodeWorkerHandle implements WorkerHandle {
     return false;
   }
 
+  private settled(requestId: string): void {
+    this.answered.add(requestId);
+    if (this.answered.size > MAX_HELD_EVENTS) this.answered.delete(this.answered.values().next().value!);
+  }
+
   private async refuse(sessionId: string, requestId: string): Promise<void> {
+    this.settled(requestId);
     this.emit({ type: "request_refused", method: "permission.asked" });
     try {
       const result = await this.request("POST",
@@ -404,7 +434,10 @@ export class OpencodeWorkerHandle implements WorkerHandle {
     const turn = this.turn;
     if (!turn?.running || turn.inboxId === null) return;
     this.turn = undefined;
-    for (const id of this.pending.keys()) this.emit({ type: "approval_resolved", native_request_id: id });
+    for (const id of this.pending.keys()) {
+      this.settled(id);
+      this.emit({ type: "approval_resolved", native_request_id: id });
+    }
     this.pending.clear();
     this.emit({ type: "turn_completed", native_turn_id: turn.inboxId, outcome });
   }
@@ -476,6 +509,7 @@ export class OpencodeWorkerHandle implements WorkerHandle {
       `/api/session/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(nativeRequestId)}/reply`,
       { decision: "reject", ...(note ? { message: note } : {}) });
     if (result.status !== 204 && result.status !== 200) throw new Error(`OpenCode did not take the denial (${result.status}).`);
+    this.settled(nativeRequestId);
     if (this.pending.delete(nativeRequestId)) this.emit({ type: "approval_resolved", native_request_id: nativeRequestId });
   }
 

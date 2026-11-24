@@ -151,14 +151,29 @@ describe("OpenCode worker transport", () => {
     expect(running.events.some((event) => event.type === "protocol_error")).toBe(false);
   });
 
-  test("a subagent's permission request is verified by ancestry, journalled and denied in its own conversation", async () => {
-    const { handle, events, until, requests } = await start();
+  test("a subagent's permission request is verified by ancestry, journalled once and denied in its own conversation", async () => {
+    const { handle, events, until, requests } = await start({ FAKE_OPENCODE_SLOW_CHILD: "1" });
     await handle.submit({ input_id: "in1", text: "child-ask", mode: "start_turn" });
     await until(() => events.some((event) => event.type === "approval_requested"));
-    expect(events.find((event) => event.type === "approval_requested")).toMatchObject({ native_request_id: "per_child", summary: "Subagent runs ls" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Two frames of one request during a slow lookup, and a reply from another conversation: one request, unsettled.
+    expect(events.filter((event) => event.type === "approval_requested")).toEqual([
+      expect.objectContaining({ native_request_id: "per_child", summary: "Subagent runs ls" })]);
+    expect(events.some((event) => event.type === "approval_resolved")).toBe(false);
     await handle.answerApproval("per_child", "deny", "Nobody can approve prompts here.");
     await until(() => events.some((event) => event.type === "turn_completed"));
-    expect(requests().some((entry) => entry.path === "/api/session/ses_grandchild/permission/per_child/reply")).toBe(true);
+    expect(requests().filter((entry) => entry.path === "/api/session/ses_grandchild/permission/per_child/reply")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "approval_resolved")).toHaveLength(1);
+  });
+
+  test("a request whose lookup outlives its turn is refused, not handed to a later turn", async () => {
+    const { handle, events, until, requests } = await start({ FAKE_OPENCODE_SLOW_CHILD: "1" });
+    await handle.submit({ input_id: "in1", text: "child-ask late", mode: "start_turn" });
+    await until(() => events.some((event) => event.type === "turn_completed"));
+    expect(await handle.submit({ input_id: "in2", text: "hang", mode: "start_turn" })).toBe("written");
+    await until(() => requests().some((entry) => entry.path === "/api/session/ses_grandchild/permission/per_child/reply"));
+    expect(events.some((event) => event.type === "approval_requested")).toBe(false);
+    expect(events).toContainEqual({ type: "request_refused", method: "permission.asked" });
   });
 
   test("a permission request from an unrelated conversation is refused in that conversation", async () => {
@@ -168,6 +183,10 @@ describe("OpenCode worker transport", () => {
     expect(events).toContainEqual({ type: "request_refused", method: "permission.asked" });
     expect(events.some((event) => event.type === "approval_requested")).toBe(false);
     expect(requests().find((entry) => entry.path === "/api/session/ses_foreign/permission/per_foreign/reply")?.body.decision).toBe("reject");
+    // The same request repeated after it was refused is not answered again.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(requests().filter((entry) => entry.path === "/api/session/ses_foreign/permission/per_foreign/reply")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "request_refused")).toHaveLength(1);
   });
 
   test("the event stream outlives the start timeout", async () => {
