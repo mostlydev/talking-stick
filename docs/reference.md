@@ -76,6 +76,7 @@ tt install <harness...|herdr> | --all [--print] [--copy] [--link] [--replace] [-
 tt uninstall <harness...|agents|herdr> | --all | --shared [--print]
 tt self-update [--print] [--manager npm|pnpm|yarn|bun]
 tt supervisor status | approvals [show <approval-id>] | logs [--lines N]
+tt supervisor gc --dry-run
 tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [options]
 tt supervisor pause|resume|stop|remove <worker>
 tt supervisor restart <worker> [--fresh]

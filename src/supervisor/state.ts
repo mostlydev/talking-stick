@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { openSqlite, type SqliteDatabase } from "../sqlite.js";
 import { withImmediateTransaction } from "../db.js";
+import { hasSharedGeneration } from "./membership-gc.js";
 import type { InputMode, InputOutcome, WorkerSpec } from "./adapter.js";
 
 // The supervisor's durable desired and observed state, in its own database
@@ -265,6 +266,24 @@ export class SupervisorStore {
       if (changed.changes !== 1) throw new Error(`No worker named ${workerId}.`);
       this.audit(at, actor, desired === "running" ? "resume" : desired === "paused" ? "pause" : "stop", workerId);
       return this.worker(workerId)!;
+    });
+  }
+
+  /** Request a stop only while the exact generation still owns this process. */
+  requestGenerationStop(target: { worker_id: string; generation: number; pid: number; process_started_at: string;
+    desired_version: number }, actor: string, at: string, detail: { reason: string; room_id: string; agent_id: string }): boolean {
+    return this.transaction(() => {
+      const worker = this.worker(target.worker_id);
+      const current = this.latestGeneration(target.worker_id);
+      if (!worker || worker.desired !== "running" || worker.restart_next || worker.hold_reason?.startsWith("prior_generation_") ||
+          worker.desired_version !== target.desired_version ||
+          !current || current.ended_at || current.generation !== target.generation || current.pid !== target.pid ||
+          current.process_started_at?.trim() !== target.process_started_at.trim() ||
+          hasSharedGeneration(this.liveGenerations(), current)) return false;
+      this.db.prepare(`UPDATE workers SET desired = 'stopped', desired_version = desired_version + 1,
+        next_start_at = NULL WHERE worker_id = ?`).run(target.worker_id);
+      this.audit(at, actor, "membership_stop", target.worker_id, { ...detail, generation: target.generation, pid: target.pid, desired_version: worker.desired_version + 1 });
+      return true;
     });
   }
 

@@ -185,6 +185,12 @@ describe("controls", () => {
     await expect(run(["stop", "w2"], { agent: "human:someone" }, "codex")).rejects.toThrow("does not accept --agent");
   });
 
+  test("GC dry-run can inspect an empty profile without preparing supervisor state", async () => {
+    const { run } = setup();
+    await expect(run(["gc"])).rejects.toThrow("Use tt supervisor gc --dry-run");
+    expect(await run(["gc"], { "dry-run": true })).toEqual({ workers: [], guardians: [] });
+  });
+
   test("status keeps its worker JSON shape and omits the chat process binding", async () => {
     const { cwd, run, store } = setup();
     await run(["add", "w1"], { harness: "claude", cwd, restricted: true });

@@ -7,6 +7,7 @@ import type { IntakeAnswer, IntakeMessage } from "./intake.js";
 import type { RoomBridge } from "./room-bridge.js";
 import { resolveBundledSkillPath } from "../skill-install.js";
 import { checkWorkerExecutable, executableFailure } from "./executable.js";
+import { terminateKnownProcess, type ProcessInspector, type ProcessSignaler } from "../process-utils.js";
 import { displayText, safeDetail } from "./approval-detail.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
@@ -34,6 +35,8 @@ export interface SupervisorOptions {
   adapters: Partial<Record<Harness, HarnessAdapter>>;
   processLiveness: ProcessLivenessReader;
   now?: () => Date;
+  guardInspector?: ProcessInspector;
+  guardSignaler?: ProcessSignaler;
   newId?: () => string;
   /** How long one worker may hold up a tick; TICK_WAIT_MS by default. */
   tickWaitMs?: number;
@@ -82,6 +85,8 @@ export class Supervisor {
   private readonly store: SupervisorStore;
   private readonly adapters: Partial<Record<Harness, HarnessAdapter>>;
   private readonly processLiveness: ProcessLivenessReader;
+  private readonly guardInspector: ProcessInspector | undefined;
+  private readonly guardSignaler: ProcessSignaler | undefined;
   private readonly now: () => Date;
   private readonly newId: () => string;
   private readonly handles = new Map<string, WorkerHandle>();
@@ -118,6 +123,8 @@ export class Supervisor {
     this.store = options.store;
     this.adapters = options.adapters;
     this.processLiveness = options.processLiveness;
+    this.guardInspector = options.guardInspector;
+    this.guardSignaler = options.guardSignaler;
     this.now = options.now ?? (() => new Date());
     this.newId = options.newId ?? randomUUID;
     this.tickWaitMs = options.tickWaitMs ?? TICK_WAIT_MS;
@@ -150,6 +157,9 @@ export class Supervisor {
         ? "unknown" : this.processLiveness(row.pid, row.process_started_at);
       if (liveness === "gone") {
         this.store.endGeneration(row.worker_id, row.generation, this.at(), { reason: "gone_at_startup" });
+        if (this.socketPath && row.delivery_token_hash) {
+          this.forgetRoomGeneration(`${this.socketPath}#${row.worker_id}@${row.generation}`, row.delivery_token_hash, row.worker_id);
+        }
       } else {
         this.store.hold(row.worker_id, liveness === "alive" ? "prior_generation_alive" : "prior_generation_unknown", this.at());
       }
@@ -192,6 +202,20 @@ export class Supervisor {
   async tick(): Promise<void> {
     if (!this.reconciled) throw new SupervisorError("Reconcile recorded generations before the first tick.");
     await Promise.allSettled(this.store.workers().map((worker) => bounded(this.reconcileWorker(worker), this.tickWaitMs)));
+    if (!this.shuttingDown) this.reapGuards();
+  }
+
+  private reapGuards(): void {
+    if (!this.bridge?.releasedGuards || !this.socketPath || !this.guardInspector) return;
+    for (const guard of this.bridge.releasedGuards(this.socketPath)) {
+      const current = this.guardInspector.inspect(guard.pid);
+      if (current === null || (current?.startTime && current.startTime.trim() !== guard.process_started_at)) {
+        this.bridge.forgetGuard?.(guard);
+      } else if (current?.ppid === 1 && terminateKnownProcess(guard, { inspector: this.guardInspector, signaler: this.guardSignaler })) {
+        this.store.audit(this.at(), "supervisor", "orphan_guard_stop", null, guard);
+        this.bridge.forgetGuard?.(guard);
+      }
+    }
   }
 
   private async reconcileWorker(worker: WorkerRow): Promise<void> {
@@ -215,7 +239,13 @@ export class Supervisor {
       this.store.updateGeneration(worker.worker_id, handle.generation, { state: liveness === "unknown" ? "unknown" : reported });
       if (liveness === "unknown") this.probeUnknown.add(worker.worker_id);
       else this.probeUnknown.delete(worker.worker_id);
-      if (liveness === "alive") this.recoverMembership(worker, handle);
+      if (liveness === "alive") {
+        this.recoverMembership(worker, handle);
+        if (this.requestMembershipStop(worker, handle)) {
+          await this.stopHandle(worker.worker_id, handle);
+          return;
+        }
+      }
       this.bootstrapWorker(handle, worker.worker_id);
       this.drain(worker.worker_id);
       return;
@@ -231,6 +261,21 @@ export class Supervisor {
     const done = this.start(worker, controller.signal).finally(() => this.pendingStarts.delete(worker.worker_id));
     this.pendingStarts.set(worker.worker_id, { controller, done });
     await done;
+  }
+
+  private requestMembershipStop(worker: WorkerRow, handle: WorkerHandle): boolean {
+    if (!this.socketPath || !this.bridge?.withGcTarget || this.shuttingDown || this.stopping.has(worker.worker_id) ||
+        this.handles.get(worker.worker_id) !== handle || worker.desired !== "running" || worker.restart_next) return false;
+    const generation = this.store.generation(worker.worker_id, handle.generation);
+    if (!generation || generation.pid !== handle.pid ||
+        generation.process_started_at?.trim() !== handle.processStartedAt.trim()) return false;
+    try {
+      return this.bridge.withGcTarget(this.socketPath, generation, this.now(), (target) =>
+        this.store.requestGenerationStop({ ...target, desired_version: worker.desired_version }, "supervisor", this.at(), target));
+    } catch (error) {
+      this.store.audit(this.at(), "supervisor", "membership_cleanup_error", worker.worker_id, { error: String(error) });
+      return false;
+    }
   }
 
   private async start(worker: WorkerRow, signal: AbortSignal): Promise<void> {
@@ -486,9 +531,15 @@ export class Supervisor {
   /** A generation is over; restart policy applies unless a human asked for it. */
   private ended(workerId: string, handle: WorkerHandle, exit: Record<string, unknown>): void {
     if (this.handles.get(workerId) !== handle) return;
+    const beforeExit = this.store.worker(workerId);
+    if (beforeExit && exit.reason !== "stopped") this.requestMembershipStop(beforeExit, handle);
     this.handles.delete(workerId);
     this.denying.delete(`${workerId}\u0000${handle.generation}`);
-    if (this.deliveryTokens.get(workerId)?.generation === handle.generation) this.deliveryTokens.delete(workerId);
+    const delivery = this.deliveryTokens.get(workerId);
+    if (delivery?.generation === handle.generation) {
+      this.deliveryTokens.delete(workerId);
+      this.forgetRoomGeneration(delivery.address, hashToken(delivery.token), workerId);
+    }
     const { uncertain } = this.store.endGeneration(workerId, handle.generation, this.at(), exit);
     this.store.audit(this.at(), "supervisor", "exit", workerId, { generation: handle.generation, ...exit, uncertain });
     const worker = this.store.worker(workerId);
@@ -497,6 +548,14 @@ export class Supervisor {
       .get(workerId, handle.generation)) this.store.hold(workerId, "bootstrap_failed", this.at());
     const requested = exit.reason === "stopped" || this.stopping.has(workerId);
     if (worker?.desired === "running" && !requested) this.crashed(workerId, exit);
+  }
+
+  private forgetRoomGeneration(address: string, tokenHash: string, workerId: string): void {
+    try {
+      this.bridge?.forgetGeneration?.(address, tokenHash);
+    } catch (error) {
+      this.store.audit(this.at(), "supervisor", "membership_cleanup_error", workerId, { error: String(error) });
+    }
   }
 
   private crashed(workerId: string, detail: Record<string, unknown>): void {

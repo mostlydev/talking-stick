@@ -17,6 +17,8 @@ changes will be called out under **Breaking changes**.
 
 - OpenCode 2.4+ can run as a supervised headless worker on an Anthropic or OpenAI OAuth login.
 
+- The supervisor stops enrolled headless workers when their room membership ends. Use `tt supervisor gc --dry-run` to preview cleanup.
+
 ### Changed
 
 - `rooms --help` and `tt --help` name themselves after the command you ran, and group the commands into managing rooms, working inside a room (the talking stick), and setup. `--version` and the unknown-command error use the same name.

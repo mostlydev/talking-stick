@@ -1,4 +1,5 @@
 import os from "node:os";
+import { recordManagedGuard } from "./supervisor/membership-gc.js";
 import type { MessageAttachment } from "./attachments.js";
 import { detectNativeWakeEndpoints } from "./native-wake.js";
 import { TalkingStickService, type RoleNotifier } from "./service.js";
@@ -335,6 +336,15 @@ export class TalkingStickCommands {
       agent_id: identity.agent_id,
       ...input
     });
+  }
+
+  registerManagedGuard(identity: DerivedIdentity, input: { room_id: string; lease_id: string }): void {
+    const endpoint = process.env.TT_SUPERVISOR_ENDPOINT;
+    const secret = process.env.TT_SUPERVISOR_TOKEN;
+    const { pid, process_started_at, host_id } = identity.process_metadata;
+    if (!endpoint || !secret || !host_id || !pid || pid <= 1 || !process_started_at?.trim()) return;
+    recordManagedGuard(this.service.db, { ...input, agent_id: identity.agent_id, host_id,
+      address: endpoint, secret, pid, process_started_at: process_started_at.trim() });
   }
 
   registerWakeEndpoint(

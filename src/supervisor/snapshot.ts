@@ -13,6 +13,7 @@ interface WorkerStatusRow {
   desired_version: number;
   hold_reason: HoldReason | null;
   next_start_at: string | null;
+  stop_reason: string | null;
   generation: number | null;
   generation_state: GenerationState | null;
   pid: number | null;
@@ -41,6 +42,9 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
            g.generation, g.state AS generation_state, g.pid, g.process_started_at, g.session_id,
            g.started_at, g.ended_at,
            g.exit_json,
+           (SELECT json_extract(a.detail, '$.reason') FROM audit a
+            WHERE a.worker_id = w.worker_id AND a.action = 'membership_stop'
+              AND json_extract(a.detail, '$.desired_version') = w.desired_version ORDER BY a.id DESC LIMIT 1) AS stop_reason,
            COALESCE(i.count, 0) AS uncertain_inputs, COALESCE(a.count, 0) AS denied_requests
     FROM workers w
     LEFT JOIN generations g ON g.worker_id = w.worker_id AND g.generation = (
@@ -66,7 +70,8 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
       cwd: spec.cwd,
       desired: row.desired,
       desired_version: row.desired_version,
-      hold_reason: row.hold_reason,
+      hold_reason: row.stop_reason ? null : row.hold_reason,
+      ...(row.stop_reason ? { stop_reason: row.stop_reason } : {}),
       next_start_at: row.hold_reason ? null : row.next_start_at,
       generation: row.generation === null ? null : {
         generation: row.generation,

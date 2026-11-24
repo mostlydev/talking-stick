@@ -12,7 +12,9 @@ import {
 } from "../src/index.js";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
 import { Supervisor } from "../src/supervisor/daemon.js";
+import type { ProcessInspection } from "../src/process-utils.js";
 import { startIntakeServer } from "../src/supervisor/intake.js";
+import { MEMBERSHIP_RECOVERY_MS, recordManagedGuard, listReleasedManagedGuards } from "../src/supervisor/membership-gc.js";
 import { createRoomBridge } from "../src/supervisor/room-bridge.js";
 import type { WorkerSpec } from "../src/supervisor/adapter.js";
 import { FakeAdapter, type FakeHandle } from "./fixtures/supervisor-fake.js";
@@ -34,7 +36,8 @@ async function until(predicate: () => boolean, timeoutMs = 3_000): Promise<void>
   }
 }
 
-async function setup(options: { prompt?: boolean } = {}) {
+async function setup(options: { prompt?: boolean; gcClock?: boolean; inspect?: (pid: number) => ProcessInspection | null | undefined;
+  signal?: (pid: number, signal: NodeJS.Signals) => void } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-svb-"));
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }));
   const dataDir = path.join(root, "data");
@@ -42,7 +45,7 @@ async function setup(options: { prompt?: boolean } = {}) {
   fs.mkdirSync(project);
   fs.writeFileSync(path.join(project, "package.json"), "{}\n");
   let clock = new Date("2026-10-26T09:00:00.000Z");
-  const service = new TalkingStickService({ dataDir, hostId: HOST, processLivenessChecker: () => "alive",
+  const service = new TalkingStickService({ dataDir, hostId: HOST, ...(options.gcClock ? { now: () => clock } : {}), processLivenessChecker: () => "alive",
     receiverLivenessChecker: () => "gone", nativeWakeTransport: createSystemNativeWakeTransport(),
     wakeTransport: { deliver() { return { delivered: false, definite_failure: true }; } } });
   cleanup.push(() => service.close());
@@ -53,6 +56,8 @@ async function setup(options: { prompt?: boolean } = {}) {
   if (options.prompt === false) adapter.caps = { prompt: false, resume: true, interrupt: false, approvals: false };
   let ids = 0;
   const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "alive",
+    ...(options.inspect ? { guardInspector: { inspect: options.inspect } } : {}),
+    ...(options.signal ? { guardSignaler: { kill: options.signal } } : {}),
     now: () => clock, newId: () => `id-${++ids}`, bridge: createRoomBridge(service, { dataDir, hostId: HOST }), socketPath });
   const server = await startIntakeServer(socketPath, (message) => supervisor.acceptIntake(message));
   cleanup.push(() => server.close());
@@ -90,7 +95,7 @@ async function setup(options: { prompt?: boolean } = {}) {
   const batches = () => service.db.prepare("SELECT token, delivery_mode, acknowledged_at, event_seqs_json FROM native_delivery_batches")
     .all() as Array<{ token: string; delivery_mode: string | null; acknowledged_at: string | null; event_seqs_json: string }>;
   const advance = (ms: number) => { clock = new Date(clock.getTime() + ms); };
-  return { service, store, supervisor, adapter, roomId, dataDir, project, workerJoins, startWorker, direct, batches, advance, identity };
+  return { service, store, supervisor, adapter, roomId, socketPath, dataDir, project, workerJoins, startWorker, direct, batches, advance, identity };
 }
 
 describe("tt to a supervised worker", () => {
@@ -457,4 +462,136 @@ test("a kick from another connection during the re-bind is never undone", async 
   // An atomic re-bind holds the write lock, so the kick lands once it commits.
   if (blocked) racer.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
   expect(service.getRoomState({ room_id: roomId }).members.map((member) => member.agent_id)).not.toContain("claude:wk");
+});
+
+describe("headless membership cleanup", () => {
+  test.each(["left", "kicked"] as const)("stops a worker %s even before the first enrollment tick", async (reason) => {
+    const { service, store, supervisor, roomId, workerJoins, startWorker } = await setup({ gcClock: true });
+    const handle = await startWorker();
+    workerJoins(handle);
+    if (reason === "left") service.leaveRoom({ room_id: roomId, agent_id: "claude:wk" });
+    else service.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
+    await supervisor.tick();
+    expect(handle.stopped).toBe(true);
+    expect(store.worker("w1")).toMatchObject({ desired: "stopped", next_start_at: null });
+    expect(store.auditRows("w1")).toContainEqual(expect.objectContaining({
+      action: "membership_stop", detail: expect.stringContaining(`"reason":"${reason}"`)
+    }));
+    await supervisor.tick();
+    expect(store.latestGeneration("w1")?.generation).toBe(1);
+  });
+
+  test("a kick survives a legacy client re-registering the same generation before the next tick", async () => {
+    const { service, store, supervisor, roomId, workerJoins, startWorker, identity } = await setup({ gcClock: true });
+    const handle = await startWorker();
+    workerJoins(handle);
+    service.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
+    // Remove only the revocation in this fixture to emulate an older CLI.
+    service.db.prepare("DELETE FROM revoked_room_members WHERE room_id = ? AND agent_id = ?").run(roomId, "claude:wk");
+    workerJoins(handle);
+    expect(service.getRoomState({ room_id: roomId }).members.map(m => m.agent_id)).toContain(identity(handle).agent_id);
+    await supervisor.tick();
+    expect(store.worker("w1")?.desired).toBe("stopped");
+    expect(handle.stopped).toBe(true);
+  });
+
+  test("does not start another generation if the process exits after it left", async () => {
+    const { service, store, supervisor, roomId, workerJoins, startWorker, advance } = await setup({ gcClock: true });
+    const handle = await startWorker();
+    workerJoins(handle);
+    service.leaveRoom({ room_id: roomId, agent_id: "claude:wk" });
+    handle.emit({ type: "exited", code: 0, signal: null });
+    advance(MEMBERSHIP_RECOVERY_MS);
+    await supervisor.tick();
+    expect(store.worker("w1")?.desired).toBe("stopped");
+    expect(store.latestGeneration("w1")?.generation).toBe(1);
+  });
+
+  test("leaves a shared host alive until its other member leaves", async () => {
+    const { service, supervisor, workerJoins, startWorker, roomId, project, identity } = await setup({ gcClock: true });
+    const handle = await startWorker();
+    workerJoins(handle);
+    service.joinPath({ agent_id: "claude:other", context_path: project,
+      process_metadata: { ...identity(handle).process_metadata, harness_session_id: "harness:other" } });
+    service.kickMember({ room_id: roomId, agent_id: OP, target_agent_id: "claude:wk", force: true });
+    await supervisor.tick();
+    expect(handle.stopped).toBe(false);
+    service.leaveRoom({ room_id: roomId, agent_id: "claude:other" });
+    await supervisor.tick();
+    expect(handle.stopped).toBe(true);
+  });
+
+  test("gives a lost membership time to recover and stops it after that window", async () => {
+    const { service, store, supervisor, workerJoins, startWorker, advance } = await setup({ gcClock: true });
+    const handle = await startWorker();
+    workerJoins(handle);
+    service.recordSessionLifecycle({ harness: "claude", sessionId: "native-1", pid: handle.pid,
+      processStartedAt: handle.processStartedAt, event: "SessionEnd" });
+    advance(MEMBERSHIP_RECOVERY_MS - 1);
+    await supervisor.tick();
+    expect(handle.stopped).toBe(false);
+    // This fixture supplies no recovery credential to the supervisor.
+    expect(service.findLostMembersForSession({ harness_name: "claude", harness_session_id: "harness:native-1" })).toHaveLength(1);
+    advance(1);
+    await supervisor.tick();
+    expect(handle.stopped).toBe(true);
+    expect(store.auditRows("w1").some(row => row.action === "membership_stop" && row.detail?.includes("recovery_expired"))).toBe(true);
+  });
+
+  test("retiring the room stops its lost worker without waiting for recovery", async () => {
+    const { service, store, supervisor, roomId, workerJoins, startWorker } = await setup({ gcClock: true });
+    const handle = await startWorker();
+    workerJoins(handle);
+    service.recordSessionLifecycle({ harness: "claude", sessionId: "native-1", pid: handle.pid,
+      processStartedAt: handle.processStartedAt, event: "SessionEnd" });
+    expect(service.retireUnoccupiedRoom({ room_id: roomId }).retired).toBe(true);
+    await supervisor.tick();
+    expect(handle.stopped).toBe(true);
+    expect(store.auditRows("w1").some(row => row.action === "membership_stop" && row.detail?.includes("room_removed"))).toBe(true);
+  });
+
+  test("an old generation's departure cannot stop a restarted generation", async () => {
+    const { service, store, supervisor, workerJoins, startWorker, adapter, roomId } = await setup({ gcClock: true });
+    const first = await startWorker();
+    workerJoins(first);
+    service.leaveRoom({ room_id: roomId, agent_id: "claude:wk" });
+    store.requestRestart("w1", false, OP, new Date().toISOString());
+    await supervisor.tick();
+    await supervisor.tick();
+    const second = adapter.last;
+    expect(second.generation).toBe(2);
+    await supervisor.tick();
+    expect(second.stopped).toBe(false);
+    expect(store.worker("w1")?.desired).toBe("running");
+    expect(store.auditRows("w1").some(row => row.action === "membership_stop")).toBe(false);
+  });
+
+  test("reaps only a detached guardian whose recorded lease and exact process have ended", async () => {
+    const signals: { pid: number; signal: NodeJS.Signals }[] = [];
+    let parent = 4321;
+    const { service, store, supervisor, startWorker, workerJoins, roomId, socketPath } = await setup({ gcClock: true,
+      inspect: pid => ({ pid, ppid: parent, startTime: pid === 12345 ? "guard-start" : "reused-pid", command: "tt guard" }),
+      signal: (pid, signal) => signals.push({ pid, signal }) });
+    const handle = await startWorker();
+    workerJoins(handle);
+    const env = handle.spec.supervisor_env!;
+    service.db.prepare("UPDATE path_rooms SET owner = ?, lease_id = ? WHERE room_id = ?")
+      .run("claude:wk", "test-lease", roomId);
+    const guard = { pid: 12345, process_started_at: "guard-start", agent_id: "claude:wk", room_id: roomId };
+    const proof = { ...guard, host_id: HOST, address: env.TT_SUPERVISOR_ENDPOINT!, secret: env.TT_SUPERVISOR_TOKEN! };
+    recordManagedGuard(service.db, { ...proof, lease_id: "wrong" });
+    recordManagedGuard(service.db, { ...proof, lease_id: "test-lease" });
+    expect(listReleasedManagedGuards(service.db, HOST, socketPath)).toEqual([]);
+    expect(service.db.prepare("SELECT COUNT(*) AS count FROM managed_room_guards").get()).toEqual({ count: 1 });
+    recordManagedGuard(service.db, { ...proof, pid: 12346, lease_id: "test-lease" });
+    service.leaveRoom({ room_id: roomId, agent_id: "claude:wk" });
+    expect(listReleasedManagedGuards(service.db, HOST, socketPath)).toEqual([guard, { ...guard, pid: 12346 }]);
+    await supervisor.tick();
+    expect(signals).toEqual([]);
+    parent = 1;
+    await supervisor.tick();
+    expect(signals).toEqual([{ pid: guard.pid, signal: "SIGTERM" }]);
+    expect(listReleasedManagedGuards(service.db, HOST, socketPath)).toEqual([]);
+    expect(store.auditRows().filter(row => row.action === "orphan_guard_stop")).toHaveLength(1);
+  });
 });

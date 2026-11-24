@@ -99,6 +99,8 @@ export async function runGuardCommand(parsed: ParsedCommand): Promise<void> {
       expected_turn_id: parseRequiredInteger(parsed, "turn-id")
     };
 
+    // A detached guardian may outlive its lease. Keep its exact identity so the supervisor can reap it.
+    runtime.commands.registerManagedGuard(identity, heartbeatInput);
     const intervalMs = joined.policy.heartbeatIntervalMs;
 
     const harnessRef = {
