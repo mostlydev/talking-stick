@@ -3027,8 +3027,8 @@ export class TalkingStickService {
           { agent_id: input.agent_id }
         );
       }
-      if (input.transport === "supervisor") recordManagedMembership(this.db, input);
       const timestamp = this.now().toISOString();
+      if (input.transport === "supervisor") recordManagedMembership(this.db, input);
       const existing = this.getNativeWakeEndpoint(
         input.room_id,
         input.agent_id,

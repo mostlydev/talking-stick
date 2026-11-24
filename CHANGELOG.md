@@ -15,9 +15,9 @@ changes will be called out under **Breaking changes**.
 
 - OpenCode installs native room hooks. Running sessions receive room messages and keep separate memberships by conversation ID, even when one OpenCode server hosts several sessions.
 
-- OpenCode 2.4+ can run as a supervised headless worker on an Anthropic or OpenAI OAuth login.
-
 - The supervisor stops enrolled headless workers when their room membership ends. Use `tt supervisor gc --dry-run` to preview cleanup.
+
+- OpenCode 2.4+ can run as a supervised headless worker on an Anthropic or OpenAI OAuth login.
 
 ### Changed
 
