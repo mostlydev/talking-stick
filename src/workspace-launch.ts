@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import type { HarnessId } from "./harness-model.js";
 import {
   listHerdrAgents,
@@ -14,12 +15,14 @@ import {
   findHerdrAgentForMember,
   isLiveMember,
   proveMemberInPane,
+  proveOpencodeV2MemberInPane,
   proveChatMemberInPane,
   type StartTimeReader
 } from "./launch-identity.js";
 import type { LaunchRecord } from "./launch-record.js";
 import type { PaneBackend } from "./pane-backend.js";
 import { resolveContextPath } from "./path-resolution.js";
+import type { ProcessInspector } from "./process-utils.js";
 import { resolvePrimarySkillTargetPath } from "./skill-install.js";
 import type { RoomMember } from "./types.js";
 
@@ -73,6 +76,7 @@ export interface LaunchAgentPlan {
   skill_path: string;
   prompt_delivery: "initial_argument" | "agent_prompt";
   prompt: string;
+  opencode_v2?: { executable: string; session_id: string };
 }
 
 export type LaunchStepKind = "anchor" | "chat" | "split" | "start" | "prompt" | "focus";
@@ -119,6 +123,8 @@ export interface PlanWorkspaceLaunchInput {
    */
   pin_room_id?: string | null;
   readStartTime: StartTimeReader;
+  inspector?: ProcessInspector;
+  hostId?: string;
   record?: LaunchRecord | null;
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
@@ -236,7 +242,20 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
     }
     // Herdr launches inside an interactive pane shell whose PATH may differ
     // from ours, so local absence is uncertainty and agent start decides.
-    checks.push(executableCheck(adapter.executable, env, platform));
+    const executable = executableCheck(adapter.executable, env, platform);
+    checks.push(executable);
+    const v2Executable = agent === "opencode" && (platform === "darwin" || platform === "linux") &&
+      executable.status === "ok" ? path.resolve(executable.detail) : null;
+    const opencodeV2 = v2Executable && usesOpencodeV2(v2Executable, env) ? {
+      executable: v2Executable, session_id: `ses_${randomUUID().replace(/-/g, "")}`
+    } : null;
+    const prompt = buildBootstrapPrompt(skillPath, canonicalPath);
+    if (opencodeV2 && /[\r\n]/.test(opencodeV2.executable + prompt)) {
+      checks.push({ name: "opencode launch mode", status: "failed",
+        detail: "OpenCode V2 pane startup cannot use an executable, skill or checkout path containing a line break." });
+    } else if (opencodeV2) {
+      checks.push({ name: "opencode launch mode", status: "ok", detail: "OpenCode V2 uses a private server and verifies the exact pane session." });
+    }
 
     const herdrName = herdrAgentName(agent, canonicalPath);
     const decision = decideAgent(agent, adapter, herdrName, input, herdrAgents);
@@ -247,7 +266,8 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
       herdr_name: herdrName,
       skill_path: skillPath,
       prompt_delivery: adapter.initial_prompt ? "initial_argument" : "agent_prompt",
-      prompt: buildBootstrapPrompt(skillPath, canonicalPath)
+      prompt,
+      ...(opencodeV2 ? { opencode_v2: opencodeV2 } : {})
     };
   });
 
@@ -259,6 +279,7 @@ export function planWorkspaceLaunch(input: PlanWorkspaceLaunchInput): WorkspaceL
       // Older Herdr builds may not support this diagnostic.
     }
     for (const agent of input.agents) {
+      if (agents.find((plan) => plan.agent === agent)?.opencode_v2) continue;
       const kind = agent === "antigravity" ? "antigravity-cli" : agent;
       const line = integrationStatus.split(/\r?\n/).find((value) => value.startsWith(`${kind}: `));
       const state = line?.slice(kind.length + 2) ?? "";
@@ -328,10 +349,17 @@ function decideAgent(
   input: PlanWorkspaceLaunchInput,
   herdrAgents: HerdrAgent[]
 ): { action: LaunchAgentPlan["action"]; reason?: string } {
-  const deps = { runner: input.runner, readStartTime: input.readStartTime };
+  const deps = { runner: input.runner, readStartTime: input.readStartTime, inspector: input.inspector, hostId: input.hostId };
+  const previous = input.record?.agents[agent];
   const candidates = (input.room?.members ?? []).filter((member) => isLiveMember(member, agent));
   let unproven: string | null = null;
   for (const member of candidates) {
+    if (agent === "opencode" && previous?.opencode_session_id && previous.pane_id) {
+      const proof = proveOpencodeV2MemberInPane(member, previous.pane_id, previous.opencode_session_id, deps);
+      if (proof.confirmed) return { action: "skip", reason: proof.reason };
+      unproven ??= proof.reason;
+      continue;
+    }
     const herdrAgent = findHerdrAgentForMember(member, herdrAgents);
     if (!herdrAgent) {
       unproven ??= `${member.agent_id} is active in this room but no Herdr pane reports its session.`;
@@ -343,7 +371,6 @@ function decideAgent(
   }
   if (unproven) return { action: "inspect", reason: unproven };
 
-  const previous = input.record?.agents[agent];
   if (previous && previous.state !== "failed" && !previous.pane_id) {
     return { action: "inspect", reason: `An earlier ${agent} launch (${previous.state}) may have created a pane whose ID was not recorded; inspect it before relaunching. Use --forget only after checking the old panes.` };
   }
@@ -417,7 +444,15 @@ function planSteps(
       "--pane", pane, "--timeout", String(AGENT_START_TIMEOUT_MS)
     ];
     const cliArgs = LAUNCH_ADAPTERS[agent.agent].cli_args;
-    if (agent.prompt_delivery === "initial_argument") {
+    if (agent.opencode_v2) {
+      const v2 = agent.opencode_v2;
+      const command = [v2.executable, "--standalone", "--session", v2.session_id, "--prompt", agent.prompt]
+        .map(quotePosixArgument).join(" ");
+      // Herdr agent start uses a canonical executable from the pane's PATH.
+      // Submit the exact binary that passed preflight instead.
+      steps.push({ kind: "start", agent: agent.agent, description: "Start OpenCode V2 with a private server.",
+        argv: ["herdr", "pane", "run", pane, command] });
+    } else if (agent.prompt_delivery === "initial_argument") {
       steps.push({ kind: "start", agent: agent.agent, description: `Start ${agent.agent} with the bootstrap prompt.`, argv: [...start, "--", ...cliArgs, agent.prompt] });
     } else {
       steps.push({ kind: "start", agent: agent.agent, description: `Start ${agent.agent}.`, argv: cliArgs.length ? [...start, "--", ...cliArgs] : start });
@@ -450,6 +485,23 @@ function executableCheck(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.
   return found
     ? { name: `${name} executable`, status: "ok", detail: found }
     : { name: `${name} executable`, status: "uncertain", detail: `${name} is not on this process's PATH; the pane shell may still resolve it.` };
+}
+
+function usesOpencodeV2(executable: string, env: NodeJS.ProcessEnv): boolean {
+  try {
+    const version = execFileSync(executable, ["--version"], {
+      env, encoding: "utf8", timeout: 1_500, maxBuffer: 4_096, stdio: ["ignore", "pipe", "ignore"]
+    });
+    const match = /^(?:opencode\s+)?v?2\.(\d+)\.\d+(?:[-+][\w.-]+)?$/i.exec(version.trim());
+    return match !== null && Number(match[1]) >= 4;
+  } catch {
+    // Retain the existing path for old wrappers without a usable version command.
+    return false;
+  }
+}
+
+function quotePosixArgument(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 // Windows resolves a bare command through PATHEXT (tt.exe, codex.cmd), and a

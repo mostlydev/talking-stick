@@ -175,6 +175,13 @@ each pane's session ID. `tt up --print` reports missing or unverified integratio
 no Herdr integration. On Windows, join confirmation also needs access to process details through
 PowerShell/CIM. If the shell cannot read a process's creation time, that join stays unconfirmed.
 
+On macOS and Linux, `tt up --agents opencode` uses a private server for OpenCode 2.4 and later
+2.x releases. It runs the exact executable on the launcher's `PATH`, so put the V2 executable
+ahead of any V1 wrapper. Herdr does not need its OpenCode session integration in this mode:
+the launch record identifies the exact conversation, and confirmation checks that the joined
+member's private server belongs to the foreground OpenCode client in the pane. The old path for
+OpenCode V1 is unchanged. Use `tt up --print --agents opencode` to check the selected mode.
+
 Which agents start, first match wins:
 
 1. `--agents claude,codex`.
@@ -221,9 +228,10 @@ never replaced by another.
   matching its session and process. Grok stays unconfirmed when Herdr omits its session identity.
 - Plain tmux works too: outside Herdr, `tt up` run in a tmux pane drives tmux instead. A Herdr
   workspace becomes a tmux session and a tab becomes a window; `--print` shows the same steps.
-  Agents are started by typing their command line into a fresh pane, which tt labels with the
+  Agents are started by typing their command line into a fresh pane, which tt usually labels with the
   `@tt_agent` pane option. tmux cannot detect agents, so a join is verified by the member's harness
-  process (and its start time) being a foreground process of that pane's terminal. tmux has no
+  process (and its start time) being a foreground process of that pane's terminal, or by the
+  private-server proof for OpenCode V2 described above. tmux has no
   busy/idle signal, so Escape in chat goes to a verified Codex pane without checking whether a turn
   is active. Showing a new session needs an attached client; otherwise select it yourself
   (`tmux switch-client -t <session>`). Requires tmux 3.1 or later.

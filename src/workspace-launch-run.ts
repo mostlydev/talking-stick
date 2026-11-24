@@ -10,6 +10,7 @@ import {
 import {
   isLiveMember,
   proveMemberInPane,
+  proveOpencodeV2MemberInPane,
   proveChatMemberInPane,
   type StartTimeReader
 } from "./launch-identity.js";
@@ -18,6 +19,7 @@ import {
   type LaunchAgentState,
   type LaunchRecord
 } from "./launch-record.js";
+import type { ProcessInspector } from "./process-utils.js";
 import type { RoomMember } from "./types.js";
 import {
   AGENT_PROMPT_TIMEOUT_MS,
@@ -38,6 +40,8 @@ export interface ExecuteLaunchDeps {
   startRunner?: HerdrStartRunner;
   signal?: AbortSignal;
   readStartTime: StartTimeReader;
+  inspector?: ProcessInspector;
+  hostId?: string;
   // Reads the exact room's members; null while no room exists yet.
   readMembers: () => RoomMember[] | null;
   dataDir: string;
@@ -119,15 +123,17 @@ export async function executeWorkspaceLaunch(
   };
   const track = (agent: LaunchAgent, state: LaunchAgentState, detail: string, paneId?: string | null) => {
     const outcome = outcomes.get(agent)!;
+    const agentPlan = plan.agents.find((candidate) => candidate.agent === agent)!;
     outcome.state = state;
     outcome.detail = detail;
     if (paneId !== undefined) outcome.pane_id = paneId;
     record.agents[agent] = {
-      herdr_name: plan.agents.find((candidate) => candidate.agent === agent)!.herdr_name,
+      herdr_name: agentPlan.herdr_name,
       pane_id: outcome.pane_id,
       state,
       detail,
       ...(outcome.member_id ? { member_id: outcome.member_id } : {}),
+      ...(agentPlan.opencode_v2 ? { opencode_session_id: agentPlan.opencode_v2.session_id } : {}),
       updated_at: new Date(now()).toISOString()
     };
     save();
@@ -205,8 +211,9 @@ export async function executeWorkspaceLaunch(
     }
 
     if (step.kind === "split" && step.agent) track(step.agent, "pane_created", "Creating a fresh shell pane.");
+    const paneStart = step.kind === "start" && argv[0] === "pane" && argv[1] === "run";
     if (step.kind === "start" && step.agent) {
-      const paneId = argv[argv.indexOf("--pane") + 1];
+      const paneId = paneStart ? argv[2] : argv[argv.indexOf("--pane") + 1];
       track(step.agent, "starting", "Starting the agent.", paneId);
     }
 
@@ -217,7 +224,7 @@ export async function executeWorkspaceLaunch(
       return;
     }
     const outcome = step.kind === "start" || step.kind === "prompt"
-      ? await runStartStep(deps.startRunner ?? (async (args, options) => deps.runner(args, options)), step, argv, abort.signal)
+      ? await runStartStep(deps.startRunner ?? (async (args, options) => deps.runner(args, options)), step, argv, abort.signal, paneStart)
       : runStep(deps.runner, step, argv);
     if (outcome.kind === "ok") {
       if (step.produces) {
@@ -342,10 +349,10 @@ function runStep(runner: HerdrRunner, step: LaunchStep, args: string[]): StepOut
   }
 }
 
-async function runStartStep(runner: HerdrStartRunner, step: LaunchStep, args: string[], signal: AbortSignal): Promise<StepOutcome> {
+async function runStartStep(runner: HerdrStartRunner, step: LaunchStep, args: string[], signal: AbortSignal, allowEmptySuccess: boolean): Promise<StepOutcome> {
   const timeoutMs = (step.kind === "start" ? AGENT_START_TIMEOUT_MS : AGENT_PROMPT_TIMEOUT_MS) + CALL_HEADROOM_MS;
   try {
-    return { kind: "ok", result: await runHerdrStartJson(runner, args, { timeoutMs, signal }) };
+    return { kind: "ok", result: await runHerdrStartJson(runner, args, { timeoutMs, signal, allowEmptySuccess }) };
   } catch (error) {
     return { kind: "error", code: error instanceof HerdrError ? error.code : null,
       message: error instanceof Error ? error.message : String(error) };
@@ -366,7 +373,7 @@ async function observeJoins(
 ): Promise<void> {
   const pending = () => [...outcomes.values()].filter((outcome) => outcome.state === "started");
   const deadline = now() + (deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS);
-  const proofDeps = { runner: deps.runner, readStartTime: deps.readStartTime };
+  const proofDeps = { runner: deps.runner, readStartTime: deps.readStartTime, inspector: deps.inspector, hostId: deps.hostId };
   const lastReason = new Map<LaunchAgent, string>();
   const noticed = new Map<LaunchAgent, string>();
   const seconds = Math.round((deps.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS) / 1000);
@@ -404,8 +411,9 @@ async function observeJoins(
       } catch { /* No positive console proof yet; retain submitted state. */ }
     }
     for (const outcome of pending()) {
+      const v2 = plan.agents.find((agent) => agent.agent === outcome.agent)?.opencode_v2;
       const herdrAgent = herdrAgents.find((candidate) => candidate.pane_id === outcome.pane_id);
-      if (!herdrAgent) {
+      if (!herdrAgent && !v2) {
         lastReason.set(outcome.agent, `Herdr no longer reports an agent in pane ${outcome.pane_id}.`);
         continue;
       }
@@ -414,7 +422,9 @@ async function observeJoins(
       // tried; a matching row without a start time never ends the search.
       let unrecorded: string | undefined;
       for (const member of members.filter((candidate) => isLiveMember(candidate, outcome.agent))) {
-        const proof = proveMemberInPane(member, herdrAgent, executable, proofDeps);
+        const proof = v2 && outcome.pane_id
+          ? proveOpencodeV2MemberInPane(member, outcome.pane_id, v2.session_id, proofDeps)
+          : proveMemberInPane(member, herdrAgent!, executable, proofDeps);
         if (proof.confirmed) {
           outcome.member_id = member.agent_id;
           track(outcome.agent, "confirmed", proof.reason);

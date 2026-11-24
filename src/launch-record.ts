@@ -22,6 +22,8 @@ export interface LaunchRecordAgent {
   state: LaunchAgentState;
   detail?: string;
   member_id?: string;
+  /** Exact conversation requested before starting a private OpenCode V2 client. */
+  opencode_session_id?: string;
   updated_at: string;
 }
 

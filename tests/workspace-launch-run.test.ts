@@ -6,6 +6,9 @@ import { handleUpCommand, renderPlan, renderResult } from "../src/cli/up.js";
 import { parseCommand } from "../src/cli/parser.js";
 import type { Runtime } from "../src/cli/runtime.js";
 import { acquireLaunchLock, readLaunchRecord, launchRecordPath, writeLaunchRecord } from "../src/launch-record.js";
+import { deriveHarnessCliIdentity } from "../src/identity.js";
+import type { HerdrRunner } from "../src/herdr.js";
+import type { ProcessInspector } from "../src/process-utils.js";
 import type { RoomMember } from "../src/types.js";
 import {
   planWorkspaceLaunch,
@@ -190,6 +193,70 @@ describe("tt up execution", () => {
     expect(result.status).toBe("launched");
     expect(result.agents[0]).toMatchObject({ agent, state: "confirmed", pane_id: "w1:p2" });
   });
+
+  test.skipIf(process.platform === "win32").each(["herdr", "tmux"] as const)(
+    "pins the OpenCode V2 binary and confirms its private server in %s", async (backend) => {
+      const { herdr, repo, home, bin, dataDir } = setup();
+      const executable = path.join(bin, "opencode");
+      fs.writeFileSync(executable, "#!/bin/sh\nprintf 'opencode v2.4.1\\n'\n", { mode: 0o755 });
+      const shellProcessPid = 504;
+      let joined: RoomMember | undefined;
+      const clientPid = 501;
+      const serverPid = 502;
+      let parentPid = clientPid;
+      let serverArgs = "serve --stdio --port 0";
+      const inspector: ProcessInspector = {
+        inspect: pid => ({
+          [clientPid]: { pid, ppid: 1, startTime: "client start", command: `${executable} --standalone` },
+          [serverPid]: { pid, ppid: parentPid, startTime: "server start", command: `${executable} ${serverArgs}` },
+          504: { pid, ppid: serverPid, startTime: "shell helper start", command: "opencode-pty" }
+        })[pid]
+      };
+      const runner: HerdrRunner = (args) => {
+        if (args[0] === "pane" && args[1] === "run") {
+          const attempt = readLaunchRecord(dataDir, repo)?.agents.opencode;
+          expect(attempt).toMatchObject({ pane_id: args[2], state: "starting", opencode_session_id: expect.stringMatching(/^ses_/) });
+          expect(args[3]).toContain(`'${executable}' '--standalone' '--session' '${attempt!.opencode_session_id}' '--prompt'`);
+          const identity = deriveHarnessCliIdentity({ env: { OPENCODE: "1", OPENCODE_SESSION_ID: attempt!.opencode_session_id },
+            inspector, parentPid: shellProcessPid, hostId: "local" })!;
+          expect(identity.process_metadata.harness_pid).toBe(serverPid);
+          joined = { ...identity.process_metadata, agent_id: identity.agent_id, status: "active" } as RoomMember;
+          // Herdr's integration may be absent or still report only a terminal.
+          return backend === "herdr" ? "" : JSON.stringify({ result: {} });
+        }
+        if (args[0] === "pane" && args[1] === "process-info") {
+          expect(args[3]).toBe("w1:p2");
+          return JSON.stringify({ result: { process_info: { foreground_processes: [{ pid: clientPid, argv0: "opencode" }] } } });
+        }
+        return herdr.runner(args);
+      };
+      const plan = (members: RoomMember[]) => planWorkspaceLaunch({
+        agents: ["opencode"], context_path: repo, topology: "here", backend,
+        herdr: { pane_id: "w1:p1", tab_id: "w1:t1", workspace_id: "w1" },
+        runner, room: { room_id: "room-1", members }, record: readLaunchRecord(dataDir, repo),
+        readStartTime: () => null, inspector, hostId: "local", env: { PATH: bin }, homeDir: home
+      });
+      const initial = plan([]);
+      expect(initial.steps.find(step => step.kind === "split")?.argv).toContain("TT_ROOM=room-1");
+      expect(initial.checks.some(check => check.name === "opencode herdr integration")).toBe(false);
+      const result = await executeWorkspaceLaunch(initial, {
+        runner, readStartTime: () => null, inspector, hostId: "local", dataDir, record: null,
+        readMembers: () => joined ? [joined] : [], joinTimeoutMs: 0
+      });
+      expect(result).toMatchObject({ status: "launched", agents: [{ state: "confirmed", member_id: joined!.agent_id }] });
+      expect(plan([joined!]).agents[0]).toMatchObject({ action: "skip" });
+      expect(plan([{ ...joined!, harness_session_id: "harness:ses_wrong" }]).agents[0]).toMatchObject({ action: "inspect" });
+      expect(plan([{ ...joined!, harness_process_started_at: "new incarnation" }]).agents[0]).toMatchObject({ action: "inspect" });
+      expect(plan([{ ...joined!, harness_host_id: "another-host" }]).agents[0]).toMatchObject({ action: "inspect" });
+      parentPid = 999;
+      expect(plan([joined!]).agents[0]).toMatchObject({ action: "inspect" });
+      parentPid = clientPid;
+      serverArgs = "serve --service";
+      expect(plan([joined!]).agents[0]).toMatchObject({ action: "inspect" });
+      serverArgs = "--prompt serve --stdio";
+      expect(plan([joined!]).agents[0]).toMatchObject({ action: "inspect" });
+    }
+  );
 
   test("tt up opens chat in the invoking pane after releasing the launch lock", async () => {
     const { herdr, repo, home, bin, dataDir } = setup();
