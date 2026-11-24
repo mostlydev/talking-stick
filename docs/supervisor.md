@@ -56,6 +56,24 @@ If PATH has only OpenCode 1.x, set `OPENCODE_EXECUTABLE` to the absolute 2.4+ bi
 before running `tt up`, or pass `--env OPENCODE_EXECUTABLE=literal:/absolute/path` to `tt supervisor add`.
 `tt chat` shows the worker under `/who` and counts its holds under `/rooms`.
 
+## Automatic cleanup after leaving a room
+
+The supervisor stops an enrolled worker when it leaves or is kicked, or its room is
+removed. Lost memberships get two minutes to recover. Restarting or rebinding a
+worker keeps the new generation running. If another room member already shares
+the same host process, cleanup waits until that member leaves.
+
+To move a worker to another room without stopping it, join the destination
+directly with `tt join --in <room>`. A separate `tt leave` can stop the worker
+before it joins the destination.
+
+Run `tt supervisor gc --dry-run` to see eligible worker generations and detached
+guardians whose lease ended. The same checks run automatically. Supervisor status
+and chat `/who` show why a worker was stopped, and the supervisor records each
+cleanup in its audit log. A worker stopped after a room departure needs a new
+native session. Run `tt up --headless` for the same workspace and agent, or use
+`tt supervisor restart <worker> --fresh`. Both keep the worker's saved settings.
+
 ## Start and inspect a worker
 
 `tt supervisor add` checks the executable when its path or PATH is fixed by the worker's

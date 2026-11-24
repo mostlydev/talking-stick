@@ -4,6 +4,7 @@ import path from "node:path";
 import { openSqlite, type SqliteDatabase } from "./sqlite.js";
 import { resolveDataDir } from "./config.js";
 import { RENAME_NOTICE_ID } from "./profile-notices.js";
+import { membershipGcSchema } from "./supervisor/membership-gc.js";
 
 export type { SqliteDatabase } from "./sqlite.js";
 
@@ -600,7 +601,8 @@ const migrations: Migration[] = [
       db.prepare("INSERT OR IGNORE INTO profile_notices (notice_id, created_at) VALUES (?, ?)")
         .run(RENAME_NOTICE_ID, new Date().toISOString());
     }
-  }
+  },
+  { id: 34, name: "managed_membership_gc", up: membershipGcSchema }
 ];
 
 export function resolveDatabasePath(options: OpenDatabaseOptions = {}): string {

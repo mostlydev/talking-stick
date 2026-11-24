@@ -113,6 +113,34 @@ describe("tt up --headless", () => {
     expect(t.installs).toHaveLength(1);
   });
 
+  test("queues a fresh session for a worker stopped after room departure", async () => {
+    const t = setup();
+    await t.up(["--agents", "claude,codex", "--restricted"]);
+    const db = t.store();
+    const now = new Date().toISOString();
+    const generation = { worker_id: "shrooms-claude", generation: 1, pid: 12, process_started_at: "started",
+      pgid: 12, session_id: "native-1", state: "idle" as const, started_at: now };
+    db.recordGeneration(generation);
+    expect(db.requestGenerationStop({ ...generation, desired_version: 1 }, "supervisor", now,
+      { reason: "kicked", room_id: "room", agent_id: "claude:test" })).toBe(true);
+    db.endGeneration("shrooms-claude", 1, now, { reason: "stopped" });
+    db.setDesired("shrooms-codex", "stopped", "human:test", now);
+    const before = db.worker("shrooms-claude");
+    expect((await t.up(["--agents", "claude,codex", "--prefix", "other", "--print"])).workers.map(
+      (worker: { worker: string; action: string }) => [worker.worker, worker.action]))
+      .toEqual([["shrooms-claude", "restart"], ["shrooms-codex", "exists"]]);
+    expect(db.worker("shrooms-claude")).toEqual(before);
+    const started = await t.up(["--agents", "claude,codex", "--prefix", "other"]);
+    expect(started).toMatchObject({ status: "started", workers: [
+      { worker: "shrooms-claude", action: "restart_queued", unrestricted: false },
+      { worker: "shrooms-codex", action: "exists", desired: "stopped" }
+    ] });
+    expect(db.worker("shrooms-claude")).toMatchObject({ desired: "running", fresh_next: 1, restart_next: 1,
+      spec_json: before!.spec_json });
+    expect((await t.up(["--agents", "claude"])).workers[0].action).toBe("exists");
+    expect(t.installs).toHaveLength(1);
+  });
+
   test("an existing worker for the folder is reused under any name and keeps its own permissions", async () => {
     const t = setup();
     t.store().addWorker({ worker_id: "mine", harness: "codex", cwd: t.repo, env: [],

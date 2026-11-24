@@ -4,7 +4,7 @@ import { readSupervisorOwnerLock, type ProcessLivenessReader } from "./daemon.js
 import { executableFailure } from "./executable.js";
 import { inspectSupervisorState } from "./root.js";
 import { supervisorPaths, systemProcessLiveness } from "./run.js";
-import type { DesiredState, GenerationState, HoldReason } from "./state.js";
+import { MEMBERSHIP_STOP_REASON_SQL, type DesiredState, type GenerationState, type HoldReason } from "./state.js";
 
 interface WorkerStatusRow {
   worker_id: string;
@@ -13,6 +13,7 @@ interface WorkerStatusRow {
   desired_version: number;
   hold_reason: HoldReason | null;
   next_start_at: string | null;
+  stop_reason: string | null;
   generation: number | null;
   generation_state: GenerationState | null;
   pid: number | null;
@@ -41,6 +42,7 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
            g.generation, g.state AS generation_state, g.pid, g.process_started_at, g.session_id,
            g.started_at, g.ended_at,
            g.exit_json,
+           CASE WHEN w.desired != 'running' THEN ${MEMBERSHIP_STOP_REASON_SQL} END AS stop_reason,
            COALESCE(i.count, 0) AS uncertain_inputs, COALESCE(a.count, 0) AS denied_requests
     FROM workers w
     LEFT JOIN generations g ON g.worker_id = w.worker_id AND g.generation = (
@@ -66,7 +68,8 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
       cwd: spec.cwd,
       desired: row.desired,
       desired_version: row.desired_version,
-      hold_reason: row.hold_reason,
+      hold_reason: row.stop_reason ? null : row.hold_reason,
+      ...(row.stop_reason ? { stop_reason: row.stop_reason } : {}),
       next_start_at: row.hold_reason ? null : row.next_start_at,
       generation: row.generation === null ? null : {
         generation: row.generation,

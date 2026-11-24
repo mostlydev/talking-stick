@@ -1,6 +1,9 @@
 import os from "node:os";
 import type { TalkingStickService } from "../service.js";
 import { readCliSessions, resolveCliSessionPath } from "../session-store.js";
+import { withImmediateTransaction } from "../db.js";
+import { findWorkerGcTarget, listReleasedManagedGuards, type ManagedGuard, type WorkerGcTarget } from "./membership-gc.js";
+import type { GenerationRow } from "./state.js";
 import type { Harness } from "./adapter.js";
 
 // What the supervisor asks of the room. It never writes presence or model
@@ -25,6 +28,11 @@ export interface RoomBridge {
    */
   sessionStarted(input: { harness: Harness; session_id: string; pid: number; process_started_at: string }): void;
   lostSessions(input: { harness: Harness; session_id: string }): Array<{ room_id: string; agent_id: string }>;
+  /** Inspect the room and commit a stop while a concurrent recovery cannot replace that evidence. */
+  withGcTarget?(socket: string, generation: GenerationRow, now: Date, stop: (target: WorkerGcTarget) => boolean): boolean;
+  forgetGeneration?(address: string, tokenHash: string): void;
+  releasedGuards?(socket: string): ManagedGuard[];
+  forgetGuard?(guard: ManagedGuard): void;
   isEnrolled(input: { harness: Harness; session_id: string; pid: number; process_started_at: string;
     endpoint_address: string }): boolean;
 }
@@ -89,6 +97,21 @@ export function createRoomBridge(service: TalkingStickService, options: { dataDi
     },
     lostSessions(input) {
       return service.findLostMembersForSession({ harness_name: input.harness, harness_session_id: `harness:${input.session_id}` });
+    },
+    withGcTarget(socket, generation, now, stop) {
+      return withImmediateTransaction(service.db, () => {
+        const target = findWorkerGcTarget(service.db, hostId, socket, generation, now);
+        return target ? stop(target) : false;
+      });
+    },
+    forgetGeneration(address, tokenHash) {
+      service.db.prepare("DELETE FROM managed_room_memberships WHERE host_id = ? AND address = ? AND token_hash = ?")
+        .run(hostId, address, tokenHash);
+    },
+    releasedGuards(socket) { return listReleasedManagedGuards(service.db, hostId, socket); },
+    forgetGuard(guard) {
+      service.db.prepare("DELETE FROM managed_room_guards WHERE host_id = ? AND pid = ? AND process_started_at = ?")
+        .run(hostId, guard.pid, guard.process_started_at);
     },
     isEnrolled(input) {
       return service.findMembersForSession({ harness_name: input.harness, harness_session_id: `harness:${input.session_id}` })
