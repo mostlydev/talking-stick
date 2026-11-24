@@ -287,6 +287,7 @@ export class Supervisor {
     // The configured session seeds only the first start. After that the latest
     // generation decides, including a fresh start that recorded no session.
     const latest = this.store.latestGeneration(worker.worker_id);
+    if (latest && !worker.fresh_next && this.store.refuseDepartedResume(worker, this.at())) return;
     const resume = worker.fresh_next ? undefined
       : latest ? latest.session_id ?? undefined : spec.resume_session_id;
     // Continuing a conversation the adapter cannot resume would quietly start a new one.

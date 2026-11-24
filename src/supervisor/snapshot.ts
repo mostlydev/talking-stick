@@ -4,7 +4,7 @@ import { readSupervisorOwnerLock, type ProcessLivenessReader } from "./daemon.js
 import { executableFailure } from "./executable.js";
 import { inspectSupervisorState } from "./root.js";
 import { supervisorPaths, systemProcessLiveness } from "./run.js";
-import type { DesiredState, GenerationState, HoldReason } from "./state.js";
+import { MEMBERSHIP_STOP_REASON_SQL, type DesiredState, type GenerationState, type HoldReason } from "./state.js";
 
 interface WorkerStatusRow {
   worker_id: string;
@@ -42,9 +42,7 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
            g.generation, g.state AS generation_state, g.pid, g.process_started_at, g.session_id,
            g.started_at, g.ended_at,
            g.exit_json,
-           (SELECT json_extract(a.detail, '$.reason') FROM audit a
-            WHERE a.worker_id = w.worker_id AND a.action = 'membership_stop'
-              AND json_extract(a.detail, '$.desired_version') = w.desired_version ORDER BY a.id DESC LIMIT 1) AS stop_reason,
+           CASE WHEN w.desired != 'running' THEN ${MEMBERSHIP_STOP_REASON_SQL} END AS stop_reason,
            COALESCE(i.count, 0) AS uncertain_inputs, COALESCE(a.count, 0) AS denied_requests
     FROM workers w
     LEFT JOIN generations g ON g.worker_id = w.worker_id AND g.generation = (

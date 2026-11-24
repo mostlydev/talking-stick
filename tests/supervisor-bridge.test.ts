@@ -481,6 +481,23 @@ describe("headless membership cleanup", () => {
     expect(store.latestGeneration("w1")?.generation).toBe(1);
   });
 
+  test("an older CLI resume cannot launch the departed conversation", async () => {
+    const { service, store, supervisor, adapter, roomId, workerJoins, startWorker } = await setup({ gcClock: true });
+    const first = await startWorker();
+    workerJoins(first);
+    service.leaveRoom({ room_id: roomId, agent_id: "claude:wk" });
+    await supervisor.tick();
+    expect(first.stopped).toBe(true);
+    store.db.prepare("UPDATE workers SET desired = 'running', desired_version = desired_version + 1 WHERE worker_id = 'w1'").run();
+    await supervisor.tick();
+    expect(adapter.handles).toHaveLength(1);
+    expect(store.worker("w1")?.desired).toBe("stopped");
+    store.requestRestart("w1", true, OP, new Date().toISOString());
+    await supervisor.tick();
+    expect(adapter.last.generation).toBe(2);
+    expect(adapter.last.spec.resume_session_id).toBeUndefined();
+  });
+
   test("a kick survives a legacy client re-registering the same generation before the next tick", async () => {
     const { service, store, supervisor, roomId, workerJoins, startWorker, identity } = await setup({ gcClock: true });
     const handle = await startWorker();

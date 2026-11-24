@@ -70,8 +70,9 @@ before it joins the destination.
 Run `tt supervisor gc --dry-run` to see eligible worker generations and detached
 guardians whose lease ended. The same checks run automatically. Supervisor status
 and chat `/who` show why a worker was stopped, and the supervisor records each
-cleanup in its audit log. Use `tt supervisor restart <worker> --fresh` to start a
-new native session.
+cleanup in its audit log. A worker stopped after a room departure needs a new
+native session. Run `tt up --headless` for the same workspace and agent, or use
+`tt supervisor restart <worker> --fresh`. Both keep the worker's saved settings.
 
 ## Start and inspect a worker
 

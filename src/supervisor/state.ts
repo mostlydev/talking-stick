@@ -56,6 +56,11 @@ export interface GenerationRow {
   delivery_token_hash: string | null;
 }
 
+/** A room departure retires this generation's conversation across later pause/stop requests. */
+export const MEMBERSHIP_STOP_REASON_SQL = `(SELECT json_extract(a.detail, '$.reason') FROM audit a
+  WHERE a.worker_id = g.worker_id AND a.action = 'membership_stop'
+    AND json_extract(a.detail, '$.generation') = g.generation ORDER BY a.id DESC LIMIT 1)`;
+
 export interface InputRow {
   input_id: string;
   worker_id: string;
@@ -261,11 +266,36 @@ export class SupervisorStore {
   /** A control change: bumps the version so any in-flight action on the old one loses. */
   setDesired(workerId: string, desired: DesiredState, actor: string, at: string, clearHold = false): WorkerRow {
     return this.transaction(() => {
+      if (desired === "running") this.requireFreshAfterDeparture(workerId);
       const changed = this.db.prepare(`UPDATE workers SET desired = ?, desired_version = desired_version + 1
         ${clearHold ? ", hold_reason = NULL, next_start_at = NULL" : ""} WHERE worker_id = ?`).run(desired, workerId);
       if (changed.changes !== 1) throw new Error(`No worker named ${workerId}.`);
       this.audit(at, actor, desired === "running" ? "resume" : desired === "paused" ? "pause" : "stop", workerId);
       return this.worker(workerId)!;
+    });
+  }
+
+  private membershipStopReason(workerId: string): string | null {
+    return this.db.prepare<[string], { reason: string | null }>(`SELECT ${MEMBERSHIP_STOP_REASON_SQL} AS reason
+      FROM generations g WHERE g.worker_id = ? ORDER BY g.generation DESC LIMIT 1`).get(workerId)?.reason ?? null;
+  }
+
+  private requireFreshAfterDeparture(workerId: string): void {
+    if (this.membershipStopReason(workerId)) {
+      throw new Error(`Worker ${workerId} stopped after its room membership ended. Run tt supervisor restart ${workerId} --fresh.`);
+    }
+  }
+
+  /** Older CLI clients can change desired state without checking the departure audit. */
+  refuseDepartedResume(worker: WorkerRow, at: string): boolean {
+    return this.transaction(() => {
+      const current = this.worker(worker.worker_id);
+      if (!current || current.desired_version !== worker.desired_version || current.desired !== "running") return true;
+      if (current.fresh_next || !this.membershipStopReason(worker.worker_id)) return false;
+      this.db.prepare(`UPDATE workers SET desired = 'stopped', desired_version = desired_version + 1,
+        restart_next = 0, next_start_at = NULL WHERE worker_id = ?`).run(worker.worker_id);
+      this.audit(at, "supervisor", "membership_resume_refused", worker.worker_id);
+      return true;
     });
   }
 
@@ -409,6 +439,7 @@ export class SupervisorStore {
    */
   requestRestart(workerId: string, fresh: boolean, actor: string, at: string): WorkerRow {
     return this.transaction(() => {
+      if (!fresh) this.requireFreshAfterDeparture(workerId);
       const changed = this.db.prepare(`UPDATE workers SET desired = 'running', desired_version = desired_version + 1,
         hold_reason = NULL, next_start_at = NULL, restart_next = 1, fresh_next = ? WHERE worker_id = ?`).run(fresh ? 1 : 0, workerId);
       if (changed.changes !== 1) throw new Error(`No worker named ${workerId}.`);

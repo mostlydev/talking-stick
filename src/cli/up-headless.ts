@@ -56,7 +56,7 @@ export interface HeadlessUpOptions {
 export interface HeadlessWorker {
   agent: LaunchAgent;
   worker: string;
-  action: "add" | "added" | "exists";
+  action: "add" | "added" | "exists" | "restart" | "restart_queued";
   /** The worker's own stored permissions; an existing worker keeps whatever it was added with. */
   unrestricted: boolean;
   /** For an existing worker: what the supervisor last recorded. */
@@ -269,8 +269,8 @@ export async function handleHeadlessUp(runtime: Runtime, parsed: ParsedCommand, 
       const harness = agent;
       const same = existing.find((worker) => worker.harness === harness && realDirectory(worker.cwd) === cwd);
       if (same) {
-        return { agent, worker: same.worker_id, action: "exists", unrestricted: same.unrestricted === true,
-          desired: same.desired, hold_reason: same.hold_reason };
+        return { agent, worker: same.worker_id, action: same.stop_reason ? "restart" : "exists",
+          unrestricted: same.unrestricted === true, desired: same.desired, hold_reason: same.hold_reason };
       }
       const name = `${prefix}-${agentLabel(agent)}`;
       const taken = existing.find((worker) => worker.worker_id === name);
@@ -321,6 +321,13 @@ export async function handleHeadlessUp(runtime: Runtime, parsed: ParsedCommand, 
     workers = store.transaction(() => {
       const planned = plan(readSupervisorWorkers(store.db));
       for (const worker of planned) {
+        if (worker.action === "restart") {
+          const restarted = store.requestRestart(worker.worker, true, actor, at);
+          worker.action = "restart_queued";
+          worker.desired = restarted.desired;
+          worker.hold_reason = restarted.hold_reason;
+          continue;
+        }
         if (worker.action !== "add") continue;
         const harness = worker.agent;
         const spec: WorkerSpec = { worker_id: worker.worker, harness, cwd,
@@ -340,7 +347,7 @@ export async function handleHeadlessUp(runtime: Runtime, parsed: ParsedCommand, 
   }
 
   const service = ensureService(dataDir, root, platform, options, launchctl, searchPath);
-  const result = buildResult(workers.some((worker) => worker.action === "added") ? "started" : "nothing_to_add", workers, service);
+  const result = buildResult(workers.some((worker) => worker.action === "added" || worker.action === "restart_queued") ? "started" : "nothing_to_add", workers, service);
   printResult(parsed, result, () => renderHeadless(result));
   if (service.state === "not_started") process.exitCode = 1;
 }
@@ -392,12 +399,14 @@ export function renderHeadless(result: HeadlessUpResult): string {
   for (const worker of result.workers) {
     const outcome = worker.action === "added" ? `added as ${worker.worker}`
       : worker.action === "add" ? `would add as ${worker.worker}`
+      : worker.action === "restart" ? `would start a fresh session for ${worker.worker}`
+      : worker.action === "restart_queued" ? `queued a fresh session for ${worker.worker}`
       : `already set up as ${worker.worker}${worker.desired && worker.desired !== "running" ? ` (${worker.desired})` : ""}`;
     lines.push(`  ${agentLabel(worker.agent)}: ${outcome} · ${worker.unrestricted ? "unrestricted" : "restricted"}`);
   }
   for (const skip of result.skipped) lines.push(`  skipped ${skip}`);
   lines.push("", describeService(result.service));
-  if (result.workers.some((worker) => worker.action !== "exists" && worker.unrestricted)) {
+  if (result.workers.some((worker) => (worker.action === "add" || worker.action === "added") && worker.unrestricted)) {
     lines.push("New workers approve their own tool use and run with your account's access; --restricted keeps each harness's own rules.");
   }
   lines.push("", "Next:", ...result.next_steps.map((step) => `  - ${step}`));
