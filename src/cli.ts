@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { isProtocolError } from "./index.js";
 import { hasOption, parseCommand } from "./cli/parser.js";
 import { printCommandHelp, printHelp, shouldUseJson } from "./cli/output.js";
-import { COMMAND_REGISTRY, getCommand } from "./cli/registry.js";
+import { getCommand, helpGroups } from "./cli/registry.js";
+import { invokedCommandName } from "./cli/invoked-name.js";
 import { createRuntime } from "./cli/runtime.js";
 import { runStartupMaintenance } from "./cli/startup-maintenance.js";
 import { isStandalone, standaloneRoot } from "./standalone-mode.js";
@@ -32,7 +33,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
 
   if (!parsed.name && hasOption(parsed, "version")) {
     const version = packageVersion();
-    process.stdout.write(shouldUseJson(parsed) ? `${JSON.stringify({ version })}\n` : `tt ${version}\n`);
+    process.stdout.write(shouldUseJson(parsed) ? `${JSON.stringify({ version })}\n` : `${invokedCommandName()} ${version}\n`);
     return;
   }
 
@@ -42,14 +43,14 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     if (command) {
       printCommandHelp(command);
     } else {
-      printHelp(COMMAND_REGISTRY.filter((entry) => !entry.internal).map((entry) => entry.usage), shouldUseJson(parsed) ? undefined : helpNotice());
+      printHelp(helpGroups(), shouldUseJson(parsed) ? undefined : helpNotice());
     }
     return;
   }
 
   const command = getCommand(parsed.name);
   if (!command) {
-    throw new Error(`Unknown command: ${parsed.name}`);
+    throw new Error(`Unknown command: ${parsed.name}. Run ${invokedCommandName()} --help for the commands.`);
   }
 
   if (await runStartupUpdate(parsed)) return;

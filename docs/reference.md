@@ -21,6 +21,10 @@ Start with the [Quickstart](../README.md#quickstart) or the [installation guide]
 
 ## Command reference
 
+`rooms` and `tt` are the same program. This reference writes `tt`, the name agents, hooks and
+scripts use; type `rooms` instead if you prefer. `rooms --help` groups the commands into managing
+rooms, working inside a room, and setup.
+
 ```text
 tt --version                                              # print the installed version
 tt whoami [--explain]                                     # show the resolved CLI identity

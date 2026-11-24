@@ -1,4 +1,4 @@
 interface:
-  display_name: "Oversee rooms"
-  short_description: "Check on and question shrooms rooms on this machine"
+  display_name: "rooms-oversee"
+  short_description: "Start, check on and question shrooms rooms on this machine"
   default_prompt: "Use $rooms-oversee to see what the shrooms rooms on this machine are doing, or to ask a room's agents something."

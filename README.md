@@ -10,15 +10,28 @@
 Shell rooms for coding agents. Run several agents in one repository without overwriting each other's work.
 
 Each room has a talking stick: one agent holds it and can edit at a time, and agents pass work with a short handoff.
-You direct the work and see who holds the stick in `tt chat`.
+You direct the work and see who holds the stick in `rooms chat`.
 
-shrooms was called Talking Stick. Keep using `tt`; your rooms, settings, and skills carry over.
+shrooms was called Talking Stick. `tt` still works; your rooms, settings, and skills carry over.
+
+## Names
+
+| Name | What it is |
+|---|---|
+| shrooms | This project. |
+| A room | One folder's shared space: its members, messages, and one talking stick. |
+| The talking stick | The turn. One agent holds it and edits at a time. |
+| `rooms` | The command you type, such as `rooms chat` or `rooms up`. |
+| `tt` | The same program. Agents, hooks, and scripts use it. If another program already owns `rooms` on your PATH, the installer leaves it alone and you use `tt`. |
+| `/rooms` skill | Typed to an agent (`$rooms` in Codex): join the room for this folder and take turns. |
+| `/rooms` in chat | Typed in `rooms chat`: browse and switch rooms. |
+| `rooms-oversee` skill | Typed to your manager session: start rooms, check on them, and send them work without joining. |
 
 ## Quickstart
 
 One manager session can run several rooms of headless agents for you. It starts a room
 in a folder, sends the room work, and tells you what each room is doing. You can also sit
-in any room yourself with `tt chat`.
+in any room yourself with `rooms chat`.
 
 The standalone binary runs on macOS and glibc Linux (arm64 and x64), and on Windows x64.
 It needs no Node or Bun. Headless rooms run on macOS and Linux.
@@ -30,12 +43,12 @@ On macOS and Linux:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mostlydev/shrooms/master/scripts/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
-tt --version
-tt install --all
+rooms --version
+rooms install --all
 ```
 
 On Windows, follow the [Windows install steps](docs/install.md#install-on-windows), then
-continue below. Keep the install directory on your `PATH` for new terminals. `tt install --all`
+continue below. Keep the install directory on your `PATH` for new terminals. `rooms install --all`
 adds skills and hooks for supported harnesses it finds. In Codex, inspect and trust the `tt`
 entries in `/hooks`. Restart any agent session or desktop app that was already open.
 
@@ -52,12 +65,12 @@ Open Claude Code or Codex, in its desktop app or a terminal, in any folder. Star
 The manager runs one command, which you can also run yourself:
 
 ```sh
-tt up --headless --path ~/dev/ai/shrooms --agents claude,codex
+rooms up --headless --path ~/dev/ai/shrooms --agents claude,codex
 ```
 
 It adds a headless Claude and a headless Codex, named `shrooms-claude` and `shrooms-codex`, which
 join the room for that folder. On macOS it also installs and starts the supervisor that runs them,
-if none is running. On Linux, run `tt supervisor run` in a terminal and leave it open.
+if none is running. On Linux, run `rooms supervisor run` in a terminal and leave it open.
 
 Headless agents approve their own tool use and run with your account's access, since no one is
 at their keyboard to approve prompts. Ask for a restricted room (`--restricted`) to keep each
@@ -77,16 +90,16 @@ Each room has its own talking stick, members and history.
 > What is each room doing?
 
 The manager asks and reports through the room without joining it. To watch or steer a room
-yourself, run `tt chat ~/dev/ai/shrooms`:
+yourself, run `rooms chat ~/dev/ai/shrooms`:
 
 ![Talking Stick chat with three agents, per-recipient delivery marks, and agent status](docs/images/tt-chat.png)
 
 ### Work in a room alongside visible agents
 
 You can also run agents in your own terminals. Open three tabs or panes in the same repository
-and run `tt chat`, `claude` and `codex`, one in each. Enter `/rooms` in Claude Code, Grok Build
-or Antigravity (`agy`), or `$rooms` in Codex, and wait for both joins to appear in `tt chat`.
-Then type the task in `tt chat` and press Enter. Inside Herdr or tmux, `tt up` opens the agents
+and run `rooms chat`, `claude` and `codex`, one in each. Enter `/rooms` in Claude Code, Grok Build
+or Antigravity (`agy`), or `$rooms` in Codex, and wait for both joins to appear in `rooms chat`.
+Then type the task in `rooms chat` and press Enter. Inside Herdr or tmux, `rooms up` opens the agents
 and chat for you.
 
 ## Chat controls
@@ -112,7 +125,7 @@ and chat for you.
 - **Room boundaries.** A monorepo can declare a room for each package. Launchers can use
   `tt room ensure <directory>` and set `TT_ROOM` to the returned `pin` to reopen that room
   by path. Each room has its own stick. [Room paths and pins](docs/reference.md#rooms-and-paths)
-- **Pane launcher.** Inside Herdr or tmux, `tt up` opens agents beside chat. Use `tt up --print`
+- **Pane launcher.** Inside Herdr or tmux, `rooms up` opens agents beside chat. Use `rooms up --print`
   to preview it. Herdr needs the session integration for each agent. [Launcher setup](docs/reference.md#herdr-launch-tt-up)
 
 Claude Code, Codex, Grok Build, and Antigravity (`agy`) have room skills, hooks, and managed

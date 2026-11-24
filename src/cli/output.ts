@@ -1,3 +1,4 @@
+import { invokedCommandName, usageFor, type CommandName } from "./invoked-name.js";
 import { SUPPORTED_HARNESSES } from "../install.js";
 import type { Handoff } from "../index.js";
 import { isKnownHarnessCliEnv } from "./identity.js";
@@ -286,13 +287,17 @@ export function indent(text: string, prefix = "  "): string {
 
 // The command list comes from the registry, so new commands appear here
 // without a second list to keep in sync. Internal hook commands are omitted.
-export function printHelp(usages: readonly string[], notice?: string): void {
-  process.stdout.write(`Usage: tt <command> [options]
+export function printHelp(groups: ReadonlyArray<{ title: string; usages: readonly string[] }>, notice?: string,
+  name: CommandName = invokedCommandName()): void {
+  const other = name === "rooms" ? "tt" : "rooms";
+  const sections = groups.map((group) =>
+    `${group.title}:\n${group.usages.map((usage) => indent(usageFor(usage, name))).join("\n")}`).join("\n\n");
+  process.stdout.write(`Usage: ${name} <command> [options]
 
-Commands:
-${usages.map((usage) => indent(usage)).join("\n")}
+${sections}
 
-Run \`tt <command> --help\` for a command's details.
+Run \`${name} <command> --help\` for a command's details. \`${other}\` is the same program;
+agents, hooks and scripts use tt.
 
 Harnesses: ${SUPPORTED_HARNESSES.join(", ")} (claude aliases claude-code)
 
@@ -310,12 +315,12 @@ export function printCommandHelp(command: {
   aliases?: string[];
   usage: string;
   description: string;
-}): void {
+}, name: CommandName = invokedCommandName()): void {
   const aliases =
     command.aliases && command.aliases.length > 0
       ? `\nAliases: ${command.aliases.join(", ")}`
       : "";
-  process.stdout.write(`Usage: ${command.usage}
+  process.stdout.write(`Usage: ${usageFor(command.usage, name)}
 
 ${command.description}${aliases}
 

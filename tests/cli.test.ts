@@ -259,7 +259,7 @@ describe("JSON error output", () => {
     expect(processState.stdout()).toBe("");
     expect(JSON.parse(processState.stderr())).toEqual({
       error: "cli_error",
-      message: "Unknown command: unknown"
+      message: "Unknown command: unknown. Run tt --help for the commands."
     });
   });
 });
