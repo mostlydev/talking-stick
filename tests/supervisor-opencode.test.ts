@@ -295,3 +295,23 @@ describe("OpenCode worker transport", () => {
     expect(await handle.interrupt()).toBe("not_busy");
   });
 });
+
+
+test("refuses an oversized permission request without recording it", async () => {
+  const { handle, events, until, requests } = await start();
+  await handle.submit({ input_id: "in1", text: "oversized-ask", mode: "start_turn" });
+  await until(() => events.some((event) => event.type === "turn_completed"));
+  expect(events).toContainEqual({ type: "request_refused", method: "permission.asked" });
+  expect(events.some((event) => event.type === "approval_requested")).toBe(false);
+  expect(requests().find((entry) => entry.path?.endsWith("/permission/per_1/reply"))?.body)
+    .toMatchObject({ decision: "reject" });
+});
+
+test("escapes invisible characters in permission detail", async () => {
+  const { handle, events, until } = await start();
+  await handle.submit({ input_id: "in1", text: "invisible-ask", mode: "start_turn" });
+  await until(() => events.some((event) => event.type === "approval_requested"));
+  const event = events.find((event) => event.type === "approval_requested");
+  expect(event?.detail).toContain(String.raw`\u202e`);
+  expect(JSON.parse(event!.detail).message).toBe("Run\u202Els");
+});

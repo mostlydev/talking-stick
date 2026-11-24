@@ -95,7 +95,8 @@ const server = http.createServer((request, response) => {
           const asked = { id: "per_foreign", sessionID: "ses_foreign", action: "bash", resources: ["rm"], message: "Foreign" };
           emit("permission.asked", asked);
           later(() => emit("permission.asked", asked), 80); // repeated after it was refused
-        } else if (text.includes("ask")) emit("permission.asked", { id: "per_1", sessionID, action: "bash", resources: ["ls"], message: "Run ls" });
+        } else if (text.includes("ask")) emit("permission.asked", { id: "per_1", sessionID, action: "bash", resources: ["ls"],
+          message: text.includes("oversized-ask") ? "x".repeat(140 * 1024) : text.includes("invisible-ask") ? "Run\u202Els" : "Run ls" });
         else if (!text.includes("hang")) {
           const succeed = () => { running = null; emit("session.execution.succeeded", { sessionID }); };
           if (early) succeed(); else later(succeed);

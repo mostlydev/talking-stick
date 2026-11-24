@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { createSystemProcessInspector } from "../../process-utils.js";
 import { AuthModeError, type InputOutcome, type SpawnedProcess, type WorkerEvent, type WorkerHandle } from "../adapter.js";
-import { approvalSummary } from "../approval-detail.js";
+import { approvalDetail, approvalSummary } from "../approval-detail.js";
 import { spawnManagedProcess, type ManagedProcess } from "./process.js";
 
 // The transport for an OpenCode 2.4+ worker: a private `opencode serve --stdio`
@@ -339,7 +339,8 @@ export class OpencodeWorkerHandle implements WorkerHandle {
         return;
       case "permission.replied":
         // Only the conversation that owns the pending request can settle it.
-        if (typeof data.requestID === "string" && this.pending.get(data.requestID) === data.sessionID) {
+        if (typeof data.requestID === "string" && typeof data.sessionID === "string" &&
+            this.pending.get(data.requestID) === data.sessionID) {
           this.pending.delete(data.requestID);
           this.settled(data.requestID);
           this.emit({ type: "approval_resolved", native_request_id: data.requestID });
@@ -375,11 +376,13 @@ export class OpencodeWorkerHandle implements WorkerHandle {
     }
     if (this.terminal) return;
     if (!ours || !turn?.running || this.turn !== turn) { await this.refuse(sessionId, id); return; }
+    const detail = approvalDetail(data);
+    if (detail === null) { await this.refuse(sessionId, id); return; }
     this.pending.set(id, sessionId);
     const action = typeof data.action === "string" ? data.action : "tool";
     const message = typeof data.message === "string" ? data.message : `OpenCode asks to ${action}.`;
     this.emit({ type: "approval_requested", native_request_id: id, tool: `OpenCode ${action}`,
-      summary: approvalSummary(message), detail: JSON.stringify(data, null, 2) });
+      summary: approvalSummary(message), detail });
   }
 
   /** Whether the conversation's parent chain reaches this worker's root conversation. */
