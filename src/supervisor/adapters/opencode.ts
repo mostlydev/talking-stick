@@ -6,6 +6,7 @@ import { AuthModeError, type Capabilities, type HarnessAdapter, type SpawnedProc
 import { OPENCODE_STOCK_OAUTH_PROVIDERS, openCodePermissionEnv, parseOpenCodeModelRef,
   readOpenCodeServerGateSurface, resolveOpenCodeV2Executable, verifyOpenCodeSubscriptionRoute,
   type OpenCodeGateSurface, type VerifiedOpenCodeRoute } from "./opencode-gate.js";
+import { openCodeRequestGuardActive, renderOpenCodeRequestGuard } from "./opencode-request-guard.js";
 import { startOpencodeWorker } from "./opencode-worker.js";
 import { workerEnvironment } from "./process.js";
 
@@ -56,12 +57,7 @@ export class OpencodeAdapter implements HarnessAdapter {
     // A config file outranks a project provider policy. The env-content
     // overlay is lower priority and is used only for tool permissions.
     const policy = path.join(stateHome, `provider-policy-${generation}.json`);
-    fs.writeFileSync(policy, JSON.stringify({ policies: [
-      { action: "provider.use", resource: "*", effect: "deny" },
-      ...allowedProviders.map((resource) => ({ action: "provider.use", resource, effect: "allow" }))
-    ] }), { flag: "wx", mode: 0o600 });
-    env.OPENCODE_CONFIG = policy;
-
+    const pluginDir = path.join(stateHome, `request-guard-${generation}`);
     const token = spec.supervisor_env?.TT_SUPERVISOR_TOKEN;
     const endpoint = spec.supervisor_env?.TT_SUPERVISOR_ENDPOINT;
     const evidence = token && endpoint ? createProcessEvidence({
@@ -72,8 +68,16 @@ export class OpencodeAdapter implements HarnessAdapter {
     const cleanup = () => {
       evidence?.clear();
       try { fs.rmSync(policy, { force: true }); } catch { /* The old generation's file is no longer used. */ }
+      try { fs.rmSync(pluginDir, { recursive: true, force: true }); } catch { /* The old generation's plugin is no longer used. */ }
     };
     try {
+      fs.mkdirSync(pluginDir, { mode: 0o700 });
+      fs.writeFileSync(path.join(pluginDir, "index.js"), renderOpenCodeRequestGuard(allowedProviders), { flag: "wx", mode: 0o600 });
+      fs.writeFileSync(policy, JSON.stringify({ policies: [
+        { action: "provider.use", resource: "*", effect: "deny" },
+        ...allowedProviders.map((resource) => ({ action: "provider.use", resource, effect: "allow" }))
+      ], plugins: [pluginDir] }), { flag: "wx", mode: 0o600 });
+      env.OPENCODE_CONFIG = policy;
       return await startOpencodeWorker({
         command, cwd, generation, env: { ...env, ...openCodePermissionEnv(spec.permissions) },
         resumeSessionId: spec.resume_session_id, signal,
@@ -82,6 +86,11 @@ export class OpencodeAdapter implements HarnessAdapter {
           onSpawn(spawned);
         },
         onExit: cleanup,
+        beforePrompt: async (server) => {
+          if (!await openCodeRequestGuardActive({ ...server, pluginDir })) {
+            throw new AuthModeError("wrong_auth_mode", "The OpenCode worker's model request guard is no longer active.");
+          }
+        },
         beforeSession: async ({ url, authorization, cwd, signal }) => {
           const deadline = Date.now() + 8_000;
           for (;;) {
@@ -91,9 +100,12 @@ export class OpencodeAdapter implements HarnessAdapter {
             });
             // Native startup serves HTTP before directory integrations and policy are ready.
             const route = decideOpenCodeRoute(surface, allowedProviders, spec.model);
-            if (route) return { model: { providerID: route.providerID, id: route.id } };
+            if (route && await openCodeRequestGuardActive({
+              url, authorization, cwd, pluginDir,
+              signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))])
+            })) return { model: { providerID: route.providerID, id: route.id } };
             if (Date.now() >= deadline) {
-              throw new AuthModeError("wrong_auth_mode", "OpenCode did not publish a catalog limited to the worker's subscription policy.");
+              throw new AuthModeError("wrong_auth_mode", "OpenCode did not activate the worker's subscription policy and request guard.");
             }
             await delay(100, undefined, { signal });
           }

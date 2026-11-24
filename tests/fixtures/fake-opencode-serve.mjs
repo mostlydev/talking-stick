@@ -22,6 +22,7 @@ const clients = new Set();
 let inbox = 0;
 let running = null;
 let catalogReads = 0;
+let guardReads = 0;
 const model = {
   providerID: "anthropic", id: "claude-sonnet",
   package: "@opencode/ai/providers/anthropic", settings: { baseURL: "https://api.anthropic.com/v1" }
@@ -70,6 +71,13 @@ const server = http.createServer((request, response) => {
       });
       if (url.pathname === "/api/model/default") return json(response, 200, { location, data: model });
       if (url.pathname === "/api/model") return json(response, 200, { location, data: [model] });
+      if (url.pathname === "/api/plugin") {
+        const policy = JSON.parse(fs.readFileSync(process.env.OPENCODE_CONFIG, "utf8"));
+        return json(response, 200, { location, data: [{
+          id: "shrooms.worker-request-guard", source: { type: "local", path: policy.plugins[0] },
+          state: { status: guardReads++ > 0 && process.env.FAKE_OPENCODE_GUARD_DROPS ? "inactive" : "active" }
+        }] });
+      }
       if (url.pathname === "/api/config") {
         const foreignAction = process.env.FAKE_OPENCODE_FOREIGN_RULE;
         return json(response, 200, foreignAction ? [{ type: "document",

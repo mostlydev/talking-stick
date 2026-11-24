@@ -45,8 +45,9 @@ then reports on the room and sends it work without joining.
 
 Install the skills with `tt install opencode` and sign in with Anthropic or OpenAI OAuth in
 OpenCode 2.4 or later. Start with `tt up --headless --agents opencode`. The worker starts its
-own native server and uses a subscription model from that server's allowed catalog. Its
-tool permissions follow the same `--restricted` option as other workers.
+own native server and verifies the endpoint and OAuth credential on each model request,
+including title generation and native child sessions. Its tool permissions follow the
+same `--restricted` option as other workers.
 
 To pick a specific subscription model, use
 `tt supervisor add <worker> --harness opencode --cwd <absolute-folder> --model <provider>/<model>`.

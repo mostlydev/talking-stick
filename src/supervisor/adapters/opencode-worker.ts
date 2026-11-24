@@ -41,6 +41,8 @@ export interface OpencodeStartOptions {
    * resumed one, before every prompt.
    */
   beforeSession?: (server: OpencodeServerAccess) => Promise<{ model?: OpencodeModelRef } | void>;
+  /** Confirm that the same native guard is still active immediately before admitting input. */
+  beforePrompt?: (server: OpencodeServerAccess) => Promise<void>;
   /** The model to require when no beforeSession supplies one. */
   model?: OpencodeModelRef;
   onSpawn(process: SpawnedProcess): void;
@@ -133,7 +135,8 @@ export class OpencodeWorkerHandle implements WorkerHandle {
   private expected?: { cwd: string; model?: OpencodeModelRef };
 
   constructor(generation: number, readonly password: string, private readonly requestTimeoutMs = 10_000,
-    private readonly ackTimeoutMs = 30_000) {
+    private readonly ackTimeoutMs = 30_000,
+    private readonly beforePrompt?: OpencodeStartOptions["beforePrompt"]) {
     this.generation = generation;
     this.authorization = "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
   }
@@ -463,6 +466,17 @@ export class OpencodeWorkerHandle implements WorkerHandle {
       this.fail(check === "model" ? { type: "state", state: "wrong_auth_mode" } : { type: "protocol_error" });
       return result;
     }
+    if (this.beforePrompt) {
+      try {
+        await this.beforePrompt({ url: this.baseUrl, authorization: this.authorization, cwd: this.expected!.cwd,
+          signal: AbortSignal.any([this.events.signal, AbortSignal.timeout(this.requestTimeoutMs)]) });
+      } catch {
+        const result = refused();
+        this.fail({ type: "state", state: "wrong_auth_mode" });
+        return result;
+      }
+    }
+    if (this.terminal) return refused();
     // It may have been admitted: record that, then end this generation so no
     // later work in the conversation is attributed to another input.
     const uncertain = (): InputOutcome => {
@@ -544,7 +558,8 @@ export class OpencodeWorkerHandle implements WorkerHandle {
  */
 export async function startOpencodeWorker(options: OpencodeStartOptions): Promise<OpencodeWorkerHandle> {
   const password = randomBytes(24).toString("hex");
-  const handle = new OpencodeWorkerHandle(options.generation, password, options.requestTimeoutMs, options.ackTimeoutMs);
+  const handle = new OpencodeWorkerHandle(options.generation, password, options.requestTimeoutMs,
+    options.ackTimeoutMs, options.beforePrompt);
   const timeout = options.startTimeoutMs ?? 15_000;
   const announced = handle.waitForUrl(timeout);
   announced.catch(() => {});

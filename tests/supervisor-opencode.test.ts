@@ -317,7 +317,9 @@ test("escapes invisible characters in permission detail", async () => {
   expect(JSON.parse(event!.detail).message).toBe("Run\u202Els");
 });
 
-test.each([null, "provider.use", "integration.use", "*"])("the adapter enforces its complete provider policy (%s)", async (foreignAction) => {
+test.each([null, "provider.use", "integration.use", "*", "guard-stops"])("the adapter enforces its complete provider policy (%s)", async (scenario) => {
+  const guardStops = scenario === "guard-stops";
+  const foreignAction = guardStops ? null : scenario;
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tt-opencode-adapter-")));
   cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
   const log = path.join(dir, "requests.jsonl");
@@ -335,7 +337,8 @@ exec ${shellLiteral(process.execPath)} ${shellLiteral(fixture)} "$@"
     harness: "opencode", worker_id: "fixture", cwd: link, state_dir: path.join(dir, "state"),
     permissions: { harness: "opencode", mode: "default" }, model: "anthropic/claude-sonnet",
     env: Object.entries({ OPENCODE_EXECUTABLE: executable, FAKE_OPENCODE_LOG: log, FAKE_OPENCODE_STOCK: "1",
-      ...(foreignAction ? { FAKE_OPENCODE_FOREIGN_RULE: foreignAction } : {}) })
+      ...(foreignAction ? { FAKE_OPENCODE_FOREIGN_RULE: foreignAction } : {}),
+      ...(guardStops ? { FAKE_OPENCODE_GUARD_DROPS: "1" } : {}) })
       .map(([name, value]) => ({ name, value, from: "literal" }))
   }, 1, () => {});
   const handle = foreignAction ? null : await started;
@@ -351,6 +354,10 @@ exec ${shellLiteral(process.execPath)} ${shellLiteral(fixture)} "$@"
   if (handle) {
     expect(requests.filter((entry) => entry.path === "/api/integration")).toHaveLength(2);
     expect(opened?.body).toEqual({ location: { directory: workdir }, model: { providerID: "anthropic", id: "claude-sonnet" } });
+    if (guardStops) {
+      expect(await handle.submit({ input_id: "guard-stops", mode: "start_turn", text: "blocked" })).toBe("rejected");
+      expect(fs.readFileSync(log, "utf8")).not.toContain("/prompt");
+    }
     await handle.stop(500);
   } else {
     expect(opened).toBeUndefined();
