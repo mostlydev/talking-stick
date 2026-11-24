@@ -61,7 +61,11 @@ export async function openCodeRequestGuardActive(input: {
     location?: { directory?: string };
     data?: Array<{ id?: string; source?: { type?: string; path?: string }; state?: { status?: string } }>;
   };
-  return report.location?.directory === input.cwd && Array.isArray(report.data) &&
-    report.data.some((plugin) => plugin.id === OPENCODE_REQUEST_GUARD_ID && plugin.source?.type === "local" &&
-      plugin.source.path === input.pluginDir && plugin.state?.status === "active");
+  if (report.location?.directory !== input.cwd || !Array.isArray(report.data)) return false;
+  const isGuard = (plugin: typeof report.data[number]) => plugin.id === OPENCODE_REQUEST_GUARD_ID &&
+    plugin.source?.type === "local" && plugin.source.path === input.pluginDir && plugin.state?.status === "active";
+  // Policy-denied plugins are absent from the native report. A listed
+  // third-party plugin may still be starting and register a later hook.
+  return report.data.filter(isGuard).length === 1 &&
+    report.data.every((plugin) => isGuard(plugin) || plugin.source?.type === "builtin");
 }

@@ -317,9 +317,10 @@ test("escapes invisible characters in permission detail", async () => {
   expect(JSON.parse(event!.detail).message).toBe("Run\u202Els");
 });
 
-test.each([null, "provider.use", "integration.use", "*", "guard-stops"])("the adapter enforces its complete provider policy (%s)", async (scenario) => {
+test.each([null, "provider.use", "integration.use", "*", "guard-stops", "other-plugin", "loading-plugin"])("the adapter enforces its complete provider policy (%s)", async (scenario) => {
   const guardStops = scenario === "guard-stops";
-  const foreignAction = guardStops ? null : scenario;
+  const otherPlugin = scenario === "other-plugin" || scenario === "loading-plugin";
+  const foreignAction = guardStops || otherPlugin ? null : scenario;
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tt-opencode-adapter-")));
   cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
   const log = path.join(dir, "requests.jsonl");
@@ -338,7 +339,8 @@ exec ${shellLiteral(process.execPath)} ${shellLiteral(fixture)} "$@"
     permissions: { harness: "opencode", mode: "default" }, model: "anthropic/claude-sonnet",
     env: Object.entries({ OPENCODE_EXECUTABLE: executable, FAKE_OPENCODE_LOG: log, FAKE_OPENCODE_STOCK: "1",
       ...(foreignAction ? { FAKE_OPENCODE_FOREIGN_RULE: foreignAction } : {}),
-      ...(guardStops ? { FAKE_OPENCODE_GUARD_DROPS: "1" } : {}) })
+      ...(guardStops ? { FAKE_OPENCODE_GUARD_DROPS: "1" } : {}),
+      ...(otherPlugin ? { FAKE_OPENCODE_PLUGIN_ADDED: scenario === "loading-plugin" ? "loading" : "active" } : {}) })
       .map(([name, value]) => ({ name, value, from: "literal" }))
   }, 1, () => {});
   const handle = foreignAction ? null : await started;
@@ -348,14 +350,16 @@ exec ${shellLiteral(process.execPath)} ${shellLiteral(fixture)} "$@"
   const policy = requests.find((entry) => entry.policyFile);
   expect(policy).toMatchObject({ mode: 0o600, policy: { policies: [
     { action: "provider.use", resource: "*", effect: "deny" },
-    { action: "provider.use", resource: "anthropic", effect: "allow" }
+    { action: "provider.use", resource: "anthropic", effect: "allow" },
+    { action: "plugin.use", resource: "*", effect: "deny" },
+    { action: "plugin.use", resource: expect.stringContaining("request-guard-1"), effect: "allow" }
   ] } });
   const opened = requests.find((entry) => entry.method === "POST" && entry.path === "/api/session");
   if (handle) {
     expect(requests.filter((entry) => entry.path === "/api/integration")).toHaveLength(2);
     expect(opened?.body).toEqual({ location: { directory: workdir }, model: { providerID: "anthropic", id: "claude-sonnet" } });
-    if (guardStops) {
-      expect(await handle.submit({ input_id: "guard-stops", mode: "start_turn", text: "blocked" })).toBe("rejected");
+    if (guardStops || otherPlugin) {
+      expect(await handle.submit({ input_id: "plugin-state-changed", mode: "start_turn", text: "blocked" })).toBe("rejected");
       expect(fs.readFileSync(log, "utf8")).not.toContain("/prompt");
     }
     await handle.stop(500);

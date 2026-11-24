@@ -73,10 +73,15 @@ const server = http.createServer((request, response) => {
       if (url.pathname === "/api/model") return json(response, 200, { location, data: [model] });
       if (url.pathname === "/api/plugin") {
         const policy = JSON.parse(fs.readFileSync(process.env.OPENCODE_CONFIG, "utf8"));
-        return json(response, 200, { location, data: [{
+        const laterRead = guardReads++ > 0;
+        const data = [{
           id: "shrooms.worker-request-guard", source: { type: "local", path: policy.plugins[0] },
-          state: { status: guardReads++ > 0 && process.env.FAKE_OPENCODE_GUARD_DROPS ? "inactive" : "active" }
-        }] });
+          state: { status: laterRead && process.env.FAKE_OPENCODE_GUARD_DROPS ? "inactive" : "active" }
+        }, { id: "opencode.provider.openai", source: { type: "builtin" }, state: { status: "active" } }];
+        if (laterRead && process.env.FAKE_OPENCODE_PLUGIN_ADDED) {
+          data.push({ id: "other-auth", source: { type: "package" }, state: { status: process.env.FAKE_OPENCODE_PLUGIN_ADDED } });
+        }
+        return json(response, 200, { location, data });
       }
       if (url.pathname === "/api/config") {
         const foreignAction = process.env.FAKE_OPENCODE_FOREIGN_RULE;

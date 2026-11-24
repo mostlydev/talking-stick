@@ -75,7 +75,9 @@ export class OpencodeAdapter implements HarnessAdapter {
       fs.writeFileSync(path.join(pluginDir, "index.js"), renderOpenCodeRequestGuard(allowedProviders), { flag: "wx", mode: 0o600 });
       fs.writeFileSync(policy, JSON.stringify({ policies: [
         { action: "provider.use", resource: "*", effect: "deny" },
-        ...allowedProviders.map((resource) => ({ action: "provider.use", resource, effect: "allow" }))
+        ...allowedProviders.map((resource) => ({ action: "provider.use", resource, effect: "allow" })),
+        { action: "plugin.use", resource: "*", effect: "deny" },
+        { action: "plugin.use", resource: pluginDir, effect: "allow" }
       ], plugins: [pluginDir] }), { flag: "wx", mode: 0o600 });
       env.OPENCODE_CONFIG = policy;
       return await startOpencodeWorker({
