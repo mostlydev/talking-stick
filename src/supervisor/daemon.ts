@@ -6,6 +6,7 @@ import type { GenerationState, SupervisorStore, WorkerRow } from "./state.js";
 import type { IntakeAnswer, IntakeMessage } from "./intake.js";
 import type { RoomBridge } from "./room-bridge.js";
 import { resolveBundledSkillPath } from "../skill-install.js";
+import { checkWorkerExecutable, executableFailure } from "./executable.js";
 import { displayText, safeDetail } from "./approval-detail.js";
 
 // The reconcile loop: it compares each worker's desired state with what is
@@ -162,6 +163,27 @@ export class Supervisor {
       WHERE (i.state != 'completed' OR i.turn_outcome != 'success') AND w.fresh_next = 0
         AND g.generation = (SELECT MAX(generation) FROM generations WHERE worker_id = b.worker_id)`).all()) {
       this.store.hold(row.worker_id, "bootstrap_failed", this.at());
+    }
+    // Reclassify old pre-spawn failures without silently resuming a held worker.
+    for (const worker of this.store.workers()) {
+      if (worker.desired !== "running" ||
+          (worker.hold_reason !== "start_failed" && worker.hold_reason !== "crash_loop" &&
+           worker.hold_reason !== "executable_ready")) continue;
+      const latest = this.store.latestGeneration(worker.worker_id);
+      if (!latest?.ended_at) continue;
+      const spec = JSON.parse(worker.spec_json) as WorkerSpec;
+      if (!executableFailure(spec.harness, latest.exit_json, latest.pid)) continue;
+      let reason: "executable_ready" | "start_failed" = "start_failed";
+      try {
+        checkWorkerExecutable(spec);
+        reason = "executable_ready";
+      } catch { /* The executable is still unavailable in this daemon environment. */ }
+      this.store.transaction(() => {
+        const current = this.store.worker(worker.worker_id);
+        if (!current || current.desired_version !== worker.desired_version || current.hold_reason !== worker.hold_reason) return;
+        if (current.hold_reason !== reason) this.store.hold(worker.worker_id, reason, this.at());
+        else if (current.next_start_at) this.store.setNextStart(worker.worker_id, null);
+      });
     }
     this.reconciled = true;
   }

@@ -44,6 +44,12 @@ function setup() {
   // Run as a plain shell would: no harness in the environment, so the actor is human:<user>.
   for (const key of ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "OPENCODE", "TT_HARNESS_AGENT_ID"]) vi.stubEnv(key, "");
   cleanup.push(() => { vi.unstubAllEnvs(); });
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  for (const name of ["claude", "codex", "grok", "agy"]) {
+    fs.symlinkSync(process.execPath, path.join(bin, name));
+  }
+  vi.stubEnv("PATH", bin);
   const output: string[] = [];
   const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
     output.push(String(chunk));
@@ -71,6 +77,14 @@ function setup() {
 }
 
 describe("tt supervisor add", () => {
+  test("refuses a missing pinned executable before adding a worker", async () => {
+    const { root, cwd, run, store } = setup();
+    await expect(run(["add", "w1"], { harness: "claude", cwd,
+      env: `CLAUDE_EXECUTABLE=literal:${path.join(root, "missing")}` })).rejects.toThrow(/Cannot find the Claude Code executable/);
+    expect(store().worker("w1")).toBeNull();
+    expect(await run(["add", "w2"], { harness: "claude", cwd, env: "PATH" })).toMatchObject({ status: "added" });
+  });
+
   test("records explicit permissions and environment references, never values it wasn't given", async () => {
     const { cwd, run, store } = setup();
     expect(await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "on-request",
@@ -192,8 +206,11 @@ describe("controls", () => {
     ["PATH=literal:/usr/bin:/bin", "--env CODEX_EXECUTABLE=literal:/absolute/executable"]
   ])("status shows the right recovery for missing Codex with %s", async (env, remedy) => {
     const { cwd, run, store } = setup();
-    await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "never", env });
     const db = store();
+    db.addWorker({ worker_id: "w1", harness: "codex", cwd,
+      permissions: { harness: "codex", sandbox: "workspace-write", approval: "never" },
+      env: [parseEnvReference(env)]
+    }, "human:test", "started");
     db.recordGeneration({ worker_id: "w1", generation: 1, pid: null, process_started_at: null,
       pgid: null, session_id: null, state: "starting", started_at: "started" });
     db.endGeneration("w1", 1, "ended", { reason: "start_failed", error: "Error: Cannot find a native Codex executable." });

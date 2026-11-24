@@ -5,6 +5,8 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { SupervisorStore, supervisorDatabasePath } from "../src/supervisor/state.js";
 import { Supervisor, acquireOwnerLock, CRASH_LIMIT } from "../src/supervisor/daemon.js";
 import { AuthModeError, type WorkerSpec } from "../src/supervisor/adapter.js";
+import { ClaudeAdapter } from "../src/supervisor/adapters/claude.js";
+import { readSupervisorWorkers } from "../src/supervisor/snapshot.js";
 import { FakeAdapter } from "./fixtures/supervisor-fake.js";
 import type { RoomBridge } from "../src/supervisor/room-bridge.js";
 
@@ -160,6 +162,50 @@ describe("one-time room enrolment", () => {
 });
 
 describe("starting and restarting workers", () => {
+  test("holds a deterministic executable failure on the first generation and clears its retry time", async () => {
+    const { dataDir, store, spec } = setup();
+    const supervisor = new Supervisor({ store, adapters: { claude: new ClaudeAdapter() }, processLiveness: () => "gone" });
+    store.addWorker({ ...spec, env: [{ name: "CLAUDE_EXECUTABLE", from: "literal", value: path.join(dataDir, "missing") }] }, "human:op", "t");
+    store.setNextStart("w1", "2026-10-26T08:59:00.000Z");
+    supervisor.reconcileStartup();
+    await supervisor.tick();
+    await supervisor.tick();
+    expect(store.latestGeneration("w1")?.generation).toBe(1);
+    expect(store.worker("w1")).toMatchObject({ hold_reason: "start_failed", next_start_at: null });
+    expect(readSupervisorWorkers(store.db)[0]).toMatchObject({ start_error: expect.stringContaining("CLAUDE_EXECUTABLE") });
+  });
+
+  test("rechecks legacy missing executables at startup and waits for explicit resume", async () => {
+    const { dataDir, store, adapter, spec, make } = setup();
+    const executable = path.join(dataDir, "claude");
+    store.addWorker({ ...spec, env: [{ name: "CLAUDE_EXECUTABLE", from: "literal", value: executable }] }, "human:op", "t");
+    store.recordGeneration({ worker_id: "w1", generation: 1, pid: null, process_started_at: null,
+      pgid: null, session_id: null, state: "starting", started_at: "t" });
+    const exit = { reason: "start_failed", error: "Error: Cannot find the Claude Code executable." };
+    store.endGeneration("w1", 1, "ended", exit);
+    store.hold("w1", "crash_loop", "ended");
+    store.setNextStart("w1", "2026-10-26T08:59:00.000Z");
+    const first = make();
+    first.reconcileStartup();
+    expect(store.worker("w1")).toMatchObject({ hold_reason: "start_failed", next_start_at: null });
+
+    fs.symlinkSync(process.execPath, executable);
+    const repaired = make();
+    repaired.reconcileStartup();
+    const status = readSupervisorWorkers(store.db)[0];
+    expect(status).toMatchObject({ hold_reason: "executable_ready", next_start_at: null,
+      start_remedy: expect.stringContaining("tt supervisor resume w1") });
+    expect(status).not.toHaveProperty("start_error");
+    expect(JSON.parse(store.latestGeneration("w1")!.exit_json!)).toEqual(exit);
+    await repaired.tick();
+    expect(adapter.handles).toHaveLength(0);
+
+    store.setDesired("w1", "running", "human:op", "t", true);
+    await repaired.tick();
+    expect(adapter.handles).toHaveLength(1);
+    expect(readSupervisorWorkers(store.db)[0]).not.toHaveProperty("start_remedy");
+  });
+
   test("starts a running worker once and records its exact process before any input", async () => {
     const { store, adapter, supervisor, spec } = setup();
     store.addWorker(spec, "human:op", "t");
@@ -188,7 +234,7 @@ describe("starting and restarting workers", () => {
       advance(60_000);
       await supervisor.tick();
     }
-    expect(store.worker("w1")!.hold_reason).toBe("crash_loop");
+    expect(store.worker("w1")).toMatchObject({ hold_reason: "crash_loop", next_start_at: null });
     const started = adapter.handles.length;
     advance(60 * 60_000);
     await supervisor.tick();

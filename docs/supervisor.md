@@ -58,6 +58,13 @@ before running `tt up`, or pass `--env OPENCODE_EXECUTABLE=literal:/absolute/pat
 
 ## Start and inspect a worker
 
+`tt supervisor add` checks the executable when its path or PATH is fixed by the worker's
+settings. The daemon checks inherited paths when it starts the worker. An unavailable
+executable holds the worker as `start_failed` after one attempt. At startup the daemon
+rechecks executable holds and repairs older ones recorded as `crash_loop`. When status
+shows `executable_ready`, run `tt supervisor resume <worker>` to start it. In `tt chat`,
+`/who` shows the same recovery instruction.
+
 1. Sign in to your harness with your account. Install its `rooms` skill
    with `tt install claude-code` or `tt install codex`. A restricted Claude worker also needs
    `Bash(tt:*)` in your Claude settings, plus a read of the bundled skill that the worker's start

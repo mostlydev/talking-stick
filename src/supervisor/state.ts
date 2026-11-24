@@ -16,7 +16,7 @@ export type GenerationState =
 
 export type HoldReason =
   | "crash_loop" | "prior_generation_alive" | "prior_generation_unknown"
-  | "resume_failed" | "overflow" | "start_failed" | "protocol_error" | "bootstrap_failed"
+  | "resume_failed" | "overflow" | "start_failed" | "executable_ready" | "protocol_error" | "bootstrap_failed"
   /** Not on a subscription login: not signed in, or signed in with an API key or another provider. */
   | "auth_required" | "wrong_auth_mode"
   /** A permission prompt's denial couldn't be delivered, so the worker may still be waiting on it. */
@@ -269,7 +269,7 @@ export class SupervisorStore {
   }
 
   hold(workerId: string, reason: HoldReason, at: string): void {
-    this.db.prepare("UPDATE workers SET hold_reason = ? WHERE worker_id = ?").run(reason, workerId);
+    this.db.prepare("UPDATE workers SET hold_reason = ?, next_start_at = NULL WHERE worker_id = ?").run(reason, workerId);
     this.audit(at, "supervisor", "hold", workerId, { reason });
   }
 
