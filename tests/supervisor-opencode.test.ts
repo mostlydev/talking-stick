@@ -129,6 +129,47 @@ describe("OpenCode worker transport", () => {
     expect(await handle.submit({ input_id: "in2", text: "hello", mode: "start_turn" })).toBe("rejected");
   });
 
+  test("an admitted prompt that is cancelled before delivery is journalled uncertain and ends the generation", async () => {
+    const { handle, events, until } = await start();
+    expect(await handle.submit({ input_id: "in1", text: "cancel", mode: "start_turn" })).toBe("written");
+    await until(() => events.some((event) => event.type === "exited"));
+    expect(events).toContainEqual({ type: "input", input_id: "in1", outcome: "uncertain" });
+    expect(events).toContainEqual({ type: "protocol_error" });
+    expect(events.some((event) => event.type === "turn_started")).toBe(false);
+  });
+
+  test("an admitted prompt that is never delivered times out of busy, separately from a running turn", async () => {
+    const { handle, events, until } = await start({}, { ackTimeoutMs: 300 });
+    expect(await handle.submit({ input_id: "in1", text: "nodeliver", mode: "start_turn" })).toBe("written");
+    await until(() => events.some((event) => event.type === "exited"));
+    expect(events).toContainEqual({ type: "input", input_id: "in1", outcome: "uncertain" });
+    // A delivered turn may run past the acknowledgement period.
+    const running = await start({}, { ackTimeoutMs: 300 });
+    await running.handle.submit({ input_id: "in1", text: "hang", mode: "start_turn" });
+    await running.until(() => running.events.some((event) => event.type === "turn_started"));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(running.events.some((event) => event.type === "protocol_error")).toBe(false);
+  });
+
+  test("a subagent's permission request is verified by ancestry, journalled and denied in its own conversation", async () => {
+    const { handle, events, until, requests } = await start();
+    await handle.submit({ input_id: "in1", text: "child-ask", mode: "start_turn" });
+    await until(() => events.some((event) => event.type === "approval_requested"));
+    expect(events.find((event) => event.type === "approval_requested")).toMatchObject({ native_request_id: "per_child", summary: "Subagent runs ls" });
+    await handle.answerApproval("per_child", "deny", "Nobody can approve prompts here.");
+    await until(() => events.some((event) => event.type === "turn_completed"));
+    expect(requests().some((entry) => entry.path === "/api/session/ses_grandchild/permission/per_child/reply")).toBe(true);
+  });
+
+  test("a permission request from an unrelated conversation is refused in that conversation", async () => {
+    const { handle, events, until, requests } = await start();
+    await handle.submit({ input_id: "in1", text: "foreign-ask", mode: "start_turn" });
+    await until(() => events.some((event) => event.type === "turn_completed"));
+    expect(events).toContainEqual({ type: "request_refused", method: "permission.asked" });
+    expect(events.some((event) => event.type === "approval_requested")).toBe(false);
+    expect(requests().find((entry) => entry.path === "/api/session/ses_foreign/permission/per_foreign/reply")?.body.decision).toBe("reject");
+  });
+
   test("the event stream outlives the start timeout", async () => {
     const { handle, events, until, turns } = await start({}, { startTimeoutMs: 300 });
     await new Promise((resolve) => setTimeout(resolve, 700));

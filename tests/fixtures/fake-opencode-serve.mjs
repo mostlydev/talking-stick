@@ -2,10 +2,12 @@
 // auth with OPENCODE_SERVER_PASSWORD, the session, prompt, interrupt, model
 // and permission routes, and a server-sent event stream. It exits on stdin EOF.
 //
-// Prompt text steers it: "ask" raises a permission request, "hang" keeps the
-// turn running, "hang-post" never answers the prompt, and "stray" first emits
-// work in the conversation that no prompt started. FAKE_OPENCODE_EARLY sends a
-// prompt's events before its response.
+// Prompt text steers it: "ask" raises a permission request, "child-ask" raises
+// one from a subagent conversation, "foreign-ask" one from an unrelated
+// conversation, "hang" keeps the turn running, "hang-post" never answers the
+// prompt, "cancel" cancels the admitted item, "nodeliver" never delivers it,
+// and "stray" first emits work in the conversation that no prompt started.
+// FAKE_OPENCODE_EARLY sends a prompt's events before its response.
 import fs from "node:fs";
 import http from "node:http";
 
@@ -72,11 +74,20 @@ const server = http.createServer((request, response) => {
       if (text.includes("hang-post")) return; // admitted, perhaps, but never answered
       const id = `inbox_${++inbox}`;
       const respond = () => json(response, 200, { data: { id, sessionID, type: "user", time: { created: 1 }, payload: { text }, delivery: "queue" } });
+      if (text.includes("cancel")) { respond(); later(() => emit("session.inbox.cancelled", { sessionID, inboxID: id })); return; }
+      if (text.includes("nodeliver")) { respond(); return; }
       const run = (early) => {
         emit("session.inbox.delivered", { sessionID, inboxID: id });
         emit("session.execution.started", { sessionID });
         running = sessionID;
-        if (text.includes("ask")) emit("permission.asked", { id: "per_1", sessionID, action: "bash", resources: ["ls"], message: "Run ls" });
+        if (text.includes("child-ask")) {
+          sessions.set("ses_grandchild", { id: "ses_grandchild", parentID: "ses_child" });
+          sessions.set("ses_child", { id: "ses_child", parentID: sessionID });
+          emit("permission.asked", { id: "per_child", sessionID: "ses_grandchild", action: "bash", resources: ["ls"], message: "Subagent runs ls" });
+        } else if (text.includes("foreign-ask")) {
+          sessions.set("ses_foreign", { id: "ses_foreign" });
+          emit("permission.asked", { id: "per_foreign", sessionID: "ses_foreign", action: "bash", resources: ["rm"], message: "Foreign" });
+        } else if (text.includes("ask")) emit("permission.asked", { id: "per_1", sessionID, action: "bash", resources: ["ls"], message: "Run ls" });
         else if (!text.includes("hang")) {
           const succeed = () => { running = null; emit("session.execution.succeeded", { sessionID }); };
           if (early) succeed(); else later(succeed);
@@ -102,7 +113,11 @@ const server = http.createServer((request, response) => {
       response.end();
       later(() => {
         emit("permission.replied", { sessionID, requestID, reply: JSON.parse(body).decision });
-        if (requestID === "per_1") { running = null; emit("session.execution.succeeded", { sessionID }); }
+        if (["per_1", "per_child", "per_foreign"].includes(requestID) && running) {
+          const root = running;
+          running = null;
+          emit("session.execution.succeeded", { sessionID: root });
+        }
       });
       return;
     }
