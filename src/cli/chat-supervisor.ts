@@ -10,7 +10,7 @@ import type { NavigatorRoom } from "./room-navigator.js";
 // resumes or restarts a worker.
 
 /** Holds the operator clears with resume, per docs/supervisor.md. */
-const RESUME_HOLDS: ReadonlySet<HoldReason> = new Set(["auth_required", "wrong_auth_mode", "deny_undelivered", "crash_loop"]);
+const RESUME_HOLDS: ReadonlySet<HoldReason> = new Set(["auth_required", "wrong_auth_mode", "deny_undelivered", "crash_loop", "executable_ready"]);
 /** Holds that need a new conversation. */
 const FRESH_HOLDS: ReadonlySet<HoldReason> = new Set(["resume_failed", "bootstrap_failed"]);
 

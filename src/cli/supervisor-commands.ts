@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { resolveDataDir } from "../config.js";
 import type { EnvReference, Harness, WorkerPermissions, WorkerSpec } from "../supervisor/adapter.js";
 import { parseOpenCodeModelRef } from "../supervisor/adapters/opencode-gate.js";
+import { preflightWorkerExecutable } from "../supervisor/executable.js";
 import { builtinAdapters } from "../supervisor/adapters/index.js";
 import { installLaunchAgent, launchAgentPath, supervisorProgram, uninstallLaunchAgent, type LaunchctlRunner } from "../supervisor/launchd.js";
 import { isStandalone, isInstalledRelease, standaloneRoot } from "../standalone-mode.js";
@@ -239,7 +240,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
           .join("\n") || "No permission requests.")
         : (status.workers.map((w) => `${w.worker_id}  ${w.harness}  ${w.desired}${w.hold_reason ? ` (held: ${w.hold_reason})` : ""}  ` +
             `${w.generation ? `#${w.generation.generation} ${w.generation.state}` : "never started"}` +
-            `${w.unrestricted ? " · unrestricted" : ""}${w.start_error ? ` · ${w.start_error} ${w.start_remedy}` : ""}` +
+            `${w.unrestricted ? " · unrestricted" : ""}${w.start_remedy ? ` · ${[w.start_error, w.start_remedy].filter(Boolean).join(" ")}` : ""}` +
             `${w.uncertain_inputs ? `  ${w.uncertain_inputs} uncertain` : ""}` +
             `${w.denied_requests ? `  ${w.denied_requests} denied` : ""}`).join("\n") || "No workers."));
       return;
@@ -269,6 +270,7 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
       const spec: WorkerSpec = { worker_id: workerId, harness, cwd, permissions: parsePermissions(parsed, harness),
         ...(model ? { model } : {}),
         env };
+      preflightWorkerExecutable(spec);
       const row = store.addWorker(spec, actor, now());
       const unrestricted = hasUnrestrictedPermissions(spec.permissions);
       printResult(parsed, { status: "added", worker: row.worker_id, desired: row.desired,
