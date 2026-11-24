@@ -11,7 +11,9 @@ const supported = [
   { executable: "claude", install: "claude-code", worker: "claude", skills: [".claude", "skills"], hooks: [".claude", "settings.json"] },
   { executable: "codex", install: "codex", worker: "codex", skills: [".agents", "skills"], hooks: [".codex", "hooks.json"] },
   { executable: "grok", install: "grok", worker: "grok", skills: [".agents", "skills"], hooks: [".grok", "hooks", "talking-stick-lifecycle.json"] },
-  { executable: "agy", install: "antigravity", worker: "antigravity", skills: [".gemini", "config", "skills"], hooks: [".gemini", "config", "hooks.json"] }
+  { executable: "agy", install: "antigravity", worker: "antigravity", skills: [".gemini", "config", "skills"], hooks: [".gemini", "config", "hooks.json"] },
+  { executable: "opencode", install: "opencode", worker: "opencode", skills: [".agents", "skills"],
+    hooks: [".config", "opencode", "plugins", "shrooms-session", "index.js"] }
 ] as const;
 
 const profiles: string[] = [];
@@ -22,7 +24,7 @@ afterEach(() => {
 test.each(supported)("$executable ships both skills, lifecycle hooks, and a resumable headless worker", async harness => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "shrooms-harness-"));
   profiles.push(homeDir);
-  if (harness.executable !== "agy") fs.mkdirSync(path.join(homeDir, harness.hooks[0]));
+  if (harness.executable !== "agy") fs.mkdirSync(path.join(homeDir, ...harness.hooks.slice(0, -1)), { recursive: true });
   const options = {
     homeDir,
     env: { HOME: homeDir },
@@ -41,10 +43,12 @@ test.each(supported)("$executable ships both skills, lifecycle hooks, and a resu
     expect(fs.readFileSync(path.join(destination, "SKILL.md"), "utf8")).toContain(`name: ${skillName}\n`);
   }
 
-  const [hook] = planSessionHooks(harness.install, "install", options);
-  expect(hook).toMatchObject({ kind: "file-patch", filePath: path.join(homeDir, ...harness.hooks) });
-  expect((await runAction(hook, options)).status).not.toBe("failed");
-  expect(fs.readFileSync(path.join(homeDir, ...harness.hooks), "utf8")).toContain("SessionStart");
+  const hookPath = path.join(homeDir, ...harness.hooks);
+  const hook = planSessionHooks(harness.install, "install", options)
+    .find((action) => action.kind === "file-patch" && action.filePath === hookPath);
+  expect(hook).toBeDefined();
+  expect((await runAction(hook!, options)).status).not.toBe("failed");
+  expect(fs.readFileSync(hookPath, "utf8")).toContain(harness.executable === "opencode" ? "shrooms.session" : "SessionStart");
 
   const adapter = builtinAdapters()[harness.worker];
   expect(adapter?.harness).toBe(harness.worker);

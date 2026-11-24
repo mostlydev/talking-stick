@@ -51,7 +51,7 @@ tt status [path] [--verbose|--all]                        # alias for health
 tt events [path] [--all] [--after N] [--limit N] [--wait|--follow] [--event TYPE[,TYPE]] [--target self|any|agent]
 tt chat [path] [--in ROOM] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse] [--theme lantern|tide|dusk]
 tt up [--agents claude,codex,grok,agy,opencode [--save [--room]] | --choose] [--path DIR] [--in ROOM] [--new-tab|--new-workspace] [--print] [--forget] [--timeout 120s] [--json] # experimental Herdr/tmux launcher
-tt up --headless [--path DIR] [--agents claude,codex,grok,agy] [--prefix NAME] [--restricted] [--print] [--json] # supervised headless workers
+tt up --headless [--path DIR] [--agents claude,codex,grok,agy,opencode] [--prefix NAME] [--restricted] [--print] [--json] # supervised headless workers
 tt msg send <recipient|room> <body...> [--interrupt] [--stdin] [--attach IMAGE]... [--path DIR]
 tt msg recv [--wait|--follow] [--from agent] [--after N] [--target self|any|agent] [--path DIR]
 tt ack <delivery-token> [--json]                          # acknowledge a native delivery envelope

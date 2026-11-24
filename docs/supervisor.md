@@ -1,7 +1,7 @@
 # Managed headless supervisor
 
 The optional supervisor is a CLI preview for trusted local use on macOS and Linux. It starts
-and keeps its own Claude, Codex, Grok, and Antigravity workers running under your harness settings and subscription
+and keeps its own Claude, Codex, Grok, Antigravity, and OpenCode workers running under your harness settings and subscription
 logins. Terminal agents and `tt up` use their existing pane workflows. The supervisor owns only
 the processes it starts. Its process groups provide lifecycle control.
 
@@ -20,7 +20,7 @@ One command starts a worker for each agent in a folder, and the supervisor if no
 tt up --headless --path ~/dev/ai/shrooms --agents claude,codex
 ```
 
-- `--agents` takes `claude`, `codex`, `grok` and `agy`. Without it, `tt up` uses the agents saved
+- `--agents` takes `claude`, `codex`, `grok`, `agy`, and `opencode`. Without it, `tt up` uses the agents saved
   with `tt up --save`, or Claude and Codex where installed.
 - Workers are named after the room, such as `shrooms-claude`, and use the folder as their working
   directory, so they join that folder's room. Running the command again leaves a worker that is
@@ -40,6 +40,21 @@ tt up --headless --path ~/dev/ai/shrooms --agents claude,codex
 
 A manager session with the `rooms-oversee` skill runs this command when you ask it to start a room,
 then reports on the room and sends it work without joining.
+
+### OpenCode workers
+
+Install the skills with `tt install opencode` and sign in with Anthropic or OpenAI OAuth in
+OpenCode 2.4 or later. Start with `tt up --headless --agents opencode`. The worker starts its
+own native server and verifies the endpoint and OAuth credential on each model request,
+including title generation and native child sessions. It runs with OpenCode's built-in
+plugins and the worker's own request guard. Its tool permissions follow the same
+`--restricted` option as other workers.
+
+To pick a specific subscription model, use
+`tt supervisor add <worker> --harness opencode --cwd <absolute-folder> --model <provider>/<model>`.
+If PATH has only OpenCode 1.x, set `OPENCODE_EXECUTABLE` to the absolute 2.4+ binary path
+before running `tt up`, or pass `--env OPENCODE_EXECUTABLE=literal:/absolute/path` to `tt supervisor add`.
+`tt chat` shows the worker under `/who` and counts its holds under `/rooms`.
 
 ## Start and inspect a worker
 

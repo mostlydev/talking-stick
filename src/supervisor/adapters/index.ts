@@ -3,8 +3,9 @@ import { ClaudeAdapter } from "./claude.js";
 import { CodexAdapter } from "./codex.js";
 import { AntigravityAdapter } from "./antigravity.js";
 import { GrokAdapter } from "./grok.js";
+import { OpencodeAdapter } from "./opencode.js";
 
 // A harness with no adapter is held start_failed.
 export function builtinAdapters(): Partial<Record<Harness, HarnessAdapter>> {
-  return { claude: new ClaudeAdapter(), codex: new CodexAdapter(), grok: new GrokAdapter(), antigravity: new AntigravityAdapter() };
+  return { claude: new ClaudeAdapter(), codex: new CodexAdapter(), grok: new GrokAdapter(), antigravity: new AntigravityAdapter(), opencode: new OpencodeAdapter() };
 }
