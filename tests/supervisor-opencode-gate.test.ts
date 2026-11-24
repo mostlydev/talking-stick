@@ -11,9 +11,12 @@ import {
   openCodePermissionEnv,
   parseOpenCodeMajorVersion,
   parseOpenCodeModelRef,
+  projectOpenCodeConfigDocuments,
+  projectOpenCodeModel,
+  projectOpenCodeProvider,
   readOpenCodeServerGateSurface,
   readRedactedOpenCodeAuth,
-  readRedactedOpenCodeConfig,
+  readRedactedOpenCodeConfigOverrides,
   resolveOpenCodeV2Executable,
   verifyOpenCodeSubscriptionRoute,
   type OpenCodeGateSurface
@@ -30,7 +33,6 @@ function stockSurface(overrides: Partial<OpenCodeGateSurface> = {}): OpenCodeGat
     integrations: [
       { id: "anthropic", name: "Anthropic", connections: [{ type: "credential", id: "cred_1", label: "OAuth", method: "oauth" }] },
       { id: "openai", name: "OpenAI", connections: [{ type: "credential", id: "cred_2", label: "OAuth", method: "oauth" }] },
-      { id: "github-copilot", name: "GitHub Copilot", connections: [{ type: "credential", id: "cred_3", label: "OAuth", method: "oauth" }] },
       { id: "opencode", name: "OpenCode", connections: [
         { type: "credential", id: "cred_4", label: "Default", method: "oauth" },
         { type: "credential", id: "cred_5", label: "API key", method: "key" }
@@ -43,30 +45,75 @@ function stockSurface(overrides: Partial<OpenCodeGateSurface> = {}): OpenCodeGat
         integrationID: "anthropic",
         activation: "auto",
         package: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.package,
-        settings: { baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL }
+        settingKeys: ["baseURL"],
+        baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL,
+        headerKeys: [],
+        bodyKeys: []
       },
       {
         id: "openai",
         integrationID: "openai",
         activation: "auto",
         package: OPENCODE_STOCK_OAUTH_PROVIDERS.openai.package,
-        settings: { baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.openai.baseURL, compaction: true, transport: "ws" }
-      },
-      {
-        id: "github-copilot",
-        integrationID: "github-copilot",
-        activation: "auto",
-        package: OPENCODE_STOCK_OAUTH_PROVIDERS["github-copilot"].package,
-        settings: { baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS["github-copilot"].baseURL }
+        settingKeys: ["baseURL", "compaction", "transport"],
+        baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.openai.baseURL,
+        headerKeys: [],
+        bodyKeys: []
       }
     ],
-    defaultModel: { id: "claude-sonnet-4-6", providerID: "anthropic" },
+    defaultModel: {
+      id: "claude-sonnet-4-6",
+      modelID: "claude-sonnet-4-6",
+      providerID: "anthropic",
+      package: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.package,
+      settingKeys: ["baseURL"],
+      baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL,
+      headerKeys: [],
+      bodyKeys: []
+    },
     models: [
-      { id: "claude-sonnet-4-6", providerID: "anthropic" },
-      { id: "gpt-5.3-codex", providerID: "openai" },
-      { id: "claude-sonnet-5", providerID: "github-copilot" }
+      {
+        id: "claude-sonnet-4-6",
+        modelID: "claude-sonnet-4-6",
+        providerID: "anthropic",
+        package: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.package,
+        settingKeys: ["baseURL"],
+        baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL,
+        headerKeys: [],
+        bodyKeys: []
+      },
+      {
+        id: "claude-opus-5",
+        modelID: "claude-opus-5",
+        providerID: "anthropic",
+        package: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.package,
+        settingKeys: ["baseURL"],
+        baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL,
+        headerKeys: [],
+        bodyKeys: []
+      },
+      {
+        id: "claude-opus-5-fast",
+        modelID: "claude-opus-5",
+        providerID: "anthropic",
+        package: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.package,
+        settingKeys: ["baseURL"],
+        baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL,
+        headerKeys: ["anthropic-beta"],
+        bodyKeys: ["speed"]
+      },
+      {
+        id: "gpt-6.2-sol-fast",
+        modelID: "gpt-6.2-sol",
+        providerID: "openai",
+        package: OPENCODE_STOCK_OAUTH_PROVIDERS.openai.package,
+        settingKeys: ["baseURL", "compaction"],
+        baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.openai.baseURL,
+        headerKeys: [],
+        bodyKeys: ["service_tier"]
+      }
     ],
-    configDocuments: [],
+    configOverrides: [],
     ...overrides
   };
 }
@@ -124,9 +171,11 @@ describe("OpenCode V2 executable and environment guards", () => {
     expect(() => workerEnvironment(idSpec, {})).toThrow(/identity marker/);
   });
 
-  test("maps bypassPermissions vs default permission modes cleanly", () => {
+  test("maps bypassPermissions to V2 plural permissions schema and default to empty overlay", () => {
     expect(openCodePermissionEnv({ harness: "opencode", mode: "bypassPermissions" })).toEqual({
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: "allow" })
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        permissions: [{ action: "*", resource: "*", effect: "allow" }]
+      })
     });
     expect(openCodePermissionEnv({ harness: "opencode", mode: "default" })).toEqual({});
     expect(OPENCODE_RESTRICTED_PERMISSION_REPLY).toBe("reject");
@@ -135,161 +184,181 @@ describe("OpenCode V2 executable and environment guards", () => {
 });
 
 describe("OpenCode V2 fail-closed subscription and override gate", () => {
-  test("admits stock OAuth routes for anthropic, openai, and github-copilot", () => {
+  test("admits stock OAuth routes for anthropic and openai including fast variants with exact id match", () => {
     const surface = stockSurface();
     expect(verifyOpenCodeSubscriptionRoute(surface)).toEqual({
-      providerID: "anthropic", modelID: "claude-sonnet-4-6", integrationID: "anthropic"
+      providerID: "anthropic", id: "claude-sonnet-4-6", integrationID: "anthropic"
     });
-    expect(verifyOpenCodeSubscriptionRoute(surface, "openai/gpt-5.3-codex")).toEqual({
-      providerID: "openai", modelID: "gpt-5.3-codex", integrationID: "openai"
+    expect(verifyOpenCodeSubscriptionRoute(surface, "anthropic/claude-opus-5")).toEqual({
+      providerID: "anthropic", id: "claude-opus-5", integrationID: "anthropic"
     });
-    expect(verifyOpenCodeSubscriptionRoute(surface, "github-copilot/claude-sonnet-5")).toEqual({
-      providerID: "github-copilot", modelID: "claude-sonnet-5", integrationID: "github-copilot"
+    expect(verifyOpenCodeSubscriptionRoute(surface, "anthropic/claude-opus-5-fast")).toEqual({
+      providerID: "anthropic", id: "claude-opus-5-fast", integrationID: "anthropic"
+    });
+    expect(verifyOpenCodeSubscriptionRoute(surface, "openai/gpt-6.2-sol-fast")).toEqual({
+      providerID: "openai", id: "gpt-6.2-sol-fast", integrationID: "openai"
     });
   });
 
-  test("allows benign permission-only config documents (including OPENCODE_CONFIG_CONTENT bypass)", () => {
-    const surface = stockSurface({
-      configDocuments: [
-        { type: "directory", path: "/tmp/home/.config/opencode" },
-        { type: "document", info: { permissions: [{ action: "*", resource: "*", effect: "allow" }] } }
-      ]
+  test("requires exact id match (never fuzzy modelID match) and rejects duplicate provider/model/integration rows", () => {
+    // Only gpt-6.2-sol-fast (id) has modelID === "gpt-6.2-sol"; requesting openai/gpt-6.2-sol must fail!
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface(), "openai/gpt-6.2-sol")).toThrow(AuthModeError);
+
+    const dupModel = stockSurface({
+      models: [...stockSurface().models, { ...stockSurface().models[0] }]
     });
-    expect(verifyOpenCodeSubscriptionRoute(surface).providerID).toBe("anthropic");
+    expect(() => verifyOpenCodeSubscriptionRoute(dupModel, "anthropic/claude-sonnet-4-6")).toThrow(/duplicate/);
+
+    const dupProvider = stockSurface({
+      providers: [...stockSurface().providers, { ...stockSurface().providers[0] }]
+    });
+    expect(() => verifyOpenCodeSubscriptionRoute(dupProvider)).toThrow(/duplicate/);
+
+    const dupIntegration = stockSurface({
+      integrations: [...stockSurface().integrations, { ...stockSurface().integrations[0] }]
+    });
+    expect(() => verifyOpenCodeSubscriptionRoute(dupIntegration)).toThrow(/duplicate/);
   });
 
-  test("rejects unauthenticated profiles as auth_required, never silently allowing free/default models", () => {
-    const empty = stockSurface({
-      integrations: [],
-      providers: [],
-      defaultModel: { id: "tidepool-alpha-free", providerID: "opencode" },
-      models: [{ id: "tidepool-alpha-free", providerID: "opencode" }]
-    });
-    expect(() => verifyOpenCodeSubscriptionRoute(empty)).toThrow(AuthModeError);
-    try { verifyOpenCodeSubscriptionRoute(empty); } catch (e) { expect((e as AuthModeError).reason).toBe("auth_required"); }
-
-    const noDefault = stockSurface({ integrations: [], providers: [], defaultModel: null, models: [] });
-    try { verifyOpenCodeSubscriptionRoute(noDefault); } catch (e) { expect((e as AuthModeError).reason).toBe("auth_required"); }
-  });
-
-  test("rejects API-key defaults (openrouter), ambiguous mixed providers (opencode), and unsupported providers", () => {
+  test("rejects unverified providers (github-copilot deferred, openrouter, opencode) and unauthenticated profiles", () => {
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface(), "github-copilot/claude-sonnet-5")).toThrow(AuthModeError);
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface(), "opencode/tidepool-alpha-free")).toThrow(AuthModeError);
     const openrouterDefault = stockSurface({
-      defaultModel: { id: "radixark/daisyrose-27b", providerID: "openrouter" }
+      defaultModel: { ...stockSurface().defaultModel!, id: "radixark/daisyrose-27b", providerID: "openrouter" }
     });
     try { verifyOpenCodeSubscriptionRoute(openrouterDefault); expect.unreachable(); }
     catch (e) { expect((e as AuthModeError).reason).toBe("wrong_auth_mode"); }
 
-    try { verifyOpenCodeSubscriptionRoute(stockSurface(), "opencode/tidepool-alpha-free"); expect.unreachable(); }
-    catch (e) { expect((e as AuthModeError).reason).toBe("wrong_auth_mode"); }
+    const empty = stockSurface({ integrations: [], providers: [], defaultModel: null, models: [] });
+    try { verifyOpenCodeSubscriptionRoute(empty); expect.unreachable(); }
+    catch (e) { expect((e as AuthModeError).reason).toBe("auth_required"); }
 
     expect(() => parseOpenCodeModelRef("no-slash")).toThrow(AuthModeError);
   });
 
-  test("rejects mixed oauth + key or env connections on a stock provider (fails closed on ambiguous credential)", () => {
+  test("rejects mixed oauth + key or env connections on a stock provider", () => {
     const mixed = stockSurface({
-      integrations: [
-        {
-          id: "anthropic",
-          connections: [
-            { type: "credential", id: "cred_oauth", method: "oauth" },
-            { type: "credential", id: "cred_key", method: "key" }
-          ]
-        }
-      ]
+      integrations: [{
+        id: "anthropic",
+        connections: [
+          { type: "credential", id: "cred_oauth", method: "oauth" },
+          { type: "credential", id: "cred_key", method: "key" }
+        ]
+      }]
     });
     try { verifyOpenCodeSubscriptionRoute(mixed); expect.unreachable(); }
     catch (e) { expect((e as AuthModeError).reason).toBe("wrong_auth_mode"); }
 
     const envConn = stockSurface({
-      integrations: [
-        {
-          id: "anthropic",
-          connections: [
-            { type: "credential", id: "cred_oauth", method: "oauth" },
-            { type: "env", id: "ANTHROPIC_API_KEY" }
-          ]
-        }
-      ]
+      integrations: [{
+        id: "anthropic",
+        connections: [
+          { type: "credential", id: "cred_oauth", method: "oauth" },
+          { type: "env", id: "ANTHROPIC_API_KEY" }
+        ]
+      }]
     });
     try { verifyOpenCodeSubscriptionRoute(envConn); expect.unreachable(); }
     catch (e) { expect((e as AuthModeError).reason).toBe("wrong_auth_mode"); }
   });
 
-  test("rejects provider package, baseURL, header, body, and apiKey overrides in provider metadata", () => {
+  test("fails closed when provider or model baseURL is absent or overridden, or when non-stock headers/body/package appear", () => {
+    const base = stockSurface();
     const cases: Array<[string, Partial<OpenCodeGateSurface>]> = [
-      ["custom package", { providers: [{ ...stockSurface().providers[0], package: "aisdk:@evil/pkg" }] }],
-      ["custom baseURL", { providers: [{ ...stockSurface().providers[0], settings: { baseURL: "https://proxy.example/v1" } }] }],
-      ["provider headers", { providers: [{ ...stockSurface().providers[0], headers: { "x-custom": "***" } }] }],
-      ["provider body", { providers: [{ ...stockSurface().providers[0], body: { extra: true } }] }],
-      ["provider apiKey setting", { providers: [{ ...stockSurface().providers[0], settings: { baseURL: "https://api.anthropic.com/v1", apiKey: "***" } }] }],
-      ["provider tls override", { providers: [{ ...stockSurface().providers[0], settings: { tls: { rejectUnauthorized: false } } }] }],
-      ["disabled provider", { providers: [{ ...stockSurface().providers[0], activation: "disabled" }] }],
-      ["foreign integrationID", { providers: [{ ...stockSurface().providers[0], integrationID: "openrouter" }] }],
-      ["model headers", { models: [{ id: "claude-sonnet-4-6", providerID: "anthropic", headers: { "x-m": "***" } }] }],
-      ["model baseURL", { models: [{ id: "claude-sonnet-4-6", providerID: "anthropic", settings: { baseURL: "https://m.example" } }] }],
-      ["model package", { models: [{ id: "claude-sonnet-4-6", providerID: "anthropic", package: "aisdk:@other/pkg" }] }],
-      ["missing model from catalog", { models: [{ id: "other-model", providerID: "anthropic" }] }]
+      ["missing provider baseURL", { providers: [{ ...base.providers[0], settingKeys: [], baseURL: null }] }],
+      ["custom provider baseURL", { providers: [{ ...base.providers[0], baseURL: "https://proxy.example/v1" }] }],
+      ["custom provider package", { providers: [{ ...base.providers[0], package: "aisdk:@evil/pkg" }] }],
+      ["provider headers", { providers: [{ ...base.providers[0], headerKeys: ["x-custom"] }] }],
+      ["provider body", { providers: [{ ...base.providers[0], bodyKeys: ["extra"] }] }],
+      ["provider apiKey setting", { providers: [{ ...base.providers[0], settingKeys: ["baseURL", "apiKey"] }] }],
+      ["provider tls setting", { providers: [{ ...base.providers[0], settingKeys: ["baseURL", "tls"] }] }],
+      ["disabled provider", { providers: [{ ...base.providers[0], activation: "disabled" }] }],
+      ["foreign integrationID", { providers: [{ ...base.providers[0], integrationID: "openrouter" }] }],
+      ["missing model baseURL", { models: [{ ...base.models[0], settingKeys: [], baseURL: null }] }],
+      ["custom model baseURL", { models: [{ ...base.models[0], baseURL: "https://m.example/v1" }] }],
+      ["custom model package", { models: [{ ...base.models[0], package: "aisdk:@other/pkg" }] }],
+      ["non-stock model header", { models: [{ ...base.models[0], headerKeys: ["x-custom-auth"] }] }],
+      ["non-stock model body", { models: [{ ...base.models[0], bodyKeys: ["custom_route"] }] }],
+      ["model apiKey setting", { models: [{ ...base.models[0], settingKeys: ["baseURL", "apiKey"] }] }]
     ];
     for (const [label, patch] of cases) {
       expect(() => verifyOpenCodeSubscriptionRoute(stockSurface(patch)), label).toThrow(AuthModeError);
     }
   });
 
-  test("rejects project/user config document overrides even when provider metadata looks stock", () => {
-    const docCases: Array<[string, Record<string, unknown>]> = [
-      ["redacted apiKey", { providers: { anthropic: { settings: { apiKey: "***" } } } }],
-      ["custom baseURL", { providers: { anthropic: { settings: { baseURL: "https://proxy.test/v1" } } } }],
-      ["custom package", { providers: { anthropic: { package: "aisdk:@evil/pkg" } } }],
-      ["custom npm", { providers: { anthropic: { npm: "@evil/pkg" } } }],
-      ["provider headers", { providers: { anthropic: { headers: { "x-auth": "***" } } } }],
-      ["model headers", { providers: { anthropic: { models: { "claude-sonnet-4-6": { headers: { "x-m": "***" } } } } } }],
-      ["model baseURL", { providers: { anthropic: { models: { "claude-sonnet-4-6": { settings: { baseURL: "https://m.test" } } } } } }]
-    ];
-    for (const [label, info] of docCases) {
-      const surface = stockSurface({ configDocuments: [{ type: "document", path: "/proj/opencode.json", info }] });
-      expect(() => verifyOpenCodeSubscriptionRoute(surface), label).toThrow(AuthModeError);
-    }
+  test("projectOpenCodeConfigDocuments projects strictly structural fields (never retains raw secrets) and gate rejects overrides", () => {
+    const projected = projectOpenCodeConfigDocuments([
+      { type: "directory", path: "/home/.config/opencode" },
+      { type: "document", info: { permissions: [{ action: "*", resource: "*", effect: "allow" }] } },
+      {
+        type: "document",
+        path: "/proj/opencode.json",
+        info: {
+          providers: {
+            anthropic: {
+              settings: { apiKey: "sk-secret-never-retained", baseURL: "https://proxy.test/v1" },
+              headers: { Authorization: "Bearer secret-header" },
+              models: { "claude-sonnet-4-6": { headers: { "x-m": "secret-m" } } }
+            }
+          }
+        }
+      }
+    ]);
+    expect(projected.hasPermissions).toBe(true);
+    expect(JSON.stringify(projected)).not.toContain("sk-secret-never-retained");
+    expect(JSON.stringify(projected)).not.toContain("secret-header");
+    expect(JSON.stringify(projected)).not.toContain("secret-m");
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: projected.overrides }))).toThrow(AuthModeError);
+
+    // Benign permission-only document passes cleanly
+    const benign = projectOpenCodeConfigDocuments([
+      { type: "document", info: { permissions: [{ action: "*", resource: "*", effect: "allow" }] } }
+    ]);
+    expect(benign.hasPermissions).toBe(true);
+    expect(verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: benign.overrides })).providerID).toBe("anthropic");
   });
 
-  test("CLI metadata readers pass --standalone and fail closed on invalid JSON or errors", () => {
+  test("CLI metadata readers pass --standalone and fail closed on errors", () => {
     const calls: string[][] = [];
     const exec = (_file: string, args: readonly string[]) => {
       calls.push([...args]);
-      return args[0] === "auth" ? JSON.stringify([{ id: "anthropic", connections: [{ type: "credential", method: "oauth" }] }])
-        : JSON.stringify([{ type: "directory", path: "/tmp" }]);
+      return args[0] === "auth"
+        ? JSON.stringify([{ id: "anthropic", connections: [{ type: "credential", method: "oauth" }] }])
+        : JSON.stringify([{ type: "document", info: { permissions: [{ action: "*", resource: "*", effect: "allow" }] } }]);
     };
     expect(readRedactedOpenCodeAuth("/bin/opencode", "/tmp", {}, exec)).toHaveLength(1);
-    expect(readRedactedOpenCodeConfig("/bin/opencode", "/tmp", {}, exec)).toHaveLength(1);
+    expect(readRedactedOpenCodeConfigOverrides("/bin/opencode", "/tmp", {}, exec).hasPermissions).toBe(true);
     expect(calls).toEqual([
       ["auth", "list", "--standalone", "--format", "json"],
       ["debug", "config", "--standalone"]
     ]);
     expect(() => readRedactedOpenCodeAuth("/bin/opencode", "/tmp", {}, () => "{bad")).toThrow(AuthModeError);
-    expect(() => readRedactedOpenCodeConfig("/bin/opencode", "/tmp", {}, () => { throw new Error("boom"); })).toThrow(AuthModeError);
+    expect(() => readRedactedOpenCodeConfigOverrides("/bin/opencode", "/tmp", {}, () => { throw new Error("boom"); })).toThrow(AuthModeError);
   });
 
-  test("readOpenCodeServerGateSurface queries the localhost API and redacts config secrets on arrival", async () => {
+  test("readOpenCodeServerGateSurface scopes every request with location[directory] and rejects location mismatch", async () => {
     const urls: string[] = [];
-    const fakeFetch = (async (input: string | URL) => {
+    const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-oc-loc-"));
+    cleanup.push(() => fs.rmSync(targetDir, { recursive: true, force: true }));
+    const makeFetch = (returnedDir: string) => (async (input: string | URL) => {
       const url = String(input);
       urls.push(url);
       if (url.includes("/api/integration")) {
-        return new Response(JSON.stringify({ data: [{ id: "anthropic", connections: [{ type: "credential", method: "oauth" }] }] }));
+        return new Response(JSON.stringify({ location: { directory: returnedDir }, data: [{ id: "anthropic", connections: [{ type: "credential", method: "oauth" }] }] }));
       }
       if (url.includes("/api/provider")) {
-        return new Response(JSON.stringify({ data: [stockSurface().providers[0]] }));
+        return new Response(JSON.stringify({ location: { directory: returnedDir }, data: [] }));
       }
       if (url.includes("/api/model/default")) {
-        return new Response(JSON.stringify({ data: { id: "claude-sonnet-4-6", providerID: "anthropic" } }));
+        return new Response(JSON.stringify({ location: { directory: returnedDir }, data: null }));
       }
       if (url.includes("/api/model?")) {
-        return new Response(JSON.stringify({ data: [{ id: "claude-sonnet-4-6", providerID: "anthropic" }] }));
+        return new Response(JSON.stringify({ location: { directory: returnedDir }, data: [] }));
       }
       if (url.includes("/api/config")) {
         return new Response(JSON.stringify([{
           type: "document",
-          path: "/proj/opencode.json",
-          info: { providers: { anthropic: { settings: { apiKey: "sk-live-secret-never-keep" }, headers: { Authorization: "Bearer secret" } } } }
+          info: { providers: { anthropic: { settings: { apiKey: "sk-live-secret-never-keep" } } } }
         }]));
       }
       return new Response("not found", { status: 404 });
@@ -298,17 +367,23 @@ describe("OpenCode V2 fail-closed subscription and override gate", () => {
     const surface = await readOpenCodeServerGateSurface({
       baseUrl: "http://127.0.0.1:12345",
       authHeader: "Basic dGVzdA==",
-      directory: "/proj",
-      fetchImpl: fakeFetch
+      directory: targetDir,
+      fetchImpl: makeFetch(targetDir)
     });
+    expect(urls.every((u) => u.includes(`location%5Bdirectory%5D=${encodeURIComponent(targetDir)}`))).toBe(true);
     expect(urls.some((u) => u.includes("/api/credential"))).toBe(false);
     expect(JSON.stringify(surface)).not.toContain("sk-live-secret-never-keep");
-    expect(JSON.stringify(surface)).not.toContain("Bearer secret");
-    expect(() => verifyOpenCodeSubscriptionRoute(surface)).toThrow(AuthModeError);
+
+    await expect(readOpenCodeServerGateSurface({
+      baseUrl: "http://127.0.0.1:12345",
+      authHeader: "Basic dGVzdA==",
+      directory: targetDir,
+      fetchImpl: makeFetch("/some/other/directory")
+    })).rejects.toThrow(/different directory/);
   });
 });
 
-// Live isolated verification against local OpenCode v2 binary when installed (zero real user data, zero model calls).
+// Live OpenCode V2 tests when a local v2 binary is installed (zero model calls, zero secret reads).
 const localV2 = (() => {
   try {
     return resolveOpenCodeV2Executable({
@@ -319,77 +394,141 @@ const localV2 = (() => {
   }
 })();
 
-test.skipIf(!localV2 || process.platform === "win32")("live isolated OpenCode v2 serve --stdio fails closed on unauthenticated profile and project overrides", async () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "tt-oc-v2-live-"));
-  const home = path.join(work, "home");
-  const proj = path.join(work, "proj");
-  const tmpdir = path.join(work, "tmp");
-  fs.mkdirSync(home, { recursive: true });
-  fs.mkdirSync(proj, { recursive: true });
-  fs.mkdirSync(tmpdir, { recursive: true });
-  execFileSync("git", ["-C", proj, "init", "-q"]);
-  fs.writeFileSync(path.join(proj, "opencode.json"), JSON.stringify({
-    model: "anthropic/claude-sonnet-4-6",
-    provider: {
-      anthropic: {
-        options: { baseURL: "https://proxy.example.test/v1", apiKey: "sk-test-fake" }
+test.skipIf(!localV2 || process.platform === "win32")(
+  "live two-directory OpenCode v2 serve --stdio scopes location[directory], enforces Basic auth, parses V2 permissions, and catches targetDir overrides",
+  async () => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "tt-oc-v2-twodir-"));
+    const home = path.join(work, "home");
+    const serverDir = path.join(work, "server-cwd");
+    const targetDir = path.join(work, "target-dir");
+    const tmpdir = path.join(work, "tmp");
+    for (const d of [home, serverDir, targetDir, tmpdir]) fs.mkdirSync(d, { recursive: true });
+    execFileSync("git", ["-C", serverDir, "init", "-q"]);
+    execFileSync("git", ["-C", targetDir, "init", "-q"]);
+
+    // serverDir stays completely clean; ONLY targetDir has an override + ask/deny rules!
+    fs.writeFileSync(path.join(targetDir, "opencode.json"), JSON.stringify({
+      model: "anthropic/claude-sonnet-4-6",
+      permissions: [
+        { action: "shell", resource: "*", effect: "ask" },
+        { action: "tool.use", resource: "bash", effect: "deny" }
+      ],
+      provider: {
+        anthropic: {
+          options: { baseURL: "https://proxy.example.test/v1", apiKey: "sk-target-only-secret" }
+        }
       }
-    }
-  }));
+    }));
 
-  const password = "live-gate-test-pass";
-  const env: NodeJS.ProcessEnv = {
-    PATH: `${path.dirname(localV2!)}:/usr/bin:/bin`,
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(home, ".config"),
-    XDG_DATA_HOME: path.join(home, ".local/share"),
-    XDG_STATE_HOME: path.join(home, ".local/state"),
-    XDG_CACHE_HOME: path.join(home, ".cache"),
-    TMPDIR: tmpdir,
-    OPENCODE_PASSWORD: password,
-    ...openCodePermissionEnv({ harness: "opencode", mode: "bypassPermissions" })
-  };
+    const password = "live-gate-test-pass";
+    const env: NodeJS.ProcessEnv = {
+      PATH: `${path.dirname(localV2!)}:/usr/bin:/bin`,
+      HOME: home,
+      XDG_CONFIG_HOME: path.join(home, ".config"),
+      XDG_DATA_HOME: path.join(home, ".local/share"),
+      XDG_STATE_HOME: path.join(home, ".local/state"),
+      XDG_CACHE_HOME: path.join(home, ".cache"),
+      TMPDIR: tmpdir,
+      OPENCODE_PASSWORD: password,
+      ...openCodePermissionEnv({ harness: "opencode", mode: "bypassPermissions" })
+    };
 
-  const srv = spawn(localV2!, ["serve", "--stdio", "--port", "0"], {
-    cwd: proj, env, detached: true, stdio: ["pipe", "pipe", "pipe"]
-  });
-  cleanup.push(async () => {
-    try { process.kill(-srv.pid!, "SIGTERM"); } catch {}
-    await new Promise((r) => setTimeout(r, 200));
-    try { process.kill(-srv.pid!, "SIGKILL"); } catch {}
-    fs.rmSync(work, { recursive: true, force: true });
-  });
-
-  const firstLine = await new Promise<string>((resolve, reject) => {
-    let buf = "";
-    const timer = setTimeout(() => reject(new Error("timeout waiting for serve --stdio")), 8_000);
-    srv.stdout.on("data", (chunk: Buffer) => {
-      buf += chunk.toString();
-      const nl = buf.indexOf("\n");
-      if (nl !== -1) { clearTimeout(timer); resolve(buf.slice(0, nl)); }
+    const srv = spawn(localV2!, ["serve", "--stdio", "--port", "0"], {
+      cwd: serverDir, env, detached: true, stdio: ["pipe", "pipe", "pipe"]
     });
-  });
-  const { url } = JSON.parse(firstLine) as { url: string };
-  const authHeader = "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
+    cleanup.push(async () => {
+      try { process.kill(-srv.pid!, "SIGTERM"); } catch {}
+      await new Promise((r) => setTimeout(r, 200));
+      try { process.kill(-srv.pid!, "SIGKILL"); } catch {}
+      fs.rmSync(work, { recursive: true, force: true });
+    });
 
-  const surface = await readOpenCodeServerGateSurface({ baseUrl: url, authHeader, directory: proj });
-  expect(JSON.stringify(surface)).not.toContain("sk-test-fake");
-  expect(surface.configDocuments.some((doc) => Array.isArray(doc.info?.permissions))).toBe(true);
-  // Even if an attacker had stock anthropic OAuth, the project opencode.json override is caught!
-  const withSyntheticOAuth: OpenCodeGateSurface = {
-    ...surface,
-    integrations: [{ id: "anthropic", connections: [{ type: "credential", method: "oauth" }] }],
-    providers: [stockSurface().providers[0]],
-    defaultModel: { id: "claude-sonnet-4-6", providerID: "anthropic" },
-    models: [{ id: "claude-sonnet-4-6", providerID: "anthropic" }]
-  };
-  expect(() => verifyOpenCodeSubscriptionRoute(withSyntheticOAuth)).toThrow(AuthModeError);
-  // And the actual unauthenticated isolated surface fails closed as auth_required!
-  try {
-    verifyOpenCodeSubscriptionRoute(surface);
-    expect.unreachable();
-  } catch (error) {
-    expect(error).toBeInstanceOf(AuthModeError);
-    expect((error as AuthModeError).reason).toBe("auth_required");
+    const firstLine = await new Promise<string>((resolve, reject) => {
+      let buf = "";
+      const timer = setTimeout(() => reject(new Error("timeout waiting for serve --stdio")), 8_000);
+      srv.stdout.on("data", (chunk: Buffer) => {
+        buf += chunk.toString();
+        const nl = buf.indexOf("\n");
+        if (nl !== -1) { clearTimeout(timer); resolve(buf.slice(0, nl)); }
+      });
+    });
+    const { url } = JSON.parse(firstLine) as { url: string };
+
+    // Unauthenticated request must fail closed (401)
+    const unauth = await fetch(`${url}/api/config`);
+    expect(unauth.status).toBe(401);
+
+    const authHeader = "Basic " + Buffer.from(`opencode:${password}`).toString("base64");
+    const surface = await readOpenCodeServerGateSurface({ baseUrl: url, authHeader, directory: targetDir });
+
+    // Confirm raw secret was projected out and V2 plural permissions were parsed
+    expect(JSON.stringify(surface)).not.toContain("sk-target-only-secret");
+    expect(surface.hasConfigPermissions).toBe(true);
+    // Confirm targetDir's override was observed despite server running in clean serverDir!
+    expect(surface.configOverrides.some((o) => o.providerID === "anthropic" && o.settingKeys.includes("apiKey"))).toBe(true);
+
+    // Even with synthetic stock OAuth metadata, targetDir's project override fails closed
+    const withSyntheticOAuth: OpenCodeGateSurface = {
+      ...surface,
+      integrations: stockSurface().integrations.slice(0, 1),
+      providers: stockSurface().providers.slice(0, 1),
+      defaultModel: stockSurface().defaultModel,
+      models: stockSurface().models
+    };
+    expect(() => verifyOpenCodeSubscriptionRoute(withSyntheticOAuth)).toThrow(AuthModeError);
+
+    // And the actual unauthenticated isolated surface fails closed as auth_required
+    try { verifyOpenCodeSubscriptionRoute(surface); expect.unreachable(); }
+    catch (error) { expect((error as AuthModeError).reason).toBe("auth_required"); }
   }
-});
+);
+
+test.skipIf(!localV2 || process.platform === "win32")(
+  "live positive metadata check against actual stock provider/model catalog (overlaying only synthetic redacted OAuth connections)",
+  () => {
+    let rawProviders: unknown;
+    let rawModels: unknown;
+    try {
+      const loc = `location[directory]=${os.homedir()}`;
+      rawProviders = JSON.parse(execFileSync(localV2!, ["api", "provider.list", "--param", loc], { encoding: "utf8", timeout: 6_000 }));
+      rawModels = JSON.parse(execFileSync(localV2!, ["api", "model.list", "--param", loc], { encoding: "utf8", timeout: 6_000 }));
+    } catch {
+      return; // Skip cleanly when no local OpenCode v2 service is running (e.g. CI).
+    }
+    const providers = ((rawProviders as { data?: unknown[] }).data ?? [])
+      .map(projectOpenCodeProvider)
+      .filter((p): p is NonNullable<typeof p> => p !== null);
+    const models = ((rawModels as { data?: unknown[] }).data ?? [])
+      .map(projectOpenCodeModel)
+      .filter((m): m is NonNullable<typeof m> => m !== null);
+
+    const anthropicModels = models.filter((m) => m.providerID === "anthropic");
+    const openaiModels = models.filter((m) => m.providerID === "openai");
+    if (anthropicModels.length === 0 && openaiModels.length === 0) return;
+
+    const surface: OpenCodeGateSurface = {
+      integrations: [
+        { id: "anthropic", connections: [{ type: "credential", method: "oauth" }] },
+        { id: "openai", connections: [{ type: "credential", method: "oauth" }] }
+      ],
+      providers,
+      defaultModel: anthropicModels[0] ?? openaiModels[0] ?? null,
+      models,
+      configOverrides: []
+    };
+
+    // Every actual stock Anthropic and OpenAI model (including id !== modelID fast variants) must pass!
+    for (const model of [...anthropicModels, ...openaiModels]) {
+      expect(verifyOpenCodeSubscriptionRoute(surface, `${model.providerID}/${model.id}`)).toEqual({
+        providerID: model.providerID,
+        id: model.id,
+        integrationID: model.providerID
+      });
+    }
+    // Verify id vs modelID distinction on any real variant where id !== modelID
+    const variant = [...anthropicModels, ...openaiModels].find((m) => m.modelID && m.id !== m.modelID);
+    if (variant) {
+      expect(verifyOpenCodeSubscriptionRoute(surface, `${variant.providerID}/${variant.id}`).id).toBe(variant.id);
+    }
+  }
+);
