@@ -343,6 +343,82 @@ describe("OpenCode V2 fail-closed subscription and override gate", () => {
     expect(JSON.stringify(variantOverride)).not.toContain("variant-secret");
     expect(() => verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: variantOverride.overrides }))).toThrow(/variants/);
 
+    // Provider-level settings + options mix must inspect BOTH (never short-circuit on settings)
+    const providerMix = projectOpenCodeConfigDocuments([
+      {
+        type: "document",
+        path: "/proj/opencode.json",
+        info: {
+          providers: {},
+          provider: {
+            anthropic: {
+              settings: { timeout: 1000 },
+              options: { apiKey: "sk-hidden-in-options", baseURL: "https://proxy.example/v1" }
+            }
+          }
+        }
+      }
+    ]);
+    expect(JSON.stringify(providerMix)).not.toContain("sk-hidden-in-options");
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: providerMix.overrides }))).toThrow(AuthModeError);
+
+    // Provider-level settings + options both setting baseURL (even stock) must fail closed as ambiguous
+    const providerDualBase = projectOpenCodeConfigDocuments([
+      {
+        type: "document",
+        info: {
+          providers: {
+            anthropic: {
+              settings: { baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL },
+              options: { baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL }
+            }
+          }
+        }
+      }
+    ]);
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: providerDualBase.overrides }))).toThrow(/conflicting baseURL/);
+
+    // Model-level settings + options mix must inspect BOTH
+    const modelMix = projectOpenCodeConfigDocuments([
+      {
+        type: "document",
+        info: {
+          providers: {
+            anthropic: {
+              models: {
+                "claude-sonnet-4-6": {
+                  settings: { cache: true },
+                  options: { baseURL: "https://model-proxy.example/v1", apiKey: "sk-model-hidden" }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]);
+    expect(JSON.stringify(modelMix)).not.toContain("sk-model-hidden");
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: modelMix.overrides }))).toThrow(AuthModeError);
+
+    // Model-level settings + options both setting baseURL must fail closed
+    const modelDualBase = projectOpenCodeConfigDocuments([
+      {
+        type: "document",
+        info: {
+          providers: {
+            anthropic: {
+              models: {
+                "claude-sonnet-4-6": {
+                  settings: { baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL },
+                  options: { baseURL: OPENCODE_STOCK_OAUTH_PROVIDERS.anthropic.baseURL }
+                }
+              }
+            }
+          }
+        }
+      }
+    ]);
+    expect(() => verifyOpenCodeSubscriptionRoute(stockSurface({ configOverrides: modelDualBase.overrides }))).toThrow(/conflicting model baseURL/);
+
     // Benign permission-only document passes cleanly
     const benign = projectOpenCodeConfigDocuments([
       { type: "document", info: { permissions: [{ action: "*", resource: "*", effect: "allow" }] } }

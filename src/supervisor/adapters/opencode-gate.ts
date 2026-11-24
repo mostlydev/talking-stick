@@ -114,7 +114,8 @@ export interface OpenCodeConfigModelOverride {
   disabled?: boolean;
   package?: string;
   settingKeys: string[];
-  baseURL: string | null;
+  /** Every baseURL declared across settings and options (null marks a non-string value). */
+  baseURLs: Array<string | null>;
 }
 
 /** Structural projection of one provider entry inside a config document (zero secret values retained). */
@@ -125,7 +126,8 @@ export interface OpenCodeConfigProviderOverride {
   integrationID?: string;
   package?: string;
   settingKeys: string[];
-  baseURL: string | null;
+  /** Every baseURL declared across settings and options (null marks a non-string value). */
+  baseURLs: Array<string | null>;
   models: Record<string, OpenCodeConfigModelOverride>;
 }
 
@@ -337,6 +339,27 @@ export function projectOpenCodeModel(raw: unknown): OpenCodeModelInfo | null {
  * (`apiKey`, header values, body payloads, unknown setting values) are discarded
  * immediately and never retained on the returned projection.
  */
+function mergeConfigSettings(entry: Record<string, unknown>): {
+  settingKeys: string[];
+  baseURLs: Array<string | null>;
+} {
+  const keys = new Set<string>();
+  const baseURLs: Array<string | null> = [];
+  for (const field of ["settings", "options"] as const) {
+    if (!(field in entry) || entry[field] === undefined) continue;
+    const rec = asRecord(entry[field]);
+    if (!rec) {
+      keys.add(`invalid:${field}`);
+      continue;
+    }
+    for (const key of Object.keys(rec)) keys.add(key);
+    if ("baseURL" in rec && rec.baseURL !== undefined) {
+      baseURLs.push(typeof rec.baseURL === "string" ? rec.baseURL : null);
+    }
+  }
+  return { settingKeys: [...keys], baseURLs };
+}
+
 export function projectOpenCodeConfigDocuments(rawDocuments: readonly unknown[]): {
   overrides: OpenCodeConfigProviderOverride[];
   hasPermissions: boolean;
@@ -351,38 +374,40 @@ export function projectOpenCodeConfigDocuments(rawDocuments: readonly unknown[])
     if (!info) continue;
     if (Array.isArray(info.permissions) && info.permissions.length > 0) hasPermissions = true;
 
-    const providers = asRecord(info.providers) ?? asRecord(info.provider);
-    if (!providers) continue;
-    for (const [providerID, rawEntry] of Object.entries(providers)) {
-      const entry = asRecord(rawEntry);
-      if (!entry) continue;
-      const settings = asRecord(entry.settings) ?? asRecord(entry.options);
-      const rawModels = asRecord(entry.models);
-      const models: Record<string, OpenCodeConfigModelOverride> = {};
-      if (rawModels) {
-        for (const [modelKey, rawModelEntry] of Object.entries(rawModels)) {
-          const modelEntry = asRecord(rawModelEntry);
-          if (!modelEntry) continue;
-          const mSettings = asRecord(modelEntry.settings) ?? asRecord(modelEntry.options);
-          models[modelKey] = {
-            keys: Object.keys(modelEntry),
-            disabled: typeof modelEntry.disabled === "boolean" ? modelEntry.disabled : undefined,
-            package: typeof modelEntry.package === "string" ? modelEntry.package : undefined,
-            settingKeys: mSettings ? Object.keys(mSettings) : [],
-            baseURL: mSettings && typeof mSettings.baseURL === "string" ? mSettings.baseURL : null
-          };
+    for (const providersField of ["providers", "provider"] as const) {
+      const providers = asRecord(info[providersField]);
+      if (!providers) continue;
+      for (const [providerID, rawEntry] of Object.entries(providers)) {
+        const entry = asRecord(rawEntry);
+        if (!entry) continue;
+        const { settingKeys, baseURLs } = mergeConfigSettings(entry);
+        const rawModels = asRecord(entry.models);
+        const models: Record<string, OpenCodeConfigModelOverride> = {};
+        if (rawModels) {
+          for (const [modelKey, rawModelEntry] of Object.entries(rawModels)) {
+            const modelEntry = asRecord(rawModelEntry);
+            if (!modelEntry) continue;
+            const mergedModel = mergeConfigSettings(modelEntry);
+            models[modelKey] = {
+              keys: Object.keys(modelEntry),
+              disabled: typeof modelEntry.disabled === "boolean" ? modelEntry.disabled : undefined,
+              package: typeof modelEntry.package === "string" ? modelEntry.package : undefined,
+              settingKeys: mergedModel.settingKeys,
+              baseURLs: mergedModel.baseURLs
+            };
+          }
         }
+        overrides.push({
+          providerID,
+          keys: Object.keys(entry),
+          activation: typeof entry.activation === "string" ? entry.activation : undefined,
+          integrationID: typeof entry.integrationID === "string" ? entry.integrationID : undefined,
+          package: typeof entry.package === "string" ? entry.package : undefined,
+          settingKeys,
+          baseURLs,
+          models
+        });
       }
-      overrides.push({
-        providerID,
-        keys: Object.keys(entry),
-        activation: typeof entry.activation === "string" ? entry.activation : undefined,
-        integrationID: typeof entry.integrationID === "string" ? entry.integrationID : undefined,
-        package: typeof entry.package === "string" ? entry.package : undefined,
-        settingKeys: settings ? Object.keys(settings) : [],
-        baseURL: settings && typeof settings.baseURL === "string" ? settings.baseURL : null,
-        models
-      });
     }
   }
   return { overrides, hasPermissions };
@@ -432,9 +457,15 @@ function assertCleanConfigOverrides(
           `OpenCode configuration sets custom setting (${settingKey}) for ${stock.id}; supervised workers require the stock OAuth route.`
         );
       }
-      if (settingKey === "baseURL") {
-        assertStockEndpoint(entry.baseURL, stock, `OpenCode configuration for ${stock.id}`);
-      }
+    }
+    if (entry.baseURLs.length > 1) {
+      throw new AuthModeError(
+        "wrong_auth_mode",
+        `OpenCode configuration sets conflicting baseURL fields for ${stock.id}; refusing ambiguous route.`
+      );
+    }
+    for (const url of entry.baseURLs) {
+      assertStockEndpoint(url, stock, `OpenCode configuration for ${stock.id}`);
     }
 
     const modelOverride = entry.models[modelID];
@@ -460,9 +491,15 @@ function assertCleanConfigOverrides(
             `OpenCode configuration sets custom model setting (${settingKey}) for ${stock.id}/${modelID}.`
           );
         }
-        if (settingKey === "baseURL") {
-          assertStockEndpoint(modelOverride.baseURL, stock, `OpenCode model configuration for ${stock.id}/${modelID}`);
-        }
+      }
+      if (modelOverride.baseURLs.length > 1) {
+        throw new AuthModeError(
+          "wrong_auth_mode",
+          `OpenCode configuration sets conflicting model baseURL fields for ${stock.id}/${modelID}; refusing ambiguous route.`
+        );
+      }
+      for (const url of modelOverride.baseURLs) {
+        assertStockEndpoint(url, stock, `OpenCode model configuration for ${stock.id}/${modelID}`);
       }
     }
   }
@@ -689,15 +726,20 @@ export interface ReadOpenCodeServerGateOptions {
   directory: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 async function fetchGateJson(
   url: string,
   authHeader: string,
   fetchImpl: typeof fetch,
-  timeoutMs: number
+  timeoutMs: number,
+  callerSignal?: AbortSignal
 ): Promise<unknown> {
   const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (callerSignal?.aborted) controller.abort();
+  else callerSignal?.addEventListener("abort", onAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(url, {
@@ -714,6 +756,7 @@ async function fetchGateJson(
     throw new AuthModeError("wrong_auth_mode", "Cannot verify OpenCode server authentication and provider metadata.");
   } finally {
     clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -747,11 +790,11 @@ export async function readOpenCodeServerGateSurface(
   const query = `location%5Bdirectory%5D=${encodeURIComponent(options.directory)}`;
 
   const [integrationsRaw, providersRaw, defaultModelRaw, modelsRaw, configRaw] = await Promise.all([
-    fetchGateJson(`${base}/api/integration?${query}`, options.authHeader, fetchImpl, timeoutMs),
-    fetchGateJson(`${base}/api/provider?${query}`, options.authHeader, fetchImpl, timeoutMs),
-    fetchGateJson(`${base}/api/model/default?${query}`, options.authHeader, fetchImpl, timeoutMs),
-    fetchGateJson(`${base}/api/model?${query}`, options.authHeader, fetchImpl, timeoutMs),
-    fetchGateJson(`${base}/api/config?${query}`, options.authHeader, fetchImpl, timeoutMs)
+    fetchGateJson(`${base}/api/integration?${query}`, options.authHeader, fetchImpl, timeoutMs, options.signal),
+    fetchGateJson(`${base}/api/provider?${query}`, options.authHeader, fetchImpl, timeoutMs, options.signal),
+    fetchGateJson(`${base}/api/model/default?${query}`, options.authHeader, fetchImpl, timeoutMs, options.signal),
+    fetchGateJson(`${base}/api/model?${query}`, options.authHeader, fetchImpl, timeoutMs, options.signal),
+    fetchGateJson(`${base}/api/config?${query}`, options.authHeader, fetchImpl, timeoutMs, options.signal)
   ]);
 
   assertResponseLocation(integrationsRaw, options.directory, "/api/integration");
