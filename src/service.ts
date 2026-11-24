@@ -1429,6 +1429,17 @@ export class TalkingStickService {
       const targetWasOwner = room.owner === input.target_agent_id;
       const targetWasReservedFor = room.reserved_for === input.target_agent_id;
 
+      // A kick is final for this session, whether or not the process is still
+      // alive. A later join of the same harness session is member_revoked.
+      if (target.harness_session_id) {
+        this.db.prepare(`INSERT OR REPLACE INTO revoked_room_members
+          (room_id, agent_id, harness_session_id, revoked_at, revoked_by)
+          VALUES (?, ?, ?, ?, ?)`).run(input.room_id, input.target_agent_id,
+          target.harness_session_id, timestamp, input.agent_id);
+      }
+      this.db.prepare("DELETE FROM member_credentials WHERE room_id = ? AND agent_id = ?")
+        .run(input.room_id, input.target_agent_id);
+
       this.db
         .prepare("DELETE FROM room_members WHERE room_id = ? AND agent_id = ?")
         .run(input.room_id, input.target_agent_id);
