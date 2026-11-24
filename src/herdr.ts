@@ -87,13 +87,13 @@ export function createSystemHerdrStartRunner(env: NodeJS.ProcessEnv = process.en
 }
 
 export async function runHerdrStartJson(runner: HerdrStartRunner, args: readonly string[],
-  options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Record<string, unknown>> {
+  options: { timeoutMs?: number; signal?: AbortSignal; allowEmptySuccess?: boolean } = {}): Promise<Record<string, unknown>> {
   let output: string;
   try { output = await runner(args, options); }
   catch (error) {
     throw new HerdrError(`herdr ${args.join(" ")} failed: ${describeError(error)}`, args, herdrErrorCode(error));
   }
-  return parseHerdrResult(output, args, false);
+  return parseHerdrResult(output, args, options.allowEmptySuccess ?? false);
 }
 
 // Only trust the pane identity Herdr placed in this process's environment.

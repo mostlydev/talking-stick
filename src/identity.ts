@@ -306,13 +306,20 @@ export function findHarnessRootInAncestry(
       currentInspection.startTime
     ) {
       result = { pid: currentPid, startTime: currentInspection.startTime };
-      if (nearest) break;
+      // V2's private server is stable for the pane and owns both lifecycle
+      // hooks and tool shells. The terminal client is only its parent.
+      if (nearest || (harness === "opencode" && isOpencodeStdioServer(currentInspection.command))) break;
     }
     currentPid = currentInspection.ppid ?? null;
     childStartedAt = startedAt;
     currentInspection = undefined;
   }
   return result;
+}
+
+export function isOpencodeStdioServer(command: string | null): boolean {
+  return command !== null && /^\s*(?:"[^"]+"|'[^']+'|\S+)\s+serve\s+--stdio(?:\s|$)/.test(command) &&
+    deriveCommandLabel(command) === "opencode";
 }
 
 const TERMINAL_SESSION_ENV_VARS = [

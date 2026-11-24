@@ -1,6 +1,8 @@
+import os from "node:os";
 import { executableName } from "./executable-name.js";
 import { readPaneProcesses, type HerdrAgent, type HerdrRunner } from "./herdr.js";
-import { createSystemProcessInspector } from "./process-utils.js";
+import { isOpencodeStdioServer } from "./identity.js";
+import { createSystemProcessInspector, type ProcessInspector } from "./process-utils.js";
 import type { RoomMember } from "./types.js";
 
 // Reads a local process start time in the same format members record.
@@ -10,6 +12,8 @@ export interface IdentityDeps {
   platform?: NodeJS.Platform;
   runner: HerdrRunner;
   readStartTime: StartTimeReader;
+  inspector?: ProcessInspector;
+  hostId?: string;
 }
 
 export interface IdentityProof {
@@ -73,6 +77,35 @@ export function proveMemberInPane(
     return { confirmed: false, reason: `${executable} pid ${pid} is a different process incarnation.` };
   }
   return { confirmed: true, reason: `${member.agent_id} is confirmed in pane ${herdrAgent.pane_id}.` };
+}
+
+// V2's TUI and private server are different processes. The same local proof
+// works in tmux and Herdr, without treating a pane title or a cwd as identity.
+export function proveOpencodeV2MemberInPane(
+  member: RoomMember, paneId: string, sessionId: string, deps: IdentityDeps
+): IdentityProof {
+  if (member.harness_name !== "opencode" || member.harness_session_id !== `${HARNESS_SESSION_PREFIX}${sessionId}`) {
+    return { confirmed: false, reason: `${member.agent_id} is not the OpenCode session launched in pane ${paneId}.` };
+  }
+  if ((member.harness_host_id ?? member.host_id) !== (deps.hostId ?? os.hostname())) {
+    return { confirmed: false, reason: `${member.agent_id} is not a local OpenCode member.` };
+  }
+  const pid = member.harness_pid;
+  const started = member.harness_process_started_at?.trim();
+  const inspector = deps.inspector ?? createSystemProcessInspector();
+  const server = pid ? inspector.inspect(pid) : null;
+  if (!server?.ppid || !started || server.startTime?.trim() !== started || !isOpencodeStdioServer(server.command)) {
+    return { confirmed: false, reason: `${member.agent_id} has no matching OpenCode private server process.` };
+  }
+  try {
+    const foreground = readPaneProcesses(deps.runner, paneId);
+    const client = foreground.find(({ pid: candidate, argv0 }) =>
+      candidate === server.ppid && executableName(argv0, deps.platform) === "opencode");
+    if (client) return { confirmed: true, reason: `${member.agent_id} is confirmed in pane ${paneId} (OpenCode V2 private server).` };
+  } catch (error) {
+    return { confirmed: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+  return { confirmed: false, reason: `OpenCode server pid ${pid} does not belong to the foreground client in pane ${paneId}.` };
 }
 
 // A parked agent can go quiet long enough to read "inactive" while its
