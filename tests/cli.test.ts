@@ -3988,6 +3988,43 @@ describe("tt room", () => {
     for (const dir of registry) fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  // A Codex app-server ends an idle conversation's session while it stays
+  // running; the member is lost but can rejoin, so listings keep it.
+  test("brief, room list and state keep a member lost to a Codex app-server listed as recoverable", async () => {
+    const registry: string[] = [];
+    const { project } = setupIsolatedCli(registry);
+    const start = "Sun Oct 25 07:00:00 2026";
+    const service = new TalkingStickService();
+    try {
+      service.joinPath({ agent_id: "codex:lost1", context_path: project, process_metadata: {
+        host_id: os.hostname(), pid: 999990, process_started_at: start, session_kind: "harness_cli", display_name: "codex",
+        harness_name: "codex", harness_session_id: "harness:thread-1", harness_host_id: os.hostname(),
+        harness_pid: 999991, harness_process_started_at: start } });
+      expect(service.recordSessionLifecycle({ event: "SessionEnd", harness: "codex", sessionId: "thread-1", pid: 999991,
+        processStartedAt: start, hookReason: "other", processKind: "shared_host" })).toBe(1);
+    } finally {
+      service.close();
+    }
+    try {
+      const brief = JSON.parse(await captureStdout(["room", "brief", project, "--json"]));
+      expect(brief.members).toEqual([]);
+      expect(brief.lost_members).toEqual([expect.objectContaining({ agent_id: "codex:lost1", harness_name: "codex",
+        process_kind: "shared_host", hook_reason: "other", cause: expect.stringContaining("after 30 idle minutes") })]);
+      expect(await captureStdout(["room", "brief", project, "--text"]))
+        .toMatch(/lost, recoverable: codex:lost1 \(lost [^:]+: Codex closed the conversation\)/);
+      // A room whose only agent is lost is still listed.
+      const list = JSON.parse(await captureStdout(["room", "list", "--all", "--json"]));
+      expect(list.rooms).toContainEqual(expect.objectContaining({ room_id: brief.room_id, agents: [],
+        lost_members: [expect.objectContaining({ agent_id: "codex:lost1" })] }));
+      expect(await captureStdout(["room", "list", "--all", "--text"])).toContain("lost, recoverable: codex:lost1");
+      const state = await captureStdout(["state", project, "--agent", "human:observer", "--text"]);
+      expect(state).toContain("1 lost (recoverable)");
+      expect(state).toMatch(/codex:lost1\s+lost .*Codex closed the conversation; it rejoins on its next tt command/);
+    } finally {
+      for (const dir of registry) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("ask, reply, and replies carry a visitor's question without moving anyone", async () => {
     const registry: string[] = [];
     const { project } = setupIsolatedCli(registry);

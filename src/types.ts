@@ -215,6 +215,8 @@ export type RecoveryNoticeStatus =
 export interface LostMember {
   agent_id: AgentId;
   harness_name: string;
+  /** Whether the lost process hosted one session or several, such as a Codex app-server. */
+  process_kind: "single_session" | "shared_host" | null;
   lost_at: string;
   hook_reason: string | null;
   notice_status: string | null;

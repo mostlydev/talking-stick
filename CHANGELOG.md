@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- Codex members no longer drop off room member lists. A Codex app-server ends an idle conversation's session after 30 minutes with no client showing it, and keeps running. The member was lost but could still rejoin, yet only `tt state --json` listed it. Lost members now show as **lost, recoverable**, with how long and why, in chat's footer, `/who` and `/members`, in `tt state`, `tt room brief` and `tt room list --all`. A room whose only agent is lost is still listed. The `member_lost` error and recovery notice name Codex's reasons: idle, archive, delete or shutdown. `/kick` and the member picker can remove a lost member. Recovery, held messages and cleanup are unchanged.
+
 ## [0.40.0] — 2026-11-25
 
 Full notes: [`docs/releases/0.40.0.md`](docs/releases/0.40.0.md).

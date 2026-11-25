@@ -34,6 +34,7 @@ import {
   upsertSessionFromJoin
 } from "./session.js";
 import { kickAndStop, previewKickStop } from "./kick-stop.js";
+import { describeLossCauseShort } from "../lost-member.js";
 import { registerNativeWake, type Runtime } from "./runtime.js";
 
 export function handleListCommand(
@@ -208,8 +209,10 @@ export function handleStateCommand(
 
     const active = state.members.filter((m) => m.status === "active");
     const inactive = state.members.filter((m) => m.status !== "active");
+    const lost = state.lost_members ?? [];
     lines.push(
-      `  Members:  ${active.length} active${inactive.length > 0 ? `, ${inactive.length} inactive` : ""}`
+      `  Members:  ${active.length} active${inactive.length > 0 ? `, ${inactive.length} inactive` : ""}` +
+        `${lost.length > 0 ? `, ${lost.length} lost (recoverable)` : ""}`
     );
     for (const member of state.members) {
       const marker = member.agent_id === identity.agent_id ? "  ← you" : "";
@@ -222,6 +225,11 @@ export function handleStateCommand(
         : "";
       lines.push(
         `            • ${member.agent_id.padEnd(24)} ${member.status.padEnd(8)} ${seen}, intent ${intent}${standby}${marker}`
+      );
+    }
+    for (const member of lost) {
+      lines.push(
+        `            • ${member.agent_id.padEnd(24)} ${"lost".padEnd(8)} ${formatRelativeTime(member.lost_at)}, ${describeLossCauseShort(member)}; it rejoins on its next tt command`
       );
     }
     const hiddenMembers = formatHiddenSummary("member", state.hidden?.members);

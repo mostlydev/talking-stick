@@ -456,3 +456,57 @@ test("chat's held line never claims a pending notice reached the model", async (
   expect(describeHeldRecipient("claude", { ...held, notice: "recovered" }))
     .toBe("claude has rejoined; it reads the message from the room.");
 });
+
+// A Codex app-server sends SessionEnd (reason "other") when it unloads an idle
+// conversation and keeps running, and also on archive, delete and shutdown.
+describe("a member lost to a Codex app-server", () => {
+  const codexHost = { pid: 601, command: "codex app-server", reason: "other" };
+
+  test("stays listed as lost with its process kind, and the error names Codex's reasons", () => {
+    const { join, hook, members, lost } = setup();
+    join("codex:bb", metadata("codex", "t1", { harness_pid: 601 }));
+    join("claude:aa", metadata("claude", "s1"));
+    hook("SessionEnd", "codex", "t1", codexHost);
+    hook("SessionEnd", "claude", "s1", { reason: "other" });
+    expect(members()).toEqual([OP]);
+    expect(lost().map((member) => [member.agent_id, member.process_kind]).sort())
+      .toEqual([["claude:aa", "single_session"], ["codex:bb", "shared_host"]]);
+    expect(() => join("codex:bb", metadata("codex", "t1", { harness_pid: 601 })))
+      .toThrow(/Codex closed this conversation in its app-server\. It does that after 30 idle minutes with no client showing the conversation, and when it is archived, deleted or shut down\. Run tt join to recover it\./);
+    expect(() => join("claude:aa", metadata("claude", "s1"))).toThrow(/the harness reported this session ended \(other\)\./);
+  });
+
+  test("tells a recovering Codex conversation the same reason", async () => {
+    const { service, roomId, join, hook, nativeRequests } = setup({ native: () => ({ outcome: "queued" }) });
+    join("codex:bb", metadata("codex", "t1", { harness_pid: 601 }));
+    service.registerNativeWakeEndpoint({ agent_id: "codex:bb", room_id: roomId, transport: "codex_queue",
+      address: "codex-thread:t1", secret: null, harness_session_id: "harness:t1", host_id: HOST });
+    hook("SessionEnd", "codex", "t1", codexHost);
+    const sent = await service.sendMessageAndWake({ agent_id: OP, room_id: roomId, to_agent_id: "codex:bb", body: "still there?" });
+    expect(sent.held).toEqual([expect.objectContaining({ agent_id: "codex:bb", notice: "queued" })]);
+    expect(nativeRequests.at(-1)?.text).toContain("Codex closed this conversation in its app-server.");
+  });
+
+  test("chat keeps it in the status bar, /who, /kick and the member picker", async () => {
+    const { formatChatStatus, describeLostMembers } = await import("../src/cli/chat-format.js");
+    const { resolveChatKick } = await import("../src/cli/chat-kick.js");
+    const { createMemberMenu, renderMemberMenu } = await import("../src/cli/member-menu.js");
+    const now = new Date("2026-10-25T12:00:00.000Z");
+    const codex = { agent_id: "codex:bb", harness_name: "codex", process_kind: "shared_host" as const,
+      lost_at: "2026-10-25T11:48:00.000Z", hook_reason: "other", notice_status: null, notice_at: null };
+    const claude = { agent_id: "claude:aa", display_name: "claude", session_kind: "harness_cli", status: "active",
+      process_liveness: "alive", last_seen_at: now.toISOString() } as never;
+    const context = { self_agent_id: OP, name_of: (id: string) => id.split(":")[0], color: false, show_turn_events: false };
+    expect(formatChatStatus({ members: [claude], owner: null, owner_since: null, reserved_for: null, now, columns: 80,
+      lost_members: [codex] }, context)).toBe("claude active · codex lost 12m");
+    expect(describeLostMembers([codex], (id) => id.split(":")[0], now)).toBe("Lost, recoverable: codex 12m " +
+      "(Codex closed the conversation). It rejoins when that conversation runs tt again, and messages to it wait until then.");
+    expect(describeLostMembers([], (id) => id, now)).toBeNull();
+    // Live members win a /kick; a lost one resolves by exact id or unique prefix.
+    expect(resolveChatKick("claude", [claude], OP, [codex])).toMatchObject({ target: { agent_id: "claude:aa" } });
+    expect(resolveChatKick("--force codex", [claude], OP, [codex])).toMatchObject({ lost: { agent_id: "codex:bb" }, force: true });
+    expect(() => resolveChatKick("grok", [claude], OP, [codex])).toThrow("No room member matches grok.");
+    expect(renderMemberMenu(createMemberMenu(["claude:aa", "codex:bb"]), 6, (id) => id, { lost: new Set(["codex:bb"]) }))
+      .toEqual(["Room members", "› claude:aa", "  codex:bb · lost, recoverable", "↑↓ choose · Enter select · Esc cancel"]);
+  });
+});

@@ -41,10 +41,11 @@ export function memberMenuKey(state: MemberMenu, key: ChatModalKey): MemberMenuA
 }
 
 export function renderMemberMenu(state: MemberMenu, maxLines: number, nameOf: (id: string) => string = id => id,
-  options: { color?: boolean; color_mode?: ChatColorMode } = {}): string[] {
+  options: { color?: boolean; color_mode?: ChatColorMode; lost?: ReadonlySet<string> } = {}): string[] {
   const paint = (style: string, text: string) => paintStyle(Boolean(options.color), style, text);
   const label = (id: string) => paint(agentStyle(id, options.color_mode), sanitizeChatText(nameOf(id))) +
-    (nameOf(id) === id ? "" : paint(themeStyle("muted", options.color_mode), ` · ${sanitizeChatText(id)}`));
+    (nameOf(id) === id ? "" : paint(themeStyle("muted", options.color_mode), ` · ${sanitizeChatText(id)}`)) +
+    (options.lost?.has(id) ? paint(themeStyle("muted", options.color_mode), " · lost, recoverable") : "");
   const title = state.phase === "members" ? paint(`1;${themeStyle("accent", options.color_mode)}`, "Room members") : label(state.target ?? "");
   const choices = state.phase === "members" ? state.agents.map(label) : state.phase === "actions"
     ? [paint(themeStyle("command", options.color_mode), "Message"), paint(themeStyle("warn", options.color_mode), "Remove from room…"),
