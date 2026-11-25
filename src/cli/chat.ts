@@ -1512,7 +1512,7 @@ export async function runChatSession(
     if (changed) composeStrip();
     const busySignature = [...headlessBusyMembers(here).entries()]
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([id, info]) => `${id}:${info.busy ? 1 : 0}:${info.since ?? ""}:${info.queued}`)
+      .map(([id, info]) => `${id}:${info.label ?? ""}:${info.since ?? ""}:${info.queued}`)
       .join("\n");
     const busyChanged = busySignature !== lastBusySignature;
     lastBusySignature = busySignature;

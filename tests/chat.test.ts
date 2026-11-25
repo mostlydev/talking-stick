@@ -390,19 +390,23 @@ describe("chat status line", () => {
     expect(formatChatStatus(base, names)).toBe("codex holding 2m · claude standby");
     expect(formatChatStatus({
       ...base,
-      busy_members: new Map([["claude:bb", { busy: true, since: minutesAgo(4), queued: 1 }]])
+      busy_members: new Map([["claude:bb", { label: "working", since: minutesAgo(4), queued: 1 }]])
     }, names)).toBe("codex holding 2m · claude working 4m (1 queued)");
     expect(formatChatStatus({
       ...base,
+      busy_members: new Map([["claude:bb", { label: "denying a prompt", since: minutesAgo(4), queued: 1 }]])
+    }, names)).toBe("codex holding 2m · claude denying a prompt 4m (1 queued)");
+    expect(formatChatStatus({
+      ...base,
       busy_members: new Map([
-        ["codex:aa", { busy: true, since: minutesAgo(2), queued: 2 }],
-        ["claude:bb", { busy: false, since: null, queued: 1 }]
+        ["codex:aa", { label: "working", since: minutesAgo(2), queued: 2 }],
+        ["claude:bb", { label: null, since: null, queued: 1 }]
       ])
     }, names)).toBe("codex holding 2m (2 queued) · claude standby (1 queued)");
     expect(formatChatStatus({
       ...base,
       interrupt_statuses: new Map([["claude:bb", "stopping…"]]),
-      busy_members: new Map([["claude:bb", { busy: true, since: minutesAgo(4), queued: 1 }]])
+      busy_members: new Map([["claude:bb", { label: "working", since: minutesAgo(4), queued: 1 }]])
     }, names)).toBe("codex holding 2m · claude stopping…");
   });
 

@@ -171,8 +171,13 @@ describe("what chat shows", () => {
         : []
     }));
     const busy = headlessBusyMembers(routed.workers);
-    expect(busy.get("antigravity:live")).toEqual({ busy: true, since: "2026-04-01T10:00:00.000Z", queued: 1 });
+    expect(busy.get("antigravity:live")).toEqual({ label: "working", since: "2026-04-01T10:00:00.000Z", queued: 1 });
     expect(busy.size).toBe(1);
+    const denying = headlessBusyMembers([view({
+      worker_id: "w-deny", agent_id: "claude:deny", state: "denying a prompt",
+      busy_since: "2026-04-01T10:02:00.000Z", queued_inputs: 1
+    })]);
+    expect(denying.get("claude:deny")).toEqual({ label: "denying a prompt", since: "2026-04-01T10:02:00.000Z", queued: 1 });
   });
 
   test("the header marker stays short and names where to look", () => {

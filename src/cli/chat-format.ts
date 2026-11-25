@@ -462,7 +462,7 @@ function paint(context: ChatFormatContext, code: string, text: string): string {
 }
 
 export interface BusyMemberInfo {
-  busy: boolean;
+  label: string | null;
   since: string | null;
   queued: number;
 }
@@ -541,7 +541,7 @@ export function chatTextWidth(text: string): number {
 function rankMember(member: RoomMember, input: ChatStatusInput): number {
   if (member.agent_id === input.owner) return 0;
   if (member.agent_id === input.reserved_for) return 1;
-  if (input.busy_members?.get(member.agent_id)?.busy) return 2;
+  if (input.busy_members?.get(member.agent_id)?.label) return 2;
   return member.status === "active" ? 3 : 4;
 }
 
@@ -562,10 +562,10 @@ export function describeMemberState(
   if (member.agent_id === input.reserved_for) {
     return `up next${queuedSuffix}`;
   }
-  if (busy?.busy) {
+  if (busy?.label) {
     const base = busy.since
-      ? `working ${formatDuration(input.now, busy.since)}`
-      : "working";
+      ? `${busy.label} ${formatDuration(input.now, busy.since)}`
+      : busy.label;
     return `${base}${queuedSuffix}`;
   }
   if (member.standby_transport) {

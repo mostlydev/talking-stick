@@ -213,21 +213,23 @@ export function headlessBusyMembers(workers: readonly HeadlessWorker[]): Map<str
   const result = new Map<string, BusyMemberInfo>();
   for (const worker of workers) {
     if (!worker.agent_id) continue;
-    const busy = worker.state === "working" || worker.state === "denying a prompt";
-    if (!busy && worker.queued_inputs === 0) continue;
+    const label = worker.state === "working" || worker.state === "denying a prompt" ? worker.state : null;
+    if (!label && worker.queued_inputs === 0) continue;
     const existing = result.get(worker.agent_id);
     if (!existing) {
-      result.set(worker.agent_id, { busy, since: busy ? worker.busy_since : null, queued: worker.queued_inputs });
+      result.set(worker.agent_id, { label, since: label ? worker.busy_since : null, queued: worker.queued_inputs });
       continue;
     }
-    const nextBusy = existing.busy || busy;
-    const candidateSince = busy ? worker.busy_since : null;
+    const nextLabel = existing.label === "denying a prompt" || label === "denying a prompt"
+      ? "denying a prompt"
+      : (existing.label ?? label);
+    const candidateSince = label ? worker.busy_since : null;
     const nextSince = existing.since && candidateSince
       ? (existing.since < candidateSince ? existing.since : candidateSince)
       : (existing.since ?? candidateSince);
     result.set(worker.agent_id, {
-      busy: nextBusy,
-      since: nextBusy ? nextSince : null,
+      label: nextLabel,
+      since: nextLabel ? nextSince : null,
       queued: existing.queued + worker.queued_inputs
     });
   }
