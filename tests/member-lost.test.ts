@@ -489,9 +489,16 @@ describe("a member lost to a Codex app-server", () => {
     expect(lostMemberLabel(lostById()["codex:bb"])).toBe("dormant");
     // A session that ended on its own is lost even while its process runs.
     expect(lostMemberLabel(lostById()["claude:aa"])).toBe("lost, recoverable");
+    // Only a positive reading is dormant: an inconclusive one reads lost.
+    liveness["harness:t1"] = "unknown";
+    expect(lostById()["codex:bb"]).toMatchObject({ process_liveness: "unknown" });
+    expect(lostMemberLabel(lostById()["codex:bb"])).toBe("lost, recoverable");
     liveness["harness:t1"] = "gone";
     expect(lostById()["codex:bb"]).toMatchObject({ process_liveness: "gone" });
     expect(lostMemberLabel(lostById()["codex:bb"])).toBe("lost, recoverable");
+    // A shared host of another harness is not labeled dormant.
+    expect(lostMemberLabel({ harness_name: "grok", process_kind: "shared_host", process_liveness: "alive" }))
+      .toBe("lost, recoverable");
   });
 
   test("tells a recovering Codex conversation the same reason", async () => {

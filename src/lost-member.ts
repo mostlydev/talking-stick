@@ -1,7 +1,7 @@
 import type { LostMember } from "./types.js";
 
 type LossFacts = Pick<LostMember, "harness_name" | "process_kind" | "hook_reason">;
-type LossState = Pick<LostMember, "process_kind" | "process_liveness">;
+type LossState = Pick<LostMember, "harness_name" | "process_kind" | "process_liveness">;
 
 /**
  * Why a member was lost, in words an operator or the agent can act on.
@@ -23,16 +23,16 @@ export function describeLossCauseShort(lost: LossFacts): string {
 }
 
 /**
- * A conversation its shared host closed while that host still runs, such
- * as an idle Codex thread, is dormant: the host may reopen it. A live host
- * does not prove it will, so messages still wait and a wake is not counted
- * as delivered. Once the process reads gone, the member is lost.
+ * A conversation a Codex app-server closed while that app-server reads
+ * alive, such as an idle thread, is dormant: the app-server may reopen it.
+ * A running host does not prove it will, so messages still wait and a wake
+ * is not counted as delivered. A gone or inconclusive reading is lost.
  */
 export function isDormant(lost: LossState): boolean {
-  return lost.process_kind === "shared_host" && lost.process_liveness !== "gone";
+  return isCodexHostLoss(lost) && lost.process_liveness === "alive";
 }
 
-/** The member-list label: "dormant", or "lost, recoverable" when the process is gone or the session ended. */
+/** The member-list label: "dormant", or "lost, recoverable" otherwise. */
 export function lostMemberLabel(lost: LossState): "dormant" | "lost, recoverable" {
   return isDormant(lost) ? "dormant" : "lost, recoverable";
 }
@@ -41,6 +41,6 @@ export function lostMemberLabel(lost: LossState): "dormant" | "lost, recoverable
 export const LOST_MEMBER_RECOVERY =
   "Each rejoins when its conversation runs tt again, and messages to it wait until then.";
 
-function isCodexHostLoss(lost: LossFacts): boolean {
+function isCodexHostLoss(lost: Pick<LostMember, "harness_name" | "process_kind">): boolean {
   return lost.harness_name === "codex" && lost.process_kind === "shared_host";
 }

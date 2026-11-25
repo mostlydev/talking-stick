@@ -1097,10 +1097,10 @@ wake registrations, and where its reading stopped. A lost member:
 
 - Stays listed, with how long and why: in `tt state` (text, and `lost_members` in JSON),
   `tt room brief`, `tt room list --all`, chat's footer (`codex dormant 12m`), `/who`, and the
-  `/members` picker. It reads **dormant** when a shared host such as a Codex app-server
-  closed the conversation and still runs, since that host may reopen it. It reads
-  **lost, recoverable** once that process is gone, and whenever a single-session harness
-  such as Claude Code ends a session. A running host doesn't prove the conversation will
+  `/members` picker. It reads **dormant** when a Codex app-server closed the conversation
+  and that app-server reads as running on this host, since it may reopen the conversation.
+  It reads **lost, recoverable** otherwise: when that process is gone or can't be checked,
+  and whenever another harness, such as Claude Code, ends a session. A running host doesn't prove the conversation will
   reopen, so messages to a dormant member wait and a wake isn't counted as delivered.
   A room whose only agent is dormant or lost is still listed. `/kick` and the picker remove
   one for good; `/kick` takes an exact agent ID over any prefix match.
