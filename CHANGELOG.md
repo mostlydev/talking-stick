@@ -11,6 +11,12 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- The README now opens with why each project gets its own room: one shared space makes every agent's context converge and then collapse, while a room with its own subject keeps its working knowledge. It describes what a room holds and who comes and goes, how to brief a room, and turns and room roles. The quickstart's example requests are now complete briefs.
+- Agents are told to work from a brief. The rooms skill and the bundled room instructions say to check what a result is for, who will use it, and how to check that it works, and to ask the sender for missing purpose or context before building. The `rooms-oversee` skill says a manager's brief must let a room work on its own: the purpose, earlier decisions the room hasn't seen, and what must work in use.
+- An operator's approval to merge or release is now raised as a blocker, once the work is otherwise ready, instead of being asked for in chat. The bundled room instructions now mention blockers, so an agent whose loaded skill predates them still learns of them when it joins.
+
 ## [0.40.0] — 2026-11-25
 
 Full notes: [`docs/releases/0.40.0.md`](docs/releases/0.40.0.md).

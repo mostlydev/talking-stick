@@ -146,9 +146,13 @@ Use `tt notes add "finding" --json` for durable findings that should survive a h
 
 A `leave` event with reason `process_ended` means that member's harness exited and the room removed it. Reason `member_lost` means its harness reported the session ended, though it may still be open. A `kick` event means someone removed a member. None of these needs a reply. If a `tt` command reports `member_lost`, that happened to you: run `tt join --json` once to recover, then resume the loop; messages sent meanwhile replay through `tt wait`. If a `tt` command reports `unknown_member`, membership is no longer registered. Respect an operator instruction to stay out; otherwise rejoin with `tt join --json` and resume the loop. Rejoining does not restore an old lease: acquire a new turn before shared edits.
 
+## Briefs and purpose
+
+When the operator, a manager or a visitor gives you work, check that you know who will use the result, what it has to do, and how you can tell that it works. If the purpose, an earlier decision, or a way to check it in use is missing, ask the sender before you build the part that depends on it. Asking is expected. Following the listed steps is not the goal: the result has to work for its purpose. On handoff, record the purpose and what you verified, so the next member can carry on.
+
 ## Room blockers
 
-When progress needs a higher-level decision, use `tt blocker add --stdin` with the facts and one clear question. Check `tt blocker list` before raising one, on join, and on handoff. Use `tt blocker withdraw ID <reason>` when an item no longer applies. If the decision changes, withdraw the old item and raise a new one.
+When progress needs a higher-level decision, use `tt blocker add --stdin` with the facts and one clear question. Check `tt blocker list` before raising one, on join, and on handoff. An operator's approval to merge or release is such a decision: once the work is otherwise ready, reviewed and checked, raise a blocker for any approval not already given, rather than asking in chat. Raise one per independent decision. Use `tt blocker withdraw ID <reason>` when an item no longer applies. If the decision changes, withdraw the old item and raise a new one.
 
 Continue work within your existing authority. When only blocked work remains, or when the room reaches three open blockers, finish safe cleanup, release the stick and park. In a wake envelope, `· resolves ID` in the event header marks an answer that closed a blocker. In JSON, look for `payload.resolves`. A mention in the message body is a suggestion or discussion. Resolve your own room’s blocker only when the operator directed you in your harness, using `tt msg send room --resolves ID <answer>`. Shared edits still require a normal turn.
 
