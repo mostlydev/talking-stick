@@ -174,7 +174,7 @@ A room has one talking stick. The member holding it may change the shared worksp
 
 A room role does not grant the stick and does not move it.
 
-`tt roles show` lists the roles in the room. The same list is edited in `rooms chat` with `/roles`. The grid's keys are in the reference.
+`rooms roles show` lists the roles in the room. The same list is edited in `rooms chat` with `/roles`. The grid's keys are in the reference.
 
 | Room role | Responsibility |
 |---|---|
@@ -184,7 +184,7 @@ A room role does not grant the stick and does not move it.
 | reviewer | Independent review and cross-checks |
 | scribe | Notes, documentation, and handoff summaries |
 
-What a room role changes is the responsibility text in `tt instructions show`, and who is told when an assignment or a definition changes. An assignment change tells the affected members. A definition change tells the members who hold that role. A change to the shared project instructions tells the members reading that file. A harness default also tells members in other open rooms who inherit it, and leaves a room's own override alone. The notice is a `[roles vN]` message. It applies on that member's next turn.
+What a room role changes is the responsibility text in `rooms instructions show`, and who is told when an assignment or a definition changes. An assignment change tells the affected members. A definition change tells the members who hold that role. A change to the shared project instructions tells the members reading that file. A harness default also tells members in other open rooms who inherit it, and leaves a room's own override alone. The notice is a `[roles vN]` message. It applies on that member's next turn.
 
 A room can add a role under `## Roles` in `.talking-stick/instructions.md`. User defaults live in the user instructions file. Definitions layer bundled, then user, then project.
 
