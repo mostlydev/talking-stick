@@ -3,7 +3,7 @@ import path from "node:path";
 import { ROOM_DECLARATION_FILE, insideNestedRepository, isWithinOrSame, readDeclaration, resolveContextPath } from "../path-resolution.js";
 import { HUMAN_CHAT_SESSION_KIND } from "../types.js";
 import type { LostMember, PathRoom, RoomActivity, RoomBlocker, RoomMember } from "../types.js";
-import { describeLossCause, describeLossCauseShort } from "../lost-member.js";
+import { describeLossCause, describeLossCauseShort, isDormant } from "../lost-member.js";
 import { formatRelativeTime, printResult } from "./output.js";
 import { getStringOption, hasOption, parseOptionalInteger, type ParsedCommand } from "./parser.js";
 import { resolveRoomSelector, roomShortName, selectedRoom } from "./room-selector.js";
@@ -212,16 +212,22 @@ interface RoomListing {
   agents: string[];
 }
 
-type ListedLostMember = Pick<LostMember, "agent_id" | "harness_name" | "process_kind" | "hook_reason" | "lost_at"> & { cause: string };
+type ListedLostMember = Pick<LostMember, "agent_id" | "harness_name" | "process_kind" | "process_liveness" | "hook_reason" | "lost_at"> &
+  { state: "dormant" | "lost"; cause: string };
 
-/** A lost member as listings show it: still in the room's records, and able to rejoin. */
+/** A dormant or lost member as listings show it: still in the room's records, and able to rejoin. */
 function listedLostMember(lost: LostMember): ListedLostMember {
   return { agent_id: lost.agent_id, harness_name: lost.harness_name, process_kind: lost.process_kind,
-    hook_reason: lost.hook_reason, lost_at: lost.lost_at, cause: describeLossCause(lost) };
+    process_liveness: lost.process_liveness, hook_reason: lost.hook_reason, lost_at: lost.lost_at,
+    state: isDormant(lost) ? "dormant" : "lost", cause: describeLossCause(lost) };
 }
 
-function formatLostMembers(lost: readonly ListedLostMember[]): string {
-  return lost.map((member) => `${member.agent_id} (lost ${formatRelativeTime(member.lost_at)}: ${describeLossCauseShort(member)})`).join(", ");
+/** One line for dormant members and one for lost ones, each only when it has any. */
+function formatLostMembers(lost: readonly ListedLostMember[]): string[] {
+  const list = (state: ListedLostMember["state"]) => lost.filter((member) => member.state === state)
+    .map((member) => `${member.agent_id} (${formatRelativeTime(member.lost_at)}: ${describeLossCauseShort(member)})`).join(", ");
+  return [["dormant", list("dormant")], ["lost, recoverable", list("lost")]]
+    .filter(([, members]) => members).map(([label, members]) => `${label}: ${members}`);
 }
 
 // Read without an agent id so listing never refreshes the caller's presence
@@ -285,7 +291,7 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
         .filter(Boolean).join(", ");
       const lines = [`#${room.name}  ${who}${room.owner ? `  stick=${room.owner}${room.state === "stale_owner" ? " (stale)" : ""}` : ""}  active ${formatRelativeTime(room.last_activity_at)}`,
         `  ${room.canonical_path}  ${room.room_id}`];
-      if (room.lost_members.length) lines.push(`  lost, recoverable: ${formatLostMembers(room.lost_members)}`);
+      lines.push(...formatLostMembers(room.lost_members).map((line) => `  ${line}`));
       if (room.open_blockers) lines.push(`  ${room.open_blockers} open blocker${room.open_blockers === 1 ? "" : "s"}`);
       if (room.last_handoff) {
         lines.push(`  last handoff ${formatRelativeTime(room.last_handoff.created_at)} from ${room.last_handoff.from_agent_id ?? "unknown"}: ${room.last_handoff.status}`);
@@ -421,7 +427,7 @@ function formatBrief(brief: {
   lines.push(`stick: ${stick}`);
   lines.push(`members: ${brief.members.map((member) =>
     `${member.agent_id}${member.kind === "console" ? " (console)" : ""}${memberPresence(member)}`).join(", ") || "none"}`);
-  if (brief.lost_members.length) lines.push(`lost, recoverable: ${formatLostMembers(brief.lost_members)}`);
+  lines.push(...formatLostMembers(brief.lost_members));
   if (brief.blockers.length) lines.push("", "Open blockers",
     ...brief.blockers.map(blocker => `  ${blocker.blocker_id} (${sanitizeChatText(blocker.author_agent_id)})  ${sanitizeChatText(blocker.body).replace(/\s+/g, " ")}`));
   const handoff = brief.last_handoff;

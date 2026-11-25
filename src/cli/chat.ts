@@ -94,6 +94,7 @@ import {
   sanitizeChatText,
   EVERYONE_SELECTORS
 } from "./chat-format.js";
+import { lostMemberLabel } from "../lost-member.js";
 import {
   getStringOption,
   hasOption,
@@ -725,7 +726,7 @@ export async function runChatSession(
   const deferredInline: string[] = [];
   const roleOptions = { contextPath: joined.canonical_path };
   const panelHeight = () => Math.max(3, dimensions().rows - 7 - renderAttention(attention, dimensions().columns - 1, dimensions().rows, formatContext()).lines.length);
-  const rolesPanelLines = () => roomTree ? roomTree.render(panelHeight(), resolvedTreeRoom(), Boolean(formatContext().color)) : memberMenu ? renderMemberMenu(memberMenu, panelHeight(), nameOf, { ...formatContext(), lost: new Set(lostMembers.map((member) => member.agent_id)) }) : rolesPanel
+  const rolesPanelLines = () => roomTree ? roomTree.render(panelHeight(), resolvedTreeRoom(), Boolean(formatContext().color)) : memberMenu ? renderMemberMenu(memberMenu, panelHeight(), nameOf, { ...formatContext(), lost: new Map(lostMembers.map((member) => [member.agent_id, lostMemberLabel(member)])) }) : rolesPanel
     ? renderRolesEditor(rolesPanel, formatContext(), panelHeight(), Math.max(1, dimensions().columns - 1))
     : blockersPanel ? renderBlockersMenu(blockersPanel, panelHeight(), formatContext())
     : undefined;
@@ -1368,7 +1369,7 @@ export async function runChatSession(
     owner = state.room.owner ?? null;
     reservedFor = state.room.reserved_for ?? null;
     nameOf = buildNameResolver(
-      [...members.map((member) => member.agent_id), selfId],
+      [...members.map((member) => member.agent_id), ...lostMembers.map((member) => member.agent_id), selfId],
       selfId,
       new Map(
         members
@@ -1952,7 +1953,8 @@ export async function runChatSession(
           if (resolved.stop) { confirmMemberStop(lostId, resolved.reason); return; }
           runtime.commands.kickMember(identity, { room_id: roomId, target_agent_id: lostId, reason: resolved.reason });
           refreshMembers();
-          print(`Removed lost member ${sanitizeChatText(lostId)}; that session can no longer rejoin this room.`, "ok");
+          const was = lostMemberLabel(resolved.lost) === "dormant" ? "dormant" : "lost";
+          print(`Removed ${was} member ${sanitizeChatText(lostId)}; that session can no longer rejoin this room.`, "ok");
           return;
         }
         const { target, force, stop, reason } = resolved;

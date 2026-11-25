@@ -632,7 +632,7 @@ it. Scrolling, selection, and copying stay with the terminal.
 | Plain text or `/all <message>` | Broadcast to the room |
 | `@agent <message>` or `/to agent <message>` | Send to every matching ID or display-name prefix, ignoring case. Mention several agents anywhere in the text: `@claude @codex, review this`. `@everyone` (or `@all`) addresses every agent in the room. Leading mentions are stripped from the message; an unknown `@name` blocks the whole send; email addresses and `` `code` `` spans are not mentions |
 | `/interrupt [@agent] <message>`, `!@agent <message>`, or `!@ <message>` | Steer an agent now. A busy Claude Code session gets the prompt at its next tool step and changes course without stopping; Codex steers its active daemon-backed turn, or queues when steering is definitely unavailable. `!@` works anywhere a mention does, and any `!@` makes the whole message an interrupt |
-| `/who` | Show members, the current stick holder, lost members that can rejoin, and this room's headless workers with their state and fix |
+| `/who` | Show members, the current stick holder, dormant and lost members that can rejoin, and this room's headless workers with their state and fix |
 | `/members` | Choose a member to message, remove, or **Kick and stop**. The confirmation names the stop target |
 | `/kick [--force] <agent> [reason]` | Remove one exact ID or unique prefix from the room. Live or unconfirmed processes require `--force`; consoles cannot be kicked. A kicked native session cannot rejoin this room. Use `/kick --stop <agent>` to preview and confirm a stop |
 | `/events` | Toggle turn and handoff events, hidden by default |
@@ -720,7 +720,7 @@ footer below the lower input rule shows each agent's most useful state, without 
 `holding 12m` means the agent has had the stick for 12 minutes. The other states are `up next`
 (reserved for the next turn), `standby`, `away` (inactive with no confirmation that its process is
 still running), `active` (ran a `tt` command within the last minute), and `idle 3m` (time since its
-last `tt` command). Lost members follow, dimmed, as `lost 12m`: they can rejoin (see
+last `tt` command). Dormant and lost members follow, dimmed, as `dormant 12m` or `lost 12m`: they can rejoin (see
 [session lifecycle](#session-lifecycle)). Agents whose process has ended are left out of the footer; `/who` lists them as
 ended, and once it has read them as ended for an hour the room removes them. The stick holder is listed first. The line refreshes
 on room events and every 10 seconds, and is trimmed to the terminal width with a `+N` count for
@@ -1095,10 +1095,15 @@ all with reason `other`, while the app-server keeps running.
 The room keeps what it needs to restore it: its delivery batches, receipts and
 wake registrations, and where its reading stopped. A lost member:
 
-- Stays listed as **lost, recoverable**, with how long it has been lost and why: in
-  `tt state` (text, and `lost_members` in JSON), `tt room brief`, `tt room list --all`,
-  chat's footer (`codex lost 12m`), `/who`, and the `/members` picker. A room whose only
-  agent is lost is still listed. `/kick` and the picker remove a lost member for good.
+- Stays listed, with how long and why: in `tt state` (text, and `lost_members` in JSON),
+  `tt room brief`, `tt room list --all`, chat's footer (`codex dormant 12m`), `/who`, and the
+  `/members` picker. It reads **dormant** when a shared host such as a Codex app-server
+  closed the conversation and still runs, since that host may reopen it. It reads
+  **lost, recoverable** once that process is gone, and whenever a single-session harness
+  such as Claude Code ends a session. A running host doesn't prove the conversation will
+  reopen, so messages to a dormant member wait and a wake isn't counted as delivered.
+  A room whose only agent is dormant or lost is still listed. `/kick` and the picker remove
+  one for good; `/kick` takes an exact agent ID over any prefix match.
 - Still has messages sent to it. Senders see it under `held`, not as delivered. For a
   direct message, a visitor's question, or an operator's room message, its still-running
   process gets one notice, at most every 30 minutes, through its own Claude inbox or

@@ -3988,8 +3988,8 @@ describe("tt room", () => {
     for (const dir of registry) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  // A Codex app-server ends an idle conversation's session while it stays
-  // running; the member is lost but can rejoin, so listings keep it.
+  // A Codex app-server ends an idle conversation's session. Once that
+  // process is gone too, the member is lost but can rejoin, so listings keep it.
   test("brief, room list and state keep a member lost to a Codex app-server listed as recoverable", async () => {
     const registry: string[] = [];
     const { project } = setupIsolatedCli(registry);
@@ -4009,9 +4009,10 @@ describe("tt room", () => {
       const brief = JSON.parse(await captureStdout(["room", "brief", project, "--json"]));
       expect(brief.members).toEqual([]);
       expect(brief.lost_members).toEqual([expect.objectContaining({ agent_id: "codex:lost1", harness_name: "codex",
-        process_kind: "shared_host", hook_reason: "other", cause: expect.stringContaining("after 30 idle minutes") })]);
+        process_kind: "shared_host", process_liveness: "gone", hook_reason: "other", state: "lost",
+        cause: expect.stringContaining("after 30 idle minutes") })]);
       expect(await captureStdout(["room", "brief", project, "--text"]))
-        .toMatch(/lost, recoverable: codex:lost1 \(lost [^:]+: Codex closed the conversation\)/);
+        .toMatch(/lost, recoverable: codex:lost1 \([^:]+: Codex closed the conversation\)/);
       // A room whose only agent is lost is still listed.
       const list = JSON.parse(await captureStdout(["room", "list", "--all", "--json"]));
       expect(list.rooms).toContainEqual(expect.objectContaining({ room_id: brief.room_id, agents: [],

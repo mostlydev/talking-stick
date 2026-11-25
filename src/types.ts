@@ -217,6 +217,8 @@ export interface LostMember {
   harness_name: string;
   /** Whether the lost process hosted one session or several, such as a Codex app-server. */
   process_kind: "single_session" | "shared_host" | null;
+  /** The lost session's process as read now, as for a member. */
+  process_liveness: "alive" | "gone" | "unknown";
   lost_at: string;
   hook_reason: string | null;
   notice_status: string | null;
