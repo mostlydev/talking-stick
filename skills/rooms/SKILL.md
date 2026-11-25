@@ -157,7 +157,7 @@ Continue work within your existing authority. When only blocked work remains, or
 You can look into, and ask questions of, other rooms on this host without joining them or leaving your own:
 
 ```sh
-tt room list --all --json              # every room with live members
+tt room list --all --json              # every room with live or lost members
 tt room brief <room> --json            # holder, members, latest handoff, notes, recent messages
 tt room ask <room> --to <agent|room> --stdin --json <<'EOF'
 Your question.

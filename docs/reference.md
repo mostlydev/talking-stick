@@ -33,7 +33,7 @@ tt roles [show] | set <agent|harness> <roles|none|clear> | default <harness> <ro
 tt room create [path] [--name NAME]                       # declare a room boundary (.talking-stick/room.toml)
 tt room ensure <path> [--name NAME]                       # declare it unless already declared; same room either way (for launchers)
 tt room list [path]                                       # this repository's rooms, live agents in each, current marked
-tt room list --all                                        # every room on this host with live members, most recent room activity first
+tt room list --all                                        # every room on this host with live or lost members or open blockers, most recent activity first
 tt room brief [room] [--limit N] [--before SEQ]           # room holder, members, last handoff, notes, and messages
 tt room ask <room> --to <agents|room> <body...> [--stdin] [--request-key KEY]
 tt room replies <request-id> [--after SEQ] [--limit N] [--timeout S] # read answers; --timeout waits up to 60s

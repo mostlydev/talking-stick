@@ -502,10 +502,16 @@ describe("a member lost to a Codex app-server", () => {
     expect(describeLostMembers([codex], (id) => id.split(":")[0], now)).toBe("Lost, recoverable: codex 12m " +
       "(Codex closed the conversation). It rejoins when that conversation runs tt again, and messages to it wait until then.");
     expect(describeLostMembers([], (id) => id, now)).toBeNull();
-    // Live members win a /kick; a lost one resolves by exact id or unique prefix.
+    // A /kick resolves an exact id first, live then lost, else one prefix match across both.
     expect(resolveChatKick("claude", [claude], OP, [codex])).toMatchObject({ target: { agent_id: "claude:aa" } });
     expect(resolveChatKick("--force codex", [claude], OP, [codex])).toMatchObject({ lost: { agent_id: "codex:bb" }, force: true });
     expect(() => resolveChatKick("grok", [claude], OP, [codex])).toThrow("No room member matches grok.");
+    expect(() => resolveChatKick("c", [claude], OP, [codex])).toThrow("Ambiguous agent c: claude:aa, codex:bb.");
+    // A live member whose display name starts with a lost member's full id
+    // must not be kicked in its place.
+    const lookalike = { ...(claude as object), agent_id: "grok:cc", display_name: "codex:bb-helper" } as never;
+    expect(resolveChatKick("--force codex:bb", [lookalike], OP, [codex])).toMatchObject({ lost: { agent_id: "codex:bb" } });
+    expect(() => resolveChatKick("codex:b", [lookalike], OP, [codex])).toThrow("Ambiguous agent codex:b: grok:cc, codex:bb.");
     expect(renderMemberMenu(createMemberMenu(["claude:aa", "codex:bb"]), 6, (id) => id, { lost: new Set(["codex:bb"]) }))
       .toEqual(["Room members", "› claude:aa", "  codex:bb · lost, recoverable", "↑↓ choose · Enter select · Esc cancel"]);
   });

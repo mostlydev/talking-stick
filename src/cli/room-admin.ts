@@ -279,7 +279,7 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
     .filter((room) => room.agents.length > 0 || room.consoles.length > 0 || room.lost_members.length > 0 || room.open_blockers > 0)
     .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at));
   printResult(parsed, { rooms }, () => rooms.length === 0
-    ? "No rooms on this host have live members or open blockers."
+    ? "No rooms on this host have live or lost members or open blockers."
     : rooms.map((room) => {
       const who = [room.agents.join(", ") || "no agents", room.consoles.length > 0 ? `${room.consoles.length} console${room.consoles.length === 1 ? "" : "s"}` : null]
         .filter(Boolean).join(", ");
