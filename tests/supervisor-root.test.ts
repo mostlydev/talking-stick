@@ -384,9 +384,23 @@ describe("read-only supervisor snapshots", () => {
       kind: "ready", daemon: "stopped", workers: [{
         worker_id: "w1", harness: "claude", cwd, desired: "running", desired_version: 1, hold_reason: "deny_undelivered",
         next_start_at: null, generation: { generation: 2, state: "busy", pid: 11, session_id: "latest",
-          started_at: "generation start", ended_at: null },
-        generation_process_started_at: "process start", uncertain_inputs: 1, denied_requests: 1
+          started_at: "generation start", ended_at: null, last_model_activity_at: null },
+        generation_process_started_at: "process start", queued_inputs: 0, uncertain_inputs: 1, denied_requests: 1
       }]
+    });
+    store.updateGeneration("w1", 2, { last_model_activity_at: "2026-04-01T10:00:00.000Z" });
+    store.journalInput({ input_id: "env1", worker_id: "w1", generation: 2, mode: "start_turn", source: "tt_envelope", created_at: "time", batch_token: "b1" });
+    store.journalInput({ input_id: "q2", worker_id: "w1", generation: 2, mode: "steer", source: "operator", created_at: "time" });
+    store.updateInput("q2", "w1", 2, "queued", "time");
+    store.journalInput({ input_id: "old1", worker_id: "w1", generation: 1, mode: "start_turn", source: "tt_envelope", created_at: "time", batch_token: "b0" });
+    expect(readSupervisorSnapshot(dataDir, { env })).toMatchObject({
+      kind: "ready",
+      workers: [{ worker_id: "w1", queued_inputs: 2, generation: { last_model_activity_at: "2026-04-01T10:00:00.000Z" } }]
+    });
+    store.endGeneration("w1", 2, "ended", { reason: "stopped" });
+    expect(readSupervisorSnapshot(dataDir, { env })).toMatchObject({
+      kind: "ready",
+      workers: [{ worker_id: "w1", queued_inputs: 0 }]
     });
     store.db.prepare("DELETE FROM workers WHERE worker_id = ?").run("w1");
     expect(readSupervisorSnapshot(dataDir, { env })).toEqual({ kind: "ready", daemon: "stopped", workers: [] });

@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- `tt chat` now shows joined headless workers as `working <duration>` (and `(<n> queued)` when room envelopes are waiting behind the active turn) in the footer and `/who`, instead of `standby`. `tt supervisor status` reports `queued_inputs` and `generation.last_model_activity_at`, and the supervisor persists `busy` as soon as a turn write succeeds.
+
 ## [0.40.0] — 2026-11-25
 
 Full notes: [`docs/releases/0.40.0.md`](docs/releases/0.40.0.md).

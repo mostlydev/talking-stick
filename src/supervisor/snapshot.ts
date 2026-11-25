@@ -21,7 +21,9 @@ interface WorkerStatusRow {
   session_id: string | null;
   started_at: string | null;
   ended_at: string | null;
+  last_model_activity_at: string | null;
   exit_json: string | null;
+  queued_inputs: number;
   uncertain_inputs: number;
   denied_requests: number;
 }
@@ -40,14 +42,21 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
   const rows = db.prepare<[], WorkerStatusRow>(`
     SELECT w.worker_id, w.spec_json, w.desired, w.desired_version, w.hold_reason, w.next_start_at,
            g.generation, g.state AS generation_state, g.pid, g.process_started_at, g.session_id,
-           g.started_at, g.ended_at,
+           g.started_at, g.ended_at, g.last_model_activity_at,
            g.exit_json,
            CASE WHEN w.desired != 'running' THEN ${MEMBERSHIP_STOP_REASON_SQL} END AS stop_reason,
+           COALESCE(q.count, 0) AS queued_inputs,
            COALESCE(i.count, 0) AS uncertain_inputs, COALESCE(a.count, 0) AS denied_requests
     FROM workers w
     LEFT JOIN generations g ON g.worker_id = w.worker_id AND g.generation = (
       SELECT MAX(latest.generation) FROM generations latest WHERE latest.worker_id = w.worker_id
     )
+    LEFT JOIN (
+      SELECT worker_id, generation, COUNT(*) AS count
+      FROM inputs
+      WHERE (source = 'tt_envelope' AND state = 'journalled') OR state = 'queued'
+      GROUP BY worker_id, generation
+    ) q ON q.worker_id = g.worker_id AND q.generation = g.generation AND g.ended_at IS NULL
     LEFT JOIN (SELECT worker_id, COUNT(*) AS count FROM inputs WHERE state = 'uncertain' GROUP BY worker_id) i
       ON i.worker_id = w.worker_id
     LEFT JOIN (SELECT worker_id, COUNT(*) AS count FROM approvals WHERE status = 'denied' GROUP BY worker_id) a
@@ -77,7 +86,8 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
         pid: row.pid,
         session_id: row.session_id,
         started_at: row.started_at!,
-        ended_at: row.ended_at
+        ended_at: row.ended_at,
+        last_model_activity_at: row.last_model_activity_at
       },
       ...(executableEnv ? {
         start_error: `Cannot resolve the ${spec.harness} executable (${executableEnv}).`,
@@ -89,6 +99,7 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
         start_remedy: `Executable found at supervisor startup. Run tt supervisor resume ${row.worker_id}.`
       } : {}),
       generation_process_started_at: row.process_started_at,
+      queued_inputs: row.queued_inputs,
       uncertain_inputs: row.uncertain_inputs,
       denied_requests: row.denied_requests
     };

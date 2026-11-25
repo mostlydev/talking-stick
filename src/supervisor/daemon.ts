@@ -444,11 +444,13 @@ export class Supervisor {
       case "input":
         this.store.updateInput(event.input_id, workerId, generation, event.outcome, at, event.native_turn_id);
         break;
-      case "turn_started":
+      case "turn_started": {
+        const alreadyStartedOnWrite = this.reportedState.get(workerId) === "busy" && !this.activeTurn.has(workerId);
         if (event.input_id) this.store.updateInput(event.input_id, workerId, generation, "accepted", at, event.native_turn_id);
         this.activeTurn.set(workerId, event.native_turn_id);
-        report("busy", { last_model_activity_at: at });
+        report("busy", alreadyStartedOnWrite ? {} : { last_model_activity_at: at });
         break;
+      }
       case "turn_completed":
         this.store.completeTurn(workerId, generation, event.native_turn_id, event.outcome, at);
         if (this.activeTurn.get(workerId) === event.native_turn_id) this.activeTurn.delete(workerId);
@@ -656,6 +658,7 @@ export class Supervisor {
       // already reported while the write was in flight is newer and stands.
       if ((outcome === "accepted" || outcome === "written") && !busy && (this.stateVersion.get(workerId) ?? 0) === version) {
         this.reportedState.set(workerId, "busy");
+        this.store.updateGeneration(workerId, handle.generation, { state: "busy", last_model_activity_at: this.at() });
       }
     }
   }
@@ -721,6 +724,8 @@ export class Supervisor {
 
   private async dispatchInput(handle: WorkerHandle, workerId: string, inputId: string, text: string, mode: InputMode): Promise<{ input_id: string; outcome: InputOutcome }> {
     const generation = handle.generation;
+    const version = this.stateVersion.get(workerId) ?? 0;
+    const busy = (this.reportedState.get(workerId) ?? "idle") === "busy";
     // Recorded before the write, so a crash while writing leaves it uncertain.
     this.store.updateInput(inputId, workerId, generation, "dispatching", this.at());
     let outcome: InputOutcome;
@@ -730,6 +735,10 @@ export class Supervisor {
       outcome = "uncertain";
     }
     this.store.updateInput(inputId, workerId, generation, outcome, this.at());
+    if ((outcome === "accepted" || outcome === "written") && mode === "start_turn" && !busy && (this.stateVersion.get(workerId) ?? 0) === version) {
+      this.reportedState.set(workerId, "busy");
+      this.store.updateGeneration(workerId, generation, { state: "busy", last_model_activity_at: this.at() });
+    }
     return { input_id: inputId, outcome };
   }
 
