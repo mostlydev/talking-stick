@@ -89,7 +89,7 @@ Park does not auto-claim or become an ordinary release recipient. An active owne
 
 ## Standby and pushed envelopes
 
-`tt standby --json` records parked intent and returns immediately. A direct message, an operator's room message, a blocker resolution, an assignment, a pass, or a pending-handoff hint wakes you once through your session's transport (supervisor for headless workers, native inbox/queue in Claude Code and Codex, or a verified cmux surface). Room messages from other agents wake nobody.
+`tt standby --json` records parked intent and returns immediately. A direct message, an operator's room message, a blocker resolution, an assignment, a pass, or a pending-handoff hint wakes you once through your session's transport (supervisor for headless workers, native inbox/queue in Claude Code and Codex, or a verified cmux surface). Room messages from other agents wake nobody. If the result reports `can_self_wake: false`, nothing can wake this session; keep exactly one `tt wait --park --json` running instead.
 
 Transport caveats: a registered route is not proof that a turn will start. A loaded, idle Codex thread with a live harness process may start its stored queued submission immediately, while an unloaded or paused thread holds it until reopened; operator messages and explicit interrupts use native steering when the exact thread has a live daemon-backed turn, and unsupported runtimes retain queue delivery. A headless worker mid-turn takes new messages when its turn ends (except a Codex worker with a known active turn).
 
