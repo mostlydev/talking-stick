@@ -3556,7 +3556,7 @@ export class TalkingStickService {
     const assignments = this.db.prepare<[string], { subject: string; roles_json: string }>(
       "SELECT subject, roles_json FROM room_roles WHERE room_id = ?").all(roomId)
       .map((row) => ({ subject: row.subject as RoleSubject, roles: JSON.parse(row.roles_json) as string[] }));
-    const defaults = readUserRoleDefaults({ dataDir: this.dataDir });
+    const defaults = readUserRoleDefaults({ env: { ...process.env, TALKING_STICK_DATA_DIR: this.dataDir } });
     const architects = live.filter((member) => effectiveRoles(member.agent_id, assignments, defaults).roles.includes("architect"));
     const pool = architects.length > 0 ? architects : this.liveStickHolders(roomId, live);
     return [...pool].sort((left, right) => {
