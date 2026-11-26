@@ -69,7 +69,7 @@ export const HELP_GROUPS = [
   { title: "Inside a room (the talking stick)",
     commands: ["join", "leave", "wait", "standby", "try", "take", "release", "pass", "assign", "msg", "ack", "notes",
       "state", "health", "events"] },
-  { title: "Setup", commands: ["install", "uninstall", "self-update", "instructions", "whoami"] }
+  { title: "Setup", commands: ["install", "uninstall", "update", "instructions", "whoami"] }
 ] as const;
 
 export function helpGroups(): Array<{ title: string; usages: string[] }> {
@@ -190,12 +190,13 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     handler: ({ parsed }) => runUninstallCommand(parsed)
   },
   {
-    name: "self-update",
+    name: "update",
+    aliases: ["self-update"],
     needsRuntime: false,
     startupMaintenance: false,
     internal: false,
-    usage: "tt self-update [--print] [--manager npm|pnpm|yarn|bun]",
-    description: "Update the globally installed tt package.",
+    usage: "tt update [--print] [--manager npm|pnpm|yarn|bun]",
+    description: "Update the installed shrooms app.",
     handler: ({ parsed, cliEntryUrl }) => runSelfUpdateCommand(parsed, cliEntryUrl)
   },
   {

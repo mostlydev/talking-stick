@@ -66,8 +66,10 @@ describe.skipIf(!hasBun || !supported)("standalone binary", () => {
       { cwd: project, env: env(), encoding: "utf8" }));
     expect(aliasState.room.room_id).toBe(nodeState.room.room_id);
     for (const name of [rooms, tt]) {
-      const updatePlan = execFileSync(name, ["self-update", "--print"], { env: env(), encoding: "utf8" });
+      const updatePlan = execFileSync(name, ["update", "--print"], { env: env(), encoding: "utf8" });
+      const aliasPlan = execFileSync(name, ["self-update", "--print"], { env: env(), encoding: "utf8" });
       expect(updatePlan).toContain(path.join(install, "releases"));
+      expect(aliasPlan).toBe(updatePlan);
     }
   });
 

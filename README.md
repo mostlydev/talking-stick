@@ -257,7 +257,7 @@ A manager session starts rooms and asks them questions without joining; see
 
 ## Guides
 
-- [Install, update, or uninstall](docs/install.md)
+- [Install, update, or uninstall](docs/install.md). Run `rooms update` to update an installed copy.
 - [Operator chat, room commands, and troubleshooting](docs/reference.md)
 - [Customize collaboration instructions and roles](docs/reference.md#editable-collaboration-instructions)
 - [Headless rooms and the supervisor (preview)](docs/supervisor.md)
