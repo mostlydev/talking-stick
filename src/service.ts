@@ -1,4 +1,4 @@
-import type { RoomBlocker } from "./types.js";
+import type { GoalOutcome, RoomBlocker, RoomGoal, RoomGoalEvent } from "./types.js";
 import { PROFILE_NOTICES } from "./profile-notices.js";
 import { humanAttentionIdentity, humanAttentionWhere, isHumanDirected } from "./human-attention.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -360,6 +360,8 @@ const KNOWN_EVENT_TYPES: readonly EventType[] = [
   "takeover",
   "close",
   "kick",
+  "goal_added",
+  "goal_closed",
   "session_superseded",
   "reservation_expired",
   "message_sent"
@@ -468,6 +470,12 @@ interface NativeWakeEndpointRow {
 
 /** Builds a room's role notice from its new state; no recipients means no message. */
 export type RoleNotifier = (state: { version: number; assignments: RoomRoleAssignment[]; before: RoomRoleAssignment[] }) => { body: string; to_agent_ids: AgentId[] };
+
+function goalText(value: string, instruction: string, limit: number): string {
+  const text = value.trim();
+  if (!text || Buffer.byteLength(text) > limit) throw new ProtocolError("invalid_body", `${instruction} in 1–${limit} bytes.`);
+  return text;
+}
 
 export class TalkingStickService {
   readonly db: SqliteDatabase;
@@ -1321,7 +1329,7 @@ export class TalkingStickService {
         // remaining agent rows, even stale ones, are left to idle purge.
         if (
           !remainingMembers.some((remaining) => !isObserverMember(remaining)) &&
-          !this.hasLiveObserver(remainingMembers) && !this.hasOpenBlockers(input.room_id)
+          !this.hasLiveObserver(remainingMembers) && !this.hasOpenBlockers(input.room_id) && !this.hasOpenGoals(input.room_id)
         ) {
           this.deleteRoom(input.room_id);
           return {
@@ -1338,7 +1346,7 @@ export class TalkingStickService {
           remaining_members: remainingMembers.length
         };
       }
-      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasOpenBlockers(input.room_id)) {
+      if (!this.shouldKeepRoom(remainingMembers, now) && !this.hasOpenBlockers(input.room_id) && !this.hasOpenGoals(input.room_id)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -1536,7 +1544,7 @@ export class TalkingStickService {
       });
 
       const remainingMembers = this.getMembers(input.room_id);
-      if (!input.stop_target && !this.shouldKeepRoom(remainingMembers, now) && !this.hasOpenBlockers(input.room_id)) {
+      if (!input.stop_target && !this.shouldKeepRoom(remainingMembers, now) && !this.hasOpenBlockers(input.room_id) && !this.hasOpenGoals(input.room_id)) {
         this.deleteRoom(input.room_id);
         return {
           status: "room_deleted",
@@ -2799,11 +2807,88 @@ export class TalkingStickService {
     })));
   }
 
+  listGoals(input: { room_id: string; all?: boolean; limit?: number }): RoomGoal[] {
+    this.requireRoom(input.room_id);
+    return this.db.prepare<[string, number, number], RoomGoal>(`
+      SELECT 'G' || id AS goal_id, room_id, brief, completion_criterion, created_by, created_at,
+        status, evidence, closed_by, closed_at, closure_event_seq
+      FROM room_goals WHERE room_id = ? AND (? OR status = 'open') ORDER BY id LIMIT ?
+    `).all(input.room_id, input.all ? 1 : 0, input.limit ?? -1);
+  }
+
+  getGoalCounts(): Array<{ room_id: string; count: number }> {
+    return this.db.prepare<[], { room_id: string; count: number }>(
+      "SELECT room_id, COUNT(*) AS count FROM room_goals WHERE status = 'open' GROUP BY room_id").all();
+  }
+
+  private hasOpenGoals(roomId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM room_goals WHERE room_id = ? AND status = 'open' LIMIT 1").get(roomId));
+  }
+
+  getGoal(input: { room_id: string; goal_id: string }): RoomGoal {
+    this.requireRoom(input.room_id);
+    const id = /^G([1-9]\d*)$/i.exec(input.goal_id.trim());
+    const goal = id && this.db.prepare<[string, string], RoomGoal>(`
+      SELECT 'G' || id AS goal_id, room_id, brief, completion_criterion, created_by, created_at,
+        status, evidence, closed_by, closed_at, closure_event_seq
+      FROM room_goals WHERE room_id = ? AND id = ?
+    `).get(input.room_id, id[1]);
+    if (!goal) throw new ProtocolError("goal_not_found", `No goal ${input.goal_id} in this room.`);
+    return goal;
+  }
+
+  // An outside manager can send work to a room without becoming a member.
+  addGoal(input: { room_id: string; agent_id: string; brief: string; completion_criterion: string }): RoomGoal {
+    assertNonEmpty(input.agent_id, "agent_id");
+    const brief = goalText(input.brief, "Write a goal brief", 4_096);
+    const criterion = goalText(input.completion_criterion, "State the completion criterion", 2_000);
+    return this.writeTransaction(() => {
+      const room = this.requireRoom(input.room_id);
+      if (room.state === "closed") throw new ProtocolError("room_closed", "Cannot add a goal to a closed room.");
+      const timestamp = this.now().toISOString();
+      const { id } = this.db.prepare<[string], { id: number }>(
+        "SELECT COALESCE(MAX(id), 0) + 1 AS id FROM room_goals WHERE room_id = ?").get(room.room_id)!;
+      this.db.prepare(`INSERT INTO room_goals (room_id, id, brief, completion_criterion, created_by, created_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'open')`).run(room.room_id, id, brief, criterion, input.agent_id, timestamp);
+      this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "goal_added",
+        from_agent_id: input.agent_id, to_agent_id: null, handoff: null, reason: null, created_at: timestamp,
+        goal: { goal_id: `G${id}`, status: "open", brief, completion_criterion: criterion } });
+      return this.getGoal({ room_id: room.room_id, goal_id: `G${id}` });
+    });
+  }
+
+  closeGoal(input: { room_id: string; agent_id: string; goal_id: string; status: GoalOutcome; evidence: string }): RoomGoal {
+    assertNonEmpty(input.agent_id, "agent_id");
+    if (input.status !== "done" && input.status !== "failed" && input.status !== "withdrawn") {
+      throw new ProtocolError("invalid_input", "Choose done, failed or withdrawn.");
+    }
+    const evidence = goalText(input.evidence, "Give the result and its evidence, or a reason for withdrawal", 4_096);
+    return this.writeTransaction(() => {
+      const room = this.requireRoom(input.room_id);
+      const goal = this.getGoal(input);
+      const withdrawingOwnGoal = input.status === "withdrawn" && goal.created_by === input.agent_id;
+      if (!input.agent_id.startsWith("human:") && !withdrawingOwnGoal && !this.getMember(room.room_id, input.agent_id)) {
+        throw new ProtocolError("unknown_member", "Only a room member or operator can close this goal. Its creator can withdraw it.");
+      }
+      if (goal.status !== "open") {
+        if (goal.status === input.status && goal.evidence === evidence) return goal;
+        throw new ProtocolError("goal_closed", `${goal.goal_id} is already ${goal.status}.`);
+      }
+      const timestamp = this.now().toISOString();
+      const eventSeq = this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "goal_closed",
+        from_agent_id: input.agent_id, to_agent_id: null, handoff: null, reason: null, created_at: timestamp,
+        goal: { goal_id: goal.goal_id, status: input.status, evidence } });
+      this.db.prepare(`UPDATE room_goals SET status = ?, evidence = ?, closed_by = ?, closed_at = ?, closure_event_seq = ?
+        WHERE room_id = ? AND id = ?`).run(input.status, evidence, input.agent_id, timestamp, eventSeq, room.room_id, goal.goal_id.slice(1));
+      return this.getGoal(input);
+    });
+  }
+
   listBlockers(input: { room_id: string; all?: boolean }): RoomBlocker[] {
     this.requireRoom(input.room_id);
     return this.db.prepare<[string, number], RoomBlocker>(`
       SELECT 'B' || id AS blocker_id, room_id, author_agent_id, body, created_at,
-             closed_at, closed_by_agent_id, withdrawal_reason, resolution_event_seq
+             closed_at, closed_by_agent_id, withdrawal_reason, resolution_event_seq, 'G' || goal_id AS goal_id
       FROM room_blockers WHERE room_id = ? AND (? OR closed_at IS NULL) ORDER BY id
     `).all(input.room_id, input.all ? 1 : 0);
   }
@@ -2838,14 +2923,14 @@ export class TalkingStickService {
     const id = /^B([1-9]\d*)$/i.exec(blockerId.trim());
     const blocker = id && this.db.prepare<[string, string], RoomBlocker>(`
       SELECT 'B' || id AS blocker_id, room_id, author_agent_id, body, created_at,
-             closed_at, closed_by_agent_id, withdrawal_reason, resolution_event_seq
+             closed_at, closed_by_agent_id, withdrawal_reason, resolution_event_seq, 'G' || goal_id AS goal_id
       FROM room_blockers WHERE room_id = ? AND id = ?
     `).get(roomId, id[1]);
     if (!blocker) throw new ProtocolError("blocker_not_found", `No blocker ${blockerId} in this room.`);
     return blocker;
   }
 
-  addBlocker(input: { room_id: string; agent_id: string; body: string }): RoomBlocker {
+  addBlocker(input: { room_id: string; agent_id: string; body: string; goal_id?: string }): RoomBlocker {
     const body = input.body.trim();
     if (!body || Buffer.byteLength(body) > 2_000) {
       throw new ProtocolError("invalid_body", "Write the facts and one question in 1–2,000 bytes.");
@@ -2856,15 +2941,17 @@ export class TalkingStickService {
       if (!this.getMember(input.room_id, input.agent_id)) {
         throw new ProtocolError("unknown_member", "Join the room before raising a blocker.");
       }
+      const goal = input.goal_id === undefined ? null : this.getGoal({ room_id: input.room_id, goal_id: input.goal_id });
+      if (goal && goal.status !== "open") throw new ProtocolError("goal_closed", `${goal.goal_id} is already ${goal.status}.`);
       const open = this.listBlockers(input);
-      const repeated = open.find(blocker => blocker.body === body);
+      const repeated = open.find(blocker => blocker.body === body && blocker.goal_id === (goal?.goal_id ?? null));
       if (repeated) return repeated;
       if (open.length >= 3) {
         throw new ProtocolError("blocker_limit", `This room has three open blockers (${open.map(b => b.blocker_id).join(", ")}). Finish safe cleanup and park.`);
       }
       const timestamp = this.now().toISOString();
-      const id = this.db.prepare("INSERT INTO room_blockers (room_id, author_agent_id, body, created_at) VALUES (?, ?, ?, ?)")
-        .run(input.room_id, input.agent_id, body, timestamp).lastInsertRowid;
+      const id = this.db.prepare("INSERT INTO room_blockers (room_id, author_agent_id, body, created_at, goal_id) VALUES (?, ?, ?, ?, ?)")
+        .run(input.room_id, input.agent_id, body, timestamp, goal?.goal_id.slice(1) ?? null).lastInsertRowid;
       return this.requireBlocker(input.room_id, `B${id}`);
     });
   }
@@ -5507,6 +5594,7 @@ export class TalkingStickService {
           `Room ${room.room_id} still has members (${agents.map((member) => member.agent_id).join(", ") || room.owner}). Ask them to leave first.`);
       }
       if (this.hasOpenBlockers(room.room_id)) throw new ProtocolError("room_blocked", "Resolve open blockers before removing the room.");
+      if (this.hasOpenGoals(room.room_id)) throw new ProtocolError("room_blocked", "Close open goals before removing the room.");
       this.deleteRoom(room.room_id);
       return { retired: true };
     });
@@ -6719,6 +6807,7 @@ export class TalkingStickService {
     reason: string | null;
     created_at: string;
     payload?: MessagePayload | null;
+    goal?: RoomGoalEvent;
   }): number {
     const result = this.db
       .prepare(
@@ -6748,7 +6837,7 @@ export class TalkingStickService {
         input.handoff ? JSON.stringify(input.handoff) : null,
         input.reason,
         input.created_at,
-        input.payload ? JSON.stringify(input.payload) : null
+        input.payload || input.goal ? JSON.stringify(input.payload ?? input.goal) : null
       );
 
     return Number(result.lastInsertRowid);
@@ -6823,9 +6912,9 @@ export class TalkingStickService {
         `(
           (event_type = 'message_sent' AND (to_agent_id = ? OR (to_agent_id IS NULL AND from_agent_id != ?)))
           OR
-          (event_type IN ('join', 'leave') AND from_agent_id != ?)
+          (event_type IN ('join', 'leave', 'goal_added', 'goal_closed') AND from_agent_id != ?)
           OR
-          (event_type NOT IN ('message_sent', 'join', 'leave') AND (to_agent_id = ? OR from_agent_id = ?))
+          (event_type NOT IN ('message_sent', 'join', 'leave', 'goal_added', 'goal_closed') AND (to_agent_id = ? OR from_agent_id = ?))
         )`
       );
       params.push(
@@ -7015,7 +7104,9 @@ export class TalkingStickService {
           return !stored || stored.identity !== livenessIdentity(member) ||
             stored.first_gone_at !== observations.get(member.agent_id);
         })) return;
-        if (expire && !this.db.prepare(`SELECT 1 FROM room_blockers
+        if (expire && !this.db.prepare(`SELECT 1 FROM room_goals
+          WHERE room_id = ? AND (status = 'open' OR closed_at > ?) LIMIT 1`)
+          .get(room.room_id, new Date(cutoffMs).toISOString()) && !this.db.prepare(`SELECT 1 FROM room_blockers
           WHERE room_id = ? AND (closed_at IS NULL OR closed_at > ?) LIMIT 1`)
           .get(room.room_id, new Date(cutoffMs).toISOString())) {
           this.deleteRoom(room.room_id);
@@ -7713,7 +7804,9 @@ export class TalkingStickService {
         : null,
       reason: row.reason,
       created_at: row.created_at,
-      payload
+      payload,
+      ...((row.event_type === "goal_added" || row.event_type === "goal_closed") && row.payload_json
+        ? { goal: JSON.parse(row.payload_json) as RoomGoalEvent } : {})
     };
   }
 }

@@ -167,6 +167,26 @@ export interface WaitForEventsCommandInput extends WaitForEventsInput {}
 export class TalkingStickCommands {
   constructor(private readonly service = new TalkingStickService()) {}
 
+  listGoals(input: Parameters<TalkingStickService["listGoals"]>[0]) {
+    return this.service.listGoals(input);
+  }
+
+  getGoalCounts() {
+    return this.service.getGoalCounts();
+  }
+
+  getGoal(input: Parameters<TalkingStickService["getGoal"]>[0]) {
+    return this.service.getGoal(input);
+  }
+
+  addGoal(identity: DerivedIdentity, input: Omit<Parameters<TalkingStickService["addGoal"]>[0], "agent_id">) {
+    return this.service.addGoal({ ...input, agent_id: identity.agent_id });
+  }
+
+  closeGoal(identity: DerivedIdentity, input: Omit<Parameters<TalkingStickService["closeGoal"]>[0], "agent_id">) {
+    return this.service.closeGoal({ ...input, agent_id: identity.agent_id });
+  }
+
   listBlockers(input: Parameters<TalkingStickService["listBlockers"]>[0]) {
     return this.service.listBlockers(input);
   }
@@ -179,7 +199,7 @@ export class TalkingStickCommands {
     return this.service.claimProfileNotices();
   }
 
-  addBlocker(identity: DerivedIdentity, input: { room_id: string; body: string }) {
+  addBlocker(identity: DerivedIdentity, input: { room_id: string; body: string; goal_id?: string }) {
     return this.service.addBlocker({ ...input, agent_id: identity.agent_id });
   }
 

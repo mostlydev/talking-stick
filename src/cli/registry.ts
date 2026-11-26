@@ -4,7 +4,7 @@ import { runCodexInboxHookCommand } from "./codex-inbox-hook.js";
 import { runSessionHookCommand } from "./session-hook.js";
 import { runAntigravityHookCommand } from "./antigravity-hook.js";
 import { runInterruptHookCommand } from "./interrupt-hook.js";
-import { handleBlockerCommand, handleRoomCommand } from "./room-admin.js";
+import { GOAL_USAGE, handleBlockerCommand, handleGoalCommand, handleRoomCommand } from "./room-admin.js";
 import { handleRolesCommand } from "./role-commands.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
@@ -65,7 +65,7 @@ export interface CommandEntry {
 /** How help groups the public commands: managing rooms, taking turns inside one, and setup. */
 export const HELP_GROUPS = [
   { title: "Manage rooms",
-    commands: ["chat", "up", "room", "list", "roles", "supervisor", "blocker", "kick"] },
+    commands: ["chat", "up", "room", "list", "roles", "supervisor", "goal", "blocker", "kick"] },
   { title: "Inside a room (the talking stick)",
     commands: ["join", "leave", "wait", "standby", "try", "take", "release", "pass", "assign", "msg", "ack", "notes",
       "state", "health", "events"] },
@@ -255,7 +255,7 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     startupMaintenance: true,
     internal: false,
     usage: "tt room create [path] [--name NAME] | ensure <path> [--name NAME] | list [path] [--all] | brief [room] [--limit N] [--before SEQ] | ask <room> --to <agents|room> <body> [--stdin] [--request-key KEY] | send <room> --resolves ID <text> | replies <request-id> [--after SEQ] [--limit N] [--timeout S] | adopt [path] [--name NAME] | remove [path]",
-    description: "Declare, list, adopt, or remove rooms inside a repository (remove deletes an agent-free room and its history). ensure returns the declaring directory as pin for launchers to set TT_ROOM=<pin>. list --all shows every room on this host with live or lost members or open blockers; brief shows what one room is doing, without joining it; ask puts a question to its agents and replies reads their answers.",
+    description: "Declare, list, adopt, or remove rooms inside a repository (remove deletes an agent-free room and its history). ensure returns the declaring directory as pin for launchers to set TT_ROOM=<pin>. list --all shows every room on this host with live or lost members, open goals, or open blockers; brief shows what one room is doing, without joining it; ask puts a question to its agents and replies reads their answers.",
     handler: ({ runtime, parsed }) => handleRoomCommand(requireRuntime(runtime), parsed)
   },
   {
@@ -409,11 +409,17 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     handler: ({ runtime, parsed }) => handleChatCommand(requireRuntime(runtime), parsed)
   },
   {
+    name: "goal", needsRuntime: true, startupMaintenance: false, internal: false,
+    usage: GOAL_USAGE,
+    description: "Set a room goal, read its brief, or close it with evidence.",
+    handler: ({ parsed, runtime }) => handleGoalCommand(runtime!, parsed)
+  },
+  {
     name: "blocker",
     needsRuntime: true,
     startupMaintenance: true,
     internal: false,
-    usage: "tt blocker add <facts and question> | list [--all] | withdraw <id> <reason> [--in ROOM] [--stdin]",
+    usage: "tt blocker add <facts and question> [--goal G<N>] | list [--all] | withdraw <id> <reason> [--in ROOM] [--stdin]",
     description: "Raise, list, or withdraw a room blocker. Close it explicitly with a resolution message.",
     handler: ({ runtime, parsed }) => handleBlockerCommand(requireRuntime(runtime), parsed)
   },

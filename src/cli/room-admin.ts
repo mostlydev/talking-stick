@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ROOM_DECLARATION_FILE, insideNestedRepository, isWithinOrSame, readDeclaration, resolveContextPath } from "../path-resolution.js";
 import { HUMAN_CHAT_SESSION_KIND } from "../types.js";
-import type { LostMember, PathRoom, RoomActivity, RoomBlocker, RoomMember } from "../types.js";
+import type { LostMember, PathRoom, RoomActivity, RoomBlocker, RoomGoal, RoomGoalEvent, RoomMember } from "../types.js";
 import { describeLossCause, describeLossCauseShort, isDormant } from "../lost-member.js";
 import { formatRelativeTime, printResult } from "./output.js";
 import { getStringOption, hasOption, parseOptionalInteger, type ParsedCommand } from "./parser.js";
@@ -35,7 +35,7 @@ export function handleRoomCommand(runtime: Runtime, parsed: ParsedCommand): void
   }
 }
 
-async function blockerText(parsed: ParsedCommand, parts: string[]): Promise<string> {
+async function readRoomText(parsed: ParsedCommand, parts: string[]): Promise<string> {
   return parts.length ? parts.join(" ") : hasOption(parsed, "stdin") ? readAllStdin() : "";
 }
 
@@ -44,16 +44,63 @@ async function sendResolution(runtime: Runtime, parsed: ParsedCommand, target: s
   if (!target || !resolves) throw new Error("Usage: tt room send <room> --resolves <id> <text...> [--stdin]");
   const room = briefTarget(runtime, parsed, target);
   const result = await runtime.commands.sendMessageAndWake(deriveCliIdentity(parsed), {
-    room_id: room.room_id, body: await blockerText(parsed, rest), resolves
+    room_id: room.room_id, body: await readRoomText(parsed, rest), resolves
   });
   printResult(parsed, result, () => `${result.deduplicated ? "Already resolved" : "Resolved"} ${result.resolves} in message #${result.event_seq}.`);
+}
+
+export const GOAL_USAGE = [
+  "tt goal add <brief> --done-when CRITERION [--in ROOM] [--stdin]",
+  "tt goal list [--all] [--in ROOM] | goal show <id> [--in ROOM]",
+  "tt goal close <id> <done|failed|withdrawn> <evidence or reason> [--in ROOM] [--stdin]"
+].join("\n");
+
+function formatGoal(goal: RoomGoal, detail: boolean): string {
+  const summary = `${goal.goal_id} (${goal.status})  ${sanitizeChatText(detail ? goal.brief : excerpt(goal.brief))}`;
+  if (!detail) return summary;
+  return [summary, `Done when ${sanitizeChatText(goal.completion_criterion)}`,
+    `Opened ${goal.created_at} by ${sanitizeChatText(goal.created_by)}`,
+    ...(goal.closed_at ? [`Closed ${goal.closed_at} by ${sanitizeChatText(goal.closed_by ?? "")} · #${goal.closure_event_seq}`,
+      sanitizeChatText(goal.evidence ?? "")] : [])].join("\n");
+}
+
+export async function handleGoalCommand(runtime: Runtime, parsed: ParsedCommand): Promise<void> {
+  const [action, ...args] = parsed.positionals;
+  if (!action || !["add", "list", "show", "close"].includes(action)) throw new Error(GOAL_USAGE);
+  if (hasOption(parsed, "in") && !getStringOption(parsed, "in")) throw new Error("--in needs a room.");
+  const roomId = briefTarget(runtime, parsed, undefined).room_id;
+  if (action === "list") {
+    if (args.length) throw new Error(GOAL_USAGE);
+    const goals = runtime.commands.listGoals({ room_id: roomId, all: hasOption(parsed, "all") });
+    printResult(parsed, { room_id: roomId, goals }, () => goals.length ? goals.map(goal => formatGoal(goal, false)).join("\n") : "No goals.");
+    return;
+  }
+  if (action === "show") {
+    if (args.length !== 1) throw new Error(GOAL_USAGE);
+    const goal = runtime.commands.getGoal({ room_id: roomId, goal_id: args[0] });
+    printResult(parsed, goal, () => formatGoal(goal, true));
+    return;
+  }
+  const identity = deriveCliIdentity(parsed);
+  if (action === "add") {
+    const criterion = getStringOption(parsed, "done-when");
+    if (!criterion?.trim()) throw new Error("State the completion criterion with --done-when.");
+    const goal = runtime.commands.addGoal(identity, { room_id: roomId, brief: await readRoomText(parsed, args), completion_criterion: criterion });
+    printResult(parsed, goal, () => formatGoal(goal, true));
+    return;
+  }
+  const [goalId, status, ...rest] = args;
+  if (!goalId || (status !== "done" && status !== "failed" && status !== "withdrawn")) throw new Error(GOAL_USAGE);
+  const goal = runtime.commands.closeGoal(identity, { room_id: roomId, goal_id: goalId, status,
+    evidence: await readRoomText(parsed, rest) });
+  printResult(parsed, goal, () => formatGoal(goal, true));
 }
 
 function formatBlocker(blocker: RoomBlocker): string {
   let status = "open";
   if (blocker.resolution_event_seq !== null) status = `resolved in #${blocker.resolution_event_seq}`;
   else if (blocker.closed_at) status = "withdrawn";
-  return `${blocker.blocker_id} (${status})  ${sanitizeChatText(blocker.body)}`;
+  return `${blocker.blocker_id}${blocker.goal_id ? ` → ${blocker.goal_id}` : ""} (${status})  ${sanitizeChatText(blocker.body)}`;
 }
 
 export async function handleBlockerCommand(runtime: Runtime, parsed: ParsedCommand): Promise<void> {
@@ -68,18 +115,22 @@ export async function handleBlockerCommand(runtime: Runtime, parsed: ParsedComma
   }
   const identity = deriveCliIdentity(parsed);
   if (action === "add") {
-    const blocker = runtime.commands.addBlocker(identity, { room_id: room.room_id, body: await blockerText(parsed, rest) });
+    const goalId = getStringOption(parsed, "goal");
+    if (hasOption(parsed, "goal") && !goalId) throw new Error("--goal needs an ID such as G1.");
+    const blocker = runtime.commands.addBlocker(identity, {
+      room_id: room.room_id, body: await readRoomText(parsed, rest), goal_id: goalId
+    });
     printResult(parsed, blocker, () => `Open blocker ${blocker.blocker_id}.`);
     return;
   }
   if (action === "withdraw" && rest[0]) {
     const blocker = runtime.commands.withdrawBlocker(identity, {
-      room_id: room.room_id, blocker_id: rest[0], reason: await blockerText(parsed, rest.slice(1))
+      room_id: room.room_id, blocker_id: rest[0], reason: await readRoomText(parsed, rest.slice(1))
     });
     printResult(parsed, blocker, () => `Withdrawn ${blocker.blocker_id}.`);
     return;
   }
-  throw new Error("Usage: tt blocker add <facts and question> | list [--all] | withdraw <id> <reason> [--in ROOM] [--stdin]");
+  throw new Error("Usage: tt blocker add <facts and question> [--goal G<N>] | list [--all] | withdraw <id> <reason> [--in ROOM] [--stdin]");
 }
 
 function declarationFile(directory: string): string {
@@ -251,6 +302,7 @@ function excerpt(text: string): string {
 // observer outside any repository. Reads only: it never joins a room.
 function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
   const counts = new Map(runtime.commands.getBlockerCounts().map(row => [row.room_id, row.count]));
+  const goalCounts = new Map(runtime.commands.getGoalCounts().map(row => [row.room_id, row.count]));
   const rooms = runtime.commands.listRooms({}).rooms
     .filter((room) => room.state !== "closed")
     .map((room) => {
@@ -265,6 +317,7 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
         state: room.state,
         owner: room.owner,
         open_blockers: counts.get(room.room_id) ?? 0,
+        open_goals: goalCounts.get(room.room_id) ?? 0,
         agents: members.filter((member) => member.session_kind !== HUMAN_CHAT_SESSION_KIND).map((member) => member.agent_id),
         consoles: members.filter((member) => member.session_kind === HUMAN_CHAT_SESSION_KIND).map((member) => member.agent_id),
         lost_members: lost.map(listedLostMember),
@@ -282,16 +335,17 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
         }
       };
     })
-    .filter((room) => room.agents.length > 0 || room.consoles.length > 0 || room.lost_members.length > 0 || room.open_blockers > 0)
+    .filter((room) => room.agents.length > 0 || room.consoles.length > 0 || room.lost_members.length > 0 || room.open_blockers > 0 || room.open_goals > 0)
     .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at));
   printResult(parsed, { rooms }, () => rooms.length === 0
-    ? "No rooms on this host have live or lost members or open blockers."
+    ? "No rooms on this host have live or lost members, open goals, or open blockers."
     : rooms.map((room) => {
       const who = [room.agents.join(", ") || "no agents", room.consoles.length > 0 ? `${room.consoles.length} console${room.consoles.length === 1 ? "" : "s"}` : null]
         .filter(Boolean).join(", ");
       const lines = [`#${room.name}  ${who}${room.owner ? `  stick=${room.owner}${room.state === "stale_owner" ? " (stale)" : ""}` : ""}  active ${formatRelativeTime(room.last_activity_at)}`,
         `  ${room.canonical_path}  ${room.room_id}`];
       lines.push(...formatLostMembers(room.lost_members).map((line) => `  ${line}`));
+      if (room.open_goals) lines.push(`  ${room.open_goals} open goal${room.open_goals === 1 ? "" : "s"}`);
       if (room.open_blockers) lines.push(`  ${room.open_blockers} open blocker${room.open_blockers === 1 ? "" : "s"}`);
       if (room.last_handoff) {
         lines.push(`  last handoff ${formatRelativeTime(room.last_handoff.created_at)} from ${room.last_handoff.from_agent_id ?? "unknown"}: ${room.last_handoff.status}`);
@@ -307,7 +361,8 @@ const BRIEF_DEFAULT_MESSAGES = 20;
 const BRIEF_MAX_MESSAGES = 200;
 const BRIEF_BODY_CHARS = 1000;
 const BRIEF_NOTES = 10;
-const BRIEF_EVENT_TYPES = ["message_sent", "release", "pass", "takeover"] as const;
+const BRIEF_GOALS = 10;
+const BRIEF_EVENT_TYPES = ["message_sent", "release", "pass", "takeover", "goal_added", "goal_closed"] as const;
 
 function clip(text: string, limit: number): { text: string; truncated: boolean } {
   return text.length > limit ? { text: `${text.slice(0, limit - 1)}…`, truncated: true } : { text, truncated: false };
@@ -357,7 +412,14 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
     const handoff = event.handoff
       ? { status: clip(event.handoff.status, HANDOFF_EXCERPT_CHARS), next_action: clip(event.handoff.next_action, HANDOFF_EXCERPT_CHARS) }
       : null;
-    const truncated = body?.truncated || handoff?.status.truncated || handoff?.next_action.truncated;
+    const goal = event.goal;
+    const goalClip = goal?.status === "open"
+      ? [clip(goal.brief, BRIEF_BODY_CHARS), clip(goal.completion_criterion, BRIEF_BODY_CHARS)]
+      : goal ? [clip(goal.evidence, BRIEF_BODY_CHARS)] : [];
+    const clippedGoal: RoomGoalEvent | undefined = goal?.status === "open"
+      ? { ...goal, brief: goalClip[0].text, completion_criterion: goalClip[1].text }
+      : goal ? { ...goal, evidence: goalClip[0].text } : undefined;
+    const truncated = body?.truncated || handoff?.status.truncated || handoff?.next_action.truncated || goalClip.some(part => part.truncated);
     return {
       event_seq: event.event_seq,
       event_type: event.event_type,
@@ -365,6 +427,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
       to: event.to_agent_id ?? event.payload?.recipients ?? null,
       created_at: event.created_at,
       ...(body ? { body: body.text } : {}),
+      ...(clippedGoal ? { goal: clippedGoal } : {}),
       ...(handoff ? { status: handoff.status.text, next_action: handoff.next_action.text } : {}),
       // A visitor's question, or an answer to one (sent to the visitor, so
       // its to is null like a room message).
@@ -377,6 +440,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
   const oldest = recent[0]?.event_seq;
   const hasOlder = oldest !== undefined && runtime.commands.getRecentRoomEvents({ room_id: room.room_id, limit: 1,
     event_types: eventTypes, before_event_seq: oldest }).length > 0;
+  const goals = runtime.commands.listGoals({ room_id: room.room_id, limit: BRIEF_GOALS + 1 });
   const brief = {
     name: roomShortName(room),
     room_id: room.room_id,
@@ -401,6 +465,9 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
       body: clip(note.body, BRIEF_BODY_CHARS).text
     })),
     notes_total: notes.total,
+    goals: goals.slice(0, BRIEF_GOALS).map(goal => ({ ...goal, brief: clip(goal.brief, BRIEF_BODY_CHARS).text,
+      completion_criterion: clip(goal.completion_criterion, BRIEF_BODY_CHARS).text })),
+    more_goals: goals.length > BRIEF_GOALS,
     blockers: runtime.commands.listBlockers({ room_id: room.room_id }),
     recent,
     older: hasOlder ? `tt room brief ${room.room_id} --before ${oldest} --limit ${limit} --json` : null,
@@ -416,9 +483,11 @@ function formatBrief(brief: {
   lost_members: ListedLostMember[];
   last_handoff: RoomActivity["last_handoff"];
   notes: { author_agent_id: string; body: string }[]; notes_total: number;
+  goals: RoomGoal[];
+  more_goals: boolean;
   blockers: RoomBlocker[];
   recent: { event_seq: number; event_type: string; from_agent_id: string | null; to: unknown; created_at: string;
-    body?: string; status?: string; next_action?: string; full?: string; request_id?: string; in_reply_to?: string; resolves?: string }[];
+    body?: string; goal?: RoomGoalEvent; status?: string; next_action?: string; full?: string; request_id?: string; in_reply_to?: string; resolves?: string }[];
   older: string | null; updates_since: string;
 }): string {
   const lines = [`#${brief.name}  ${brief.canonical_path}  ${brief.room_id}`];
@@ -428,8 +497,11 @@ function formatBrief(brief: {
   lines.push(`members: ${brief.members.map((member) =>
     `${member.agent_id}${member.kind === "console" ? " (console)" : ""}${memberPresence(member)}`).join(", ") || "none"}`);
   lines.push(...formatLostMembers(brief.lost_members));
+  if (brief.goals.length) lines.push("", "Open goals", ...brief.goals.map(goal =>
+    `  ${goal.goal_id} · opened ${formatRelativeTime(goal.created_at)} · ${sanitizeChatText(excerpt(goal.brief))}`));
+  if (brief.more_goals) lines.push(`  More goals in tt goal list --in ${brief.room_id}`);
   if (brief.blockers.length) lines.push("", "Open blockers",
-    ...brief.blockers.map(blocker => `  ${blocker.blocker_id} (${sanitizeChatText(blocker.author_agent_id)})  ${sanitizeChatText(blocker.body).replace(/\s+/g, " ")}`));
+    ...brief.blockers.map(blocker => `  ${blocker.blocker_id}${blocker.goal_id ? ` → ${blocker.goal_id}` : ""} (${sanitizeChatText(blocker.author_agent_id)})  ${sanitizeChatText(blocker.body).replace(/\s+/g, " ")}`));
   const handoff = brief.last_handoff;
   if (handoff) {
     lines.push("", `last handoff ${formatRelativeTime(handoff.created_at)}, ${handoff.event_type} from ${handoff.from_agent_id ?? "unknown"}${handoff.to_agent_id ? ` to ${handoff.to_agent_id}` : ""}:`,
@@ -446,7 +518,11 @@ function formatBrief(brief: {
         : Array.isArray(event.to) ? event.to.join(", ") : event.to ?? "room";
       const kind = event.request_id ? "visitor " : event.event_type === "message_sent" ? "" : `${event.event_type} `;
       lines.push(`  #${event.event_seq} ${formatRelativeTime(event.created_at)} ${kind}${event.from_agent_id ?? "unknown"} → ${to}${event.request_id ? ` (request ${event.request_id})` : ""}${event.resolves ? ` (resolves ${event.resolves})` : ""}`);
-      const text = event.body ?? [event.status, event.next_action && `next: ${event.next_action}`].filter(Boolean).join(" ");
+      const goal = event.goal;
+      const goalText = goal?.status === "open" ? `${goal.goal_id} · ${goal.brief}\nDone when ${goal.completion_criterion}` :
+        goal ? `${goal.goal_id} · ${goal.status} · ${goal.evidence}` : undefined;
+      const text = event.body ?? (goalText ? sanitizeChatText(goalText) :
+        [event.status, event.next_action && `next: ${event.next_action}`].filter(Boolean).join(" "));
       if (text.trim()) lines.push(...text.trimEnd().split("\n").map((line) => `    ${line}`));
       if (event.full) lines.push(`    (clipped; full: ${event.full})`);
     }
