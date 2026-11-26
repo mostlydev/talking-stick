@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.40.1] — 2026-11-26
+
+Full notes: [`docs/releases/0.40.1.md`](docs/releases/0.40.1.md).
+
 ### Changed
 
 - Use `rooms update` to update the installed app. `rooms self-update` still runs the same updater.
@@ -1250,6 +1254,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.40.1]: https://github.com/mostlydev/shrooms/releases/tag/v0.40.1
 [0.40.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.40.0
 [0.39.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.39.0
 [0.38.0]: https://github.com/mostlydev/talking-stick/releases/tag/v0.38.0
