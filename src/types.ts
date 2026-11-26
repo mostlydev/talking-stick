@@ -747,6 +747,8 @@ export interface NativeWakeEndpointSummary {
   last_error: string | null;
   /** Where the last attempt failed and the system's code, e.g. "connect:EPERM". */
   last_error_detail: string | null;
+  /** Receipt for the event that triggered the latest delivery attempt, if retained. */
+  last_received_at?: string | null;
 }
 
 export interface RegisterWakeEndpointInput {

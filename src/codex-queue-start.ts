@@ -18,6 +18,7 @@ export function codexControlSocket(env: NodeJS.ProcessEnv = process.env): string
 // second copy of its text, only when the thread is loaded and has no active turn.
 export function startQueuedCodexThread(
   threadId: string,
+  queuedSubmissionId: string,
   socketPath = codexControlSocket(),
   timeoutMs = 3_000
 ): Promise<boolean> {
@@ -62,8 +63,10 @@ export function startQueuedCodexThread(
         send("thread/queue/list", 4, { threadId });
       } else if (message.id === 4) {
         const queued = message.result.data as Array<{ id?: string }> | undefined;
-        if (!Array.isArray(queued) || !queued[0]?.id) { finish(false); return; }
-        send("thread/queue/start", 5, { threadId, queuedSubmissionId: queued[0].id });
+        // A native consumer may already have taken this item, or another
+        // message may be in front of it. Never start an unrelated submission.
+        if (!Array.isArray(queued) || queued[0]?.id !== queuedSubmissionId) { finish(false); return; }
+        send("thread/queue/start", 5, { threadId, queuedSubmissionId });
       } else if (message.id === 5) {
         const turn = message.result.turn as { id?: string } | undefined;
         finish(Boolean(turn?.id));
