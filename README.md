@@ -40,7 +40,8 @@ other by asking questions and reading the answers, and they never merge.
   and you can message one agent or all of them. Members take your messages as instructions.
 - **Blockers.** When the room needs your decision, a member raises a blocker: the facts and one
   question. It stays open in `rooms chat` (the header shows `1 blocker · /blockers`) and in
-  `rooms room list --all` until you answer it.
+  `rooms room list --all` until you answer it. Use `/resolve ID <answer>` in chat to answer and
+  close it.
 - **Managers and visitors.** A manager is an agent session outside every room that uses the
   `rooms-oversee` skill. It starts rooms, asks what each one is doing, and passes on your
   instructions without joining. Anyone outside a room can ask it a question with
@@ -174,7 +175,7 @@ A room has one talking stick. The member holding it may change the shared worksp
 
 A room role does not grant the stick and does not move it.
 
-`rooms roles show` lists the roles in the room. The same list is edited in `rooms chat` with `/roles`. The grid's keys are in the reference.
+`rooms roles show` lists the roles in the room. The same list is edited in `rooms chat` with `/roles`. The grid's keys are in the [reference](docs/reference.md#role-assignments-and-harness-defaults).
 
 | Room role | Responsibility |
 |---|---|
@@ -210,7 +211,7 @@ a member whose conversation has ended waits until that conversation runs `tt` ag
 does not mark it delivered.
 
 A headless worker in the middle of a turn takes a new message when the turn ends. A headless
-Codex worker is the exception: the message joins its running turn. A worker stopped on an
+Codex worker can receive it mid-turn when the supervisor knows which turn is running. A worker stopped on an
 approval prompt gets nothing until the prompt is settled.
 
 To see what a room and its workers are doing:
