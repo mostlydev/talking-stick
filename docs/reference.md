@@ -343,8 +343,9 @@ refreshes anyone's presence.
 
 A visitor can also ask a room's agents a question. `tt room ask <room> --to <agent|room>` takes
 the question as arguments or with `--stdin`. `--to` names agents by id, or by harness name when
-exactly one agent matches; `room` sends it to every live agent in the room (not gone, and either
-running or recently present). A member asking its own room this way keeps its presence unchanged.
+exactly one agent matches; `room` wakes only the liaison. `tt liaison set <agent>` pins that
+member, and `tt liaison clear` returns to the default: a live architect, then the last live stick
+holder, then the lowest-ordinal live agent. A member asking its own room this way keeps its presence unchanged.
 The recipients are fixed when the question is asked and are woken like any directed message.
 Their envelope header reads `visitor <id>` and ends with the reply command. The visitor never
 becomes a member, never holds the stick, and doesn't keep the room open. When the asker runs in

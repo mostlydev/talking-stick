@@ -592,6 +592,10 @@ export class TalkingStickCommands {
   // Visitors are identified but never registered: asking never creates a
   // membership or refreshes presence, and only captures a direct native return
   // address (claude_inbox or codex_queue) from the asker's own environment.
+  setLiaison(identity: DerivedIdentity, input: { room_id: string; liaison_agent_id: string | null }) {
+    return this.service.setLiaison({ ...input, agent_id: identity.agent_id });
+  }
+
   askRoom(identity: DerivedIdentity, input: Omit<AskRoomInput, "agent_id">): Promise<AskRoomResult> {
     const returnAddress = input.return_address ?? detectVisitorReturnAddress(process.env, identity);
     return this.service.askRoom({

@@ -52,7 +52,7 @@ For visible agents in Herdr or tmux panes instead, use `tt up --path <dir> --age
 
 ## Questions, instructions, and approvals
 
-Use `tt room ask` for anything you send: a question, a follow-up, a task, or an approval. Address a named agent (`--to codex`, or an exact id) when you can; the stick holder usually knows the most. `--to room` reaches every live agent.
+Use `tt room ask` for anything you send: a question, a follow-up, a task, or an approval. Address a named agent (`--to codex`, or an exact id) when you can; the stick holder usually knows the most. `--to room` wakes only the room's liaison, so one voice answers.
 
 Write each message so it stands alone, since recipients have not seen your conversation. A task is a brief the room must be able to work from on its own, even if you were gone:
 

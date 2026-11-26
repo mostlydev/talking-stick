@@ -636,6 +636,12 @@ const migrations: Migration[] = [
       WHERE status = 'pending';`
   },
   {
+    id: 36,
+    name: "room_liaison",
+    up: `ALTER TABLE path_rooms ADD COLUMN liaison_agent_id TEXT;
+    ALTER TABLE visitor_requests ADD COLUMN scope TEXT NOT NULL DEFAULT 'direct';`
+  },
+  {
     id: 37,
     name: "room_goals",
     up: `CREATE TABLE room_goals (
