@@ -529,8 +529,9 @@ describe("system native wake transport", () => {
     const request = { transport: "codex_queue" as const, address: thread, secret: null, text: 'fixed `text` $(literal) "quote"' };
     const script = (source: string) => fs.writeFileSync(executable, `#!${process.execPath}\n${source}`, { mode: 0o700 });
     script(`if (process.env.CMUX_CODEX_HOOKS_DISABLED !== "1") process.exit(2);
-      require("node:fs").writeFileSync(process.env.CAPTURE, JSON.stringify(process.argv.slice(2))); console.log("Queued message");`);
-    expect(await transport.deliver(request)).toEqual({ outcome: "queued" });
+      require("node:fs").writeFileSync(process.env.CAPTURE, JSON.stringify(process.argv.slice(2)));
+      console.log("Queued message 00000000-0000-0000-0000-000000000002 for thread ${thread}.");`);
+    expect(await transport.deliver(request)).toEqual({ outcome: "queued", error: "codex_turn_start_unconfirmed" });
     expect(JSON.parse(fs.readFileSync(capture, "utf8"))).toEqual(["queue", "--thread", thread, "--message", request.text]);
     script(`console.error('Error: failed to queue session message: thread/queue/add failed: failed to read thread: invalid thread-store request: no rollout found for thread id ${thread} (code -32603)');process.exit(1);`);
     expect(await transport.deliver(request)).toEqual({ outcome: "failed", error: "codex_thread_not_found", detail: "exit:1 rpc:-32603" });
@@ -818,7 +819,43 @@ test("health shows the sanitized detail for an uncertain Codex queue attempt sto
   db.prepare("UPDATE member_wake_endpoints SET last_status = 'queued', last_error = 'codex_queue_failed', last_error_detail = 'exit:2' WHERE agent_id = 'codex:bb'").run();
   const health = service.getRoomHealth({ context_path: project, agent_id: "codex:bb" }).wake_endpoints
     .find((row) => row.agent_id === "codex:bb");
-  expect(health).toMatchObject({ last_status: "queued", last_error: "codex_queue_failed", last_error_detail: "exit:2" });
+  expect(health).toMatchObject({ last_status: "ambiguous", last_error: "codex_queue_failed", last_error_detail: "exit:2" });
+});
+
+test("Codex queueing fences the exact envelope across standby and health reports its receipt", async () => {
+  const { service, project, nativeRequests } = harness({
+    native: (request) => {
+      expect(request.on_queue?.()).toBe(true);
+      return { outcome: "queued", error: "codex_turn_start_unconfirmed" };
+    }
+  });
+  const roomId = joinPair(service, project);
+  service.joinPath({ agent_id: "codex:bb", context_path: project, process_metadata: metadata("codex", "thread-b") });
+  service.registerNativeWakeEndpoint({ room_id: roomId, agent_id: "codex:bb", transport: "codex_queue",
+    address: "thread-b", secret: null, harness_session_id: "thread-b", host_id: HOST });
+  const park = () => service.registerStandby({ room_id: roomId, agent_id: "codex:bb", transport: "cmux",
+    workspace_id: "workspace", surface_id: "surface" });
+  const health = () => service.getRoomHealth({ context_path: project, agent_id: "codex:bb" }).wake_endpoints;
+  const send = (body: string) => service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId,
+    to_agent_id: "codex:bb", body });
+  const ack = (request: NativeWakeRequest) => service.acknowledgeNativeDelivery({ agent_id: "codex:bb",
+    token: envelope(request).delivery_token, harness_session_id: "thread-b", host_id: HOST });
+  park();
+  const first = await send("operator input");
+  expect(first.deliveries?.[0]).toMatchObject({ state: "queued", error: "codex_turn_start_unconfirmed" });
+  expect(health()).toContainEqual(expect.objectContaining({ transport: "codex_queue", last_status: "queued",
+    last_error: "codex_turn_start_unconfirmed", last_received_at: null }));
+  expect(health()).toContainEqual(expect.objectContaining({ transport: "cmux", last_status: null }));
+  park();
+  const second = await send("later input");
+  await service.flushWakes();
+  expect(nativeRequests).toHaveLength(2);
+  expect(envelope(nativeRequests[1]).events.map((event) => event.event_seq)).toEqual([second.event_seq]);
+  expect(ack(nativeRequests[0]).event_seqs).toEqual([first.event_seq]);
+  expect(health()).toContainEqual(expect.objectContaining({ transport: "codex_queue", last_received_at: null }));
+  expect(ack(nativeRequests[1]).event_seqs).toEqual([second.event_seq]);
+  expect(health()).toContainEqual(expect.objectContaining({ transport: "codex_queue", last_received_at: expect.any(String) }));
+  expect(health()).toContainEqual(expect.objectContaining({ transport: "cmux", last_status: null, last_received_at: null }));
 });
 
 test("a stale failure detail from an older process never explains a later delivery", async () => {

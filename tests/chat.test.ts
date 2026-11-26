@@ -3933,4 +3933,10 @@ test("chat distinguishes a rejected Codex queue call from an unconfirmed wake", 
   expect(describeChatDelivery({ ...target, status: "endpoint", state: "queued", error: "codex_queue_failed", error_detail: "exit:2" }))
     .toBe("Codex wake unconfirmed (exit:2)");
   expect(describeChatDelivery({ ...target, status: "endpoint", state: "queued" })).toBe("queued");
+  expect(describeChatDelivery({ ...target, status: "endpoint", state: "queued", error: "codex_turn_start_unconfirmed" }))
+    .toBe("saved in Codex queue; turn unconfirmed");
+  expect(describeChatDelivery({ ...target, status: "pending", error: "codex_turn_start_unconfirmed" }))
+    .toBe("not acknowledged yet");
+  expect(describeChatDelivery({ ...target, status: "endpoint", state: "ambiguous", error: "codex_queue_unconfirmed" }))
+    .toBe("Codex queue acceptance unconfirmed");
 });

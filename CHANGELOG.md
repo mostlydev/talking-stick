@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Fixed
+
+- Codex standby distinguishes an accepted queue item, a confirmed turn start, and an unconfirmed queue attempt in chat and health. The wake path starts only the exact item it just queued.
+
 ## [0.40.1] — 2026-11-26
 
 Full notes: [`docs/releases/0.40.1.md`](docs/releases/0.40.1.md).

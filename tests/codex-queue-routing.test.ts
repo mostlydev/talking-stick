@@ -11,14 +11,14 @@ const queued = "00000000-0000-0000-0000-000000000002";
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
-async function fixture(status: "idle" | "notLoaded" = "idle") {
+async function fixture(status: "idle" | "notLoaded" = "idle", queueHead = queued, receipt = `Queued message ${queued} for thread ${thread}.`) {
   // Keep UNIX socket paths short on macOS. Every endpoint is disposable;
   // even the deliberately wrong default home must never use a live daemon.
   const root = fs.mkdtempSync("/tmp/tt-cqr-");
   const home = path.join(root, "home"), bin = path.join(root, "bin"), capture = path.join(root, "argv.jsonl");
   const socket = codexControlSocket({ CODEX_HOME: home });
   fs.mkdirSync(path.dirname(socket), { recursive: true }); fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, "codex"), `#!${process.execPath}\nrequire("node:fs").appendFileSync(process.env.CAPTURE, JSON.stringify(process.argv.slice(2)) + "\\n");\n`, { mode: 0o700 });
+  fs.writeFileSync(path.join(bin, "codex"), `#!${process.execPath}\nrequire("node:fs").appendFileSync(process.env.CAPTURE, JSON.stringify(process.argv.slice(2)) + "\\n");\nconsole.log(${JSON.stringify(receipt)});\n`, { mode: 0o700 });
   const previous = process.env.CODEX_HOME;
   process.env.CODEX_HOME = path.join(root, "wrong-default");
   const server = http.createServer(); const ws = new WebSocketServer({ server });
@@ -28,7 +28,7 @@ async function fixture(status: "idle" | "notLoaded" = "idle") {
     if (r.id === undefined) return;
     const result = r.method === "thread/read" ? { thread: { id: thread, status: { type: status } } }
       : r.method === "thread/turns/list" ? { data: [{ id: "old", status: "completed" }] }
-      : r.method === "thread/queue/list" ? { data: [{ id: queued }] }
+      : r.method === "thread/queue/list" ? { data: [{ id: queueHead }] }
       : r.method === "thread/queue/start" ? { turn: { id: "started-existing-item" } } : {};
     client.send(JSON.stringify({ id: r.id, result }));
   }));
@@ -59,10 +59,30 @@ describe.skipIf(process.platform === "win32")("Codex queue wake routing", () => 
     expect(JSON.stringify(f.requests)).not.toContain("one stored envelope");
   });
 
+  test("never starts an unrelated queue head", async () => {
+    const f = await fixture("idle", "00000000-0000-0000-0000-000000000003");
+    expect(await deliverCodexQueue({ transport: "codex_queue", address: thread, secret: null,
+      text: "one stored envelope", start_queued: true }, { env: f.env })).toEqual({
+      outcome: "queued", error: "codex_turn_start_unconfirmed"
+    });
+    expect(f.argv()).toHaveLength(1);
+    expect(f.requests.at(-1)?.method).toBe("thread/queue/list");
+  });
+
+  test("does not confirm queue acceptance when the receipt names another thread", async () => {
+    const f = await fixture("idle", queued, `Queued message ${queued} for thread ${queued}.`);
+    expect(await deliverCodexQueue({ transport: "codex_queue", address: thread, secret: null,
+      text: "one envelope", start_queued: true }, { env: f.env })).toEqual({
+      outcome: "ambiguous", error: "codex_queue_unconfirmed"
+    });
+    expect(f.argv()).toHaveLength(1);
+    expect(f.requests).toEqual([]);
+  });
+
   test("an unloaded session keeps its one queued envelope without resume, takeover or a second prompt", async () => {
     const f = await fixture("notLoaded");
     expect(await deliverCodexQueue({ transport: "codex_queue", address: thread, secret: null,
-      text: "held until native resume", start_queued: true }, { env: f.env, timeout_ms: 2_000 })).toEqual({ outcome: "queued" });
+      text: "held until native resume", start_queued: true }, { env: f.env, timeout_ms: 2_000 })).toEqual({ outcome: "queued", error: "codex_turn_start_unconfirmed" });
     expect(f.argv()).toHaveLength(1);
     expect(f.requests.map(r => r.method)).toEqual(["initialize", "initialized", "thread/read"]);
   });

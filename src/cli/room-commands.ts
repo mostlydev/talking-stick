@@ -21,6 +21,7 @@ import {
   type ParsedCommand
 } from "./parser.js";
 import {
+  describeCodexWakeError,
   formatRelativeTime,
   printResult
 } from "./output.js";
@@ -401,6 +402,7 @@ interface HealthSummaryResult {
     last_status: string | null;
     last_error: string | null;
     last_error_detail?: string;
+    last_received_at?: string;
   }>;
   git: {
     dirty: boolean;
@@ -500,7 +502,8 @@ function buildHealthSummary(
         transport: endpoint.transport,
         last_status: endpoint.last_status,
         last_error: endpoint.last_error,
-        ...(endpoint.last_error_detail ? { last_error_detail: endpoint.last_error_detail } : {})
+        ...(endpoint.last_error_detail ? { last_error_detail: endpoint.last_error_detail } : {}),
+        ...(endpoint.last_received_at ? { last_received_at: endpoint.last_received_at } : {})
       })),
     git: {
       dirty:
@@ -548,11 +551,15 @@ function renderHealthSummaryText(summary: HealthSummaryResult): string {
   if (summary.wake.length > 0) {
     lines.push(
       `Wake:     ${summary.wake
-        .map((endpoint) =>
-          endpoint.last_status
-            ? `${endpoint.transport} (last ${endpoint.last_status}${endpoint.last_error ? `: ${[endpoint.last_error, endpoint.last_error_detail].filter(Boolean).join(" ")}` : ""})`
-            : endpoint.transport
-        )
+        .map((endpoint) => {
+          if (endpoint.last_received_at) return `${endpoint.transport} (delivered)`;
+          const diagnostic = endpoint.transport === "codex_queue"
+            ? describeCodexWakeError(endpoint.last_error, endpoint.last_error_detail) : undefined;
+          if (diagnostic) return `${endpoint.transport} (${diagnostic})`;
+          if (!endpoint.last_status) return endpoint.transport;
+          const detail = [endpoint.last_error, endpoint.last_error_detail].filter(Boolean).join(" ");
+          return `${endpoint.transport} (last ${endpoint.last_status}${detail ? `: ${detail}` : ""})`;
+        })
         .join(", ")}`
     );
   }
