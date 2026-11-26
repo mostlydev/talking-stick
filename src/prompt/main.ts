@@ -3,7 +3,7 @@
 // nothing and exits 0. Only `init`, run by hand, reports errors.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isStandalone } from "../standalone-mode.js";
+import { isInstalledRelease, isStandalone, standaloneInstallDir } from "../standalone-mode.js";
 import { DEFAULT_PROMPT_FORMAT, formatPrompt } from "./format.js";
 import { PROMPT_SHELLS, promptInitScript, shellQuote, type PromptShell } from "./init.js";
 import { readPromptState } from "./state.js";
@@ -41,8 +41,17 @@ export function runPromptCommand(args: readonly string[], out: (text: string) =>
 
 // The fastest way to run the segment from this install: the standalone binary
 // itself, or Node on the lean entry beside this file.
+// An installed release runs through <install-dir>/current, which
+// `rooms update` moves, so open shells keep working after older releases are
+// pruned. Node is named by its own path, so version managers keep the Node
+// this install was set up with.
 function promptCommandWords(): string {
-  if (isStandalone()) return `${shellQuote(process.execPath)} prompt`;
+  if (isStandalone()) {
+    const binary = isInstalledRelease()
+      ? path.join(standaloneInstallDir(), "current", path.basename(process.execPath))
+      : process.execPath;
+    return `${shellQuote(binary)} prompt`;
+  }
   const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "entry.js");
-  return `node ${shellQuote(entry)}`;
+  return `${shellQuote(process.execPath)} ${shellQuote(entry)}`;
 }

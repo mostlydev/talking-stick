@@ -71,11 +71,19 @@ export function readPromptState(options: PromptStateOptions = {}): PromptState |
 function findRoom(db: SqliteDatabase, cwd: string, pin: string | null): RoomRow | null {
   const select = "SELECT room_id, canonical_path, owner, lease_expires_at, state FROM path_rooms";
   if (pin) {
-    // A pin names a room by id or by absolute path, as launchers set it.
-    const pinned = db.prepare(`${select} WHERE room_id = ? OR canonical_path = ?`).get(pin, pin) as RoomRow | undefined;
-    if (pinned && pinned.state !== "closed") return pinned;
+    // A pin names a room by id or by path, as launchers set it. An explicit
+    // pin that names no open room shows nothing rather than the folder's room.
+    const byId = db.prepare(`${select} WHERE room_id = ?`).get(pin) as RoomRow | undefined;
+    if (byId) return byId.state === "closed" ? null : byId;
+    if (!path.isAbsolute(pin)) return null;
+    return findRoomForPath(db, pin);
   }
-  const resolved = resolveContextPath(cwd, { gitRoots: resolveGitRootsFromFilesystem });
+  return findRoomForPath(db, cwd);
+}
+
+function findRoomForPath(db: SqliteDatabase, contextPath: string): RoomRow | null {
+  const select = "SELECT room_id, canonical_path, owner, lease_expires_at, state FROM path_rooms";
+  const resolved = resolveContextPath(contextPath, { gitRoots: resolveGitRootsFromFilesystem });
   const byPath = db.prepare(`${select} WHERE canonical_path = ?`);
   // Most specific first, the same order the service uses.
   for (const candidate of roomCandidatePaths(resolved)) {
@@ -89,8 +97,13 @@ function describeRoom(db: SqliteDatabase, room: RoomRow,
   context: { human: string; now: Date; processAlive: (pid: number) => boolean }): PromptState {
   const members = (db.prepare(`SELECT agent_id, display_name, session_kind, status, host_id, pid, harness_host_id, harness_pid
     FROM room_members WHERE room_id = ? ORDER BY ordinal`).all(room.room_id) as MemberRow[])
-    .filter((member) => member.session_kind !== "human_chat" && member.status === "active" &&
-      !processGone(member, context.processAlive));
+    .filter((member) => {
+      if (member.session_kind === "human_chat") return false;
+      // As chat and room listings count members: a live process keeps a quiet
+      // standby agent, and a gone one drops even a fresh row.
+      const liveness = memberLiveness(member, context.processAlive);
+      return liveness !== "gone" && (member.status === "active" || liveness === "alive");
+    });
   const nameOf = (agentId: string) => {
     const member = members.find((candidate) => candidate.agent_id === agentId);
     return member?.display_name?.trim() || agentId.split(":")[0];
@@ -133,12 +146,12 @@ function humanId(env: NodeJS.ProcessEnv): string {
 }
 
 // Only a same-host pid can be checked without a subprocess; anything else is
-// kept, as the chat footer keeps a member whose process it cannot read.
-function processGone(member: MemberRow, alive: (pid: number) => boolean): boolean {
+// unknown, as for a member whose process chat cannot read.
+function memberLiveness(member: MemberRow, alive: (pid: number) => boolean): "alive" | "gone" | "unknown" {
   const pid = member.harness_pid ?? member.pid;
   const host = member.harness_pid ? (member.harness_host_id ?? member.host_id) : member.host_id;
-  if (!pid || !host || !sameHost(host)) return false;
-  return !alive(pid);
+  if (!pid || !host || !sameHost(host)) return "unknown";
+  return alive(pid) ? "alive" : "gone";
 }
 
 function sameHost(host: string): boolean {

@@ -22,7 +22,7 @@ import {
 import { handleInstructionsCommand } from "./instructions-commands.js";
 import { handleMsgCommand } from "./msg-commands.js";
 import { handleNotesCommand } from "./notes-commands.js";
-import { getStringOption, type ParsedCommand } from "./parser.js";
+import { getStringOption, hasOption, type ParsedCommand } from "./parser.js";
 import {
   handleEventsCommand,
   handleHealthCommand,
@@ -208,7 +208,9 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     description: "Print this folder's room for a shell prompt (#room members ▸holder !blockers @unread), or the shell setup line. Read-only; prints nothing outside a room.",
     handler: async ({ parsed }) => {
       const { runPromptCommand } = await import("../prompt/main.js");
-      process.exitCode = runPromptCommand(parsed.positionals);
+      const format = getStringOption(parsed, "format");
+      process.exitCode = runPromptCommand([...parsed.positionals, ...(hasOption(parsed, "json") ? ["--json"] : []),
+        ...(format !== undefined ? ["--format", format] : [])]);
     }
   },
   {
