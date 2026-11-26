@@ -146,6 +146,8 @@ export type EventType =
   | "close"
   | "kick"
   | "kick_stop"
+  | "blocker_added"
+  | "blocker_withdrawn"
   | "goal_added"
   | "goal_closed"
   | "session_superseded"
@@ -183,6 +185,7 @@ export interface RoomEvent {
   created_at: string;
   payload: MessagePayload | null;
   goal?: RoomGoalEvent;
+  blocker?: RoomBlockerEvent;
 }
 
 export interface JoinPathInput {
@@ -622,6 +625,24 @@ export interface RoomGoal {
 export type RoomGoalEvent =
   | { goal_id: string; status: "open"; brief: string; completion_criterion: string }
   | { goal_id: string; status: GoalOutcome; evidence: string };
+
+export type RoomBlockerEvent =
+  | { blocker_id: string; goal_id: string | null; status: "open"; body: string }
+  | { blocker_id: string; goal_id: string | null; status: "withdrawn"; reason: string };
+
+export interface OverseerInboxSummary {
+  alias: string;
+  agent_id: AgentId;
+  transport: VisitorReturnTransportName;
+  reachable: boolean;
+}
+
+export interface RoomOverseerSummary extends OverseerInboxSummary {
+  room_id: string;
+  pending: number;
+  unconfirmed: number;
+  failed: number;
+}
 
 export interface RoomBlocker {
   blocker_id: string;

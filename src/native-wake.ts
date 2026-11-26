@@ -174,6 +174,17 @@ export function formatNativeEventText(input: {
     lines.push(`#${event.event_seq} ${kind}${event.from_agent_id ?? "system"}${arrow}${urgent}${reply}${resolution}`);
     if (typeof payload.body === "string" && payload.body.length > 0) lines.push(...quote(payload.body));
     for (const [index, attachment] of payloadAttachments(event.payload).entries()) lines.push(...quote(attachmentInstruction(attachment, index)));
+    if (event.blocker) {
+      const blocker = event.blocker;
+      const target = `${blocker.blocker_id}${blocker.goal_id ? ` · goal ${blocker.goal_id}` : ""}`;
+      lines.push(...quote(blocker.status === "open" ? `${target} · opened\n${blocker.body}`
+        : `${target} · withdrawn\n${blocker.reason}`));
+    }
+    if (event.goal) {
+      const goal = event.goal;
+      lines.push(...quote(goal.status === "open" ? `${goal.goal_id} · opened\n${goal.brief}\nDone when ${goal.completion_criterion}`
+        : `${goal.goal_id} · ${goal.status}\n${goal.evidence}`));
+    }
     if (event.handoff) {
       lines.push(...quote(`status: ${event.handoff.status}`), ...quote(`next: ${event.handoff.next_action}`));
       // Handoffs written with tt release --stdin often list artifacts as plain

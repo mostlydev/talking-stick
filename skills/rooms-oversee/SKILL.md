@@ -67,7 +67,17 @@ Give every message a `--request-key` you can reuse (for example `wojtek-release-
 
 ## Following up
 
-Answers to `tt room ask` are not pushed to a manager yet (#286). After asking, wait once with `tt room replies <request-id> --timeout 60 --json`, or tell the user and check again later with the returned `cursor_event_seq` as `--after`. Never loop.
+If the operator wants ongoing notifications, register this session once with
+`tt overseer register <alias>`. The operator can then designate it for a room
+with `tt overseer set <alias> --in <room>`. This inbox receives new blockers,
+blocker closures and goal outcomes. Acknowledge an envelope with the supplied
+`tt ack` command. Read `tt room brief` for detail or when push is unavailable.
+Unregister the inbox before joining any room.
+
+A `tt room ask` with a return address can push replies to this session
+independently of the designation. When push is unavailable, wait once with
+`tt room replies <request-id> --timeout 60 --json`, or tell the user and check
+again later with the returned `cursor_event_seq` as `--after`. Never loop.
 
 `tt room replies` reports each recipient separately in `recipient_status`. Report these as distinct facts, never one as another, and note a recipient with `in_room: false`:
 

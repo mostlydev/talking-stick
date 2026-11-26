@@ -1,4 +1,5 @@
 import os from "node:os";
+import { ProtocolError } from "./errors.js";
 import { recordManagedGuard } from "./supervisor/membership-gc.js";
 import type { MessageAttachment } from "./attachments.js";
 import { detectNativeWakeEndpoints, detectVisitorReturnAddress } from "./native-wake.js";
@@ -166,6 +167,26 @@ export interface WaitForEventsCommandInput extends WaitForEventsInput {}
 
 export class TalkingStickCommands {
   constructor(private readonly service = new TalkingStickService()) {}
+
+  registerOverseer(identity: DerivedIdentity, alias: string) {
+    const endpoint = detectVisitorReturnAddress(process.env, identity);
+    if (!endpoint) throw new ProtocolError("invalid_input", "This session has no native inbox. Read room brief for updates.");
+    return this.service.registerOverseer({ alias, agent_id: identity.agent_id, endpoint });
+  }
+
+  unregisterOverseer(identity: DerivedIdentity, alias: string) {
+    return this.service.unregisterOverseer({ alias, agent_id: identity.agent_id,
+      harness_session_id: identity.process_metadata.harness_session_id,
+      host_id: identity.process_metadata.harness_host_id ?? identity.process_metadata.host_id });
+  }
+
+  setRoomOverseer(identity: DerivedIdentity, input: { room_id: string; alias: string | null }) {
+    return this.service.setRoomOverseer({ ...input, agent_id: identity.agent_id });
+  }
+
+  getRoomOverseer(roomId: string) {
+    return this.service.getRoomOverseer(roomId);
+  }
 
   listGoals(input: Parameters<TalkingStickService["listGoals"]>[0]) {
     return this.service.listGoals(input);
