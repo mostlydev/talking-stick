@@ -92,7 +92,7 @@ export async function runSupervisor(options: RunSupervisorOptions): Promise<void
   // Ownership names this exact process; without its start time it can't be proven later.
   const selfStartedAt = getCurrentProcessStartedAt();
   if (!selfStartedAt?.trim()) throw new Error("The supervisor can't read its own process start time, so it won't take ownership.");
-  const release = acquireOwnerLock(paths.lock, { pid: process.pid, process_started_at: selfStartedAt }, liveness);
+  const release = acquireOwnerLock(paths.lock, { pid: process.pid, process_started_at: selfStartedAt, headless_adoption: true }, liveness);
   // Everything opened after the lock registers its cleanup, so any failure,
   // at startup or later, closes it all and releases ownership, newest first.
   const cleanups: Array<() => unknown> = [release];

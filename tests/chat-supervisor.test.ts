@@ -28,6 +28,7 @@ function lookups(overrides: Partial<HeadlessLookups> = {}): HeadlessLookups {
 describe("headless worker state", () => {
   test("every hold names the supervisor table's remedy", () => {
     const remedies: Record<HoldReason, string> = {
+      adoption_pending: "tt supervisor status",
       auth_required: "tt supervisor resume w1",
       wrong_auth_mode: "tt supervisor resume w1",
       deny_undelivered: "tt supervisor resume w1",
@@ -44,7 +45,9 @@ describe("headless worker state", () => {
     for (const [reason, remedy] of Object.entries(remedies) as Array<[HoldReason, string]>) {
       expect(holdRemedy("w1", reason)).toBe(remedy);
       expect(workerState(worker({ hold_reason: reason }), "running"))
-        .toEqual({ state: `held: ${reason}`, held: reason, blocked: true, remedy });
+        .toEqual(reason === "adoption_pending"
+          ? { state: "moving to headless", held: null, blocked: true, remedy: "Exit the interactive harness normally." }
+          : { state: `held: ${reason}`, held: reason, blocked: true, remedy });
     }
   });
 

@@ -76,7 +76,7 @@ export function handleJoinCommand(
     recover: true,
     recovery_credentials: cachedRecoveryCredentials(identity)
   });
-  upsertSessionFromJoin(identity, joined);
+  upsertSessionFromJoin(identity, joined, contextPath);
   registerNativeWake(runtime, identity, joined.room_id);
 
   printResult(parsed, { ...joined, recovery_credential: joined.recovery_credential ? "(saved)" : undefined }, () => {

@@ -602,7 +602,21 @@ const migrations: Migration[] = [
         .run(RENAME_NOTICE_ID, new Date().toISOString());
     }
   },
-  { id: 34, name: "managed_membership_gc", up: membershipGcSchema }
+  { id: 34, name: "managed_membership_gc", up: membershipGcSchema },
+  { id: 35, name: "headless_adoptions", up: `CREATE TABLE headless_adoptions (
+    room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+    agent_id TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    host_id TEXT NOT NULL,
+    pid INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    worker_id TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK (state IN ('pending', 'complete', 'failed')),
+    PRIMARY KEY (room_id, agent_id)
+  );
+  CREATE UNIQUE INDEX headless_adoptions_one_session ON headless_adoptions (harness, session_id, host_id)
+    WHERE state = 'pending';` }
 ];
 
 export function resolveDatabasePath(options: OpenDatabaseOptions = {}): string {

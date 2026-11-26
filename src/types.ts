@@ -130,6 +130,7 @@ export interface RoomMember {
   wake_endpoint_generation: number;
   wake_endpoint_recorded_at: string | null;
   wake_interrupt_delivered_at: string | null;
+  headless_handoff?: "pending";
   status: "active" | "inactive";
   // Whether the member's harness process is still running on this host;
   // unknown for other hosts or missing process identity.
@@ -146,6 +147,7 @@ export type EventType =
   | "close"
   | "kick"
   | "kick_stop"
+  | "headless_adoption"
   | "session_superseded"
   | "reservation_expired"
   | "message_sent";

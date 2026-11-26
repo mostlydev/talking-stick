@@ -132,12 +132,44 @@ held:
 | `deny_undelivered` | Check `tt supervisor approvals` and `tt supervisor logs`, then resume the worker. |
 | `start_failed` | If the executable could not be found, correct PATH or re-add the worker with an explicit executable (see below). |
 | `crash_loop` | Check `tt supervisor logs`, fix the cause, then resume the worker. |
-| `resume_failed` | Use `tt supervisor restart <worker> --fresh` to start a new conversation. |
+| `resume_failed` | For an interactive handoff, stop and remove the worker before retrying. For other workers, use `tt supervisor restart <worker> --fresh` to start a new conversation. |
+| `adoption_pending` | Exit the original interactive harness normally. The supervisor waits for exact process exit. |
 | `bootstrap_failed` | Check `tt supervisor approvals` and the worker’s permission settings. Once the worker can join, run `tt supervisor restart <worker> --fresh`. |
 
 A restricted worker's permission prompts are denied automatically and recorded. See
 [Permissions and environment](#permissions-and-environment) for worker settings, and
 [Codex](#codex) for explicit paths when using a version manager or launchd.
+
+## Move an interactive conversation to headless
+
+Use a running supervisor built from the same version of shrooms. In the interactive
+session, run `rooms join` from its working directory once with this version so it
+records the exact directory, and then park at a turn boundary. From another
+terminal or the room's manager session, preview the move with:
+
+```sh
+rooms restart <agent-id> --headless --print
+```
+
+Use the exact member ID shown in the room. Add `--in ROOM` to target a different
+room. Run the command without `--print` to queue the handoff, then exit the
+interactive harness normally. Leave its room membership in place. The
+supervisor checks the original host, PID and process start time, and waits for
+proof that the process exited before resuming the conversation. It never
+terminates that process for you.
+
+Claude Code and Antigravity CLI are supported. Codex CLI requires a stable
+0.172.0 or later with rollout writer exclusion. Desktop and other shared hosts
+are ineligible. The preview shows the workspace and permissions. Adoption
+uses restricted permissions by default. Choose `--permission-mode bypassPermissions`
+explicitly to grant unrestricted permissions.
+
+While the handoff is pending, chat shows it in the header and in `/who`.
+After the native session resumes and its room identity is restored, the
+transcript records the move. Uncertain deliveries remain held for manual review.
+To cancel or retry a failed handoff, stop and remove its supervisor worker. A
+retry requires the original membership and its recovery credential.
+
 
 ## Upgrade workers from 0.33
 

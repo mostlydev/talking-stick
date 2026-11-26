@@ -11,6 +11,10 @@ import type { Harness } from "./adapter.js";
 // a worker it owns.
 
 export interface RoomBridge {
+  adoptionReady?(workerId: string, roomId: string, agentId: string): "complete" | "waiting" | { session: string };
+  abortAdoption?(workerId: string): void;
+  flushAdoption?(workerId: string): Promise<void>;
+  finishAdoption?(workerId: string, input: Parameters<TalkingStickService["finishHeadlessAdoption"]>[2]): void;
   /** fenceManagedDelivery for one batch, proven by this generation's endpoint and token. */
   fence(input: { endpoint_address: string; delivery_secret: string; batch_token: string;
     transition: "writing" | "written" | "unsent" }): void;
@@ -20,7 +24,7 @@ export interface RoomBridge {
    * what it recovered and why anything was refused.
    */
   recover(input: { harness: Harness; session_id: string; pid: number; process_started_at: string;
-    endpoint_address: string; delivery_secret: string }): { recovered: string[]; refused: Array<{ agent_id: string; error: string }> };
+    endpoint_address: string; delivery_secret: string; target?: { room_id: string; agent_id: string } }): { recovered: string[]; refused: Array<{ agent_id: string; error: string }> };
   /**
    * Records that this exact process started the session, as its supervisor
    * observed through the harness protocol. A headless worker loads no user
@@ -39,12 +43,36 @@ export interface RoomBridge {
 
 export function createRoomBridge(service: TalkingStickService, options: { dataDir?: string; hostId?: string } = {}): RoomBridge {
   const hostId = options.hostId ?? os.hostname();
+  const credentialFor = (roomId: string, agentId: string) =>
+    readCliSessions(resolveCliSessionPath({ dataDir: options.dataDir })).find(
+      (entry) => entry.room_id === roomId && entry.agent_id === agentId)?.recovery_credential ?? "";
   return {
+    adoptionReady(workerId, roomId, agentId) {
+      const adoption = service.readHeadlessAdoption(workerId);
+      if (!adoption || adoption.room_id !== roomId || adoption.agent_id !== agentId || adoption.state === "failed") {
+        throw new Error("No matching interactive handoff. Remove the held worker and request the handoff again.");
+      }
+      if (adoption.state === "complete") return "complete";
+      const source = service.previewHeadlessAdoption(roomId, agentId, workerId, credentialFor(roomId, agentId));
+      return source.process === "alive" ? "waiting" : { session: adoption.session_id.slice("harness:".length) };
+    },
+    abortAdoption: (workerId) => service.abortHeadlessAdoption(workerId),
+    async flushAdoption(workerId) {
+      const a = service.readHeadlessAdoption(workerId);
+      if (a?.state === "complete") await service.flushWakes(a.room_id, a.agent_id);
+    },
+    finishAdoption(workerId, input) {
+      const adoption = service.readHeadlessAdoption(workerId);
+      if (!adoption) throw new Error("No matching interactive handoff.");
+      service.finishHeadlessAdoption(workerId, credentialFor(adoption.room_id, adoption.agent_id), input);
+    },
     fence: (input) => { service.fenceManagedBatch(input); },
     recover(input) {
       const harnessSessionId = `harness:${input.session_id}`;
       const recovered: string[] = [];
       const refused: Array<{ agent_id: string; error: string }> = [];
+      const matches = (candidate: { room_id: string; agent_id: string }) => !input.target ||
+        (candidate.room_id === input.target.room_id && candidate.agent_id === input.target.agent_id);
       const credentials = new Map(readCliSessions(resolveCliSessionPath(options.dataDir ? { dataDir: options.dataDir } : {}))
         .filter((session) => session.recovery_credential)
         .map((session) => [`${session.agent_id}\u0000${session.room_id}`, session.recovery_credential!]));
@@ -62,7 +90,7 @@ export function createRoomBridge(service: TalkingStickService, options: { dataDi
       };
       // A membership still bound to an earlier generation of this session, or
       // missing its endpoint, is re-bound atomically by the room.
-      for (const member of service.findMembersForSession({ harness_name: input.harness, harness_session_id: harnessSessionId })) {
+      for (const member of service.findMembersForSession({ harness_name: input.harness, harness_session_id: harnessSessionId }).filter(matches)) {
         if (member.harness_pid === input.pid && member.harness_process_started_at === input.process_started_at.trim()) {
           const endpoint = service.db.prepare("SELECT address FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ? AND transport = 'supervisor'")
             .get(member.room_id, member.agent_id) as { address: string } | undefined;
@@ -80,7 +108,7 @@ export function createRoomBridge(service: TalkingStickService, options: { dataDi
       }
       // The room checks the evidence: this exact process, or a new one with the
       // credential and its own session start.
-      for (const lost of service.findLostMembersForSession({ harness_name: input.harness, harness_session_id: harnessSessionId })) {
+      for (const lost of service.findLostMembersForSession({ harness_name: input.harness, harness_session_id: harnessSessionId }).filter(matches)) {
         const credential = credentials.get(`${lost.agent_id}\u0000${lost.room_id}`);
         attempt(lost.agent_id, () => {
           service.joinPath({ agent_id: lost.agent_id, context_path: lost.canonical_path, room_id: lost.room_id, recover: true,

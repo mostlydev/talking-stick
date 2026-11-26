@@ -73,6 +73,7 @@ export function readSupervisorWorkers(db: SqliteDatabase) {
     return {
       worker_id: row.worker_id,
       harness: spec.harness,
+      ...(spec.adoption ? { adoption: spec.adoption } : {}),
       ...(hasUnrestrictedPermissions(spec.permissions) ? { unrestricted: true as const } : {}),
       cwd: spec.cwd,
       desired: row.desired,

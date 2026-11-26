@@ -3,6 +3,7 @@ import { PROFILE_NOTICES } from "./profile-notices.js";
 import { humanAttentionIdentity, humanAttentionWhere, isHumanDirected } from "./human-attention.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
+import type { HeadlessAdoption, AdoptionSource } from "./supervisor/adoption.js";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { RoleSubject, RoomRoleAssignment } from "./roles.js";
@@ -281,7 +282,11 @@ export function classifyHarnessProcess(harness: string, command: string | null |
   if (!command) return null;
   if (harness === "claude") return /(^|\s)(-p|--print)(\s|$)|stream-json/.test(command) ? "shared_host" : "single_session";
   if (harness === "codex") return /(^|\s)(app-server|exec|mcp-server|daemon)(\s|$)/.test(command) ? "shared_host" : "single_session";
-  if (harness === "antigravity") return "shared_host";
+  if (harness === "antigravity") {
+    const executable = path.basename(command.trim().split(/\s+/, 1)[0]);
+    return executable === "agy" && !/(^|\s)(acp|remote-control|mic-serve|-p|--print|--prompt|--remote-agent|--remote-control)(\s|$)/.test(command)
+      ? "single_session" : "shared_host";
+  }
   return null;
 }
 
@@ -290,7 +295,7 @@ export type HarnessProcessKind = "single_session" | "shared_host";
 // A receipt n outside every batch already held for native queueing or supervisor writing.
 const UNFENCED_WAKE_RECEIPT = `NOT EXISTS (SELECT 1 FROM native_delivery_batches mb, json_each(mb.event_seqs_json) mj
   WHERE mb.room_id = n.room_id AND mb.agent_id = n.agent_id AND mj.value = n.event_seq
-    AND mb.acknowledged_at IS NULL AND mb.delivery_mode IN ('codex_queue_held', 'managed_writing', 'managed_written'))`;
+    AND mb.acknowledged_at IS NULL AND mb.delivery_mode IN ('codex_queue_held', 'managed_writing', 'managed_written', 'adoption_uncertain'))`;
 
 /** The process fields a liveness reading of a member depends on. */
 function livenessIdentity(member: RoomMemberRow): string {
@@ -332,6 +337,7 @@ const KNOWN_EVENT_TYPES: readonly EventType[] = [
   "close",
   "kick",
   "session_superseded",
+  "headless_adoption",
   "reservation_expired",
   "message_sent"
 ];
@@ -381,6 +387,7 @@ export interface TalkingStickServiceOptions extends OpenDatabaseOptions {
   processLivenessChecker?: ProcessLivenessChecker;
   receiverLivenessChecker?: ProcessLivenessChecker;
   hostId?: string;
+  adoptionInspector?: ProcessInspector;
   wakeTransport?: WakeTransport;
   nativeWakeTransport?: NativeWakeTransport;
 }
@@ -454,6 +461,7 @@ export class TalkingStickService {
   private readonly refreshesProcessSnapshot: boolean;
   private readonly receiverLivenessChecker: ProcessLivenessChecker;
   private readonly hostId: string;
+  private readonly adoptionInspector: ProcessInspector;
   /** Where stored message attachments live; messages may name only files there. */
   private readonly dataDir: string;
   private readonly wakeTransport: WakeTransport | null;
@@ -465,6 +473,7 @@ export class TalkingStickService {
     this.now = options.now ?? (() => new Date());
     this.policy = { ...defaultPolicy, ...options.policy };
     this.hostId = options.hostId ?? os.hostname();
+    this.adoptionInspector = options.adoptionInspector ?? createSystemProcessInspector();
     this.dataDir = options.dataDir ? path.resolve(options.dataDir) : path.dirname(resolveDatabasePath(options));
     this.refreshesProcessSnapshot = !options.processLivenessChecker || !options.receiverLivenessChecker;
     this.processLivenessChecker =
@@ -594,11 +603,17 @@ export class TalkingStickService {
             input.force_new === true,
             timestamp
           );
+      this.assertNotAdopting(roomSelection.room.room_id, input.agent_id);
       const existingMember = this.getMember(
         roomSelection.room.room_id,
         input.agent_id
       );
       const joinMetadata = normalizeProcessMetadata(input.process_metadata);
+      if (joinMetadata.harness_session_id && this.db.prepare(`SELECT 1 FROM headless_adoptions
+        WHERE harness = ? AND session_id = ? AND host_id = ? AND state = 'pending'`)
+        .get(joinMetadata.harness_name, joinMetadata.harness_session_id, joinMetadata.harness_host_id)) {
+        throw new ProtocolError("invalid_input", "This conversation is moving to the supervisor.");
+      }
       const recovered = !existingMember && input.recover
         ? this.recoverLostMember(roomSelection.room.room_id, input.agent_id, joinMetadata,
           input.recovery_credentials?.[roomSelection.room.room_id])
@@ -784,6 +799,7 @@ export class TalkingStickService {
       ).all(...key);
       const keep = input.harness !== "grok";
       for (const member of members) {
+        if (this.pendingAdoption(member.room_id, member.agent_id)) continue;
         const room = this.requireRoom(member.room_id);
         this.markManagedDeparture(member.room_id, member.agent_id, "lost", timestamp);
         const snapshot = keep ? {
@@ -1192,30 +1208,181 @@ export class TalkingStickService {
     prior_pid: number; prior_process_started_at: string; process_metadata: ProcessMetadata;
     endpoint_address: string; delivery_secret: string;
   }): { status: "rebound" } {
+    return this.writeTransaction(() => this.rebindSupervisedMemberLocked(input));
+  }
+
+  private rebindSupervisedMemberLocked(input: Parameters<TalkingStickService["rebindSupervisedMember"]>[0]): { status: "rebound" } {
+    const member = this.getMember(input.room_id, input.agent_id);
+    if (!member) throw new ProtocolError("unknown_member", "That membership no longer exists.", { agent_id: input.agent_id });
+    if (member.harness_session_id !== input.harness_session_id || member.harness_pid !== input.prior_pid ||
+        member.harness_process_started_at?.trim() !== input.prior_process_started_at.trim()) {
+      throw new ProtocolError("invalid_input", "That membership changed since the supervisor read it.", { agent_id: input.agent_id });
+    }
+    if (!this.verifyRecoveryCredential({ room_id: input.room_id, agent_id: input.agent_id,
+      harness_session_id: input.harness_session_id, credential: input.credential })) {
+      throw new ProtocolError("invalid_input", "The recovery credential does not match this session.", { agent_id: input.agent_id });
+    }
+    const current = normalizeProcessMetadata(input.process_metadata);
+    const replaced = current.harness_pid !== input.prior_pid ||
+      current.harness_process_started_at?.trim() !== input.prior_process_started_at.trim();
+    if (replaced) {
+      this.releaseGrantLocked({ room_id: input.room_id, agent_id: input.agent_id, harness_pid: input.prior_pid,
+        harness_process_started_at: input.prior_process_started_at });
+      this.applyPresence(input.room_id, input.agent_id, this.now().toISOString(), {
+        processMetadata: input.process_metadata, recordWait: false, allowCreate: false, requireMember: true });
+    }
+    this.registerNativeWakeEndpoint({ agent_id: input.agent_id, room_id: input.room_id, transport: "supervisor",
+      address: input.endpoint_address, secret: input.delivery_secret, harness_session_id: input.harness_session_id,
+      host_id: current.harness_host_id ?? this.hostId });
+    return { status: "rebound" as const };
+  }
+
+  private pendingAdoption(roomId: string, agentId: AgentId): HeadlessAdoption | undefined {
+    return this.db.prepare<[string, string], HeadlessAdoption>(
+      "SELECT * FROM headless_adoptions WHERE room_id = ? AND agent_id = ? AND state = 'pending'").get(roomId, agentId);
+  }
+
+  private assertNotAdopting(roomId: string, agentId: AgentId): void {
+    if (this.pendingAdoption(roomId, agentId)) {
+      throw new ProtocolError("invalid_input", "This membership is moving to the supervisor.");
+    }
+  }
+
+  private adoptionProcess(source: Pick<HeadlessAdoption, "host_id" | "pid" | "started_at">): "alive" | "gone" | "unknown" {
+    if (source.host_id !== this.hostId || !source.started_at || source.pid <= 1) return "unknown";
+    const current = this.adoptionInspector.inspect(source.pid);
+    if (current === null) return "gone";
+    if (!current?.startTime) return "unknown";
+    return current.startTime.trim() === source.started_at ? "alive" : "gone";
+  }
+
+  private adoptionUncertain(roomId: string, agentId: AgentId): number {
+    return this.db.prepare<[string, string], { n: number }>(`SELECT COUNT(*) AS n FROM native_event_receipts n
+      WHERE n.room_id = ? AND n.agent_id = ? AND n.consumed_at IS NULL AND EXISTS (
+        SELECT 1 FROM native_delivery_batches b, json_each(b.event_seqs_json) j
+        WHERE b.room_id = n.room_id AND b.agent_id = n.agent_id AND j.value = n.event_seq
+        AND b.acknowledged_at IS NULL)`).get(roomId, agentId)?.n ?? 0;
+  }
+
+  previewHeadlessAdoption(roomId: string, agentId: AgentId, workerId: string, credential: string): AdoptionSource {
+    const room = this.requireRoom(roomId);
+    if (room.owner === agentId || room.reserved_for === agentId) throw new Error("The member holds the stick or is up next.");
+    const member = this.getMember(roomId, agentId);
+    const lost = member ? null : this.getLostMember(roomId, agentId);
+    const existing = this.pendingAdoption(roomId, agentId);
+    const harness = member?.harness_name ?? lost?.harness_name;
+    const sessionId = member?.harness_session_id ?? lost?.session_id;
+    const hostId = member?.harness_host_id ?? lost?.host_id;
+    const pid = member?.harness_pid ?? lost?.pid;
+    const startedAt = (member?.harness_process_started_at ?? lost?.process_started_at)?.trim();
+    if ((harness !== "claude" && harness !== "codex" && harness !== "antigravity") ||
+        !sessionId?.startsWith("harness:") || sessionId.length <= 8 || !hostId || !pid || !startedAt) {
+      throw new Error("The member has no supported, exact native session and process to resume.");
+    }
+    const handoff: HeadlessAdoption = { room_id: roomId, agent_id: agentId, harness, session_id: sessionId,
+      host_id: hostId, pid, started_at: startedAt, worker_id: workerId, state: "pending" };
+    if (existing && (existing.worker_id !== workerId || existing.pid !== pid || existing.started_at !== startedAt ||
+        existing.session_id !== sessionId || existing.host_id !== hostId)) throw new Error("The pending handoff no longer matches the member.");
+    const process = this.adoptionProcess(handoff);
+    if (process === "unknown") throw new Error("Can't verify the old process on this host.");
+    if (this.getNativeWakeEndpoint(roomId, agentId, "supervisor")) throw new Error("This member is already supervised.");
+    if (!this.verifyRecoveryCredential({ room_id: roomId, agent_id: agentId, harness_session_id: sessionId, credential })) {
+      throw new Error("The original membership's local recovery credential is missing or changed.");
+    }
+    const known = this.db.prepare<Array<string | number>, { process_kind: HarnessProcessKind | null }>(
+      `SELECT process_kind FROM harness_lifecycle_log WHERE harness_name = ? AND session_id = ?
+        AND host_id = ? AND pid = ? AND process_started_at = ? AND process_kind IS NOT NULL ORDER BY id DESC LIMIT 1`)
+      .get(harness, sessionId, hostId, pid, startedAt);
+    const command = process === "alive" ? this.adoptionInspector.inspect(pid) : undefined;
+    const kind = command?.startTime?.trim() === startedAt
+      ? classifyHarnessProcess(harness, command.command) : known?.process_kind ?? lost?.process_kind;
+    const shared = this.db.prepare(`SELECT 1 FROM room_members WHERE harness_host_id = ? AND harness_pid = ?
+      AND trim(harness_process_started_at) = ? AND (room_id != ? OR agent_id != ?) LIMIT 1`)
+      .get(hostId, pid, startedAt, roomId, agentId);
+    if (shared || (!existing && kind !== "single_session")) {
+      throw new Error("A shared or unverified harness host cannot move to headless.");
+    }
+    if (process === "alive" && (!member || member.wait_intent !== "parked" || this.codexTurnActive(member))) {
+      throw new Error("Park the interactive session before moving it to headless.");
+    }
+    if (this.findMembersForSession({ harness_name: harness, harness_session_id: sessionId })
+      .some(peer => peer.room_id !== roomId || peer.agent_id !== agentId)) {
+      throw new Error("The session also has another room membership.");
+    }
+    return { handoff, process, uncertain_deliveries: this.adoptionUncertain(roomId, agentId) };
+  }
+
+  beginHeadlessAdoption(roomId: string, agentId: AgentId, workerId: string, credential: string): AdoptionSource {
     return this.writeTransaction(() => {
-      const member = this.getMember(input.room_id, input.agent_id);
-      if (!member) throw new ProtocolError("unknown_member", "That membership no longer exists.", { agent_id: input.agent_id });
-      if (member.harness_session_id !== input.harness_session_id || member.harness_pid !== input.prior_pid ||
-          member.harness_process_started_at?.trim() !== input.prior_process_started_at.trim()) {
-        throw new ProtocolError("invalid_input", "That membership changed since the supervisor read it.", { agent_id: input.agent_id });
+      const source = this.previewHeadlessAdoption(roomId, agentId, workerId, credential);
+      if (this.pendingAdoption(roomId, agentId)) return source;
+      const a = source.handoff;
+      this.db.prepare(`INSERT INTO headless_adoptions
+        (room_id, agent_id, harness, session_id, host_id, pid, started_at, worker_id, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        ON CONFLICT (room_id, agent_id) DO UPDATE SET harness = excluded.harness, session_id = excluded.session_id,
+        host_id = excluded.host_id, pid = excluded.pid, started_at = excluded.started_at,
+        worker_id = excluded.worker_id, state = excluded.state WHERE headless_adoptions.state = 'failed'`)
+        .run(roomId, agentId, a.harness, a.session_id, a.host_id, a.pid, a.started_at, workerId);
+      if (!this.pendingAdoption(roomId, agentId)) throw new Error("The session has already moved to headless.");
+      this.db.prepare("DELETE FROM room_receivers WHERE room_id = ? AND agent_id = ?").run(roomId, agentId);
+      const room = this.requireRoom(roomId);
+      this.appendEvent({ room_id: roomId, turn_id: room.turn_id, event_type: "headless_adoption",
+        from_agent_id: agentId, to_agent_id: null, handoff: null, created_at: this.now().toISOString(),
+        reason: source.process === "alive" ? "Headless handoff queued. Exit the interactive harness normally." : "Headless handoff queued." });
+      return source;
+    });
+  }
+
+  readHeadlessAdoption(workerId: string): HeadlessAdoption | undefined {
+    return this.db.prepare<[string], HeadlessAdoption>("SELECT * FROM headless_adoptions WHERE worker_id = ?").get(workerId);
+  }
+
+  abortHeadlessAdoption(workerId: string): void {
+    if (this.readHeadlessAdoption(workerId)?.state !== "pending") return;
+    this.writeTransaction(() => {
+      this.db.prepare("UPDATE headless_adoptions SET state = 'failed' WHERE worker_id = ? AND state = 'pending'").run(workerId);
+    });
+  }
+
+  finishHeadlessAdoption(workerId: string, credential: string, input: {
+    session_id: string; pid: number; process_started_at: string; endpoint_address: string; delivery_secret: string;
+  }): void {
+    this.writeTransaction(() => {
+      const a = this.readHeadlessAdoption(workerId);
+      if (!a || a.state !== "pending" || a.session_id !== `harness:${input.session_id}`) throw new Error("The handoff changed.");
+      const source = this.previewHeadlessAdoption(a.room_id, a.agent_id, workerId, credential);
+      if (source.process !== "gone") throw new Error("The old process has not exited.");
+      const lost = this.getLostMember(a.room_id, a.agent_id);
+      if (lost) {
+        const old = JSON.parse(lost.member_json) as RoomMemberRow;
+        const columns = Object.keys(old);
+        this.db.prepare(`INSERT INTO room_members (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+          .run(...Object.values(old));
+        this.restoreLostMemberState(JSON.parse(lost.state_json) as LostMemberState, false);
+        this.db.prepare("DELETE FROM lost_room_members WHERE room_id = ? AND agent_id = ?").run(a.room_id, a.agent_id);
+        // Messages directed to the lost membership have events but no receipts yet.
+        this.db.prepare(`INSERT OR IGNORE INTO native_event_receipts (room_id, agent_id, event_seq)
+          SELECT room_id, ?, event_seq FROM room_events WHERE room_id = ? AND event_seq > ? AND event_type = 'message_sent'
+          AND (to_agent_id = ? OR EXISTS (SELECT 1 FROM json_each(payload_json, '$.recipients') WHERE value = ?))`)
+          .run(a.agent_id, a.room_id, lost.lost_event_seq, a.agent_id, a.agent_id);
       }
-      if (!this.verifyRecoveryCredential({ room_id: input.room_id, agent_id: input.agent_id,
-        harness_session_id: input.harness_session_id, credential: input.credential })) {
-        throw new ProtocolError("invalid_input", "The recovery credential does not match this session.", { agent_id: input.agent_id });
-      }
-      const current = normalizeProcessMetadata(input.process_metadata);
-      const replaced = current.harness_pid !== input.prior_pid ||
-        current.harness_process_started_at?.trim() !== input.prior_process_started_at.trim();
-      if (replaced) {
-        this.releaseGrantLocked({ room_id: input.room_id, agent_id: input.agent_id, harness_pid: input.prior_pid,
-          harness_process_started_at: input.prior_process_started_at });
-        this.applyPresence(input.room_id, input.agent_id, this.now().toISOString(), {
-          processMetadata: input.process_metadata, recordWait: false, allowCreate: false, requireMember: true });
-      }
-      this.registerNativeWakeEndpoint({ agent_id: input.agent_id, room_id: input.room_id, transport: "supervisor",
-        address: input.endpoint_address, secret: input.delivery_secret, harness_session_id: input.harness_session_id,
-        host_id: current.harness_host_id ?? this.hostId });
-      return { status: "rebound" as const };
+      this.db.prepare("DELETE FROM ended_room_members WHERE room_id = ? AND agent_id = ?").run(a.room_id, a.agent_id);
+      // Older native transports may already have admitted an unacknowledged batch.
+      const uncertain = this.adoptionUncertain(a.room_id, a.agent_id);
+      this.db.prepare(`UPDATE native_delivery_batches SET delivery_mode = 'adoption_uncertain'
+        WHERE room_id = ? AND agent_id = ? AND acknowledged_at IS NULL`).run(a.room_id, a.agent_id);
+      this.db.prepare("UPDATE headless_adoptions SET state = 'complete' WHERE worker_id = ?").run(workerId);
+      this.rebindSupervisedMemberLocked({ room_id: a.room_id, agent_id: a.agent_id, harness_session_id: a.session_id,
+        credential, prior_pid: a.pid, prior_process_started_at: a.started_at,
+        process_metadata: { host_id: this.hostId, pid: input.pid, process_started_at: input.process_started_at,
+          session_kind: "harness_cli", harness_name: a.harness, harness_session_id: a.session_id, harness_host_id: this.hostId,
+          harness_pid: input.pid, harness_process_started_at: input.process_started_at },
+        endpoint_address: input.endpoint_address, delivery_secret: input.delivery_secret });
+      const room = this.requireRoom(a.room_id);
+      this.appendEvent({ room_id: a.room_id, turn_id: room.turn_id, event_type: "headless_adoption",
+        from_agent_id: a.agent_id, to_agent_id: null, handoff: null, created_at: this.now().toISOString(),
+        reason: uncertain ? `Moved to headless. ${uncertain} uncertain deliveries held for review.` : "Moved to headless." });
     });
   }
 
@@ -3076,6 +3243,7 @@ export class TalkingStickService {
       );
     }
     const register = (): RegisterNativeWakeEndpointResult => {
+      this.assertNotAdopting(input.room_id, input.agent_id);
       const member = this.getMember(input.room_id, input.agent_id);
       if (!member) {
         throw new ProtocolError(
@@ -3267,6 +3435,7 @@ export class TalkingStickService {
     roomId: string,
     member: RoomMemberRow
   ): NativeWakeEndpointRow[] {
+    if (this.pendingAdoption(roomId, member.agent_id)) return [];
     return this.db
       .prepare<[string, string], NativeWakeEndpointRow>(
         "SELECT * FROM member_wake_endpoints WHERE room_id = ? AND agent_id = ?"
@@ -3614,6 +3783,7 @@ export class TalkingStickService {
         WHERE room_id = ? AND agent_id = ? AND event_seq = ? AND status = 'pending'`).run(...key);
       if (changed.changes !== 1) return null;
       const member = this.getMember(row.room_id, row.agent_id);
+      if (this.pendingAdoption(row.room_id, row.agent_id)) return null;
       if (!member || (member.harness_session_id ?? `member:${member.agent_id}`) !== row.harness_session_id ||
           (member.harness_host_id ?? member.host_id ?? this.hostId) !== row.host_id) {
         finish({ outcome: "failed", error: "interrupt_session_changed" });
@@ -3672,7 +3842,7 @@ export class TalkingStickService {
   private async dispatchWake(roomId: string, agentId: AgentId): Promise<void> {
     const reservation = this.writeTransaction(() => {
       const member = this.getMember(roomId, agentId);
-      if (!member) return null;
+      if (!member || this.pendingAdoption(roomId, agentId)) return null;
       if (member.harness_name === "codex" && !this.hasQueueableCodexEvent(roomId, agentId)) {
         this.clearReadWake(roomId, agentId);
         return null;
@@ -4222,6 +4392,7 @@ export class TalkingStickService {
         return null;
       }
       const member = members[0];
+      if (this.pendingAdoption(room.room_id, member.agent_id)) return null;
       // A supervised worker receives room work only through its supervisor.
       if (this.getNativeWakeEndpoint(room.room_id, member.agent_id, "supervisor")) return null;
       // A failed hook write must not strand events forever. Retrying can
@@ -4821,6 +4992,7 @@ export class TalkingStickService {
   private waitForTurnOnce(input: WaitForTurnInput): WaitForTurnResult {
     const now = this.now();
     let room = this.requireRoom(input.room_id);
+    this.assertNotAdopting(input.room_id, input.agent_id);
     if (!this.getMember(input.room_id, input.agent_id)) {
       throw new ProtocolError(
         "unknown_member",
@@ -5518,6 +5690,7 @@ export class TalkingStickService {
       requireMember: boolean;
     }
   ): void {
+    this.assertNotAdopting(roomId, agentId);
     const existing = this.getMember(roomId, agentId);
     const normalized = normalizeProcessMetadata(options.processMetadata);
     const lost = existing ? null : this.getLostMember(roomId, agentId);
@@ -6703,7 +6876,7 @@ export class TalkingStickService {
       // the same exact process to read gone across the whole grace.
       const readings = new Map<string, ProcessLiveness>();
       for (const member of members) {
-        if (member.agent_id === room.owner || member.agent_id === room.reserved_for ||
+        if (this.pendingAdoption(room.room_id, member.agent_id) || member.agent_id === room.owner || member.agent_id === room.reserved_for ||
             parseTimestampMs(member.last_seen_at) >= graceCutoff) continue;
         readings.set(member.agent_id, this.getMemberProcessLiveness(member));
       }
@@ -6738,7 +6911,7 @@ export class TalkingStickService {
           return !stored || stored.identity !== livenessIdentity(member) ||
             stored.first_gone_at !== observations.get(member.agent_id);
         })) return;
-        if (expire && !this.db.prepare(`SELECT 1 FROM room_blockers
+        if (expire && !this.db.prepare("SELECT 1 FROM headless_adoptions WHERE room_id = ? AND state = 'pending'").get(room.room_id) && !this.db.prepare(`SELECT 1 FROM room_blockers
           WHERE room_id = ? AND (closed_at IS NULL OR closed_at > ?) LIMIT 1`)
           .get(room.room_id, new Date(cutoffMs).toISOString())) {
           this.deleteRoom(room.room_id);
@@ -6773,6 +6946,7 @@ export class TalkingStickService {
   private purgeEndedLostMembers(now: Date): void {
     const rows = this.db.prepare<[], LostMemberRow>("SELECT * FROM lost_room_members").all();
     for (const lost of rows) {
+      if (this.pendingAdoption(lost.room_id, lost.agent_id)) continue;
       const reading = this.lostProcessLiveness(lost);
       if (reading === "unknown" || (reading === "alive" && !lost.first_gone_at)) continue;
       this.writeTransaction(() => {
@@ -6893,6 +7067,7 @@ export class TalkingStickService {
   }
 
   private isMemberActive(member: RoomMemberRow, now: Date): boolean {
+    if (this.pendingAdoption(member.room_id, member.agent_id)) return false;
     if (this.getMemberProcessLiveness(member) === "gone") {
       return false;
     }
@@ -6950,6 +7125,7 @@ export class TalkingStickService {
   }
 
   private isRecentWaiter(member: RoomMemberRow, now: Date): boolean {
+    if (this.pendingAdoption(member.room_id, member.agent_id)) return false;
     if (member.wait_intent === "parked") {
       return false;
     }
@@ -6973,7 +7149,7 @@ export class TalkingStickService {
     member: RoomMemberRow,
     now: Date
   ): boolean {
-    return !isObserverMember(member) && this.hasRecentPresence(member, now);
+    return !isObserverMember(member) && !this.pendingAdoption(member.room_id, member.agent_id) && this.hasRecentPresence(member, now);
   }
 
   private shouldDeferIdleClaim(
@@ -7269,6 +7445,7 @@ export class TalkingStickService {
     const liveness = this.getMemberProcessLiveness(row);
     return {
       ...row,
+      ...(this.pendingAdoption(row.room_id, row.agent_id) ? { headless_handoff: "pending" as const } : {}),
       standby_wake_pending: row.standby_wake_pending === 1,
       status: liveness !== "gone" && this.hasRecentPresence(row, now) ? "active" : "inactive",
       process_liveness: liveness

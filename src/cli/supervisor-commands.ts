@@ -14,6 +14,7 @@ import { acquireOwnerLock } from "../supervisor/daemon.js";
 import { createSystemProcessInspector, getCurrentProcessStartedAt } from "../process-utils.js";
 import { SupervisorStore, type GenerationRow } from "../supervisor/state.js";
 import { findWorkerGcTarget, hasSharedGeneration, listReleasedManagedGuards } from "../supervisor/membership-gc.js";
+import { TalkingStickService } from "../service.js";
 import { resolveDatabasePath } from "../db.js";
 import { openSqlite } from "../sqlite.js";
 import { hasUnrestrictedPermissions, readSupervisorDaemonStatus, readSupervisorWorkers } from "../supervisor/snapshot.js";
@@ -346,6 +347,10 @@ export async function handleSupervisorCommand(parsed: ParsedCommand): Promise<vo
         store.db.prepare("DELETE FROM workers WHERE worker_id = ?").run(workerId);
         store.audit(now(), actor, "remove", workerId);
       });
+      if ((JSON.parse(worker.spec_json) as WorkerSpec).adoption) {
+        const service = new TalkingStickService({ dataDir });
+        try { service.abortHeadlessAdoption(workerId); } finally { service.close(); }
+      }
       printResult(parsed, { status: "removed", worker: workerId }, () => `Removed ${workerId}.`);
       return;
     }

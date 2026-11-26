@@ -5,6 +5,7 @@ import { runSessionHookCommand } from "./session-hook.js";
 import { runAntigravityHookCommand } from "./antigravity-hook.js";
 import { runInterruptHookCommand } from "./interrupt-hook.js";
 import { handleBlockerCommand, handleRoomCommand } from "./room-admin.js";
+import { handleRestartCommand, RESTART_USAGE } from "./restart.js";
 import { handleRolesCommand } from "./role-commands.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
@@ -65,7 +66,7 @@ export interface CommandEntry {
 /** How help groups the public commands: managing rooms, taking turns inside one, and setup. */
 export const HELP_GROUPS = [
   { title: "Manage rooms",
-    commands: ["chat", "up", "room", "list", "roles", "supervisor", "blocker", "kick"] },
+    commands: ["chat", "up", "restart", "room", "list", "roles", "supervisor", "blocker", "kick"] },
   { title: "Inside a room (the talking stick)",
     commands: ["join", "leave", "wait", "standby", "try", "take", "release", "pass", "assign", "msg", "ack", "notes",
       "state", "health", "events"] },
@@ -161,6 +162,11 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt post-install --bin-dir DIR",
     description: "Finish a standalone install: link current, re-point managed skills, report an npm copy.",
     handler: ({ parsed }) => runPostInstallCommand(getStringOption(parsed, "bin-dir"))
+  },
+  {
+    name: "restart", needsRuntime: false, startupMaintenance: false, internal: false,
+    usage: RESTART_USAGE, description: "Move a local interactive conversation to the headless supervisor.",
+    handler: ({ parsed }) => handleRestartCommand(parsed)
   },
   {
     name: "up",

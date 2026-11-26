@@ -38,6 +38,8 @@ export interface WorkerSpec {
   permissions: WorkerPermissions;
   /** Resume this native session; a worker that cannot resume is held, never restarted fresh. */
   resume_session_id?: string;
+  /** Room-side proof required before this interactive session can start. */
+  adoption?: { room_id: string; agent_id: string; room_path?: string };
   env: EnvReference[];
   /**
    * Set by the supervisor for one start and never stored: the supervisor's

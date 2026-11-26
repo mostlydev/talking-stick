@@ -9,6 +9,10 @@ export interface CliSession {
   room_id: string;
   canonical_path: string;
   workspace_root: string;
+  /** Directory from the successful join, distinct from the room and worktree root. */
+  context_path?: string;
+  /** Filesystem locations only. Native tools still own the profile credentials. */
+  harness_profile?: { home: string; codex_home?: string; claude_config_dir?: string };
   lease_id?: string | null;
   turn_id?: number | null;
   guardian_pid?: number | null;
@@ -126,6 +130,8 @@ export function upsertJoinedCliSession(
     | "room_id"
     | "canonical_path"
     | "workspace_root"
+    | "context_path"
+    | "harness_profile"
     | "event_cursor_seq"
     | "recovery_credential"
     | "updated_at"
