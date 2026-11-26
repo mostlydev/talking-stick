@@ -43,7 +43,7 @@ async function fixture(mode: "accept" | "idle" | "wrong-thread" | "changed-turn"
     fs.rmSync(dir, { recursive: true, force: true });
   });
   const queueMarker = path.join(dir, "queued");
-  fs.writeFileSync(path.join(dir, "codex"), `#!/bin/sh\nprintf queued > '${queueMarker}'\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "codex"), `#!/bin/sh\nprintf queued > '${queueMarker}'\nprintf '%s\\n' 'Queued message 01a0e353-509b-7932-9915-b082b8169a4c for thread ${threadId}.'\n`, { mode: 0o755 });
   const request = { transport: "codex_queue" as const, address: threadId, secret: null, text: "operator correction", steer: true };
   const options = { codex_socket: socketPath, timeout_ms: 500, env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` } };
   return { dir, socketPath, requests, queueMarker, request, options };
@@ -61,7 +61,7 @@ test("steering appends input to the exact live turn without starting or queueing
 
 test.each(["idle", "wrong-thread", "changed-turn"] as const)("a definite rejection permits one queue fallback: %s", async mode => {
   const f = await fixture(mode);
-  expect(await deliverCodexQueue(f.request, f.options)).toEqual({ outcome: "queued" });
+  expect(await deliverCodexQueue(f.request, f.options)).toEqual({ outcome: "queued", error: "codex_turn_start_unconfirmed" });
   expect(fs.readFileSync(f.queueMarker, "utf8")).toBe("queued");
   if (mode !== "changed-turn") expect(f.requests.some(request => request.method === "turn/steer")).toBe(false);
 });

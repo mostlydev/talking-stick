@@ -13,7 +13,11 @@ changes will be called out under **Breaking changes**.
 
 ### Added
 
-- `rooms prompt` shows the current folder's room in your shell prompt, such as `#shrooms 4 ▸claude !1 @2`: its agents, the stick holder, open blockers, and messages waiting for you. Outside a room it prints nothing. `rooms prompt init zsh|bash|fish` prints the setup line. zsh and fish refresh in the background and repaint, so the prompt never waits, and a result for a folder you've left is dropped. It reads the database read-only, spawns no git, and takes about 40 ms. `--format` and `--json` customize it.
+- `rooms prompt` shows the current folder's room in your shell prompt, such as `#shrooms 4 ▸claude !1 @2`: its agents, the stick holder, open blockers, and messages waiting for you. Outside a room it prints nothing. `rooms prompt init zsh|bash|fish` prints the setup line. zsh and fish refresh in the background and repaint, so the prompt never waits, and a result for a folder you've left is dropped. It reads the database without writing or running Git. Bash refreshes synchronously. `--format` and `--json` customize it.
+
+### Fixed
+
+- Codex standby distinguishes an accepted queue item, a confirmed turn start, and an unconfirmed queue attempt in chat and health. The wake path starts only the exact item it just queued.
 
 ## [0.40.1] — 2026-11-26
 

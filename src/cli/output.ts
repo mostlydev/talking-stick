@@ -310,6 +310,17 @@ Common options:
 ${notice ? `\n${notice}\n` : ""}`);
 }
 
+/** Shared wording for chat and the recipient's health report. */
+export function describeCodexWakeError(error?: string | null, detail?: string): string | undefined {
+  if (error === "codex_queue_rejected") return "Codex queue rejected by the CLI";
+  if (error === "codex_turn_start_unconfirmed") return "saved in Codex queue; turn unconfirmed";
+  if (error === "codex_queue_unconfirmed") return "Codex queue acceptance unconfirmed";
+  if (error === "codex_queue_failed" || error === "codex_queue_timeout" || error === "codex_steer_unconfirmed") {
+    return detail ? `Codex wake unconfirmed (${detail})` : "Codex wake unconfirmed";
+  }
+  return undefined;
+}
+
 export function printCommandHelp(command: {
   name: string;
   aliases?: string[];

@@ -39,6 +39,8 @@ export interface NativeWakeRequest extends NativeWakeRegistration {
   /** Persist and revalidate the exact target before any steering input is sent. */
   on_steer_target?(turnId: string): boolean;
   can_queue?(): boolean;
+  /** Fence the exact envelope before handing it to the queue subprocess. */
+  on_queue?(): boolean;
 }
 
 // failed: the harness definitely did not receive the wake, so a fallback may
@@ -302,8 +304,10 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
   });
 }
 
+const CODEX_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function deliverCodexQueue(request: NativeWakeRequest, options: NativeWakeOptions = {}): Promise<NativeWakeResult> {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.address)) {
+  if (!CODEX_ID.test(request.address)) {
     return Promise.resolve({ outcome: "failed", error: "invalid_codex_thread" });
   }
   if (request.steer || request.interrupt) {
@@ -317,7 +321,9 @@ export async function deliverCodexQueue(request: NativeWakeRequest, options: Nat
     // The thread is idle, the method unsupported, or no steer bytes were sent.
     // Queuing is safe only in these definitely-unsent cases.
   }
-  if (request.can_queue && !request.can_queue()) return { outcome: "failed", error: "native_wake_unavailable", local: true };
+  if ((request.can_queue && !request.can_queue()) || (request.on_queue && !request.on_queue())) {
+    return { outcome: "failed", error: "native_wake_unavailable", local: true };
+  }
   return new Promise((resolve) => {
     // Keep queue insertion and the loaded-thread start on the same daemon.
     const child = execFile("codex", ["queue", ...(options.codex_socket ? ["--remote", `unix://${options.codex_socket}`] : []), "--thread", request.address, "--message", request.text], {
@@ -326,12 +332,20 @@ export async function deliverCodexQueue(request: NativeWakeRequest, options: Nat
       // The cmux shim can mistake queue for an interactive session and inject
       // flags that Codex rejects. Leave cmux hooks enabled in the parent.
       env: { ...withoutClaudeInboxCredentials(options.env ?? process.env), CMUX_CODEX_HOOKS_DISABLED: "1" }
-    }, (error, _stdout, stderr) => {
+    }, (error, stdout, stderr) => {
       if (!error) {
-        if (!request.start_queued) { resolve({ outcome: "queued" }); return; }
-        void startQueuedCodexThread(request.address, options.codex_socket ?? codexControlSocket(options.env), options.timeout_ms ?? 3_000)
-          .then((started) => resolve({ outcome: started ? "woken" : "queued" }))
-          .catch(() => resolve({ outcome: "queued" }));
+        const receipt = /^Queued message ([0-9a-f-]{36}) for thread ([0-9a-f-]{36})\.$/im.exec(stdout);
+        if (!receipt || !CODEX_ID.test(receipt[1]) || receipt[2].toLowerCase() !== request.address.toLowerCase()) {
+          resolve({ outcome: "ambiguous", error: "codex_queue_unconfirmed" });
+          return;
+        }
+        // An embedded TUI may start this item on its own. The CLI receipt
+        // confirms storage only. Do not retry it or claim a turn began.
+        const unconfirmed: NativeWakeResult = { outcome: "queued", error: "codex_turn_start_unconfirmed" };
+        if (!request.start_queued) { resolve(unconfirmed); return; }
+        void startQueuedCodexThread(request.address, receipt[1],
+          options.codex_socket ?? codexControlSocket(options.env), options.timeout_ms ?? 3_000)
+          .then((started) => resolve(started ? { outcome: "woken" } : unconfirmed), () => resolve(unconfirmed));
         return;
       }
       // A child that never started cannot have queued anything.

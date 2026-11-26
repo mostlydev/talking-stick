@@ -505,8 +505,8 @@ and Antigravity wake only through cmux.
   thread. A timeout or unconfirmed write stops there, so an agent is never woken twice.
 - `tt msg send` reports `delivery_status` plus `delivery_transport` and `delivery_state`.
   `delivery_state` is `queued` when the transport submitted the prompt (the socket write flushed, or
-  `codex queue` exited 0; Claude may still hold or refuse it per its inbound settings), `woken`
-  when Codex accepted a queued submission as a new turn, `steered` when its active turn accepted input, `ambiguous`
+  Codex returned a queue receipt; Claude may still hold or refuse it per its inbound settings), `woken`
+  when Codex accepted the exact queued submission as a new turn, `steered` when its active turn accepted input, `ambiguous`
   when a timeout or cut-off write left it unknown, and `failed` when every eligible transport
   definitely failed. A definite failure releases the batch so a later sender can retry. When a
   failure is this sender's own (a socket connect it was denied, or a `codex` it could not launch),
@@ -517,6 +517,12 @@ and Antigravity wake only through cmux.
   a minute while a console is open, usually within seconds.
   Claude does not confirm that a turn started; a Codex `woken` result confirms turn creation,
   not that the agent read or acted on the message.
+- A confirmed Codex queue receipt alone means the message was saved. Chat and `tt health`
+  say `saved in Codex queue; turn unconfirmed` if shrooms cannot confirm its turn started.
+  Embedded Codex may start it independently. A missing queue receipt is unconfirmed, and
+  shrooms does not submit the same envelope again. If the turn has not started, open
+  the conversation and run `tt wait --park --json` to read pending messages. A receipt
+  marks the room message delivered in chat and records `last_received_at` in health.
 - A message coalesced behind an earlier wake reports `delivery_status: pending` without reusing that
   wake's `delivery_state`. This does not imply a new wake was submitted.
 - `tt standby` reports `wake_transports`, such as `["claude_inbox"]`, and `can_self_wake`. Its

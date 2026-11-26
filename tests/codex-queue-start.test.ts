@@ -46,7 +46,7 @@ async function serverFor(threadStatus: "idle" | "active" | "notLoaded", turnStat
 
 test("starts an existing queued submission on an idle loaded Codex thread", async () => {
   const { socket, requests } = await serverFor("idle", "completed");
-  expect(await startQueuedCodexThread(threadId, socket)).toBe(true);
+  expect(await startQueuedCodexThread(threadId, queuedId, socket)).toBe(true);
   expect(requests.map((request) => request.method)).toEqual([
     "initialize", "initialized", "thread/read", "thread/turns/list", "thread/queue/list", "thread/queue/start"
   ]);
@@ -56,19 +56,19 @@ test("starts an existing queued submission on an idle loaded Codex thread", asyn
 
 test("does not start a queued submission on an active or unloaded thread", async () => {
   const active = await serverFor("active", "inProgress");
-  expect(await startQueuedCodexThread(threadId, active.socket)).toBe(false);
+  expect(await startQueuedCodexThread(threadId, queuedId, active.socket)).toBe(false);
   expect(active.requests.some((request) => request.method === "thread/queue/start")).toBe(false);
   const unloaded = await serverFor("notLoaded", "completed");
-  expect(await startQueuedCodexThread(threadId, unloaded.socket)).toBe(false);
+  expect(await startQueuedCodexThread(threadId, queuedId, unloaded.socket)).toBe(false);
   expect(unloaded.requests.some((request) => request.method === "thread/queue/start")).toBe(false);
 });
 
 test("a loaded thread with no in-progress turn can start its existing queue", async () => {
   const { socket, requests } = await serverFor("active", "completed");
-  expect(await startQueuedCodexThread(threadId, socket)).toBe(true);
+  expect(await startQueuedCodexThread(threadId, queuedId, socket)).toBe(true);
   expect(requests.at(-1)?.method).toBe("thread/queue/start");
 });
 
 test("an unavailable Codex control socket leaves the queue alone", async () => {
-  expect(await startQueuedCodexThread(threadId, "/tmp/no-such-tt-codex-control.sock", 500)).toBe(false);
+  expect(await startQueuedCodexThread(threadId, queuedId, "/tmp/no-such-tt-codex-control.sock", 500)).toBe(false);
 });

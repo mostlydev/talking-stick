@@ -66,7 +66,7 @@ import { resolveDataDir } from "../config.js";
 import { ProtocolError, isSqliteBusy } from "../errors.js";
 import { hasHookInterrupt, requestHookInterrupt } from "../interrupt-flags.js";
 import { deriveHumanCliIdentity, runningInsideHarness, type DerivedIdentity } from "../identity.js";
-import { shouldUseJson } from "./output.js";
+import { describeCodexWakeError, shouldUseJson } from "./output.js";
 import {
   HUMAN_CHAT_SESSION_KIND,
   type EventType,
@@ -223,10 +223,10 @@ export function chatTerminalCapable(
 // transport failure; an agent with nothing to wake it yet, such as a Grok that
 // will pick the message up at its next tool call, is only "not acknowledged yet".
 export function describeChatDelivery(delivery: MessageDelivery): string {
-  if (delivery.error === "codex_queue_rejected") return "Codex queue rejected by the CLI";
-  if (delivery.transport === "codex_queue" && delivery.error &&
-      (delivery.state === "ambiguous" || delivery.state === "queued")) {
-    return delivery.error_detail ? `Codex wake unconfirmed (${delivery.error_detail})` : "Codex wake unconfirmed";
+  if (delivery.transport === "codex_queue") {
+    if (delivery.status === "pending" && !delivery.state) return "not acknowledged yet";
+    const diagnostic = describeCodexWakeError(delivery.error, delivery.error_detail);
+    if (diagnostic) return diagnostic;
   }
   if (delivery.state === "failed") return "unreachable";
   if (delivery.status === "receiver") return "queued";
