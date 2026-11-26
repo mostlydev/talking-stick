@@ -858,6 +858,30 @@ test("Codex queueing fences the exact envelope across standby and health reports
   expect(health()).toContainEqual(expect.objectContaining({ transport: "cmux", last_status: null, last_received_at: null }));
 });
 
+test.each(["manual", "cmux"] as const)("a %s receipt does not credit a failed Codex queue", async (transport) => {
+  const { service, project, cmuxRequests } = harness({
+    native: () => ({ outcome: "failed", error: "codex_thread_not_found" })
+  });
+  const roomId = joinPair(service, project);
+  service.joinPath({ agent_id: "codex:bb", context_path: project, process_metadata: metadata("codex", "thread-b") });
+  service.registerNativeWakeEndpoint({ room_id: roomId, agent_id: "codex:bb", transport: "codex_queue",
+    address: "thread-b", secret: null, harness_session_id: "thread-b", host_id: HOST });
+  service.registerStandby({ room_id: roomId, agent_id: "codex:bb", transport,
+    ...(transport === "cmux" ? { workspace_id: "workspace", surface_id: "surface" } : {}) });
+  const sent = await service.sendMessageAndWake({ agent_id: "human:op:chat:1", room_id: roomId,
+    to_agent_id: "codex:bb", body: "operator input" });
+  expect(cmuxRequests).toHaveLength(transport === "cmux" ? 1 : 0);
+  const read = await service.waitForEvents({ room_id: roomId, agent_id: "codex:bb",
+    after_event_seq: sent.event_seq - 1, max_wait_ms: 0 });
+  expect(read.events.map((event) => event.event_seq)).toContain(sent.event_seq);
+  const endpoints = service.getRoomHealth({ context_path: project, agent_id: "codex:bb" }).wake_endpoints;
+  expect(endpoints).toContainEqual(expect.objectContaining({ transport: "codex_queue", last_status: "failed",
+    last_error: "codex_thread_not_found", last_received_at: null }));
+  if (transport === "cmux") {
+    expect(endpoints).toContainEqual(expect.objectContaining({ transport: "cmux", last_received_at: expect.any(String) }));
+  }
+});
+
 test("a stale failure detail from an older process never explains a later delivery", async () => {
   const { service, project } = harness();
   const roomId = joinPair(service, project);

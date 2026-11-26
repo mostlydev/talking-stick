@@ -3254,7 +3254,7 @@ export class TalkingStickService {
         CASE WHEN last_status IN ('ambiguous', 'failed') OR (last_status = 'queued' AND last_error IS NOT NULL)
           THEN last_error_detail END AS last_error_detail,
         (SELECT consumed_at FROM native_event_receipts n
-          WHERE ranked.last_status IS NOT NULL AND n.room_id = ranked.room_id
+          WHERE ranked.last_status IN ('queued', 'woken', 'steered', 'ambiguous') AND n.room_id = ranked.room_id
             AND n.agent_id = ranked.agent_id AND n.event_seq = ranked.event_seq
         ) AS last_received_at
       FROM ranked WHERE rank = 1 ORDER BY agent_id, transport
