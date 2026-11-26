@@ -144,7 +144,7 @@ describe("visitor requests", () => {
     const asked = await service.askRoom({ agent_id: "human:guest", room_id: roomId, to: "room", body: "status?" });
     const woken = requests.length;
     expect(() => service.replyToRequest({ agent_id: "claude:outsider", request_id: asked.request_id, body: "me too" }))
-      .toThrow(expect.objectContaining({ code: "not_liaison" }));
+      .toThrow(expect.objectContaining({ code: "unknown_member" }));
     expect(service.getRoomState({ room_id: roomId }).members.map((member) => member.agent_id)).not.toContain("claude:outsider");
 
     expect(service.getRequestReplies({ request_id: asked.request_id })).toMatchObject({
@@ -257,6 +257,53 @@ describe("visitor requests", () => {
     service.setLiaison({ agent_id: "codex:bb", room_id: roomId, liaison_agent_id: null });
     const again = await service.askRoom({ agent_id: "human:guest", room_id: roomId, to: "room", body: "next?" });
     expect(again.recipients).toEqual(["claude:aa"]);
+  });
+
+  test("a stale pin falls back, and a named question is not limited to the liaison", async () => {
+    const { service, roomId } = room();
+    service.setLiaison({ agent_id: "human:op:chat:1", room_id: roomId, liaison_agent_id: "codex:bb" });
+    service.leaveRoom({ agent_id: "codex:bb", room_id: roomId });
+    expect((await service.askRoom({ agent_id: "human:guest", room_id: roomId, to: "room", body: "status?" })).recipients)
+      .toEqual(["claude:aa"]);
+    const named = await service.askRoom({ agent_id: "human:guest", room_id: roomId, to: ["claude:aa"], body: "you?" });
+    service.replyToRequest({ agent_id: "claude:aa", request_id: named.request_id, body: "Yes." });
+  });
+
+  test("without an architect, the last live stick holder answers", async () => {
+    const { service, roomId } = room();
+    service.leaveRoom({ agent_id: "claude:aa", room_id: roomId });
+    const project = service.listRooms({}).rooms[0].canonical_path;
+    service.joinPath({ agent_id: "agy:early", context_path: project, process_metadata: metadata("agy-early") });
+    service.joinPath({ agent_id: "agy:late", context_path: project, process_metadata: metadata("agy-late") });
+    const turn = await service.waitForTurn({ agent_id: "agy:late", room_id: roomId, max_wait_ms: 0 });
+    if (turn.status !== "your_turn") throw new Error(`expected the later agent to hold the stick, got ${turn.status}`);
+    service.releaseStick({ agent_id: "agy:late", room_id: roomId, lease_id: turn.lease_id, expected_turn_id: turn.turn_id,
+      handoff: { status: "Done", next_action: "Ask the room" } });
+    expect((await service.askRoom({ agent_id: "human:guest", room_id: roomId, to: "room", body: "who?" })).recipients)
+      .toEqual(["agy:late"]);
+  });
+
+  test("a wakeable architect is chosen over an earlier one that cannot be woken", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "tt-visitor-"));
+    roots.push(root);
+    const project = path.join(root, "project");
+    fs.mkdirSync(project);
+    const service = new TalkingStickService({
+      dataDir: path.join(root, "data"), hostId: HOST,
+      processLivenessChecker: () => "alive",
+      receiverLivenessChecker: () => "gone",
+      nativeWakeTransport: { deliver: () => ({ outcome: "queued" }) }
+    });
+    services.push(service);
+    const { room_id: roomId } = service.joinPath({ agent_id: "human:op:chat:1", context_path: project,
+      process_metadata: { host_id: HOST, pid: 10, process_started_at: "t", session_kind: "human_chat", display_name: "op" } });
+    for (const agentId of ["claude:quiet", "claude:awake"]) {
+      service.joinPath({ agent_id: agentId, context_path: project, process_metadata: metadata(agentId) });
+    }
+    service.registerNativeWakeEndpoint({ agent_id: "claude:awake", room_id: roomId, transport: "claude_inbox",
+      address: "/tmp/awake", secret: "s", harness_session_id: "claude:awake", host_id: HOST });
+    expect((await service.askRoom({ agent_id: "human:guest", room_id: roomId, to: "room", body: "who?" })).recipients)
+      .toEqual(["claude:awake"]);
   });
 
   test("a deleted room takes its requests and answers with it", async () => {

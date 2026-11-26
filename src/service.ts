@@ -3556,12 +3556,12 @@ export class TalkingStickService {
     const assignments = this.db.prepare<[string], { subject: string; roles_json: string }>(
       "SELECT subject, roles_json FROM room_roles WHERE room_id = ?").all(roomId)
       .map((row) => ({ subject: row.subject as RoleSubject, roles: JSON.parse(row.roles_json) as string[] }));
-    const defaults = readUserRoleDefaults();
+    const defaults = readUserRoleDefaults({ dataDir: this.dataDir });
     const architects = live.filter((member) => effectiveRoles(member.agent_id, assignments, defaults).roles.includes("architect"));
     const pool = architects.length > 0 ? architects : this.liveStickHolders(roomId, live);
     return [...pool].sort((left, right) => {
-      const leftWake = this.usableNativeWakeEndpoints(roomId, left).length > 0 ? 0 : 1;
-      const rightWake = this.usableNativeWakeEndpoints(roomId, right).length > 0 ? 0 : 1;
+      const leftWake = this.canWakeLiaison(roomId, left) ? 0 : 1;
+      const rightWake = this.canWakeLiaison(roomId, right) ? 0 : 1;
       return leftWake - rightWake || left.ordinal - right.ordinal;
     })[0]?.agent_id ?? null;
   }
@@ -3575,6 +3575,7 @@ export class TalkingStickService {
     const timestamp = now.toISOString();
     return this.writeTransaction(() => {
       const room = this.requireRoom(input.room_id);
+      if (room.state === "closed") throw new ProtocolError("room_closed", "Cannot change the liaison of a closed room.");
       const current = this.resolveLiaison(room.room_id, now);
       const allowed = input.agent_id.startsWith("human:")
         || input.agent_id === current
@@ -3612,16 +3613,27 @@ export class TalkingStickService {
     return liveness !== "gone" && (liveness === "alive" || this.hasRecentPresence(member, now));
   }
 
+  private canWakeLiaison(roomId: string, member: RoomMemberRow): boolean {
+    const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
+      "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?").get(roomId, member.agent_id);
+    if (receiver && this.receiverLiveness(receiver) === "alive") return true;
+    return this.usableNativeWakeEndpoints(roomId, member).some((row) =>
+      row.transport !== "cmux" || (member.wait_intent === "parked" && member.standby_transport === "cmux"));
+  }
+
   private liveStickHolders(roomId: string, live: RoomMemberRow[]): RoomMemberRow[] {
     const room = this.requireRoom(roomId);
     if (room.owner && live.some((member) => member.agent_id === room.owner)) {
       return live.filter((member) => member.agent_id === room.owner);
     }
-    const holders = this.db.prepare<[string], { from_agent_id: string | null }>(
-      `SELECT from_agent_id FROM room_events WHERE room_id = ? AND event_type IN ('release', 'claim')
-       AND from_agent_id IS NOT NULL ORDER BY event_seq DESC`).all(roomId);
+    // claim and takeover record the new holder in to_agent_id. pass records the
+    // previous holder in from_agent_id, and release does too.
+    const holders = this.db.prepare<[string], { holder: string | null }>(`
+      SELECT CASE WHEN event_type IN ('claim', 'takeover') THEN to_agent_id ELSE from_agent_id END AS holder
+      FROM room_events WHERE room_id = ? AND event_type IN ('release', 'pass', 'claim', 'takeover')
+      ORDER BY event_seq DESC`).all(roomId);
     for (const holder of holders) {
-      const member = live.find((candidate) => candidate.agent_id === holder.from_agent_id);
+      const member = holder.holder ? live.find((candidate) => candidate.agent_id === holder.holder) : undefined;
       if (member) return [member];
     }
     return live;
@@ -3751,6 +3763,9 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
     return this.writeTransaction(() => {
       const request = this.requireVisitorRequest(input.request_id);
+      if (!this.getMember(request.room_id, input.agent_id)) {
+        throw new ProtocolError("unknown_member", "Join the room before answering a visitor.");
+      }
       if (request.scope === "room") {
         const liaison = this.resolveLiaison(request.room_id, now, request.requester_agent_id);
         if (input.agent_id !== liaison) {
