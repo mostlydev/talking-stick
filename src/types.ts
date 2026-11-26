@@ -619,6 +619,43 @@ export interface AskRoomInput {
   body: string;
   /** Deduplicates a retry by the same requester. */
   request_key?: string;
+  /** Optional native return address (claude_inbox or codex_queue) for reply pushes. */
+  return_address?: VisitorReturnAddressInput;
+}
+
+export type VisitorReturnTransportName = "claude_inbox" | "codex_queue";
+
+export interface VisitorReturnAddressInput {
+  transport: VisitorReturnTransportName;
+  address: string;
+  secret: string | null;
+  harness_session_id?: string | null;
+  host_id?: string | null;
+  pid?: number | null;
+  process_started_at?: string | null;
+}
+
+/** Public view of a recorded return address: never carries address or secret. */
+export interface VisitorReturnAddressSummary {
+  transport: VisitorReturnTransportName;
+}
+
+export type VisitorReplyDeliveryStatus =
+  | "pending"
+  | "woken"
+  | "queued"
+  | "ambiguous"
+  | "failed";
+
+export interface VisitorReplyDelivery {
+  event_seq: number;
+  transport: VisitorReturnTransportName;
+  status: VisitorReplyDeliveryStatus;
+  error?: string;
+  error_detail?: string;
+  attempted_at: string | null;
+  /** Set only when the requester session acknowledges the pushed envelope with tt ack. */
+  received_at: string | null;
 }
 
 export interface AskRoomResult extends SendMessageResult {
@@ -627,6 +664,8 @@ export interface AskRoomResult extends SendMessageResult {
   recipients: AgentId[];
   /** True when request_key matched an earlier identical request. */
   deduplicated: boolean;
+  /** Public summary of the recorded return address, when one was captured. */
+  return_address?: VisitorReturnAddressSummary;
 }
 
 export interface ReplyToRequestInput {
@@ -642,6 +681,8 @@ export interface ReplyToRequestResult {
   event_seq: number;
   event_id: string;
   created_at: string;
+  /** Return-address push status for this reply, when the request recorded one and the requester is not a room member. */
+  return_delivery?: VisitorReplyDelivery;
 }
 
 export interface RequestRepliesInput {
@@ -677,6 +718,10 @@ export interface RequestRepliesResult {
   /** Pass as after_event_seq to read the next page or later replies. */
   cursor_event_seq: number;
   has_more: boolean;
+  /** Public summary of the recorded return address, when one was captured on ask. */
+  return_address?: VisitorReturnAddressSummary;
+  /** Return-address push delivery and receipt state per returned reply (failed sends never carry received_at). */
+  return_deliveries?: VisitorReplyDelivery[];
 }
 
 export interface MessageDelivery {

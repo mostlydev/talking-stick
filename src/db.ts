@@ -602,7 +602,39 @@ const migrations: Migration[] = [
         .run(RENAME_NOTICE_ID, new Date().toISOString());
     }
   },
-  { id: 34, name: "managed_membership_gc", up: membershipGcSchema }
+  { id: 34, name: "managed_membership_gc", up: membershipGcSchema },
+  {
+    id: 35,
+    name: "visitor_return_address",
+    up: `ALTER TABLE visitor_requests ADD COLUMN return_transport TEXT;
+    ALTER TABLE visitor_requests ADD COLUMN return_address TEXT;
+    ALTER TABLE visitor_requests ADD COLUMN return_secret TEXT;
+    ALTER TABLE visitor_requests ADD COLUMN return_harness_session_id TEXT;
+    ALTER TABLE visitor_requests ADD COLUMN return_host_id TEXT;
+    ALTER TABLE visitor_requests ADD COLUMN return_pid INTEGER;
+    ALTER TABLE visitor_requests ADD COLUMN return_process_started_at TEXT;
+    CREATE TABLE visitor_reply_deliveries (
+      request_id TEXT NOT NULL,
+      event_seq INTEGER NOT NULL,
+      room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      requester_agent_id TEXT NOT NULL,
+      transport TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      harness_session_id TEXT NOT NULL,
+      host_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      delivery_mode TEXT,
+      error TEXT,
+      error_detail TEXT,
+      created_at TEXT NOT NULL,
+      attempted_at TEXT,
+      acknowledged_at TEXT,
+      PRIMARY KEY (request_id, event_seq)
+    );
+    CREATE INDEX visitor_reply_deliveries_pending
+      ON visitor_reply_deliveries (room_id, status)
+      WHERE status = 'pending';`
+  }
 ];
 
 export function resolveDatabasePath(options: OpenDatabaseOptions = {}): string {

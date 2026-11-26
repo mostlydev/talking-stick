@@ -36,6 +36,7 @@ export async function askRoom(runtime: Runtime, parsed: ParsedCommand, room: Pat
   printResult(parsed, { ...result, replies }, () => [
     `${result.deduplicated ? "Already asked" : "Asked"} ${result.recipients.join(", ")} in ${room.canonical_path} (request ${result.request_id}).`,
     ...(result.deliveries ?? []).map((delivery) => `  ${delivery.agent_id}: ${delivery.status}`),
+    ...(result.return_address ? [`Return address: ${result.return_address.transport} (replies will be pushed)`] : []),
     `Answers: ${replies}`
   ].join("\n"));
 }
@@ -80,6 +81,12 @@ export async function readReplies(runtime: Runtime, parsed: ParsedCommand, reque
       return `  ${status.agent_id}: ${status.in_room ? "" : "left the room; "}delivery ${delivery}; ${
         status.received_at ? `received ${status.received_at}` : "no receipt on record"}; ${status.replied ? "replied" : "no reply yet"}`;
     }));
+    if (result.return_deliveries && result.return_deliveries.length > 0) {
+      lines.push("Return pushes:", ...result.return_deliveries.map((delivery) => {
+        const state = [delivery.status, delivery.error_detail ?? delivery.error].filter(Boolean).join(" ");
+        return `  #${delivery.event_seq} via ${delivery.transport}: ${state}; ${delivery.received_at ? `received ${delivery.received_at}` : "unacknowledged"}`;
+      }));
+    }
     if (result.has_more) lines.push(`More: tt room replies ${result.request_id} --after ${result.cursor_event_seq}`);
     else lines.push(`Later answers: tt room replies ${result.request_id} --after ${result.cursor_event_seq} --timeout 30`);
     return lines.join("\n");
@@ -89,6 +96,11 @@ export async function readReplies(runtime: Runtime, parsed: ParsedCommand, reque
 export async function replyToRequest(runtime: Runtime, parsed: ParsedCommand, requestId: string | undefined, rest: string[]): Promise<void> {
   if (!requestId) throw new Error("Usage: tt msg reply <request-id> <body...> [--stdin]");
   const body = await messageBody(parsed, rest);
-  const result = runtime.commands.replyToRequest(deriveCliIdentity(parsed), { request_id: requestId, body });
-  printResult(parsed, result, () => `Answered request ${result.request_id} (#${result.event_seq}).`);
+  const result = await runtime.commands.replyToRequestAndWake(deriveCliIdentity(parsed), { request_id: requestId, body });
+  printResult(parsed, result, () => {
+    const push = result.return_delivery
+      ? `; return push ${result.return_delivery.status} via ${result.return_delivery.transport}`
+      : "";
+    return `Answered request ${result.request_id} (#${result.event_seq}${push}).`;
+  });
 }

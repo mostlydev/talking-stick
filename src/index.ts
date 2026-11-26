@@ -204,6 +204,7 @@ export {
   createSystemNativeWakeTransport,
   deliverSupervisor,
   detectNativeWakeEndpoints,
+  detectVisitorReturnAddress,
   parseSupervisorAddress,
   formatNativeWakeText,
   formatNativeEventText,
