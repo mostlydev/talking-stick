@@ -4,7 +4,7 @@ import net from "node:net";
 import { attachmentInstruction, payloadAttachments } from "./attachments.js";
 import { codexControlSocket, startQueuedCodexThread } from "./codex-queue-start.js";
 import { inspectCodexTurn, steerCodexThread, type CodexTurnStatus } from "./codex-steer.js";
-import type { RoomEvent } from "./types.js";
+import type { ProcessMetadata, RoomEvent, VisitorReturnAddressInput } from "./types.js";
 
 export type NativeWakeTransportName = "claude_inbox" | "codex_queue" | "supervisor" | "cmux";
 export type NativeWakeReason = "message" | "interrupt" | "turn" | "room_update";
@@ -88,6 +88,31 @@ export function detectNativeWakeEndpoints(
     endpoints.push({ transport: "codex_queue", address: thread, secret: null });
   }
   return endpoints;
+}
+
+// A visitor request only records a direct harness return address (claude_inbox
+// or codex_queue) from the asker's own environment, never a supervisor endpoint.
+export function detectVisitorReturnAddress(
+  env: NodeJS.ProcessEnv,
+  identity: { agent_id: string; process_metadata?: Partial<ProcessMetadata> }
+): VisitorReturnAddressInput | undefined {
+  const metadata = identity.process_metadata;
+  const endpoint = detectNativeWakeEndpoints(env, {
+    agent_id: identity.agent_id,
+    harness_session_id: metadata?.harness_session_id
+  }).find((candidate): candidate is NativeWakeRegistration & { transport: "claude_inbox" | "codex_queue" } =>
+    candidate.transport === "claude_inbox" || candidate.transport === "codex_queue"
+  );
+  if (!endpoint) return undefined;
+  return {
+    transport: endpoint.transport,
+    address: endpoint.address,
+    secret: endpoint.secret,
+    harness_session_id: metadata?.harness_session_id ?? null,
+    host_id: metadata?.harness_host_id ?? metadata?.host_id ?? null,
+    pid: metadata?.harness_pid ?? metadata?.pid ?? null,
+    process_started_at: metadata?.harness_process_started_at ?? metadata?.process_started_at ?? null
+  };
 }
 
 export function formatNativeWakeText(input: {

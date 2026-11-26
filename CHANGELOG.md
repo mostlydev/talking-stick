@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- `tt room ask` captures the asker's native `claude_inbox` or `codex_queue` endpoint as a return address on the request without creating a room membership, stick, or standby row. Each `tt msg reply` pushes its `event_seq` once (queued behind an active turn, never steered, skipped if the asker is a room member) and stays unconfirmed until the asker acknowledges it with `tt ack <token>`; `tt room replies` continues to show the exact same replies plus return-push delivery and receipt status.
+
 ## [0.41.0] — 2026-11-26
 
 Full notes: [`docs/releases/0.41.0.md`](docs/releases/0.41.0.md).

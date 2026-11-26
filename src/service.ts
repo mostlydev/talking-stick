@@ -83,6 +83,10 @@ import type {
   ReplyToRequestInput,
   ReplyToRequestResult,
   RequestRepliesInput,
+  VisitorReplyDelivery,
+  VisitorReplyDeliveryStatus,
+  VisitorReturnAddressInput,
+  VisitorReturnTransportName,
   RequestRepliesResult,
   MessagePayload,
   Note,
@@ -205,6 +209,31 @@ interface VisitorRequestRow {
   event_seq: number;
   recipients_json: string;
   created_at: string;
+  return_transport: VisitorReturnTransportName | null;
+  return_address: string | null;
+  return_secret: string | null;
+  return_harness_session_id: string | null;
+  return_host_id: string | null;
+  return_pid: number | null;
+  return_process_started_at: string | null;
+}
+
+interface VisitorReplyDeliveryRow {
+  request_id: string;
+  event_seq: number;
+  room_id: string;
+  requester_agent_id: string;
+  transport: VisitorReturnTransportName;
+  token: string;
+  harness_session_id: string;
+  host_id: string;
+  status: "pending" | "dispatching" | "woken" | "queued" | "ambiguous" | "failed";
+  delivery_mode: string | null;
+  error: string | null;
+  error_detail: string | null;
+  created_at: string;
+  attempted_at: string | null;
+  acknowledged_at: string | null;
 }
 
 interface RoomReceiverRow {
@@ -3366,7 +3395,7 @@ export class TalkingStickService {
     // never delivered (killed after commit, or a long wait that queued them).
     const rooms = roomId ? [roomId] : [...new Set([...this.wakeRooms,
       ...this.db.prepare<[], { room_id: string }>(
-        "SELECT room_id FROM member_wake_endpoints WHERE wake_pending = 1 UNION SELECT room_id FROM interrupt_deliveries WHERE status = 'pending'"
+        "SELECT room_id FROM member_wake_endpoints WHERE wake_pending = 1 UNION SELECT room_id FROM interrupt_deliveries WHERE status = 'pending' UNION SELECT room_id FROM visitor_reply_deliveries WHERE status = 'pending'"
       ).all().map((row) => row.room_id)])];
     for (const room of rooms) {
       // A recipient-scoped flush leaves other recipients queued for a later
@@ -3388,6 +3417,15 @@ export class TalkingStickService {
         if (agentId && row.agent_id !== agentId) continue;
         const job = this.dispatchWake(room, row.agent_id);
         this.wakeJobs.set(job, { room, agent: row.agent_id });
+        void job.finally(() => this.wakeJobs.delete(job)).catch(() => {});
+      }
+      const visitorReplies = this.db.prepare<[string], VisitorReplyDeliveryRow>(
+        "SELECT * FROM visitor_reply_deliveries WHERE room_id = ? AND status = 'pending' ORDER BY event_seq"
+      ).all(room);
+      for (const row of visitorReplies) {
+        if (agentId && row.requester_agent_id !== agentId) continue;
+        const job = this.dispatchVisitorReplyDelivery(row);
+        this.wakeJobs.set(job, { room, agent: row.requester_agent_id });
         void job.finally(() => this.wakeJobs.delete(job)).catch(() => {});
       }
     }
@@ -3489,21 +3527,34 @@ export class TalkingStickService {
         agent_id: input.agent_id, room_id: room.room_id, body,
         ...(recipients.length === 1 ? { to_agent_id: recipients[0] } : { to_agent_ids: recipients })
       }, body, "normal", timestamp, "visitor", { request_id: requestId });
+      const returnAddr = this.normalizeVisitorReturnAddress(input.agent_id, input.return_address);
       const request: VisitorRequestRow = {
         request_id: requestId, room_id: room.room_id, requester_agent_id: input.agent_id,
         request_key: input.request_key ?? null, payload_digest: digest, event_seq: sent.event_seq,
-        recipients_json: JSON.stringify(recipients), created_at: timestamp
+        recipients_json: JSON.stringify(recipients), created_at: timestamp,
+        return_transport: returnAddr?.transport ?? null,
+        return_address: returnAddr?.address ?? null,
+        return_secret: returnAddr?.secret ?? null,
+        return_harness_session_id: returnAddr?.harness_session_id ?? null,
+        return_host_id: returnAddr?.host_id ?? null,
+        return_pid: returnAddr?.pid ?? null,
+        return_process_started_at: returnAddr?.process_started_at ?? null
       };
       this.db.prepare(`INSERT INTO visitor_requests (request_id, room_id, requester_agent_id, request_key,
-        payload_digest, event_seq, recipients_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        payload_digest, event_seq, recipients_json, created_at, return_transport, return_address, return_secret,
+        return_harness_session_id, return_host_id, return_pid, return_process_started_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(request.request_id, request.room_id, request.requester_agent_id, request.request_key,
-          request.payload_digest, request.event_seq, request.recipients_json, request.created_at);
+          request.payload_digest, request.event_seq, request.recipients_json, request.created_at,
+          request.return_transport, request.return_address, request.return_secret,
+          request.return_harness_session_id, request.return_host_id, request.return_pid, request.return_process_started_at);
       return { request, sent };
     });
 
     const { request, sent } = asked;
     const recipients = JSON.parse(request.recipients_json) as AgentId[];
-    const base = { request_id: request.request_id, room_id: request.room_id, recipients };
+    const returnSummary = request.return_transport ? { return_address: { transport: request.return_transport } } : {};
+    const base = { request_id: request.request_id, room_id: request.room_id, recipients, ...returnSummary };
     if (!sent) {
       const event = this.getEventBySeq(request.event_seq);
       return { ...base, deduplicated: true, event_seq: request.event_seq, event_id: event?.event_id ?? "",
@@ -3520,7 +3571,9 @@ export class TalkingStickService {
   }
 
   // A member's answer to a visitor's question, recorded in the question's
-  // room; the responder must already be a member there.
+  // room; the responder must already be a member there. When the request
+  // captured a return address and the requester is not a room member, queue
+  // one push delivery keyed by (request_id, event_seq).
   replyToRequest(input: ReplyToRequestInput): ReplyToRequestResult {
     assertNonEmpty(input.agent_id, "agent_id");
     const body = input.body ?? "";
@@ -3534,9 +3587,43 @@ export class TalkingStickService {
         agent_id: input.agent_id, room_id: request.room_id, body, process_metadata: input.process_metadata
       }, body, "normal", timestamp, "member", { in_reply_to: request.request_id });
       this.db.prepare("INSERT INTO visitor_replies (request_id, event_seq) VALUES (?, ?)").run(request.request_id, sent.event_seq);
-      return { request_id: request.request_id, room_id: request.room_id, event_seq: sent.event_seq,
-        event_id: sent.event_id, created_at: sent.created_at };
+      let returnDelivery: VisitorReplyDelivery | undefined;
+      if (request.return_transport && request.return_address && !this.getMember(request.room_id, request.requester_agent_id)) {
+        const token = this.newDeliveryToken();
+        const sessionId = request.return_harness_session_id ?? `member:${request.requester_agent_id}`;
+        const hostId = request.return_host_id ?? this.hostId;
+        this.db.prepare(`INSERT OR IGNORE INTO visitor_reply_deliveries (
+          request_id, event_seq, room_id, requester_agent_id, transport, token,
+          harness_session_id, host_id, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`).run(
+          request.request_id, sent.event_seq, request.room_id, request.requester_agent_id,
+          request.return_transport, token, sessionId, hostId, timestamp
+        );
+        this.wakeRooms.add(request.room_id);
+        const queued = this.getVisitorReplyDeliveryRow(request.request_id, sent.event_seq);
+        if (queued) returnDelivery = this.mapVisitorReplyDelivery(queued);
+      }
+      return {
+        request_id: request.request_id, room_id: request.room_id, event_seq: sent.event_seq,
+        event_id: sent.event_id, created_at: sent.created_at,
+        ...(returnDelivery ? { return_delivery: returnDelivery } : {})
+      };
     });
+  }
+
+  async replyToRequestAndWake(input: ReplyToRequestInput): Promise<ReplyToRequestResult> {
+    const replied = this.replyToRequest(input);
+    if (!replied.return_delivery) return replied;
+    const pending = this.getVisitorReplyDeliveryRow(replied.request_id, replied.event_seq);
+    if (pending && pending.status === "pending") {
+      await this.dispatchVisitorReplyDelivery(pending);
+    }
+    const refreshed = this.getVisitorReplyDeliveryRow(replied.request_id, replied.event_seq);
+    if (!refreshed) {
+      const { return_delivery: _omitted, ...rest } = replied;
+      return rest;
+    }
+    return { ...replied, return_delivery: this.mapVisitorReplyDelivery(refreshed) };
   }
 
   // Answers to a visitor's question, oldest first. Reads only.
@@ -3562,6 +3649,13 @@ export class TalkingStickService {
       received_at: receipt.get(request.room_id, agentId, request.event_seq)?.consumed_at ?? null,
       replied: repliedBy.has(agentId)
     }));
+    const deliveryStmt = this.db.prepare<[string, number], VisitorReplyDeliveryRow>(
+      "SELECT * FROM visitor_reply_deliveries WHERE request_id = ? AND event_seq = ?"
+    );
+    const returnDeliveries = replies
+      .map((reply) => deliveryStmt.get(request.request_id, reply.event_seq))
+      .filter((row): row is VisitorReplyDeliveryRow => Boolean(row))
+      .map((row) => this.mapVisitorReplyDelivery(row));
     return {
       request_id: request.request_id,
       room_id: request.room_id,
@@ -3571,8 +3665,173 @@ export class TalkingStickService {
       request_event_seq: request.event_seq,
       replies,
       cursor_event_seq: replies.at(-1)?.event_seq ?? after,
-      has_more: rows.length > limit
+      has_more: rows.length > limit,
+      ...(request.return_transport ? { return_address: { transport: request.return_transport } } : {}),
+      ...(request.return_transport || returnDeliveries.length > 0 ? { return_deliveries: returnDeliveries } : {})
     };
+  }
+
+  private normalizeVisitorReturnAddress(
+    agentId: AgentId,
+    input: VisitorReturnAddressInput | undefined
+  ): {
+    transport: VisitorReturnTransportName;
+    address: string;
+    secret: string | null;
+    harness_session_id: string;
+    host_id: string;
+    pid: number | null;
+    process_started_at: string | null;
+  } | null {
+    if (!input) return null;
+    if (input.transport !== "claude_inbox" && input.transport !== "codex_queue") {
+      throw new ProtocolError("invalid_input", "Visitor return address transport must be claude_inbox or codex_queue.");
+    }
+    const address = input.address.trim();
+    if (!address) {
+      throw new ProtocolError("invalid_input", "Visitor return address must not be empty.");
+    }
+    const secret = input.secret === null ? null : input.secret.trim();
+    if (input.transport === "claude_inbox" && !secret) {
+      throw new ProtocolError("invalid_input", "claude_inbox return address requires a secret.");
+    }
+    const pid = typeof input.pid === "number" && Number.isInteger(input.pid) && input.pid > 0 ? input.pid : null;
+    const startedAt = input.process_started_at?.trim() || null;
+    return {
+      transport: input.transport,
+      address,
+      secret: input.transport === "claude_inbox" ? secret : null,
+      harness_session_id: input.harness_session_id?.trim() || `member:${agentId}`,
+      host_id: input.host_id?.trim() || this.hostId,
+      pid,
+      process_started_at: startedAt
+    };
+  }
+
+  private getVisitorReplyDeliveryRow(requestId: string, eventSeq: number): VisitorReplyDeliveryRow | undefined {
+    return this.db.prepare<[string, number], VisitorReplyDeliveryRow>(
+      "SELECT * FROM visitor_reply_deliveries WHERE request_id = ? AND event_seq = ?"
+    ).get(requestId, eventSeq);
+  }
+
+  private mapVisitorReplyDelivery(row: VisitorReplyDeliveryRow): VisitorReplyDelivery {
+    let status: VisitorReplyDeliveryStatus;
+    if (row.status === "dispatching") {
+      status = row.delivery_mode === "codex_queue_held" ? "ambiguous" : "pending";
+    } else if (
+      row.status === "queued" &&
+      row.delivery_mode === "codex_queue_held" &&
+      row.error &&
+      row.error !== "codex_turn_start_unconfirmed"
+    ) {
+      status = "ambiguous";
+    } else {
+      status = row.status;
+    }
+    return {
+      event_seq: row.event_seq,
+      transport: row.transport,
+      status,
+      ...(row.error ? { error: row.error } : {}),
+      ...(row.error_detail ? { error_detail: row.error_detail } : {}),
+      attempted_at: row.attempted_at,
+      received_at: status === "failed" ? null : row.acknowledged_at
+    };
+  }
+
+  private async dispatchVisitorReplyDelivery(row: VisitorReplyDeliveryRow): Promise<void> {
+    const finish = (result: NativeWakeResult) => {
+      const stored = result.outcome === "steered" ? "woken" : result.outcome;
+      this.db.prepare(`UPDATE visitor_reply_deliveries
+        SET status = ?, error = ?, error_detail = ?, attempted_at = ?
+        WHERE request_id = ? AND event_seq = ? AND status = 'dispatching'`)
+        .run(stored, result.error ?? null, safeWakeDetail(result.detail) ?? null, this.now().toISOString(),
+          row.request_id, row.event_seq);
+    };
+    const claimed = this.writeTransaction(() => {
+      const updated = this.db.prepare(`UPDATE visitor_reply_deliveries SET status = 'dispatching'
+        WHERE request_id = ? AND event_seq = ? AND status = 'pending'`).run(row.request_id, row.event_seq);
+      if (updated.changes !== 1) return null;
+      const request = this.db.prepare<[string], VisitorRequestRow>(
+        "SELECT * FROM visitor_requests WHERE request_id = ?"
+      ).get(row.request_id);
+      const room = this.getRoomRow(row.room_id);
+      const event = this.getEventBySeq(row.event_seq);
+      if (!request || !room || !event || !request.return_transport || !request.return_address) {
+        finish({ outcome: "failed", error: "request_not_found" });
+        return null;
+      }
+      // Never double-deliver if the requester joined this room before the push ran.
+      if (this.getMember(row.room_id, row.requester_agent_id)) {
+        this.db.prepare("DELETE FROM visitor_reply_deliveries WHERE request_id = ? AND event_seq = ? AND status = 'dispatching'")
+          .run(row.request_id, row.event_seq);
+        return null;
+      }
+      if (row.host_id !== this.hostId) {
+        finish({ outcome: "failed", error: "return_host_mismatch" });
+        return null;
+      }
+      if (request.return_pid !== null && request.return_process_started_at) {
+        const liveness = this.processLivenessChecker({
+          host_id: row.host_id,
+          pid: request.return_pid,
+          process_started_at: request.return_process_started_at,
+          harness_session_id: row.harness_session_id,
+          harness_host_id: row.host_id,
+          harness_pid: request.return_pid,
+          harness_process_started_at: request.return_process_started_at
+        });
+        if (liveness === "gone") {
+          finish({ outcome: "failed", error: "return_process_gone" });
+          return null;
+        }
+      }
+      const formatted = formatNativeEventText({
+        token: row.token,
+        room_id: row.room_id,
+        path: room.canonical_path,
+        recipient: row.requester_agent_id,
+        events: [this.mapEvent(event)]
+      }) ?? [
+        `[talking-stick] room ${room.canonical_path} · ack: tt ack ${row.token}`,
+        `#${event.event_seq} ${event.from_agent_id ?? "system"} → visitor (request ${row.request_id})`,
+        `  Reply exceeds push size limit. Run \`tt room replies ${row.request_id} --after ${Math.max(0, event.event_seq - 1)}\` to read it.`,
+        "[/talking-stick]"
+      ].join("\n");
+      return {
+        transport: request.return_transport,
+        address: request.return_address,
+        secret: request.return_secret,
+        text: formatted
+      };
+    });
+    if (!claimed) return;
+    let result: NativeWakeResult;
+    try {
+      if (!this.nativeWakeTransport) {
+        result = { outcome: "failed", error: "native_wake_unavailable" };
+      } else {
+        // Always queue behind an active manager turn; steering is reserved for explicit interrupts.
+        result = await this.nativeWakeTransport.deliver({
+          transport: claimed.transport,
+          address: claimed.address,
+          secret: claimed.secret,
+          text: claimed.text,
+          interrupt: false,
+          steer: false,
+          start_queued: true,
+          ...(claimed.transport === "codex_queue" ? {
+            on_queue: () => Boolean(this.db.prepare(`UPDATE visitor_reply_deliveries
+              SET delivery_mode = 'codex_queue_held'
+              WHERE request_id = ? AND event_seq = ? AND status = 'dispatching' AND acknowledged_at IS NULL`)
+              .run(row.request_id, row.event_seq).changes)
+          } : {})
+        });
+      }
+    } catch {
+      result = { outcome: "failed", error: "native_wake_error" };
+    }
+    finish(result);
   }
 
   // The endpoint row holds only its latest attempt. Report it only when that
@@ -4134,10 +4393,10 @@ export class TalkingStickService {
   }
 
   private newDeliveryToken(): string {
-    const taken = this.db.prepare<[string], { found: number }>(
-      "SELECT 1 AS found FROM native_delivery_batches WHERE token = ?");
+    const taken = this.db.prepare<[string, string], { found: number }>(
+      "SELECT 1 AS found FROM native_delivery_batches WHERE token = ? UNION ALL SELECT 1 AS found FROM visitor_reply_deliveries WHERE token = ? LIMIT 1");
     let token = newDeliveryToken();
-    while (taken.get(token)) token = newDeliveryToken();
+    while (taken.get(token, token)) token = newDeliveryToken();
     return token;
   }
 
@@ -4276,8 +4535,26 @@ export class TalkingStickService {
       const batch = this.db.prepare<[string], { room_id: string; agent_id: string; harness_session_id: string;
         host_id: string; event_seqs_json: string; acknowledged_at: string | null }>(
         "SELECT * FROM native_delivery_batches WHERE token = ?").get(input.token);
-      const member = batch ? this.getMember(batch.room_id, input.agent_id) : undefined;
-      if (!batch || !member || batch.agent_id !== input.agent_id ||
+      if (!batch) {
+        const visitorDelivery = this.db.prepare<[string], VisitorReplyDeliveryRow>(
+          "SELECT * FROM visitor_reply_deliveries WHERE token = ?"
+        ).get(input.token);
+        if (!visitorDelivery ||
+            visitorDelivery.requester_agent_id !== input.agent_id ||
+            visitorDelivery.harness_session_id !== (input.harness_session_id ?? `member:${input.agent_id}`) ||
+            visitorDelivery.host_id !== (input.host_id ?? this.hostId) ||
+            visitorDelivery.status === "failed") {
+          throw new ProtocolError("invalid_input", "Delivery token does not belong to this harness session.");
+        }
+        if (visitorDelivery.acknowledged_at) {
+          return { status: "already_acknowledged", event_seqs: [visitorDelivery.event_seq], request_id: visitorDelivery.request_id };
+        }
+        this.db.prepare("UPDATE visitor_reply_deliveries SET acknowledged_at = ? WHERE token = ?")
+          .run(this.now().toISOString(), input.token);
+        return { status: "acknowledged", event_seqs: [visitorDelivery.event_seq], request_id: visitorDelivery.request_id };
+      }
+      const member = this.getMember(batch.room_id, input.agent_id);
+      if (!member || batch.agent_id !== input.agent_id ||
           batch.harness_session_id !== (input.harness_session_id ?? `member:${input.agent_id}`) ||
           batch.harness_session_id !== (member.harness_session_id ?? `member:${input.agent_id}`) ||
           batch.host_id !== (input.host_id ?? this.hostId) ||
@@ -6874,6 +7151,7 @@ export class TalkingStickService {
 
   private deleteRoom(roomId: string): void {
     this.markManagedDeparture(roomId, null, "room_removed", this.now().toISOString());
+    this.db.prepare("DELETE FROM visitor_reply_deliveries WHERE room_id = ?").run(roomId);
     this.db.prepare("DELETE FROM visitor_replies WHERE request_id IN (SELECT request_id FROM visitor_requests WHERE room_id = ?)").run(roomId);
     this.db.prepare("DELETE FROM visitor_requests WHERE room_id = ?").run(roomId);
     this.db.prepare("DELETE FROM room_roles WHERE room_id = ?").run(roomId);

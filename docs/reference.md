@@ -315,9 +315,15 @@ exactly one agent matches; `room` sends it to every live agent in the room (not 
 running or recently present). A member asking its own room this way keeps its presence unchanged.
 The recipients are fixed when the question is asked and are woken like any directed message.
 Their envelope header reads `visitor <id>` and ends with the reply command. The visitor never
-becomes a member, never holds the stick, and doesn't keep the room open. A member answers with
-`tt msg reply <request-id>`; answers are room messages that wake nobody in the room. The visitor
-reads them with `tt room replies <request-id>`, oldest first, 20 at a time (`--limit` up to 200),
+becomes a member, never holds the stick, and doesn't keep the room open. When the asker runs in
+a session with a `claude_inbox` or `codex_queue` endpoint in its environment, `tt room ask`
+records that endpoint as a return address on the request without creating a room membership.
+A member answers with `tt msg reply <request-id>`; answers are room messages that wake nobody in
+the room, and when a return address is recorded (and the asker is not a member of that room), each
+reply `event_seq` is pushed once to the return address — queued behind any active turn rather than
+steered — and stays unconfirmed until the asker acknowledges its token with `tt ack <token>`.
+Whether or not a return address is present (or if the push fails), the visitor can always read the
+exact same answers with `tt room replies <request-id>`, oldest first, 20 at a time (`--limit` up to 200),
 with `recipient_status` reporting, per recipient, whether it is still in the room, the wake attempt
 that dispatched this request (`delivery`, null once a later attempt replaced it), when its `tt`
 received the request (`received_at`, null when no receipt is on record), and whether it replied:

@@ -1,7 +1,7 @@
 import os from "node:os";
 import { recordManagedGuard } from "./supervisor/membership-gc.js";
 import type { MessageAttachment } from "./attachments.js";
-import { detectNativeWakeEndpoints } from "./native-wake.js";
+import { detectNativeWakeEndpoints, detectVisitorReturnAddress } from "./native-wake.js";
 import { TalkingStickService, type RoleNotifier } from "./service.js";
 import type { RoleSubject, RoomRoleAssignment } from "./roles.js";
 import type {
@@ -569,14 +569,24 @@ export class TalkingStickCommands {
       process_metadata: identity.process_metadata }, onDelivery);
   }
 
-  // Visitors are identified but never registered: no process metadata is
-  // passed, so asking cannot refresh or create a membership.
+  // Visitors are identified but never registered: asking never creates a
+  // membership or refreshes presence, and only captures a direct native return
+  // address (claude_inbox or codex_queue) from the asker's own environment.
   askRoom(identity: DerivedIdentity, input: Omit<AskRoomInput, "agent_id">): Promise<AskRoomResult> {
-    return this.service.askRoom({ ...input, agent_id: identity.agent_id });
+    const returnAddress = input.return_address ?? detectVisitorReturnAddress(process.env, identity);
+    return this.service.askRoom({
+      ...input,
+      agent_id: identity.agent_id,
+      ...(returnAddress ? { return_address: returnAddress } : {})
+    });
   }
 
   replyToRequest(identity: DerivedIdentity, input: { request_id: string; body: string }): ReplyToRequestResult {
     return this.service.replyToRequest({ ...input, agent_id: identity.agent_id, process_metadata: identity.process_metadata });
+  }
+
+  replyToRequestAndWake(identity: DerivedIdentity, input: { request_id: string; body: string }): Promise<ReplyToRequestResult> {
+    return this.service.replyToRequestAndWake({ ...input, agent_id: identity.agent_id, process_metadata: identity.process_metadata });
   }
 
   getRequestReplies(input: RequestRepliesInput): RequestRepliesResult {
