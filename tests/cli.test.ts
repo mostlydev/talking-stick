@@ -2233,19 +2233,16 @@ describe("tt notes", () => {
     }
   });
 
-  test("tt self-update --print emits the inferred command without running it", async () => {
-    const out = await captureStdout([
-      "self-update",
-      "--print",
-      "--manager",
-      "pnpm"
-    ]);
-    expect(out.trim()).toBe("pnpm install -g talking-stick@latest");
-  });
+  test.each(["update", "self-update"])("tt %s uses the same updater", async (command) => {
+    const help = await captureStdout([command, "--help"]);
+    expect(help).toContain("Usage: tt update");
+    expect(help).toContain("Aliases: self-update");
 
-  test("tt self-update --manager rejects unknown values", async () => {
+    const out = await captureStdout([command, "--print", "--manager", "pnpm"]);
+    expect(out.trim()).toBe("pnpm install -g talking-stick@latest");
+
     await expect(
-      captureStdout(["self-update", "--print", "--manager", "winget"])
+      captureStdout([command, "--print", "--manager", "winget"])
     ).rejects.toThrow(/--manager must be one of/);
   });
 

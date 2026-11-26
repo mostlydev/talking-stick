@@ -62,7 +62,7 @@ describe("automatic standalone updates", () => {
     expect(await autoUpdate(options)).toBe(false);
     expect(await autoUpdate(options)).toBe(false);
     expect(options.latestVersion).toHaveBeenCalledTimes(1);
-    expect(options.report).toHaveBeenCalledWith(expect.stringMatching(/offline.*Continuing.*self-update/));
+    expect(options.report).toHaveBeenCalledWith(expect.stringMatching(/offline.*Continuing.*tt update/));
     expect(fs.realpathSync(path.join(dir, "current"))).toBe(fs.realpathSync(root));
   });
   test("failed installation leaves the command usable; a false success is detected", async () => {

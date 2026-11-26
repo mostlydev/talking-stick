@@ -377,7 +377,7 @@ export async function runSelfUpdateCommand(
   if (!plan) {
     if (source === "dev") {
       throw new Error(
-        "tt is running from a development checkout. Use `git pull && npm install && npm run build` instead of `tt self-update`, or pass `--manager npm|pnpm|yarn|bun` if this is wrong."
+        "tt is running from a development checkout. Use `git pull && npm install && npm run build` instead of `tt update`, or pass `--manager npm|pnpm|yarn|bun` if this is wrong."
       );
     }
     throw new Error(

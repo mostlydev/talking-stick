@@ -75,7 +75,7 @@ tt msg send room --resolves <id> <answer>                  # close an item from 
 tt room send <room> --resolves <id> <answer> [--stdin]     # close an item without joining
 tt install <harness...|herdr> | --all [--print] [--copy] [--link] [--replace] [--no-guard]
 tt uninstall <harness...|agents|herdr> | --all | --shared [--print]
-tt self-update [--print] [--manager npm|pnpm|yarn|bun]
+tt update [--print] [--manager npm|pnpm|yarn|bun]         # self-update is an alias
 tt supervisor status | approvals [show <approval-id>] | logs [--lines N]
 tt supervisor gc --dry-run
 tt supervisor add <worker> --harness claude|codex|grok --cwd PATH [options]
@@ -148,12 +148,12 @@ instead, never `installed`; download the next archive from
 <https://github.com/mostlydev/shrooms/releases>. Development checkouts linked with
 `npm link` show no notice. `TT_NO_AUTO_UPDATE=1` also disables the running-chat check.
 
-`tt self-update` on the standalone binary reruns the installer bundled with the current release,
-keeping the `--install-dir` and `--bin-dir` it was installed with (recorded in
-`<install-dir>/install-receipt`). For an npm-family install it explains the move to the standalone
+On a standalone install, `rooms update` (also `tt update`) reruns the bundled installer.
+It keeps the `--install-dir` and `--bin-dir` recorded in `<install-dir>/install-receipt`. For an npm-family install it explains the move to the standalone
 binary, then detects how `tt` was installed (npm / pnpm / yarn / bun, including
 npm-via-Homebrew/mise/asdf/nvm) and runs the right global-update command. Pass `--print`
 to see the inferred command without running it, or `--manager` to override detection.
+The command `self-update` remains an alias.
 Running it from a development checkout refuses and tells you to
 `git pull && npm install && npm run build` instead.
 

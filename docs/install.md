@@ -45,7 +45,7 @@ the skill files beside the binary. `tt` links to the active release, and skill l
 ```bash
 tt install --all --print       # preview every change without touching anything
 tt install claude-code codex   # install into a subset
-tt self-update                 # reinstall the latest release with the same directories
+rooms update                  # update the installed app in the same directories
 tt uninstall --all             # remove
 ```
 
@@ -69,11 +69,13 @@ exists, `tt` downloads and installs it, then asks you to rerun the command. Agen
 JSON output, redirected terminals, and source checkouts never auto-update. The automatic download
 and install get up to two minutes.
 
-The bottom chat status bar shows a newer available version with `tt self-update`, or
+Run `rooms update` to update an installed copy now. `rooms self-update` is an alias.
+
+The bottom chat status bar shows a newer available version with `tt update`, or
 “installed · restart chat” when an update is already on disk. Windows and hand-extracted copies
 show “available · download from GitHub”. Running chats never install
 updates. Panes share one cached check of the public release asset, with jitter and cached
-failures. `TT_NO_AUTO_UPDATE=1` turns off both startup and chat checks. `tt self-update` still works.
+failures. `TT_NO_AUTO_UPDATE=1` turns off both startup and chat checks. Manual updates still work.
 
 **After any update,** restart running harnesses so they load the new skill and hooks, and reopen
 `tt chat`.

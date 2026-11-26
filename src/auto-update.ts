@@ -75,7 +75,7 @@ export async function autoUpdate(options: AutoUpdateOptions): Promise<boolean> {
     report(`Talking Stick ${installed} installed. Restart this command and any running chats or harnesses to load it.`);
     return true;
   } catch (error) {
-    report(`Talking Stick auto-update failed: ${summarizeError(error)}. Continuing; run tt self-update to retry.`);
+    report(`Talking Stick auto-update failed: ${summarizeError(error)}. Continuing; run tt update to retry.`);
     // A post-install step can fail after the binary link has already advanced.
     // Do not dispatch the old command into a newly migrated database.
     try {

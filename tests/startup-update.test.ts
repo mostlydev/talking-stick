@@ -27,7 +27,7 @@ test("interactive human chat stops dispatch when an update requires restart", as
   expect(await runStartupUpdate(parseCommand(["chat"]))).toBe(true);
   expect(autoUpdate).toHaveBeenCalledExactlyOnceWith({ releaseRoot: "/fixture/releases/0.24.1" });
 });
-test.each(["wait", "release", "standby", "msg", "ack", "guard", "session-hook", "post-install", "self-update"])("%s never triggers a startup install", async (command) => {
+test.each(["wait", "release", "standby", "msg", "ack", "guard", "session-hook", "post-install", "update", "self-update"])("%s never triggers a startup install", async (command) => {
   expect(await runStartupUpdate(parseCommand([command]))).toBe(false);
   expect(autoUpdate).not.toHaveBeenCalled();
 });

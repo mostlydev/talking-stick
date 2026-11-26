@@ -1299,7 +1299,7 @@ function renderFooter(input: ChatScreenInput, width: number, onMember?: (agent_i
     const versionText = paintStyle(context.color, themeStyle(installed ? "ok" : "accent", context.color_mode), version);
     const full = installed
       ? `${versionText}${dim(context, " installed · ")}${paintStyle(context.color, `1;${themeStyle("warn", context.color_mode)}`, "restart chat")}`
-      : `${versionText}${dim(context, manual ? " available · download from GitHub" : " available · tt self-update")}`;
+      : `${versionText}${dim(context, manual ? " available · download from GitHub" : " available · tt update")}`;
     const compact = installed
       ? `${paintStyle(context.color, `1;${themeStyle("warn", context.color_mode)}`, "restart for ")}${versionText}`
       : `${versionText}${dim(context, " available")}`;
