@@ -5,7 +5,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { resolveDataDir } from "../config.js";
 import { humanAttentionWhere } from "../human-attention.js";
 import { sanitizeIdentityComponent } from "../identity-name.js";
@@ -52,8 +51,8 @@ export function readPromptState(options: PromptStateOptions = {}): PromptState |
   const env = options.env ?? process.env;
   const file = path.join(resolveDataDir({ env }), "rooms.sqlite");
   if (!fs.existsSync(file)) return null;
-  const read = (database: string) => {
-    const db = openSqlite(database, { readonly: true, timeout: 25 });
+  const read = (immutable = false) => {
+    const db = openSqlite(file, { readonly: true, immutable, timeout: 25 });
     try {
       const room = findRoom(db, options.cwd ?? process.cwd(), env.TT_ROOM?.trim() || null);
       return room ? describeRoom(db, room, {
@@ -67,16 +66,14 @@ export function readPromptState(options: PromptStateOptions = {}): PromptState |
   };
 
   try {
-    if (!isBunRuntime()) return read(file);
+    if (!isBunRuntime()) return read();
     const before = fs.statSync(file, { bigint: true });
-    if (hasSqliteSidecars(file)) return read(file);
+    if (hasSqliteSidecars(file)) return read();
 
     // The standalone SQLite reader can refuse to open a checkpointed WAL
     // database once the last writer removes its sidecars. An immutable read
     // needs no sidecars. Discard it if a writer appeared or changed the file.
-    const uri = pathToFileURL(file);
-    uri.searchParams.set("immutable", "1");
-    const state = read(uri.href);
+    const state = read(true);
     const after = fs.statSync(file, { bigint: true });
     if (hasSqliteSidecars(file)) return null;
     return before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
