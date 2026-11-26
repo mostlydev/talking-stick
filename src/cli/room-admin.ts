@@ -103,6 +103,23 @@ function formatBlocker(blocker: RoomBlocker): string {
   return `${blocker.blocker_id}${blocker.goal_id ? ` → ${blocker.goal_id}` : ""} (${status})  ${sanitizeChatText(blocker.body)}`;
 }
 
+export async function handleLiaisonCommand(runtime: Runtime, parsed: ParsedCommand): Promise<void> {
+  const [action, target] = parsed.positionals;
+  const room = briefTarget(runtime, parsed, undefined);
+  const identity = deriveCliIdentity(parsed);
+  if (action === "set" && target) {
+    const result = runtime.commands.setLiaison(identity, { room_id: room.room_id, liaison_agent_id: target });
+    printResult(parsed, result, () => `Liaison is ${result.liaison_agent_id}.`);
+    return;
+  }
+  if (action === "clear" && !target) {
+    const result = runtime.commands.setLiaison(identity, { room_id: room.room_id, liaison_agent_id: null });
+    printResult(parsed, result, () => "Liaison cleared. The room picks one from its live members.");
+    return;
+  }
+  throw new Error("Usage: tt liaison set <agent> | clear [--in ROOM]");
+}
+
 export async function handleBlockerCommand(runtime: Runtime, parsed: ParsedCommand): Promise<void> {
   const [action, ...rest] = parsed.positionals;
   const room = briefTarget(runtime, parsed, undefined);

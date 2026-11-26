@@ -12,6 +12,8 @@ export type ProtocolErrorCode =
   | "request_not_found"
   | "request_key_conflict"
   | "no_recipients"
+  | "not_liaison"
+  | "not_authorized"
   | "unknown_member"
   | "session_ended"
   | "member_lost"
@@ -58,6 +60,7 @@ export interface ProtocolErrorDetails {
   room_state?: RoomState;
   to_agent_id?: string;
   request_id?: string;
+  liaison_agent_id?: string | null;
   reserved_for?: string | null;
   reason?: string;
   room_id?: string;

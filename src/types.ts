@@ -150,6 +150,7 @@ export type EventType =
   | "goal_closed"
   | "session_superseded"
   | "reservation_expired"
+  | "liaison_set"
   | "message_sent";
 
 export type DeliveryHint = "normal" | "interrupt";

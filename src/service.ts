@@ -5,7 +5,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { RoleSubject, RoomRoleAssignment } from "./roles.js";
+import { effectiveRoles, readUserRoleDefaults, type RoleSubject, type RoomRoleAssignment } from "./roles.js";
 import {
   insideNestedRepository,
   isWithinOrSame,
@@ -209,6 +209,7 @@ interface VisitorRequestRow {
   event_seq: number;
   recipients_json: string;
   created_at: string;
+  scope: string;
   return_transport: VisitorReturnTransportName | null;
   return_address: string | null;
   return_secret: string | null;
@@ -364,6 +365,7 @@ const KNOWN_EVENT_TYPES: readonly EventType[] = [
   "goal_closed",
   "session_superseded",
   "reservation_expired",
+  "liaison_set",
   "message_sent"
 ];
 
@@ -3542,6 +3544,101 @@ export class TalkingStickService {
   // A question from outside the room: the requester need not be a member and
   // never becomes one. Recipients are fixed when it is asked, and are woken
   // like any directed message after the request commits.
+  // The one member a room-wide overseer question wakes. A pin wins while that
+  // member is live. Otherwise a live architect, then the last live stick
+  // holder, then the lowest-ordinal live agent.
+  resolveLiaison(roomId: string, now = this.now(), exclude?: AgentId): AgentId | null {
+    const live = this.getMembers(roomId).filter((member) => this.liaisonCandidate(member, now, exclude));
+    if (live.length === 0) return null;
+    const pinned = this.db.prepare<[string], { liaison_agent_id: string | null }>(
+      "SELECT liaison_agent_id FROM path_rooms WHERE room_id = ?").get(roomId)?.liaison_agent_id ?? null;
+    if (pinned && live.some((member) => member.agent_id === pinned)) return pinned;
+    const assignments = this.db.prepare<[string], { subject: string; roles_json: string }>(
+      "SELECT subject, roles_json FROM room_roles WHERE room_id = ?").all(roomId)
+      .map((row) => ({ subject: row.subject as RoleSubject, roles: JSON.parse(row.roles_json) as string[] }));
+    const defaults = readUserRoleDefaults({ env: { ...process.env, TALKING_STICK_DATA_DIR: this.dataDir } });
+    const architects = live.filter((member) => effectiveRoles(member.agent_id, assignments, defaults).roles.includes("architect"));
+    const pool = architects.length > 0 ? architects : this.liveStickHolders(roomId, live);
+    return [...pool].sort((left, right) => {
+      const leftWake = this.canWakeLiaison(roomId, left) ? 0 : 1;
+      const rightWake = this.canWakeLiaison(roomId, right) ? 0 : 1;
+      return leftWake - rightWake || left.ordinal - right.ordinal;
+    })[0]?.agent_id ?? null;
+  }
+
+  setLiaison(input: { agent_id: AgentId; room_id: string; liaison_agent_id: AgentId | null }): {
+    room_id: string; liaison_agent_id: AgentId | null; event_seq: number | null;
+  } {
+    assertNonEmpty(input.agent_id, "agent_id");
+    assertNonEmpty(input.room_id, "room_id");
+    const now = this.now();
+    const timestamp = now.toISOString();
+    return this.writeTransaction(() => {
+      const room = this.requireRoom(input.room_id);
+      if (room.state === "closed") throw new ProtocolError("room_closed", "Cannot change the liaison of a closed room.");
+      const current = this.resolveLiaison(room.room_id, now);
+      const allowed = input.agent_id.startsWith("human:")
+        || input.agent_id === current
+        || (current === null && room.owner === input.agent_id);
+      if (!allowed) {
+        throw new ProtocolError("not_authorized",
+          current ? `Only the operator or liaison ${current} can change the liaison.`
+            : "Only the operator or the stick holder can set a liaison while none is live.",
+          { liaison_agent_id: current });
+      }
+      if (input.liaison_agent_id) {
+        const target = this.getMembers(room.room_id).find((member) => member.agent_id === input.liaison_agent_id);
+        if (!target || !this.liaisonCandidate(target, now)) {
+          throw new ProtocolError("unknown_member", `No live agent ${input.liaison_agent_id} is in this room.`,
+            { agent_id: input.liaison_agent_id });
+        }
+      }
+      const pinned = this.db.prepare<[string], { liaison_agent_id: string | null }>(
+        "SELECT liaison_agent_id FROM path_rooms WHERE room_id = ?").get(room.room_id)?.liaison_agent_id ?? null;
+      if (pinned === input.liaison_agent_id) return { room_id: room.room_id, liaison_agent_id: pinned, event_seq: null };
+      this.db.prepare("UPDATE path_rooms SET liaison_agent_id = ?, updated_at = ? WHERE room_id = ?")
+        .run(input.liaison_agent_id, timestamp, room.room_id);
+      const eventSeq = this.appendEvent({
+        room_id: room.room_id, turn_id: room.turn_id, event_type: "liaison_set",
+        from_agent_id: input.agent_id, to_agent_id: input.liaison_agent_id, handoff: null,
+        reason: input.liaison_agent_id ? "pinned" : "cleared", created_at: timestamp
+      });
+      return { room_id: room.room_id, liaison_agent_id: input.liaison_agent_id, event_seq: eventSeq };
+    });
+  }
+
+  private liaisonCandidate(member: RoomMemberRow, now: Date, exclude?: AgentId): boolean {
+    if (member.agent_id === exclude || member.agent_id.startsWith("human:") || isObserverMember(member)) return false;
+    const liveness = this.getMemberProcessLiveness(member);
+    return liveness !== "gone" && (liveness === "alive" || this.hasRecentPresence(member, now));
+  }
+
+  private canWakeLiaison(roomId: string, member: RoomMemberRow): boolean {
+    const receiver = this.db.prepare<[string, string], RoomReceiverRow>(
+      "SELECT * FROM room_receivers WHERE room_id = ? AND agent_id = ?").get(roomId, member.agent_id);
+    if (receiver && this.receiverLiveness(receiver) === "alive") return true;
+    return this.usableNativeWakeEndpoints(roomId, member).some((row) =>
+      row.transport !== "cmux" || (member.wait_intent === "parked" && member.standby_transport === "cmux"));
+  }
+
+  private liveStickHolders(roomId: string, live: RoomMemberRow[]): RoomMemberRow[] {
+    const room = this.requireRoom(roomId);
+    if (room.owner && live.some((member) => member.agent_id === room.owner)) {
+      return live.filter((member) => member.agent_id === room.owner);
+    }
+    // claim and takeover record the new holder in to_agent_id. pass records the
+    // previous holder in from_agent_id, and release does too.
+    const holders = this.db.prepare<[string], { holder: string | null }>(`
+      SELECT CASE WHEN event_type IN ('claim', 'takeover') THEN to_agent_id ELSE from_agent_id END AS holder
+      FROM room_events WHERE room_id = ? AND event_type IN ('release', 'pass', 'claim', 'takeover')
+      ORDER BY event_seq DESC`).all(roomId);
+    for (const holder of holders) {
+      const member = holder.holder ? live.find((candidate) => candidate.agent_id === holder.holder) : undefined;
+      if (member) return [member];
+    }
+    return live;
+  }
+
   async askRoom(input: AskRoomInput): Promise<AskRoomResult> {
     assertNonEmpty(input.agent_id, "agent_id");
     assertNonEmpty(input.room_id, "room_id");
@@ -3576,19 +3673,15 @@ export class TalkingStickService {
       const members = this.getMembers(room.room_id);
       const agents = members.filter((member) => !isObserverMember(member));
       let recipients: AgentId[];
+      let scope = "direct";
       if (selectors === "room") {
-        // Live as tt room list --all counts it: not gone, and either running
-        // or recently present.
-        recipients = agents
-          .filter((member) => {
-            if (member.agent_id === input.agent_id || member.agent_id.startsWith("human:")) return false;
-            const liveness = this.getMemberProcessLiveness(member);
-            return liveness !== "gone" && (liveness === "alive" || this.hasRecentPresence(member, now));
-          })
-          .map((member) => member.agent_id);
-        if (recipients.length === 0) {
-          throw new ProtocolError("no_recipients", "No live agent is in this room to ask.", { room_id: room.room_id });
+        // One voice. The liaison is the only member woken for a room-wide ask.
+        const liaison = this.resolveLiaison(room.room_id, now, input.agent_id);
+        if (!liaison) {
+          throw new ProtocolError("no_recipients", "No live liaison is in this room to ask.", { room_id: room.room_id });
         }
+        recipients = [liaison];
+        scope = "room";
       } else {
         // An exact id, or a display or harness name that matches one agent.
         recipients = [...new Set(selectors.map((selector) => {
@@ -3618,7 +3711,7 @@ export class TalkingStickService {
       const request: VisitorRequestRow = {
         request_id: requestId, room_id: room.room_id, requester_agent_id: input.agent_id,
         request_key: input.request_key ?? null, payload_digest: digest, event_seq: sent.event_seq,
-        recipients_json: JSON.stringify(recipients), created_at: timestamp,
+        recipients_json: JSON.stringify(recipients), created_at: timestamp, scope,
         return_transport: returnAddr?.transport ?? null,
         return_address: returnAddr?.address ?? null,
         return_secret: returnAddr?.secret ?? null,
@@ -3628,11 +3721,11 @@ export class TalkingStickService {
         return_process_started_at: returnAddr?.process_started_at ?? null
       };
       this.db.prepare(`INSERT INTO visitor_requests (request_id, room_id, requester_agent_id, request_key,
-        payload_digest, event_seq, recipients_json, created_at, return_transport, return_address, return_secret,
+        payload_digest, event_seq, recipients_json, created_at, scope, return_transport, return_address, return_secret,
         return_harness_session_id, return_host_id, return_pid, return_process_started_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(request.request_id, request.room_id, request.requester_agent_id, request.request_key,
-          request.payload_digest, request.event_seq, request.recipients_json, request.created_at,
+          request.payload_digest, request.event_seq, request.recipients_json, request.created_at, scope,
           request.return_transport, request.return_address, request.return_secret,
           request.return_harness_session_id, request.return_host_id, request.return_pid, request.return_process_started_at);
       return { request, sent };
@@ -3670,6 +3763,19 @@ export class TalkingStickService {
     this.purgeExpiredIdleRooms(now);
     return this.writeTransaction(() => {
       const request = this.requireVisitorRequest(input.request_id);
+      if (!this.getMember(request.room_id, input.agent_id)) {
+        throw new ProtocolError("unknown_member", "Agent must join the room before answering a visitor.");
+      }
+      if (request.scope === "room") {
+        const liaison = this.resolveLiaison(request.room_id, now, request.requester_agent_id);
+        if (input.agent_id !== liaison) {
+          throw new ProtocolError("not_liaison",
+            liaison
+              ? `Only liaison ${liaison} replies to a room-wide question. Send what you know to ${liaison}.`
+              : "This room has no live liaison to answer a room-wide question.",
+            { liaison_agent_id: liaison });
+        }
+      }
       const sent = this.sendMessageLocked({
         agent_id: input.agent_id, room_id: request.room_id, body, process_metadata: input.process_metadata
       }, body, "normal", timestamp, "member", { in_reply_to: request.request_id });

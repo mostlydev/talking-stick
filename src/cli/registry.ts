@@ -4,7 +4,7 @@ import { runCodexInboxHookCommand } from "./codex-inbox-hook.js";
 import { runSessionHookCommand } from "./session-hook.js";
 import { runAntigravityHookCommand } from "./antigravity-hook.js";
 import { runInterruptHookCommand } from "./interrupt-hook.js";
-import { GOAL_USAGE, handleBlockerCommand, handleGoalCommand, handleRoomCommand } from "./room-admin.js";
+import { GOAL_USAGE, handleBlockerCommand, handleGoalCommand, handleLiaisonCommand, handleRoomCommand } from "./room-admin.js";
 import { handleRolesCommand } from "./role-commands.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
@@ -65,7 +65,7 @@ export interface CommandEntry {
 /** How help groups the public commands: managing rooms, taking turns inside one, and setup. */
 export const HELP_GROUPS = [
   { title: "Manage rooms",
-    commands: ["chat", "up", "room", "list", "roles", "supervisor", "goal", "blocker", "kick"] },
+    commands: ["chat", "up", "room", "list", "roles", "liaison", "supervisor", "goal", "blocker", "kick"] },
   { title: "Inside a room (the talking stick)",
     commands: ["join", "leave", "wait", "standby", "try", "take", "release", "pass", "assign", "msg", "ack", "notes",
       "state", "health", "events"] },
@@ -413,6 +413,15 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: GOAL_USAGE,
     description: "Set a room goal, read its brief, or close it with evidence.",
     handler: ({ parsed, runtime }) => handleGoalCommand(runtime!, parsed)
+  },
+  {
+    name: "liaison",
+    needsRuntime: true,
+    startupMaintenance: true,
+    internal: false,
+    usage: "tt liaison set <agent> | clear [--in ROOM]",
+    description: "Pin or clear the one member who answers a room-wide question from outside.",
+    handler: ({ runtime, parsed }) => handleLiaisonCommand(requireRuntime(runtime), parsed)
   },
   {
     name: "blocker",

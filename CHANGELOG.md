@@ -15,6 +15,7 @@ changes will be called out under **Breaking changes**.
 
 - `tt room ask` captures the asker's native `claude_inbox` or `codex_queue` endpoint as a return address on the request without creating a room membership, stick, or standby row. Each `tt msg reply` pushes its `event_seq` once (queued behind an active turn, never steered, skipped if the asker is a room member) and stays unconfirmed until the asker acknowledges it with `tt ack <token>`; `tt room replies` continues to show the exact same replies plus return-push delivery and receipt status.
 - Give a room a goal with `rooms goal add`, a brief, and a completion criterion. Rooms can link blockers to goals and close goals with evidence. `rooms room brief` shows open goals and recent closures.
+- `tt liaison set` and `tt liaison clear` pin the one member who answers a room-wide question from outside. With no pin, that member is a live architect, then the last live stick holder, then the lowest-ordinal live agent. `tt msg reply` refuses a room-wide answer from anyone else.
 
 ## [0.41.0] — 2026-11-26
 
