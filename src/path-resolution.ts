@@ -38,10 +38,20 @@ export interface ResolvedContextPath {
   room_path: string;
 }
 
-export function resolveContextPath(contextPath: string): ResolvedContextPath {
+export interface GitRoots { checkout_root: string; coordination_root: string }
+
+export interface ResolveContextOptions {
+  /**
+   * How to find the Git roots. The default asks git; a shell prompt passes
+   * resolveGitRootsFromFilesystem, which spawns nothing.
+   */
+  gitRoots?: (canonicalContextPath: string) => GitRoots | null;
+}
+
+export function resolveContextPath(contextPath: string, options: ResolveContextOptions = {}): ResolvedContextPath {
   const requestedPath = path.resolve(contextPath);
   const canonicalContextPath = canonicalizeContextPath(requestedPath);
-  const git = resolveGitRoots(canonicalContextPath);
+  const git = (options.gitRoots ?? resolveGitRoots)(canonicalContextPath);
   const workspaceRoot = git?.coordination_root ?? resolveNonGitWorkspaceRoot(canonicalContextPath);
   const declaration = findRoomDeclaration(canonicalContextPath, git?.checkout_root ?? null);
   // A declared room is keyed by the coordination root plus its checkout-relative
@@ -170,7 +180,7 @@ export function ancestorPaths(
   return ancestors;
 }
 
-function resolveGitRoots(canonicalContextPath: string): { checkout_root: string; coordination_root: string } | null {
+function resolveGitRoots(canonicalContextPath: string): GitRoots | null {
   try {
     const checkoutRoot = execFileSync(
       "git",
@@ -204,6 +214,46 @@ function resolveGitRoots(canonicalContextPath: string): { checkout_root: string;
         ? path.dirname(commonDirectory)
         : checkoutRoot;
     return { checkout_root: realCheckoutRoot, coordination_root: fs.realpathSync.native(coordinationRoot) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The same roots as resolveGitRoots, read from the filesystem: the nearest
+ * `.git` directory is an ordinary checkout; a `.git` file points at a linked
+ * worktree's or a submodule's git dir, whose `commondir` names the shared
+ * repository. As there, only a common dir named `.git` moves the coordination
+ * root; any other layout keeps the checkout root.
+ */
+export function resolveGitRootsFromFilesystem(canonicalContextPath: string): GitRoots | null {
+  try {
+    let current = canonicalContextPath;
+    while (true) {
+      const marker = path.join(current, ".git");
+      let stat: fs.Stats | null = null;
+      try { stat = fs.statSync(marker); } catch { stat = null; }
+      if (stat?.isDirectory()) {
+        const root = fs.realpathSync.native(current);
+        return { checkout_root: root, coordination_root: root };
+      }
+      if (stat?.isFile()) {
+        const checkoutRoot = fs.realpathSync.native(current);
+        const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(marker, "utf8"));
+        if (!pointer) return null;
+        const gitDir = path.resolve(current, pointer[1]);
+        let commonDir = gitDir;
+        try {
+          const common = fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim();
+          if (common) commonDir = path.resolve(gitDir, common);
+        } catch { /* A submodule's git dir has no commondir: it is its own. */ }
+        const coordinationRoot = path.basename(commonDir) === ".git" ? path.dirname(commonDir) : checkoutRoot;
+        return { checkout_root: checkoutRoot, coordination_root: fs.realpathSync.native(coordinationRoot) };
+      }
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      current = parent;
+    }
   } catch {
     return null;
   }

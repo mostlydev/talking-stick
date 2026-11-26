@@ -1,6 +1,6 @@
 import type { RoomBlocker } from "./types.js";
 import { PROFILE_NOTICES } from "./profile-notices.js";
-import { humanAttentionIdentity, isHumanDirected } from "./human-attention.js";
+import { humanAttentionIdentity, humanAttentionWhere, isHumanDirected } from "./human-attention.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -7381,24 +7381,7 @@ export class TalkingStickService {
   }
 
   private humanAttentionFilter(input: { room_id: string; human_id: string }): { where: string; values: unknown[] } {
-    const human = humanAttentionIdentity(input.human_id);
-    if (!human.startsWith("human:")) throw new Error("Human attention requires a human identity.");
-    // Recipient filtering precedes LIMIT; ordinary delivery receipts never dismiss a pin.
-    const stable = (column: string) => `(CASE WHEN substr(${column}, -14, 6) = ':chat:'
-      AND length(substr(${column}, -8)) = 8 AND substr(${column}, -8) NOT GLOB '*[^a-fA-F0-9]*'
-      THEN substr(${column}, 1, length(${column}) - 14) ELSE ${column} END)`;
-    const where = `e.room_id = ? AND e.event_type = 'message_sent'
-      AND e.event_seq > (SELECT event_seq FROM human_attention_start WHERE id = 1)
-      AND e.event_seq > ?
-      AND COALESCE(${stable("e.from_agent_id")}, '') != ?
-      AND (${stable("e.to_agent_id")} = ?
-        OR (e.to_agent_id IS NULL AND EXISTS (SELECT 1 FROM json_each(
-          COALESCE(json_extract(e.payload_json, '$.recipients'), '[]')) r
-          WHERE ${stable("r.value")} = ?)))
-      AND NOT EXISTS (SELECT 1 FROM human_message_acknowledgements a
-        WHERE a.room_id = e.room_id AND a.human_id = ? AND a.event_seq = e.event_seq)`;
-    const values = [input.room_id, this.getHumanChatClearCursor(input), human, human, human, human];
-    return { where, values };
+    return humanAttentionWhere(input.room_id, input.human_id, this.getHumanChatClearCursor(input));
   }
 
   acknowledgeHumanMessage(input: { room_id: string; agent_id: string; event_seq: number }): void {

@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- `rooms prompt` shows the current folder's room in your shell prompt, such as `#shrooms 4 ▸claude !1 @2`: its agents, the stick holder, open blockers, and messages waiting for you. Outside a room it prints nothing. `rooms prompt init zsh|bash|fish` prints the setup line. zsh and fish refresh in the background and repaint, so the prompt never waits, and a result for a folder you've left is dropped. It reads the database without writing or running Git. Bash refreshes synchronously. `--format` and `--json` customize it.
+
 ### Changed
 
 - Updated the `rooms` and `rooms-oversee` skills so members and managers know up front how messages arrive: idle members run `tt standby --json`, end their turn when `can_self_wake` is `true` (recognizing Claude Code's "Another Claude session sent a message" prompt as the room), and keep one parked wait only when `can_self_wake` is `false`; managers wait once with `tt room replies --timeout 60` instead of looping while manager push (#286) is pending.

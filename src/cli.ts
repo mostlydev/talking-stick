@@ -48,6 +48,14 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  // A shell prompt runs this on every Enter: no startup update, maintenance,
+  // notices, or runtime. The fast paths are prompt/entry.js and the binary.
+  if (parsed.name === "prompt") {
+    const { runPromptCommand } = await import("./prompt/main.js");
+    process.exitCode = runPromptCommand(argv.slice(argv.indexOf("prompt") + 1));
+    return;
+  }
+
   const command = getCommand(parsed.name);
   if (!command) {
     throw new Error(`Unknown command: ${parsed.name}. Run ${invokedCommandName()} --help for the commands.`);

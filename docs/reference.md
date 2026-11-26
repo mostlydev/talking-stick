@@ -13,6 +13,7 @@ Start with the [Quickstart](../README.md#quickstart) or the [installation guide]
 - [Waking idle agents](#waking-idle-agents)
 - [Native event delivery](#native-event-delivery)
 - [Operator chat](#operator-chat)
+- [Shell prompt](#shell-prompt)
 - [Editable collaboration instructions](#editable-collaboration-instructions)
 - [Install behavior per harness](#install-behavior-per-harness)
 - [CLI identity](#cli-identity)
@@ -28,6 +29,8 @@ rooms, working inside a room, and setup.
 ```text
 tt --version                                              # print the installed version
 tt whoami [--explain]                                     # show the resolved CLI identity
+tt prompt [--format FORMAT] [--json]                      # this folder's room for a shell prompt; nothing outside a room
+tt prompt init <zsh|bash|fish>                            # print the shell setup that shows it
 tt list [path]                                            # rooms whose scope covers the path, most specific first
 tt roles [show] | set <agent|harness> <roles|none|clear> | default <harness> <roles|none|clear> [--in ROOM]
 tt room create [path] [--name NAME]                       # declare a room boundary (.talking-stick/room.toml)
@@ -624,6 +627,52 @@ mid-turn without an explicit `--interrupt`. Grok receives messages through activ
 Codex tries to steer a reachable, active daemon-backed turn for operator messages and urgent
 input. Queued delivery waits for the current turn to end. Normal messages still coalesce into
 an unread batch.
+
+## Shell prompt
+
+`tt prompt` prints one short segment for the current folder's room, and nothing when the folder
+has no room. It finds the room the same way `tt join` would, but reads the database read-only,
+starts no git or other subprocess, and never joins, writes or shows an error. It takes about 40 ms
+from a Node install.
+
+| Segment | Meaning |
+|---|---|
+| `#shrooms` | the room's declared name, or its folder's name |
+| `4` | joined agents whose process isn't known to be gone; chat consoles don't count |
+| `▸claude` | the stick holder, while its lease is live |
+| `!1` | open blockers |
+| `@2` | messages addressed to you that no console of yours has read |
+
+`--format` takes `{room}`, `{path}`, `{members}`, `{names}`, `{holder}`, `{blockers}` and
+`{unread}`. Write `{name:prefix}` to show the prefix and value only when the value is set and not
+zero. The default is `#{room} {members}{holder: ▸}{blockers: !}{unread: @}`. `--json` prints
+the fields, or `null` outside a room. `TT_ROOM` selects a room by ID or path. A pin that
+points to a missing or closed room leaves the prompt empty.
+
+Add the setup to your shell. It calls the fastest entry for your install: the standalone binary,
+or Node on the prompt's own module.
+
+```sh
+# zsh, in ~/.zshrc: refreshes in the background and repaints
+eval "$(rooms prompt init zsh)"
+setopt prompt_subst
+RPROMPT='$ROOMS_PROMPT'
+
+# bash, in ~/.bashrc: refreshes before each prompt
+eval "$(rooms prompt init bash)"
+PS1='\w ${ROOMS_PROMPT:+[$ROOMS_PROMPT] }\$ '
+```
+
+```fish
+# fish, in ~/.config/fish/config.fish: refreshes in the background and repaints
+rooms prompt init fish | source
+function fish_right_prompt
+    rooms_prompt
+end
+```
+
+In zsh and fish, the prompt does not wait for the refresh. A result for a folder you have left
+is discarded. Bash waits for the local read before each prompt because it has no repaint hook.
 
 ## Operator chat
 
