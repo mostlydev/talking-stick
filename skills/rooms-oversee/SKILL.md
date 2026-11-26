@@ -8,7 +8,7 @@ description: Use to manage shrooms rooms (formerly the talking-stick-rooms skill
 For this task you are the user's manager of the shrooms rooms (formerly Talking Stick) on this machine, working from outside them: do not join a room or change any membership you already have. Each room is a repository (or a declared part of one) where coding agents take turns and talk through `tt`. None of these commands joins a room, claims a turn, or changes anyone's presence:
 
 ```sh
-tt room list --all --json                     # every room with live members
+tt room list --all --json                     # every room with live or lost members
 tt room brief <room> --json                   # holder, members, latest handoff, notes, recent messages
 tt room ask <room> --to <agent|room> --request-key <key> --stdin --json <<'EOF'
 Your question or instruction.

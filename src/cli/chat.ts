@@ -90,9 +90,11 @@ import {
   parseChatInput,
   resolveChatRecipients,
   describeHeldRecipient,
+  describeLostMembers,
   sanitizeChatText,
   EVERYONE_SELECTORS
 } from "./chat-format.js";
+import { lostMemberLabel } from "../lost-member.js";
 import {
   getStringOption,
   hasOption,
@@ -638,8 +640,9 @@ export async function runChatSession(
     if (rolesPanel || blockersPanel) { print("Close the current menu before opening member actions."); return; }
     if (!editor) { print("Use /who to list members and /kick <agent> to remove one."); return; }
     refreshMembers();
-    const agents = members.filter(member => member.agent_id !== selfId && member.session_kind !== HUMAN_CHAT_SESSION_KIND)
-      .map(member => member.agent_id);
+    // Lost members stay reachable: a message waits for them, and a kick ends the membership.
+    const agents = [...members.filter(member => member.agent_id !== selfId && member.session_kind !== HUMAN_CHAT_SESSION_KIND)
+      .map(member => member.agent_id), ...lostMembers.map(member => member.agent_id)];
     if (target && !agents.includes(target)) { print("That member has left the room."); return; }
     if (!agents.length) { print("No agents in this room."); return; }
     rolesPanel = null;
@@ -725,7 +728,7 @@ export async function runChatSession(
   const deferredInline: string[] = [];
   const roleOptions = { contextPath: joined.canonical_path };
   const panelHeight = () => Math.max(3, dimensions().rows - 7 - renderAttention(attention, dimensions().columns - 1, dimensions().rows, formatContext()).lines.length);
-  const rolesPanelLines = () => roomTree ? roomTree.render(panelHeight(), resolvedTreeRoom(), Boolean(formatContext().color)) : memberMenu ? renderMemberMenu(memberMenu, panelHeight(), nameOf, formatContext()) : rolesPanel
+  const rolesPanelLines = () => roomTree ? roomTree.render(panelHeight(), resolvedTreeRoom(), Boolean(formatContext().color)) : memberMenu ? renderMemberMenu(memberMenu, panelHeight(), nameOf, { ...formatContext(), lost: new Map(lostMembers.map((member) => [member.agent_id, lostMemberLabel(member)])) }) : rolesPanel
     ? renderRolesEditor(rolesPanel, formatContext(), panelHeight(), Math.max(1, dimensions().columns - 1))
     : blockersPanel ? renderBlockersMenu(blockersPanel, panelHeight(), formatContext())
     : undefined;
@@ -1024,7 +1027,7 @@ export async function runChatSession(
     const draft = editor?.draft ?? { line: "", cursor: 0 };
     return {
       room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(), release: releaseStatus, transcript, format: formatContext(),
-      status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses(), busy_members: busyMembers() },
+      status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses(), lost_members: lostMembers, busy_members: busyMembers() },
       draft, hint: currentHint(), completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
       completion_index: editor?.completionIndex ?? 0, ...dimensions()
     };
@@ -1114,7 +1117,7 @@ export async function runChatSession(
       const frame = renderInlinePanel({
         room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, release: releaseStatus, transcript, format: formatContext(),
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
-          interrupt_statuses: interruptStatuses(), busy_members: busyMembers() },
+          interrupt_statuses: interruptStatuses(), lost_members: lostMembers, busy_members: busyMembers() },
         draft, hint: currentHint(),
         completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
         completion_index: editor?.completionIndex ?? 0,
@@ -1183,6 +1186,7 @@ export async function runChatSession(
             reserved_for: reservedFor,
             now: new Date(),
             interrupt_statuses: interruptStatuses(),
+            lost_members: lostMembers,
             busy_members: busyMembers()
           },
           draft: editor?.draft ?? { line: "", cursor: 0 },
@@ -1324,7 +1328,7 @@ export async function runChatSession(
       const panel = resolveAttentionFrame(attention, pins => {
         const frame = renderInlinePanel({ room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, release: releaseStatus, transcript, format: formatContext(),
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
-          interrupt_statuses: interruptStatuses(), busy_members: busyMembers() },
+          interrupt_statuses: interruptStatuses(), lost_members: lostMembers, busy_members: busyMembers() },
         draft, hint: currentHint(), completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
         completion_index: editor?.completionIndex ?? 0, ...dimensions() });
         const height = Math.max(0, dimensions().rows - frame.lines.length);
@@ -1368,7 +1372,7 @@ export async function runChatSession(
     owner = state.room.owner ?? null;
     reservedFor = state.room.reserved_for ?? null;
     nameOf = buildNameResolver(
-      [...members.map((member) => member.agent_id), selfId],
+      [...members.map((member) => member.agent_id), ...lostMembers.map((member) => member.agent_id), selfId],
       selfId,
       new Map(
         members
@@ -1477,7 +1481,9 @@ export async function runChatSession(
       ended.length > 0
         ? ` · ended: ${ended.map((member) => coloredName(member.agent_id)).join(", ")}`
         : "";
-    return `In the room: ${who} · ${stick}${endedNote}`;
+    const lost = describeLostMembers(lostMembers.filter((member) => member.agent_id !== selfId),
+      (agentId) => coloredName(agentId), new Date());
+    return `In the room: ${who} · ${stick}${endedNote}${lost ? `\n${lost}` : ""}`;
   };
 
   // This room's supervisor workers, joined or not, each with its state and the
@@ -1950,7 +1956,17 @@ export async function runChatSession(
       }
       case "kick": {
         refreshMembers();
-        const { target, force, stop, reason } = resolveChatKick(args, members, selfId);
+        const resolved = resolveChatKick(args, members, selfId, lostMembers);
+        if ("lost" in resolved) {
+          const lostId = resolved.lost.agent_id;
+          if (resolved.stop) { confirmMemberStop(lostId, resolved.reason); return; }
+          runtime.commands.kickMember(identity, { room_id: roomId, target_agent_id: lostId, reason: resolved.reason });
+          refreshMembers();
+          const was = lostMemberLabel(resolved.lost) === "dormant" ? "dormant" : "lost";
+          print(`Removed ${was} member ${sanitizeChatText(lostId)}; that session can no longer rejoin this room.`, "ok");
+          return;
+        }
+        const { target, force, stop, reason } = resolved;
         if (stop) { confirmMemberStop(target.agent_id, reason); return; }
         let ownershipNote = "";
         try {

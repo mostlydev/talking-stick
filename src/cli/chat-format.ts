@@ -4,9 +4,11 @@ import {
   HUMAN_CHAT_SESSION_KIND,
   type AgentId,
   type HeldRecipient,
+  type LostMember,
   type RoomEvent,
   type RoomMember
 } from "../types.js";
+import { describeLossCauseShort, isDormant, LOST_MEMBER_RECOVERY } from "../lost-member.js";
 import { highlightChatBody } from "./chat-highlight.js";
 import { agentColorIndex, agentStyle, themeStyle, type ChatColorMode } from "./theme.js";
 
@@ -155,6 +157,17 @@ export function describeHeldRecipient(name: string, held: HeldRecipient): string
   } as const;
   return `${name} lost its membership; the message waits for it to rejoin` +
     (held.notice ? ` (${notice[held.notice]}).` : ".");
+}
+
+/** Dormant and lost members for /who: still listed, with why and how long, and how they come back. */
+export function describeLostMembers(lost: readonly LostMember[], nameOf: (agentId: AgentId) => string, now: Date): string | null {
+  if (!lost.length) return null;
+  const list = (members: readonly LostMember[]) => members.map((member) =>
+    `${nameOf(member.agent_id)} ${formatDuration(now, member.lost_at)} (${describeLossCauseShort(member)})`).join(", ");
+  const dormant = lost.filter(isDormant);
+  const gone = lost.filter((member) => !isDormant(member));
+  return [dormant.length ? `Dormant: ${list(dormant)}.` : null, gone.length ? `Lost, recoverable: ${list(gone)}.` : null,
+    LOST_MEMBER_RECOVERY].filter(Boolean).join(" ");
 }
 
 export function resolveChatRecipients(
@@ -475,12 +488,15 @@ export interface ChatStatusInput {
   now: Date;
   columns: number;
   interrupt_statuses?: ReadonlyMap<AgentId, string>;
+  /** Members whose harness reported the session ended; each can still rejoin. */
+  lost_members?: readonly LostMember[];
   busy_members?: ReadonlyMap<AgentId, BusyMemberInfo>;
 }
 
 // One dim line of room state for the operator: each agent
 // with the single most useful fact (holding the stick, up next, standby,
-// away, or how long since its last tt command). Observers are not listed.
+// away, or how long since its last tt command), then dormant and lost
+// members, which can rejoin, with how long since. Observers are not listed.
 export function formatChatStatus(
   input: ChatStatusInput,
   context: ChatFormatContext,
@@ -503,11 +519,16 @@ export function formatChatStatus(
     name_of: (id: AgentId) =>
       sanitizeChatText(context.name_of(id)).replace(/\s+/g, " ")
   };
-  const segments = agents.map((member) => ({
+  const segments = [...agents.map((member) => ({
     agent_id: member.agent_id,
     plain: `${safeContext.name_of(member.agent_id)} ${describeMemberState(member, input)}`,
     painted: `${formatChatAgent(safeContext, member.agent_id)} ${paint(context, "2", describeMemberState(member, input))}`
-  }));
+  })), ...(input.lost_members ?? []).filter((lost) => !agents.some((member) => member.agent_id === lost.agent_id))
+    .map((lost) => {
+      const state = `${isDormant(lost) ? "dormant" : "lost"} ${formatDuration(input.now, lost.lost_at)}`;
+      return { agent_id: lost.agent_id, plain: `${safeContext.name_of(lost.agent_id)} ${state}`,
+        painted: paint(context, "2", `${safeContext.name_of(lost.agent_id)} ${state}`) };
+    })];
   let width = 0;
   let result = "";
   for (const [index, segment] of segments.entries()) {

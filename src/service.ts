@@ -22,6 +22,7 @@ import {
   type SqliteDatabase
 } from "./db.js";
 import { ProtocolError } from "./errors.js";
+import { describeLossCause } from "./lost-member.js";
 import { recordManagedDeparture, recordManagedMembership } from "./supervisor/membership-gc.js";
 import { validateAttachments } from "./attachments.js";
 import { HUMAN_CHAT_SESSION_KIND } from "./types.js";
@@ -891,7 +892,7 @@ export class TalkingStickService {
   }
 
   private lostMemberError(lost: LostMemberRow, problem?: string): ProtocolError {
-    const why = `the harness reported this session ended${lost.hook_reason ? ` (${lost.hook_reason})` : ""}`;
+    const why = describeLossCause(lost);
     return new ProtocolError("member_lost", problem
       ? `Membership in this room was lost at ${lost.lost_at}, and it cannot be recovered: ${problem}.`
       : `Membership in this room was lost at ${lost.lost_at}: ${why}. Run tt join to recover it.`, {
@@ -1050,7 +1051,7 @@ export class TalkingStickService {
     if (!endpoints.length || !this.nativeWakeTransport) return record("unreachable");
     const room = this.requireRoom(roomId);
     const text = `[talking-stick] Your membership in room ${room.canonical_path} was lost at ${lost.lost_at}: ` +
-      "the harness reported this session ended. Run `tt join --json` to recover it, then `tt wait --json` for the messages waiting for you.";
+      `${describeLossCause(lost)}. Run \`tt join --json\` to recover it, then \`tt wait --json\` for the messages waiting for you.`;
     for (const endpoint of endpoints) {
       let result: NativeWakeResult;
       try {
@@ -2207,7 +2208,8 @@ export class TalkingStickService {
         : { rows: mappedMembers, hidden: undefined };
 
     const lostMembers = this.getLostMembers(input.room_id).map((lost): LostMember => ({
-      agent_id: lost.agent_id, harness_name: lost.harness_name, lost_at: lost.lost_at,
+      agent_id: lost.agent_id, harness_name: lost.harness_name, process_kind: lost.process_kind,
+      process_liveness: this.lostProcessLiveness(lost), lost_at: lost.lost_at,
       hook_reason: lost.hook_reason, notice_status: lost.notice_status, notice_at: lost.notice_at
     }));
     return {
@@ -6731,6 +6733,14 @@ export class TalkingStickService {
     }
   }
 
+  /** Reads the exact process a lost member's session ran in. */
+  private lostProcessLiveness(lost: LostMemberRow): ProcessLiveness {
+    return this.processLivenessChecker({ host_id: lost.host_id, pid: lost.pid,
+      process_started_at: lost.process_started_at, harness_name: lost.harness_name,
+      harness_session_id: lost.session_id, harness_host_id: lost.host_id, harness_pid: lost.pid,
+      harness_process_started_at: lost.process_started_at });
+  }
+
   /**
    * A lost member whose exact process has read gone for the whole grace has
    * ended for good, under the same first-reading rule as members.
@@ -6738,10 +6748,7 @@ export class TalkingStickService {
   private purgeEndedLostMembers(now: Date): void {
     const rows = this.db.prepare<[], LostMemberRow>("SELECT * FROM lost_room_members").all();
     for (const lost of rows) {
-      const reading = this.processLivenessChecker({ host_id: lost.host_id, pid: lost.pid,
-        process_started_at: lost.process_started_at, harness_name: lost.harness_name,
-        harness_session_id: lost.session_id, harness_host_id: lost.host_id, harness_pid: lost.pid,
-        harness_process_started_at: lost.process_started_at });
+      const reading = this.lostProcessLiveness(lost);
       if (reading === "unknown" || (reading === "alive" && !lost.first_gone_at)) continue;
       this.writeTransaction(() => {
         const same = "room_id = ? AND agent_id = ? AND lost_event_seq = ?";

@@ -456,3 +456,100 @@ test("chat's held line never claims a pending notice reached the model", async (
   expect(describeHeldRecipient("claude", { ...held, notice: "recovered" }))
     .toBe("claude has rejoined; it reads the message from the room.");
 });
+
+// A Codex app-server sends SessionEnd (reason "other") when it unloads an idle
+// conversation and keeps running, and also on archive, delete and shutdown.
+describe("a member lost to a Codex app-server", () => {
+  const codexHost = { pid: 601, command: "codex app-server", reason: "other" };
+
+  test("stays listed as lost with its process kind, and the error names Codex's reasons", () => {
+    const { join, hook, members, lost } = setup();
+    join("codex:bb", metadata("codex", "t1", { harness_pid: 601 }));
+    join("claude:aa", metadata("claude", "s1"));
+    hook("SessionEnd", "codex", "t1", codexHost);
+    hook("SessionEnd", "claude", "s1", { reason: "other" });
+    expect(members()).toEqual([OP]);
+    expect(lost().map((member) => [member.agent_id, member.process_kind]).sort())
+      .toEqual([["claude:aa", "single_session"], ["codex:bb", "shared_host"]]);
+    expect(() => join("codex:bb", metadata("codex", "t1", { harness_pid: 601 })))
+      .toThrow(/Codex closed this conversation in its app-server\. It does that after 30 idle minutes with no client showing the conversation, and when it is archived, deleted or shut down\. Run tt join to recover it\./);
+    expect(() => join("claude:aa", metadata("claude", "s1"))).toThrow(/the harness reported this session ended \(other\)\./);
+  });
+
+  test("reads dormant while its app-server runs, and lost once that process is gone", async () => {
+    const { lostMemberLabel } = await import("../src/lost-member.js");
+    const { service, roomId, join, hook, liveness } = setup();
+    join("codex:bb", metadata("codex", "t1", { harness_pid: 601 }));
+    join("claude:aa", metadata("claude", "s1"));
+    hook("SessionEnd", "codex", "t1", codexHost);
+    hook("SessionEnd", "claude", "s1", { reason: "other" });
+    const lostById = () => Object.fromEntries((service.getRoomState({ room_id: roomId }).lost_members ?? [])
+      .map((member) => [member.agent_id, member]));
+    expect(lostById()["codex:bb"]).toMatchObject({ process_kind: "shared_host", process_liveness: "alive" });
+    expect(lostMemberLabel(lostById()["codex:bb"])).toBe("dormant");
+    // A session that ended on its own is lost even while its process runs.
+    expect(lostMemberLabel(lostById()["claude:aa"])).toBe("lost, recoverable");
+    // Only a positive reading is dormant: an inconclusive one reads lost.
+    liveness["harness:t1"] = "unknown";
+    expect(lostById()["codex:bb"]).toMatchObject({ process_liveness: "unknown" });
+    expect(lostMemberLabel(lostById()["codex:bb"])).toBe("lost, recoverable");
+    liveness["harness:t1"] = "gone";
+    expect(lostById()["codex:bb"]).toMatchObject({ process_liveness: "gone" });
+    expect(lostMemberLabel(lostById()["codex:bb"])).toBe("lost, recoverable");
+    // A shared host of another harness is not labeled dormant.
+    expect(lostMemberLabel({ harness_name: "grok", process_kind: "shared_host", process_liveness: "alive" }))
+      .toBe("lost, recoverable");
+  });
+
+  test("tells a recovering Codex conversation the same reason", async () => {
+    const { service, roomId, join, hook, nativeRequests } = setup({ native: () => ({ outcome: "queued" }) });
+    join("codex:bb", metadata("codex", "t1", { harness_pid: 601 }));
+    service.registerNativeWakeEndpoint({ agent_id: "codex:bb", room_id: roomId, transport: "codex_queue",
+      address: "codex-thread:t1", secret: null, harness_session_id: "harness:t1", host_id: HOST });
+    hook("SessionEnd", "codex", "t1", codexHost);
+    const sent = await service.sendMessageAndWake({ agent_id: OP, room_id: roomId, to_agent_id: "codex:bb", body: "still there?" });
+    expect(sent.held).toEqual([expect.objectContaining({ agent_id: "codex:bb", notice: "queued" })]);
+    expect(nativeRequests.at(-1)?.text).toContain("Codex closed this conversation in its app-server.");
+  });
+
+  test("chat keeps it in the status bar, /who, /kick and the member picker", async () => {
+    const { formatChatStatus, describeLostMembers, buildNameResolver } = await import("../src/cli/chat-format.js");
+    const { resolveChatKick } = await import("../src/cli/chat-kick.js");
+    const { createMemberMenu, renderMemberMenu } = await import("../src/cli/member-menu.js");
+    const now = new Date("2026-10-25T12:00:00.000Z");
+    const codex = { agent_id: "codex:bb", harness_name: "codex", process_kind: "shared_host" as const, process_liveness: "alive" as const,
+      lost_at: "2026-10-25T11:48:00.000Z", hook_reason: "other", notice_status: null, notice_at: null };
+    const ended = { ...codex, agent_id: "codex:dd", process_liveness: "gone" as const, lost_at: "2026-10-25T11:50:00.000Z" };
+    const claude = { agent_id: "claude:aa", display_name: "claude", session_kind: "harness_cli", status: "active",
+      process_liveness: "alive", last_seen_at: now.toISOString() } as never;
+    const context = { self_agent_id: OP, name_of: (id: string) => id.split(":")[0], color: false, show_turn_events: false };
+    expect(formatChatStatus({ members: [claude], owner: null, owner_since: null, reserved_for: null, now, columns: 80,
+      lost_members: [codex] }, context)).toBe("claude active · codex dormant 12m");
+    expect(describeLostMembers([codex], (id) => id.split(":")[0], now)).toBe("Dormant: codex 12m " +
+      "(Codex closed the conversation). Each rejoins when its conversation runs tt again, and messages to it wait until then.");
+    // Once the host process is gone, the member reads lost. Several Codex
+    // conversations get distinct names, since chat names lost ids too.
+    const names = buildNameResolver(["claude:aa", "codex:bb", "codex:dd", OP], OP);
+    expect(names("codex:bb")).not.toBe(names("codex:dd"));
+    expect(formatChatStatus({ members: [claude], owner: null, owner_since: null, reserved_for: null, now, columns: 80,
+      lost_members: [codex, ended] }, { ...context, name_of: names }))
+      .toBe(`claude active · ${names("codex:bb")} dormant 12m · ${names("codex:dd")} lost 10m`);
+    expect(describeLostMembers([codex, ended], names, now)).toBe(`Dormant: ${names("codex:bb")} 12m (Codex closed the conversation). ` +
+      `Lost, recoverable: ${names("codex:dd")} 10m (Codex closed the conversation). ` +
+      "Each rejoins when its conversation runs tt again, and messages to it wait until then.");
+    expect(describeLostMembers([], (id) => id, now)).toBeNull();
+    // A /kick resolves an exact id first, live then lost, else one prefix match across both.
+    expect(resolveChatKick("claude", [claude], OP, [codex])).toMatchObject({ target: { agent_id: "claude:aa" } });
+    expect(resolveChatKick("--force codex", [claude], OP, [codex])).toMatchObject({ lost: { agent_id: "codex:bb" }, force: true });
+    expect(() => resolveChatKick("grok", [claude], OP, [codex])).toThrow("No room member matches grok.");
+    expect(() => resolveChatKick("c", [claude], OP, [codex])).toThrow("Ambiguous agent c: claude:aa, codex:bb.");
+    // A live member whose display name starts with a lost member's full id
+    // must not be kicked in its place.
+    const lookalike = { ...(claude as object), agent_id: "grok:cc", display_name: "codex:bb-helper" } as never;
+    expect(resolveChatKick("--force codex:bb", [lookalike], OP, [codex])).toMatchObject({ lost: { agent_id: "codex:bb" } });
+    expect(() => resolveChatKick("codex:b", [lookalike], OP, [codex])).toThrow("Ambiguous agent codex:b: grok:cc, codex:bb.");
+    expect(renderMemberMenu(createMemberMenu(["claude:aa", "codex:bb", "codex:dd"]), 7, (id) => id,
+      { lost: new Map([["codex:bb", "dormant"], ["codex:dd", "lost, recoverable"]]) }))
+      .toEqual(["Room members", "› claude:aa", "  codex:bb · dormant", "  codex:dd · lost, recoverable", "↑↓ choose · Enter select · Esc cancel"]);
+  });
+});

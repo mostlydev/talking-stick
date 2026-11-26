@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { ROOM_DECLARATION_FILE, insideNestedRepository, isWithinOrSame, readDeclaration, resolveContextPath } from "../path-resolution.js";
 import { HUMAN_CHAT_SESSION_KIND } from "../types.js";
-import type { PathRoom, RoomActivity, RoomBlocker, RoomMember } from "../types.js";
+import type { LostMember, PathRoom, RoomActivity, RoomBlocker, RoomMember } from "../types.js";
+import { describeLossCause, describeLossCauseShort, isDormant } from "../lost-member.js";
 import { formatRelativeTime, printResult } from "./output.js";
 import { getStringOption, hasOption, parseOptionalInteger, type ParsedCommand } from "./parser.js";
 import { resolveRoomSelector, roomShortName, selectedRoom } from "./room-selector.js";
@@ -211,6 +212,24 @@ interface RoomListing {
   agents: string[];
 }
 
+type ListedLostMember = Pick<LostMember, "agent_id" | "harness_name" | "process_kind" | "process_liveness" | "hook_reason" | "lost_at"> &
+  { state: "dormant" | "lost"; cause: string };
+
+/** A dormant or lost member as listings show it: still in the room's records, and able to rejoin. */
+function listedLostMember(lost: LostMember): ListedLostMember {
+  return { agent_id: lost.agent_id, harness_name: lost.harness_name, process_kind: lost.process_kind,
+    process_liveness: lost.process_liveness, hook_reason: lost.hook_reason, lost_at: lost.lost_at,
+    state: isDormant(lost) ? "dormant" : "lost", cause: describeLossCause(lost) };
+}
+
+/** One line for dormant members and one for lost ones, each only when it has any. */
+function formatLostMembers(lost: readonly ListedLostMember[]): string[] {
+  const list = (state: ListedLostMember["state"]) => lost.filter((member) => member.state === state)
+    .map((member) => `${member.agent_id} (${formatRelativeTime(member.lost_at)}: ${describeLossCauseShort(member)})`).join(", ");
+  return [["dormant", list("dormant")], ["lost, recoverable", list("lost")]]
+    .filter(([, members]) => members).map(([label, members]) => `${label}: ${members}`);
+}
+
 // Read without an agent id so listing never refreshes the caller's presence
 // in other rooms. A parked agent can be inactive by recency yet alive.
 function liveMembers(runtime: Runtime, roomId: string): RoomMember[] {
@@ -236,6 +255,7 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
     .filter((room) => room.state !== "closed")
     .map((room) => {
       const members = liveMembers(runtime, room.room_id);
+      const lost = runtime.commands.getRoomState({ room_id: room.room_id }).lost_members ?? [];
       const activity = runtime.commands.getRoomActivity({ room_id: room.room_id });
       const handoff = activity.last_handoff;
       return {
@@ -247,6 +267,7 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
         open_blockers: counts.get(room.room_id) ?? 0,
         agents: members.filter((member) => member.session_kind !== HUMAN_CHAT_SESSION_KIND).map((member) => member.agent_id),
         consoles: members.filter((member) => member.session_kind === HUMAN_CHAT_SESSION_KIND).map((member) => member.agent_id),
+        lost_members: lost.map(listedLostMember),
         // Room activity, not conversation progress: the row also changes on
         // lease renewals, and events cover messages and handoffs.
         last_activity_at: [activity.last_event_at, room.updated_at].filter((at): at is string => at !== null).sort().at(-1)!,
@@ -261,15 +282,16 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
         }
       };
     })
-    .filter((room) => room.agents.length > 0 || room.consoles.length > 0 || room.open_blockers > 0)
+    .filter((room) => room.agents.length > 0 || room.consoles.length > 0 || room.lost_members.length > 0 || room.open_blockers > 0)
     .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at));
   printResult(parsed, { rooms }, () => rooms.length === 0
-    ? "No rooms on this host have live members or open blockers."
+    ? "No rooms on this host have live or lost members or open blockers."
     : rooms.map((room) => {
       const who = [room.agents.join(", ") || "no agents", room.consoles.length > 0 ? `${room.consoles.length} console${room.consoles.length === 1 ? "" : "s"}` : null]
         .filter(Boolean).join(", ");
       const lines = [`#${room.name}  ${who}${room.owner ? `  stick=${room.owner}${room.state === "stale_owner" ? " (stale)" : ""}` : ""}  active ${formatRelativeTime(room.last_activity_at)}`,
         `  ${room.canonical_path}  ${room.room_id}`];
+      lines.push(...formatLostMembers(room.lost_members).map((line) => `  ${line}`));
       if (room.open_blockers) lines.push(`  ${room.open_blockers} open blocker${room.open_blockers === 1 ? "" : "s"}`);
       if (room.last_handoff) {
         lines.push(`  last handoff ${formatRelativeTime(room.last_handoff.created_at)} from ${room.last_handoff.from_agent_id ?? "unknown"}: ${room.last_handoff.status}`);
@@ -372,6 +394,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
       wait_intent: member.wait_intent,
       last_seen_at: member.last_seen_at
     })),
+    lost_members: (state.lost_members ?? []).map(listedLostMember),
     last_handoff: activity.last_handoff,
     notes: notes.notes.map((note) => ({
       note_id: note.note_id, author_agent_id: note.author_agent_id, created_at: note.created_at,
@@ -390,6 +413,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
 function formatBrief(brief: {
   name: string; canonical_path: string; room_id: string; state: string; owner: string | null; reserved_for: string | null;
   members: { agent_id: string; kind: string; live: boolean; process_liveness: string }[];
+  lost_members: ListedLostMember[];
   last_handoff: RoomActivity["last_handoff"];
   notes: { author_agent_id: string; body: string }[]; notes_total: number;
   blockers: RoomBlocker[];
@@ -403,6 +427,7 @@ function formatBrief(brief: {
   lines.push(`stick: ${stick}`);
   lines.push(`members: ${brief.members.map((member) =>
     `${member.agent_id}${member.kind === "console" ? " (console)" : ""}${memberPresence(member)}`).join(", ") || "none"}`);
+  lines.push(...formatLostMembers(brief.lost_members));
   if (brief.blockers.length) lines.push("", "Open blockers",
     ...brief.blockers.map(blocker => `  ${blocker.blocker_id} (${sanitizeChatText(blocker.author_agent_id)})  ${sanitizeChatText(blocker.body).replace(/\s+/g, " ")}`));
   const handoff = brief.last_handoff;
