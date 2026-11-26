@@ -2137,9 +2137,9 @@ describe("tt notes", () => {
     }
     const args = ["health", project, "--agent", agentId];
     expect(JSON.parse(await captureStdout([...args, "--json"])).wake).toEqual([
-      { transport: "codex_queue", last_status: "queued", last_error: "codex_queue_failed", last_error_detail: "exit:2" }
+      { transport: "codex_queue", last_status: "ambiguous", last_error: "codex_queue_failed", last_error_detail: "exit:2" }
     ]);
-    expect(await captureStdout([...args, "--text"])).toContain("codex_queue_failed exit:2");
+    expect(await captureStdout([...args, "--text"])).toContain("Codex wake unconfirmed (exit:2)");
   });
 
   test("TT_HARNESS_EXPORT auto-switches state to JSON; --text overrides", async () => {
