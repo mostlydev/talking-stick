@@ -388,6 +388,26 @@ describe("chat status line", () => {
       ["codex:aa", "interrupted"], ["claude:bb", "stopping"]
     ]) }, names)).toBe("codex interrupted · claude stopping");
     expect(formatChatStatus(base, names)).toBe("codex holding 2m · claude standby");
+    expect(formatChatStatus({
+      ...base,
+      busy_members: new Map([["claude:bb", { label: "working", since: minutesAgo(4), queued: 1 }]])
+    }, names)).toBe("codex holding 2m · claude working 4m (1 queued)");
+    expect(formatChatStatus({
+      ...base,
+      busy_members: new Map([["claude:bb", { label: "denying a prompt", since: minutesAgo(4), queued: 1 }]])
+    }, names)).toBe("codex holding 2m · claude denying a prompt 4m (1 queued)");
+    expect(formatChatStatus({
+      ...base,
+      busy_members: new Map([
+        ["codex:aa", { label: "working", since: minutesAgo(2), queued: 2 }],
+        ["claude:bb", { label: null, since: null, queued: 1 }]
+      ])
+    }, names)).toBe("codex holding 2m (2 queued) · claude standby (1 queued)");
+    expect(formatChatStatus({
+      ...base,
+      interrupt_statuses: new Map([["claude:bb", "stopping…"]]),
+      busy_members: new Map([["claude:bb", { label: "working", since: minutesAgo(4), queued: 1 }]])
+    }, names)).toBe("codex holding 2m · claude stopping…");
   });
 
   test("fits the terminal width and counts what it had to drop", () => {
@@ -1499,7 +1519,7 @@ describe("headless workers in chat", () => {
     const commands = new TalkingStickCommands(service);
     const status = (worker_id: string, dir: string) => ({ worker_id, harness: "claude" as const, cwd: dir, desired: "running" as const,
       desired_version: 1, hold_reason: null, next_start_at: null, generation: null, generation_process_started_at: null,
-      uncertain_inputs: 0, denied_requests: 0 });
+      queued_inputs: 0, uncertain_inputs: 0, denied_requests: 0 });
 
     const view = routeHeadlessWorkers({ kind: "ready", daemon: "running", workers: [status("w1", cwd)] },
       createHeadlessLookups(commands, 10_000));

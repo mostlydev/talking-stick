@@ -708,6 +708,35 @@ describe("review regressions", () => {
     expect(store.input("input-1")!.state).toBe("written");
   });
 
+  test("persists busy state immediately when a start_turn write succeeds before turn_started", async () => {
+    let tickMs = Date.parse("2026-04-01T10:00:00.000Z");
+    const { store, spec, adapter } = setup();
+    const supervisor = new Supervisor({ store, adapters: { claude: adapter }, processLiveness: () => "gone", now: () => new Date(tickMs) });
+    supervisor.reconcileStartup();
+    store.addWorker(spec, "human:op", "t");
+    await supervisor.tick();
+    adapter.last.submitOutcome = "written";
+    tickMs = Date.parse("2026-04-01T10:01:00.000Z");
+    await supervisor.submit("w1", "work", "start_turn", "review");
+    expect(store.latestGeneration("w1")).toMatchObject({
+      state: "busy",
+      last_model_activity_at: "2026-04-01T10:01:00.000Z"
+    });
+    // A later turn_started for the same turn preserves the initial turn-start timestamp.
+    tickMs = Date.parse("2026-04-01T10:03:00.000Z");
+    adapter.last.emit({ type: "turn_started", native_turn_id: "turn-1", input_id: "input-1" });
+    expect(store.latestGeneration("w1")).toMatchObject({
+      state: "busy",
+      last_model_activity_at: "2026-04-01T10:01:00.000Z"
+    });
+    tickMs = Date.parse("2026-04-01T10:04:00.000Z");
+    adapter.last.emit({ type: "turn_completed", native_turn_id: "turn-1", outcome: "success" });
+    expect(store.latestGeneration("w1")).toMatchObject({
+      state: "idle",
+      last_model_activity_at: "2026-04-01T10:04:00.000Z"
+    });
+  });
+
   test.each([1, 2])("concurrent stale-lock reapers never both take ownership (contender at read %i)", (at) => {
     const { dataDir } = setup();
     const lock = path.join(dataDir, "owner.lock");

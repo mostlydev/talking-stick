@@ -3,6 +3,7 @@ import path from "node:path";
 import type { TalkingStickCommands } from "../commands.js";
 import type { SupervisorDaemonStatus, SupervisorSnapshot, SupervisorWorkerStatus } from "../supervisor/snapshot.js";
 import type { GenerationState, HoldReason } from "../supervisor/state.js";
+import { formatDuration, type BusyMemberInfo } from "./chat-format.js";
 import type { NavigatorRoom } from "./room-navigator.js";
 
 // What chat shows of the supervisor's headless workers: where each one works,
@@ -49,6 +50,8 @@ export interface HeadlessWorker {
   remedy: string | null;
   start_error?: string;
   unrestricted?: boolean;
+  busy_since: string | null;
+  queued_inputs: number;
   denied_requests: number;
   uncertain_inputs: number;
 }
@@ -170,16 +173,20 @@ export function routeHeadlessWorkers(snapshot: SupervisorSnapshot, lookups: Head
     else {
       try { room = lookups.roomForPath(worker.cwd); } catch { room = { room_path: worker.cwd, room_id: null }; }
     }
+    const stateInfo = workerState(worker, snapshot.daemon);
+    const busy = stateInfo.state === "working" || stateInfo.state === "denying a prompt";
     return {
       worker_id: worker.worker_id,
       harness: worker.harness,
       ...room,
       open_path: worker.cwd,
       agent_id: member?.agent_id ?? null,
-      ...workerState(worker, snapshot.daemon),
+      ...stateInfo,
       start_error: worker.start_error,
       ...(worker.start_remedy ? { remedy: worker.start_remedy } : {}),
       unrestricted: worker.unrestricted,
+      busy_since: busy && worker.generation?.ended_at === null ? worker.generation.last_model_activity_at : null,
+      queued_inputs: worker.queued_inputs,
       denied_requests: worker.denied_requests,
       uncertain_inputs: worker.uncertain_inputs
     };
@@ -198,17 +205,56 @@ export function headlessCounts(workers: readonly HeadlessWorker[]): { headless: 
   return { headless: workers.length, blocked: workers.filter((worker) => worker.blocked).length };
 }
 
+/**
+ * Joined headless workers currently mid-turn or holding queued envelopes, keyed
+ * by their room agent id so chat replaces "standby" with "working 4m (1 queued)".
+ */
+export function headlessBusyMembers(workers: readonly HeadlessWorker[]): Map<string, BusyMemberInfo> {
+  const result = new Map<string, BusyMemberInfo>();
+  for (const worker of workers) {
+    if (!worker.agent_id) continue;
+    const label = worker.state === "working" || worker.state === "denying a prompt" ? worker.state : null;
+    if (!label && worker.queued_inputs === 0) continue;
+    const existing = result.get(worker.agent_id);
+    if (!existing) {
+      result.set(worker.agent_id, { label, since: label ? worker.busy_since : null, queued: worker.queued_inputs });
+      continue;
+    }
+    const nextLabel = existing.label === "denying a prompt" || label === "denying a prompt"
+      ? "denying a prompt"
+      : (existing.label ?? label);
+    const candidateSince = label ? worker.busy_since : null;
+    const nextSince = existing.since && candidateSince
+      ? (existing.since < candidateSince ? existing.since : candidateSince)
+      : (existing.since ?? candidateSince);
+    result.set(worker.agent_id, {
+      label: nextLabel,
+      since: nextLabel ? nextSince : null,
+      queued: existing.queued + worker.queued_inputs
+    });
+  }
+  return result;
+}
+
 /** One /who line per worker, already plain text; the caller sanitizes and paints. */
-export function headlessWhoLines(workers: readonly HeadlessWorker[], nameOf: (agentId: string) => string): string[] {
+export function headlessWhoLines(
+  workers: readonly HeadlessWorker[],
+  nameOf: (agentId: string) => string,
+  now?: Date
+): string[] {
   return workers.map((worker) => {
+    const stateLabel = now && worker.busy_since && (worker.state === "working" || worker.state === "denying a prompt")
+      ? `${worker.state} ${formatDuration(now, worker.busy_since)}`
+      : worker.state;
     const where = worker.agent_id ? `joined as ${nameOf(worker.agent_id)}` : "not joined";
     const extras = [
       worker.unrestricted ? "unrestricted" : "",
       worker.start_error ?? "",
+      worker.queued_inputs ? `${worker.queued_inputs} queued` : "",
       worker.denied_requests ? `${worker.denied_requests} denied (tt supervisor approvals)` : "",
       worker.uncertain_inputs ? `${worker.uncertain_inputs} uncertain` : ""
     ].filter(Boolean);
-    return [`${worker.worker_id} (${worker.harness})`, worker.state, where, ...extras].join(" · ") +
+    return [`${worker.worker_id} (${worker.harness})`, stateLabel, where, ...extras].join(" · ") +
       (worker.remedy ? ` → ${worker.remedy}` : "");
   });
 }
