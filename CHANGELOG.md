@@ -11,12 +11,21 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.42.0] — 2026-11-26
+
+Full notes: [`docs/releases/0.42.0.md`](docs/releases/0.42.0.md).
+
 ### Added
 
-- The operator can designate an outside overseer inbox for a room. The inbox receives blocker updates and goal outcomes once per event, with receipt status shown in room summaries.
+- The operator can designate an outside overseer inbox for a room. Blocker updates and goal closures generate one notification per event, with delivery and acknowledgment status shown in room summaries.
 - `tt room ask` captures the asker's native `claude_inbox` or `codex_queue` endpoint as a return address on the request without creating a room membership, stick, or standby row. Each `tt msg reply` pushes its `event_seq` once (queued behind an active turn, never steered, skipped if the asker is a room member) and stays unconfirmed until the asker acknowledges it with `tt ack <token>`; `tt room replies` continues to show the exact same replies plus return-push delivery and receipt status.
 - Give a room a goal with `rooms goal add`, a brief, and a completion criterion. Rooms can link blockers to goals and close goals with evidence. `rooms room brief` shows open goals and recent closures.
 - `tt liaison set` and `tt liaison clear` pin the one member who answers a room-wide question from outside. With no pin, that member is a live architect, then the last live stick holder, then the lowest-ordinal live agent. `tt msg reply` refuses a room-wide answer from anyone else.
+
+### Upgrading
+
+- Run `rooms update`, then reopen any long-running chat consoles and harness sessions so they load the update.
+- From a supported outside Claude Code or Codex session, run `rooms overseer register <alias>`. As the operator, run `rooms overseer set <alias> --in <room>` to route that room's notifications to it. Use `rooms overseer show --in <room>` to check the designation and delivery counts.
 
 ## [0.41.0] — 2026-11-26
 
@@ -1278,6 +1287,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.42.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.42.0
 [0.41.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.41.0
 [0.40.1]: https://github.com/mostlydev/shrooms/releases/tag/v0.40.1
 [0.40.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.40.0
