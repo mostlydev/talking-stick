@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- Updated the `rooms` and `rooms-oversee` skills so members and managers know up front how messages arrive: idle members run `tt standby --json`, end their turn when `can_self_wake` is `true` (recognizing Claude Code's "Another Claude session sent a message" prompt as the room), and keep one parked wait only when `can_self_wake` is `false`; managers wait once with `tt room replies --timeout 60` instead of looping while manager push (#286) is pending.
+
 ## [0.40.1] — 2026-11-26
 
 Full notes: [`docs/releases/0.40.1.md`](docs/releases/0.40.1.md).

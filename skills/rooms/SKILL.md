@@ -9,6 +9,8 @@ shrooms (formerly Talking Stick) gives several harnesses a shared room: one even
 
 If the task is only to check on rooms or ask another room's agents something, use the `rooms-oversee` skill and do not join anything. If you are already in a room, stay in it; looking into other rooms never changes your membership.
 
+Run `tt standby --json` when idle. If `can_self_wake` is `true`, end your turn — room messages addressed to you, operator messages, blocker resolutions, and stick passes arrive as prompts, never by polling. If `can_self_wake` is `false`, keep one `tt wait --park --json` running. Acknowledge pushed envelopes with their `tt ack` command. Address a peer directly when you need to wake it. Claude Code shows a pushed envelope as "Another Claude session sent a message"; that is the room. A registered route is not proof that a turn will start; see [Standby and pushed envelopes](#standby-and-pushed-envelopes) for transport caveats.
+
 ## Invoked without a task
 
 If you have no task or existing assignment, run `tt join --json` as your first action.
@@ -24,12 +26,7 @@ tt standby --json
 
 Joining is already visible: the room emits a join event and the operator's console prints it. Do not send a room message announcing that you arrived, and do not introduce yourself unprompted — wait until the operator asks.
 
-When standby can wake you, end your model turn. Do not claim the stick, invent work, propose a plan, or ask for a task in your harness prompt. Use chat for operator interaction by default.
-
-Two cases need care:
-
-- If `tt standby --json` reports `can_self_wake: false`, nothing can wake this session. Keep exactly one `tt wait --park --json` running instead, so you stay reachable without claiming a turn.
-- Use `--park`, not an ordinary `tt wait`, whenever you are idle in a room with peers. A plain wait can be granted a turn you have no work for, which churns the stick.
+Do not claim the stick, invent work, propose a plan, or ask for a task in your harness prompt. Use chat for operator interaction by default. Whenever you need a wait while idle in a room with peers, use `--park`, not an ordinary `tt wait` — a plain wait can be granted a turn you have no work for, which churns the stick.
 
 For a greeting or membership-only wake, acknowledge supplied events, answer in chat when needed, then return to the idle receive path. Fetch a body-free wake with `tt wait --park --json` while taskless; switch to the normal loop when it supplies work. Do not claim or hand off turns merely to acknowledge messages.
 
@@ -90,13 +87,11 @@ Interpret wait results directly:
 
 Park does not auto-claim or become an ordinary release recipient. An active owner must release before parking. Use `tt wait --park --json` only when a live process listener is useful.
 
-When no agent work is pending and the current model turn should end, prefer event-driven standby:
+## Standby and pushed envelopes
 
-```sh
-tt standby --json
-```
+`tt standby --json` records parked intent and returns immediately. A direct message, an operator's room message, a blocker resolution, an assignment, a pass, or a pending-handoff hint wakes you once through your session's transport (supervisor for headless workers, native inbox/queue in Claude Code and Codex, or a verified cmux surface). Room messages from other agents wake nobody.
 
-Standby records parked intent and returns immediately. A direct message, an operator's room message, an assignment, a pass, or a pending-handoff hint wakes you once: natively in Claude Code and Codex, otherwise through a verified cmux surface. A loaded, idle Codex thread with a live harness process may start its stored queued submission immediately; operator messages and explicit interrupts use native steering when the exact thread has a live daemon-backed turn. Unsupported runtimes retain queue delivery. Room messages from other agents do not wake you. The result's `can_self_wake: false` means nothing can wake this session; keep exactly one `tt wait --park --json` running instead, as in the taskless path.
+Transport caveats: a registered route is not proof that a turn will start. A loaded, idle Codex thread with a live harness process may start its stored queued submission immediately, while an unloaded or paused thread holds it until reopened; operator messages and explicit interrupts use native steering when the exact thread has a live daemon-backed turn, and unsupported runtimes retain queue delivery. A headless worker mid-turn takes new messages when its turn ends (except a Codex worker with a known active turn).
 
 Each explicit standby rearms the next directed wake, except a held Codex steering batch with unread receipts: consume it with `tt ack` or `tt wait` first. Standby does not replay possibly accepted steering input. It does not mark messages read; acknowledge supplied native events or use `tt wait` for body-free wakes before returning to standby.
 
