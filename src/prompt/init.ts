@@ -74,17 +74,31 @@ function fishScript(command: string): string {
 #   function fish_right_prompt; rooms_prompt; end
 set -g __rooms_prompt_value ""
 set -g __rooms_prompt_pwd ""
-set -g __rooms_prompt_file (string trim -r -c / -- (set -q TMPDIR; and echo $TMPDIR; or echo /tmp))/rooms-prompt-$fish_pid
+if not functions -q __rooms_prompt_exit
+    set -g __rooms_prompt_dir ""
+    set -l base
+    for base in "$XDG_RUNTIME_DIR" "$TMPDIR" /tmp
+        test -n "$base"; or continue
+        if set -l created (command mktemp -d "$base/rooms-prompt.XXXXXXXXXX" 2>/dev/null)
+            if test -d "$created"
+                set -g __rooms_prompt_dir "$created"
+                break
+            end
+        end
+    end
+end
+set -g __rooms_prompt_file "$__rooms_prompt_dir/segment"
 function __rooms_prompt_refresh --on-event fish_prompt
     if test "$__rooms_prompt_pwd" != "$PWD"
         set -g __rooms_prompt_value ""
         set -g __rooms_prompt_pwd $PWD
     end
-    command sh -c '( out=$(eval "$4" 2>/dev/null); printf "%s\\t%s" "$1" "$out" >"$2.tmp" && mv "$2.tmp" "$2" && kill -USR1 "$3" ) >/dev/null 2>&1 </dev/null &' sh $PWD $__rooms_prompt_file $fish_pid ${fishQuote(command)}
+    test -d "$__rooms_prompt_dir"; or return 0
+    command sh -c '( out=$(eval "$4" 2>/dev/null); tmp="$2.$$.tmp"; printf "%s\\t%s" "$1" "$out" >"$tmp" && mv "$tmp" "$2" && kill -USR1 "$3" ) >/dev/null 2>&1 </dev/null &' sh "$PWD" "$__rooms_prompt_file" $fish_pid ${fishQuote(command)}
 end
 function __rooms_prompt_signal --on-signal SIGUSR1
-    test -r $__rooms_prompt_file; or return 0
-    read -l -z line <$__rooms_prompt_file
+    test -d "$__rooms_prompt_dir"; and test -r "$__rooms_prompt_file"; or return 0
+    read -l -z line <"$__rooms_prompt_file"
     set -l parts (string split -m 1 \\t -- $line)
     test "$parts[1]" = "$PWD"; or return 0
     if test "$parts[2]" != "$__rooms_prompt_value"
@@ -93,7 +107,7 @@ function __rooms_prompt_signal --on-signal SIGUSR1
     end
 end
 function __rooms_prompt_exit --on-event fish_exit
-    command rm -f $__rooms_prompt_file $__rooms_prompt_file.tmp
+    test -n "$__rooms_prompt_dir"; and command rm -rf -- "$__rooms_prompt_dir" 2>/dev/null
 end
 function rooms_prompt --description "The shrooms room for this folder"
     echo -n $__rooms_prompt_value

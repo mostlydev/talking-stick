@@ -640,8 +640,8 @@ from a Node install.
 `--format` takes `{room}`, `{path}`, `{members}`, `{names}`, `{holder}`, `{blockers}` and
 `{unread}`. Write `{name:prefix}` to show the prefix and value only when the value is set and not
 zero. The default is `#{room} {members}{holder: ▸}{blockers: !}{unread: @}`. `--json` prints
-the fields, or `null` outside a room. `TT_ROOM` selects a room by id or path, as for other
-commands.
+the fields, or `null` outside a room. `TT_ROOM` selects a room by ID or path. A pin that
+points to a missing or closed room leaves the prompt empty.
 
 Add the setup to your shell. It calls the fastest entry for your install: the standalone binary,
 or Node on the prompt's own module.
@@ -665,8 +665,8 @@ function fish_right_prompt
 end
 ```
 
-In zsh and fish, a refresh that finishes after you have changed folders is dropped, so a room is
-never shown for the wrong folder.
+In zsh and fish, the prompt does not wait for the refresh. A result for a folder you have left
+is discarded. Bash waits for the local read before each prompt because it has no repaint hook.
 
 ## Operator chat
 

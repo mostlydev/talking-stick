@@ -110,6 +110,17 @@ describe("rooms prompt", () => {
     expect(state).toMatchObject({ members: 2, holder: null });
   });
 
+  test("counts an inactive standby member with a live local process", () => {
+    const { service, dataDir, project, roomId } = room();
+    service.joinPath({ agent_id: "grok:cc", context_path: project,
+      process_metadata: { host_id: os.hostname(), pid: process.pid, process_started_at: "t", session_kind: "harness_cli" } });
+    const db = openSqlite(path.join(dataDir, "rooms.sqlite"));
+    db.prepare("UPDATE room_members SET status = 'inactive', wait_intent = 'parked' WHERE room_id = ? AND agent_id = ?")
+      .run(roomId, "grok:cc");
+    db.close();
+    expect(read(dataDir, project)).toMatchObject({ members: 3, names: ["claude", "codex", "grok"] });
+  });
+
   test("prints nothing outside a room, without a database, or for a broken one", () => {
     const { dataDir } = room();
     const outside = tempRoot();
@@ -125,6 +136,17 @@ describe("rooms prompt", () => {
     const elsewhere = tempRoot();
     expect(read(dataDir, elsewhere, { TT_ROOM: roomId })?.room).toBe("ceramics");
     expect(read(dataDir, elsewhere, { TT_ROOM: fs.realpathSync(project) })?.room).toBe("ceramics");
+    const link = path.join(elsewhere, "room-link");
+    fs.symlinkSync(project, link, "junction");
+    expect(read(dataDir, elsewhere, { TT_ROOM: `${link}/` })?.room).toBe("ceramics");
+  });
+
+  test("shows nothing for a stale pin, even inside an open room", () => {
+    const { dataDir, project } = room();
+    const elsewhere = tempRoot();
+    expect(read(dataDir, project)?.room).toBe("ceramics");
+    expect(read(dataDir, project, { TT_ROOM: "missing-room-id" })).toBeNull();
+    expect(read(dataDir, project, { TT_ROOM: path.join(elsewhere, "missing-room-path") })).toBeNull();
   });
 
   test("never writes to the database", () => {
@@ -161,6 +183,15 @@ describe("prompt output", () => {
     expect(out[2]).toContain("function rooms_prompt");
     expect(runPromptCommand(["init", "tcsh"], () => {}, (text) => err.push(text))).toBe(1);
     expect(err.join("")).toMatch(/Usage: rooms prompt init/);
+  });
+
+  test("fish reserves private storage and publishes each refresh atomically", () => {
+    const script = promptInitScript("fish", "rooms prompt");
+    expect(script).toContain('for base in "$XDG_RUNTIME_DIR" "$TMPDIR" /tmp');
+    expect(script).toContain('mktemp -d "$base/rooms-prompt.XXXXXXXXXX"');
+    expect(script).toContain('tmp="$2.$$.tmp"');
+    expect(script).toContain('mv "$tmp" "$2" && kill -USR1 "$3"');
+    expect(script).toContain('rm -rf -- "$__rooms_prompt_dir"');
   });
 
   test("fish quoting survives a path with quotes and spaces", () => {
