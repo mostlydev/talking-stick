@@ -12,6 +12,7 @@ import {
   type HarnessCliHarness
 } from "./harness-model.js";
 import { resolveContextPath } from "./path-resolution.js";
+import { sanitizeIdentityComponent } from "./identity-name.js";
 import {
   createSystemProcessInspector,
   type ProcessInspection,
@@ -588,13 +589,6 @@ function safeUsername(): string {
   }
 }
 
-function sanitizeIdentityComponent(value: string): string {
-  const sanitized = value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return sanitized || "anon";
-}
 
 function hashIdentityParts(parts: string[]): string {
   return crypto

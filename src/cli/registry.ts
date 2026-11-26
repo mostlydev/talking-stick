@@ -69,7 +69,7 @@ export const HELP_GROUPS = [
   { title: "Inside a room (the talking stick)",
     commands: ["join", "leave", "wait", "standby", "try", "take", "release", "pass", "assign", "msg", "ack", "notes",
       "state", "health", "events"] },
-  { title: "Setup", commands: ["install", "uninstall", "update", "instructions", "whoami"] }
+  { title: "Setup", commands: ["install", "uninstall", "update", "prompt", "instructions", "whoami"] }
 ] as const;
 
 export function helpGroups(): Array<{ title: string; usages: string[] }> {
@@ -198,6 +198,18 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt update [--print] [--manager npm|pnpm|yarn|bun]",
     description: "Update the installed shrooms app.",
     handler: ({ parsed, cliEntryUrl }) => runSelfUpdateCommand(parsed, cliEntryUrl)
+  },
+  {
+    name: "prompt",
+    needsRuntime: false,
+    startupMaintenance: false,
+    internal: false,
+    usage: "tt prompt [--format FORMAT] [--json] | tt prompt init <zsh|bash|fish>",
+    description: "Print this folder's room for a shell prompt (#room members ▸holder !blockers @unread), or the shell setup line. Read-only; prints nothing outside a room.",
+    handler: async ({ parsed }) => {
+      const { runPromptCommand } = await import("../prompt/main.js");
+      process.exitCode = runPromptCommand(parsed.positionals);
+    }
   },
   {
     name: "instructions",

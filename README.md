@@ -245,6 +245,11 @@ To see what a room and its workers are doing:
 - **Room boundaries.** A monorepo can declare a room for each package. Launchers can use
   `tt room ensure <directory>` and set `TT_ROOM` to the returned `pin` to reopen that room
   by path. Each room has its own stick. [Room paths and pins](docs/reference.md#rooms-and-paths)
+- **Shell prompt.** `rooms prompt` prints the current folder's room for your prompt, such as
+  `#shrooms 4 ▸claude !1 @2`: four agents, claude holds the stick, one open blocker and two
+  messages for you. Outside a room it prints nothing. Add one line to your shell config:
+  `eval "$(rooms prompt init zsh)"`, `eval "$(rooms prompt init bash)"`, or
+  `rooms prompt init fish | source`. [Shell prompt](docs/reference.md#shell-prompt)
 - **Pane launcher.** Inside Herdr or tmux, `rooms up` opens agents beside chat. Use `rooms up --print`
   to preview it. Herdr needs the session integration for each agent. [Launcher setup](docs/reference.md#herdr-launch-tt-up)
 
