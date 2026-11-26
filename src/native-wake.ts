@@ -39,6 +39,8 @@ export interface NativeWakeRequest extends NativeWakeRegistration {
   /** Persist and revalidate the exact target before any steering input is sent. */
   on_steer_target?(turnId: string): boolean;
   can_queue?(): boolean;
+  /** Revalidate an outside recipient immediately before writing or queuing the envelope. */
+  can_send?(): boolean;
   /** Fence the exact envelope before handing it to the queue subprocess. */
   on_queue?(): boolean;
 }
@@ -325,6 +327,10 @@ export function deliverClaudeInbox(request: NativeWakeRequest, options: NativeWa
       finish(written ? { outcome: "ambiguous", error: "claude_inbox_write_failed", detail: `write:${code}` } : unsent(code));
     });
     socket.on("connect", () => {
+      if (request.can_send && !request.can_send()) {
+        finish({ outcome: "failed", error: "native_wake_unavailable", local: true });
+        return;
+      }
       written = true;
       socket.end(
         JSON.stringify({ type: "auth", token: request.secret }) + "\n" +
@@ -357,7 +363,8 @@ export async function deliverCodexQueue(request: NativeWakeRequest, options: Nat
     // The thread is idle, the method unsupported, or no steer bytes were sent.
     // Queuing is safe only in these definitely-unsent cases.
   }
-  if ((request.can_queue && !request.can_queue()) || (request.on_queue && !request.on_queue())) {
+  if ((request.can_send && !request.can_send()) || (request.can_queue && !request.can_queue()) ||
+      (request.on_queue && !request.on_queue())) {
     return { outcome: "failed", error: "native_wake_unavailable", local: true };
   }
   return new Promise((resolve) => {

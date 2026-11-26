@@ -1,8 +1,10 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { TalkingStickService, type NativeWakeRequest, type NativeWakeResult, type VisitorReturnAddressInput } from "../src/index.js";
+import { deliverClaudeInbox } from "../src/native-wake.js";
 
 const HOST = "fixture-host";
 const MEMBER = "agy:worker";
@@ -12,7 +14,7 @@ const BETA = "codex:latest";
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
 
-function setup() {
+function setup(deliver?: (request: NativeWakeRequest) => NativeWakeResult | Promise<NativeWakeResult>) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-overseer-"));
   cleanup.push(() => fs.rmSync(dir, { recursive: true, force: true }));
   const workspace = path.join(dir, "room");
@@ -22,11 +24,12 @@ function setup() {
   const uncertain = new Set<string>();
   const service = new TalkingStickService({ dataDir: path.join(dir, "data"), hostId: HOST,
     processLivenessChecker: proc => uncertain.has(proc.harness_session_id ?? "") ? "unknown" : "alive",
-    nativeWakeTransport: { deliver(request) {
+    nativeWakeTransport: { deliver: deliver ?? ((request) => {
+      if (request.can_send && !request.can_send()) return { outcome: "failed", error: "not_admitted" };
       if (request.transport === "codex_queue" && !request.on_queue?.()) return { outcome: "failed", error: "not_admitted" };
       requests.push(request);
       return outcome;
-    } } });
+    }) } });
   cleanup.push(() => service.close());
   const roomId = service.joinPath({ agent_id: MEMBER, context_path: workspace }).room_id;
   const endpoint = (name: string): VisitorReturnAddressInput => ({
@@ -81,7 +84,8 @@ test("captures only the explicit designation and sends every lifecycle event onc
   expect(f.service.getRoomOverseer(f.roomId)).toMatchObject({ pending: 0, unconfirmed: 4, failed: 0 });
   const ack = { agent_id: ALPHA, token: rows[0].token, harness_session_id: "harness:alpha", host_id: HOST };
   expect(() => f.service.acknowledgeNativeDelivery({ ...ack, harness_session_id: "harness:latest" })).toThrow("does not belong");
-  expect(f.service.acknowledgeNativeDelivery(ack)).toEqual({ status: "acknowledged", event_seqs: [rows[0].event_seq] });
+  expect(() => f.service.acknowledgeNativeDelivery({ ...ack, host_id: "other-host" })).toThrow("does not belong");
+  expect(f.service.acknowledgeNativeDelivery({ ...ack, host_id: undefined })).toEqual({ status: "acknowledged", event_seqs: [rows[0].event_seq] });
   expect(f.service.acknowledgeNativeDelivery(ack).status).toBe("already_acknowledged");
   expect(f.service.getRoomOverseer(f.roomId)?.unconfirmed).toBe(3);
   expect(f.service.getRoomState({ room_id: f.roomId }).members.map(member => member.agent_id)).toEqual([MEMBER]);
@@ -105,6 +109,65 @@ test("reassignment cancels undelivered work and never redirects old events", asy
   f.designate(null);
   expect(f.service.getRoomOverseer(f.roomId)).toBeNull();
   expect(f.requests).toHaveLength(1);
+});
+
+test.each(["clear", "reassign", "unregister"] as const)(
+  "does not write to a connected Claude inbox after %s during dispatch", async (change) => {
+    const f = setup(deliverClaudeInbox);
+    const address = path.join(f.dir, "inbox.sock");
+    let bytesReceived = 0;
+    const server = net.createServer(socket => socket.on("data", (chunk) => { bytesReceived += Buffer.byteLength(chunk); }));
+    await new Promise<void>(resolve => server.listen(address, resolve));
+    try {
+      f.service.registerOverseer({ alias: "alpha", agent_id: "claude:alpha",
+        endpoint: { ...f.endpoint("alpha"), address, secret: "fixture", transport: "claude_inbox" } });
+      f.register("latest", BETA);
+      f.designate("alpha");
+      f.open("First question");
+      const sent = f.service.flushWakes();
+      expect(f.rows()).toMatchObject([{ status: "dispatching" }]);
+      if (change === "unregister") f.service.unregisterOverseer({ alias: "alpha", agent_id: OPERATOR });
+      else f.designate(change === "clear" ? null : "latest");
+      await sent;
+      expect(f.service.db.prepare<[], { status: string; error: string }>(
+        "SELECT status, error FROM overseer_deliveries").get()).toEqual({ status: "failed", error: "overseer_changed" });
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+    expect(bytesReceived).toBe(0);
+  }
+);
+
+test("rechecks the designation before admitting a Codex queue request", async () => {
+  let admitted = false;
+  const f = setup(async (request) => {
+    await Promise.resolve();
+    if ((request.can_send && !request.can_send()) || !request.on_queue?.()) {
+      return { outcome: "failed", error: "not_admitted" };
+    }
+    admitted = true;
+    return { outcome: "queued" };
+  });
+  f.register("alpha", ALPHA);
+  f.designate("alpha");
+  f.open("First question");
+  const sent = f.service.flushWakes();
+  expect(f.rows()).toMatchObject([{ status: "dispatching" }]);
+  f.designate(null);
+  await sent;
+  expect(admitted).toBe(false);
+  expect(f.service.db.prepare<[], { status: string; error: string }>(
+    "SELECT status, error FROM overseer_deliveries").get()).toEqual({ status: "failed", error: "overseer_changed" });
+});
+
+test("refuses a designation change for a closed room", () => {
+  const f = setup();
+  f.register("alpha", ALPHA);
+  f.service.db.prepare("UPDATE path_rooms SET state = 'closed' WHERE room_id = ?").run(f.roomId);
+  for (const alias of ["alpha", null]) {
+    expect(() => f.designate(alias)).toThrow("Cannot change the overseer of a closed room");
+  }
+  expect(f.service.getRoomOverseer(f.roomId)).toBeNull();
 });
 
 test("refuses to wake uncertain processes and does not retry an ambiguous write", async () => {

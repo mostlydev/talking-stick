@@ -4039,7 +4039,8 @@ export class TalkingStickService {
   setRoomOverseer(input: { room_id: string; agent_id: string; alias: string | null }): RoomOverseerSummary | null {
     if (!input.agent_id.startsWith("human:")) throw new ProtocolError("operator_only", "Only the operator designates a room's overseer.");
     return this.writeTransaction(() => {
-      this.requireRoom(input.room_id);
+      const room = this.requireRoom(input.room_id);
+      if (room.state === "closed") throw new ProtocolError("room_closed", "Cannot change the overseer of a closed room.");
       const previous = this.designatedOverseer(input.room_id);
       const inbox = input.alias === null ? null : this.overseerInbox(input.alias.trim().toLowerCase());
       if (input.alias !== null && !inbox) throw new ProtocolError("overseer_not_found", "No registered overseer matches that alias.");
@@ -4111,20 +4112,31 @@ export class TalkingStickService {
     });
     if (!claimed) return;
     const { transport, address, secret } = claimed.inbox;
-    finish(await this.deliverOutsideWake({ transport, address, secret, text: claimed.text }, () =>
+    const result = await this.deliverOutsideWake({ transport, address, secret, text: claimed.text }, () =>
       Boolean(this.db.prepare(`UPDATE overseer_deliveries SET delivery_mode = 'codex_queue_held'
         WHERE event_seq = ? AND status = 'dispatching' AND acknowledged_at IS NULL AND EXISTS (
           SELECT 1 FROM room_overseers WHERE room_id = ? AND inbox_id = ?)`)
-        .run(row.event_seq, row.room_id, row.inbox_id).changes)));
+        .run(row.event_seq, row.room_id, row.inbox_id).changes), () => {
+      try {
+        if (this.designatedOverseer(row.room_id)?.inbox_id === row.inbox_id) return true;
+        finish({ outcome: "failed", error: "overseer_changed" });
+      } catch {
+        // An asynchronous transport callback must fail closed if the DB is unavailable.
+      }
+      return false;
+    });
+    finish(result);
   }
 
   private async deliverOutsideWake(
     input: { transport: VisitorReturnTransportName; address: string; secret: string | null; text: string },
-    onQueue: () => boolean
+    onQueue: () => boolean,
+    canSend?: () => boolean
   ): Promise<NativeWakeResult> {
     try {
       if (!this.nativeWakeTransport) return { outcome: "failed", error: "native_wake_unavailable" };
       return await this.nativeWakeTransport.deliver({ ...input, interrupt: false, steer: false, start_queued: true,
+        ...(canSend ? { can_send: canSend } : {}),
         ...(input.transport === "codex_queue" ? { on_queue: onQueue } : {}) });
     } catch {
       return { outcome: "failed", error: "native_wake_error" };
@@ -4940,7 +4952,7 @@ export class TalkingStickService {
         const overseer = this.db.prepare<[string], OverseerDeliveryRow>("SELECT * FROM overseer_deliveries WHERE token = ?").get(input.token);
         if (overseer) {
           if (overseer.agent_id !== input.agent_id || overseer.harness_session_id !== input.harness_session_id ||
-              overseer.host_id !== input.host_id || overseer.status === "pending" || overseer.status === "failed") {
+              overseer.host_id !== (input.host_id ?? this.hostId) || overseer.status === "pending" || overseer.status === "failed") {
             throw new ProtocolError("invalid_input", "Delivery token does not belong to this overseer session.");
           }
           if (overseer.acknowledged_at) return { status: "already_acknowledged", event_seqs: [overseer.event_seq] };
