@@ -146,6 +146,8 @@ export type EventType =
   | "close"
   | "kick"
   | "kick_stop"
+  | "goal_added"
+  | "goal_closed"
   | "session_superseded"
   | "reservation_expired"
   | "message_sent";
@@ -179,6 +181,7 @@ export interface RoomEvent {
   reason: string | null;
   created_at: string;
   payload: MessagePayload | null;
+  goal?: RoomGoalEvent;
 }
 
 export interface JoinPathInput {
@@ -598,8 +601,30 @@ export interface SendMessageInput {
   process_metadata?: ProcessMetadata;
 }
 
+export type GoalOutcome = "done" | "failed" | "withdrawn";
+
+export interface RoomGoal {
+  goal_id: string;
+  room_id: string;
+  brief: string;
+  completion_criterion: string;
+  created_by: AgentId;
+  created_at: string;
+  status: "open" | GoalOutcome;
+  evidence: string | null;
+  closed_by: AgentId | null;
+  closed_at: string | null;
+  closure_event_seq: number | null;
+}
+
+/** The durable facts published when a goal changes. */
+export type RoomGoalEvent =
+  | { goal_id: string; status: "open"; brief: string; completion_criterion: string }
+  | { goal_id: string; status: GoalOutcome; evidence: string };
+
 export interface RoomBlocker {
   blocker_id: string;
+  goal_id?: string | null;
   room_id: string;
   author_agent_id: AgentId;
   body: string;

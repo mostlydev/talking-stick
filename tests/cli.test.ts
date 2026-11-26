@@ -2004,6 +2004,32 @@ describe("tt notes", () => {
     }
   });
 
+  test("room goals preserve outside authorship, blocker links and closure evidence", async () => {
+    const { project } = setupIsolatedCli(tempDirs);
+    const call = async (...args: string[]) => JSON.parse(await captureStdout([...args, "--json"]));
+    const member = ["--agent", "claude:goal-worker"];
+    const outsider = ["--agent", "codex:goal-manager"];
+    const { room_id } = await call("join", project, ...member);
+    const room = ["--in", room_id];
+    const goal = await call("goal", "add", "Check the setup guide", "--done-when", "Build passes in a clean checkout", ...room, ...outsider);
+    expect(goal).toMatchObject({ goal_id: "G1", created_by: "codex:goal-manager", status: "open" });
+    expect((await call("goal", "list", ...room)).goals).toEqual([goal]);
+    const blocker = await call("blocker", "add", "May we run a build?", "--goal", "G1", ...room, ...member);
+    expect(blocker).toMatchObject({ goal_id: "G1" });
+    const before = await call("room", "brief", room_id);
+    expect(before.goals).toEqual([goal]);
+    expect(before.blockers).toEqual([blocker]);
+    expect(before.members.map((entry: { agent_id: string }) => entry.agent_id)).toEqual(["claude:goal-worker"]);
+    expect((await call("room", "list", "--all")).rooms).toContainEqual(expect.objectContaining({ room_id, open_goals: 1 }));
+    const closed = await call("goal", "close", "G1", "done", "Build passed at abc1234", ...room, ...member);
+    expect(await call("goal", "show", "g1", ...room)).toEqual(closed);
+    expect((await call("goal", "list", "--all", ...room)).goals).toEqual([closed]);
+    const after = await call("room", "brief", room_id);
+    expect(after.goals).toEqual([]);
+    expect(after.recent).toContainEqual(expect.objectContaining({ event_seq: closed.closure_event_seq,
+      event_type: "goal_closed", goal: { goal_id: "G1", status: "done", evidence: "Build passed at abc1234" } }));
+  });
+
   test("outside room send resolves a blocker without joining", async () => {
     const { project } = setupIsolatedCli(tempDirs);
     const call = async (...args: string[]) => JSON.parse(await captureStdout([...args, "--json"]));

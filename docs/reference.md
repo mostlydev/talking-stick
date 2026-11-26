@@ -71,7 +71,11 @@ tt take [path] [--reason TEXT] [--operator-requested]     # deliberate claim whe
 tt takeover [path] [--reason TEXT] [--operator-requested] # alias for take
 tt notes add <body> [--turn N] [--path DIR] [--stdin]     # leave an async note
 tt notes list [--all] [--after ID] [--limit N] [--path DIR]
-tt blocker add <facts and question> [--stdin] [--in ROOM]  # raise a decision for the room
+tt goal add <brief> --done-when CRITERION [--in ROOM] [--stdin]
+tt goal list [--all] [--in ROOM]
+tt goal show <id> [--in ROOM]
+tt goal close <id> <done|failed|withdrawn> <evidence or reason> [--in ROOM] [--stdin]
+tt blocker add <facts and question> [--goal G<N>] [--stdin] [--in ROOM]  # raise a decision for the room
 tt blocker list [--all] [--in ROOM]                        # open items by default
 tt blocker withdraw <id> <reason> [--stdin] [--in ROOM]    # clear a stale item
 tt msg send room --resolves <id> <answer>                  # close an item from inside
@@ -287,6 +291,34 @@ inside that hour. Unknown or remote process liveness is preserved. For a stuck h
 takeover eligibility reported by `tt wait`; a single process-gone observation does not
 immediately revoke a live lease.
 
+### Room goals
+
+A goal belongs to the room. Give it a brief and a completion criterion that the
+room can test. An outside manager can add a goal without joining the room.
+
+```sh
+tt goal add --in api "Verify the setup guide" --done-when "A clean checkout builds using only the documented steps"
+tt goal list --in api
+tt goal show --in api G1
+tt blocker add --in api --goal G1 "May we use a clean build machine? That would let us verify the setup steps."
+tt goal close --in api G1 done "Built from a fresh checkout of abc1234 using every documented step."
+```
+
+IDs such as `G1` are scoped to the room. `goal list` shows open goals and
+`goal list --all` includes closed goals. `goal show` has the full brief,
+completion criterion, and any closure evidence. A member or operator can close
+a goal as `done`, `failed`, or `withdrawn`. An outside creator can withdraw a
+goal it set. Include build results, commit SHAs, or other evidence for an
+outcome, and give a reason when withdrawing.
+
+A closure produces one durable `goal_closed` event with the goal ID, status and
+evidence. Repeating the same closure returns the same event sequence. Members
+can see goal events in their event stream, and the room brief shows recent
+closures. Link a blocker to an open goal with `--goal G1`. Resolve or withdraw
+linked blockers explicitly when their decision is settled. An open goal keeps
+its room available after the last member leaves.
+
+
 ### Observing rooms from outside
 
 For a session whose whole job is watching rooms, such as a Claude Code or Codex session started
@@ -294,12 +326,12 @@ in your home folder, use the `rooms-oversee` skill: it never joins a room, and i
 session to find a room, summarize it, and ask its agents.
 
 Any agent or person on the host can see what each room is doing without joining it.
-`tt room list --all` lists every room with a live agent or console, most recent room activity
-first. Room activity includes lease renewals, so it means the room is in use, not that its
+`tt room list --all` lists rooms with live or recoverable members, consoles, open goals,
+or open blockers, most recent room activity first. Room activity includes lease renewals, so it means the room is in use, not that its
 conversation moved. `tt room brief <room>` then shows one room: the stick holder (marked stale
 once the lease has expired) or the reservation, members with their kind and whether each is
 live, inactive, or gone, the latest handoff in full, the newest ten open notes with the real open
-count, and the last 20 messages and handoffs. `--limit N` (up to 200) changes how many recent
+count, open goals and their age, and the last 20 messages, handoffs and goal events. `--limit N` (up to 200) changes how many recent
 events to show. Message bodies are cut at 1,000 characters and handoffs at 160; each clipped
 event carries a `full` command that reads it whole. `older` pages back with `--before <seq>`, and
 `updates_since` reads everything after the brief's cursor. A visitor's question carries its

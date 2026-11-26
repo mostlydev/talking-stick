@@ -634,6 +634,26 @@ const migrations: Migration[] = [
     CREATE INDEX visitor_reply_deliveries_pending
       ON visitor_reply_deliveries (room_id, status)
       WHERE status = 'pending';`
+  },
+  {
+    id: 37,
+    name: "room_goals",
+    up: `CREATE TABLE room_goals (
+      room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      id INTEGER NOT NULL,
+      brief TEXT NOT NULL,
+      completion_criterion TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('open', 'done', 'failed', 'withdrawn')),
+      evidence TEXT,
+      closed_by TEXT,
+      closed_at TEXT,
+      closure_event_seq INTEGER,
+      PRIMARY KEY (room_id, id)
+    );
+    CREATE INDEX room_goals_open ON room_goals (room_id) WHERE status = 'open';
+    ALTER TABLE room_blockers ADD COLUMN goal_id INTEGER;`
   }
 ];
 
