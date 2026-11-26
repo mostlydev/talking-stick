@@ -1,4 +1,4 @@
-import type { GoalOutcome, RoomBlocker, RoomGoal, RoomGoalEvent } from "./types.js";
+import type { GoalOutcome, OverseerInboxSummary, RoomBlocker, RoomBlockerEvent, RoomGoal, RoomGoalEvent, RoomOverseerSummary } from "./types.js";
 import { PROFILE_NOTICES } from "./profile-notices.js";
 import { humanAttentionIdentity, humanAttentionWhere, isHumanDirected } from "./human-attention.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -219,6 +219,31 @@ interface VisitorRequestRow {
   return_process_started_at: string | null;
 }
 
+interface OverseerInboxRow {
+  inbox_id: string;
+  alias: string;
+  agent_id: string;
+  harness_session_id: string;
+  host_id: string;
+  pid: number;
+  process_started_at: string;
+  transport: VisitorReturnTransportName;
+  address: string;
+  secret: string | null;
+}
+
+interface OverseerDeliveryRow {
+  event_seq: number;
+  token: string;
+  room_id: string;
+  inbox_id: string;
+  agent_id: string;
+  harness_session_id: string;
+  host_id: string;
+  status: string;
+  acknowledged_at: string | null;
+}
+
 interface VisitorReplyDeliveryRow {
   request_id: string;
   event_seq: number;
@@ -361,6 +386,8 @@ const KNOWN_EVENT_TYPES: readonly EventType[] = [
   "takeover",
   "close",
   "kick",
+  "blocker_added",
+  "blocker_withdrawn",
   "goal_added",
   "goal_closed",
   "session_superseded",
@@ -638,6 +665,7 @@ export class TalkingStickService {
         input.agent_id
       );
       const joinMetadata = normalizeProcessMetadata(input.process_metadata);
+      this.requireNoOverseerInbox(input.agent_id, joinMetadata);
       const recovered = !existingMember && input.recover
         ? this.recoverLostMember(roomSelection.room.room_id, input.agent_id, joinMetadata,
           input.recovery_credentials?.[roomSelection.room.room_id])
@@ -2880,6 +2908,7 @@ export class TalkingStickService {
       const eventSeq = this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "goal_closed",
         from_agent_id: input.agent_id, to_agent_id: null, handoff: null, reason: null, created_at: timestamp,
         goal: { goal_id: goal.goal_id, status: input.status, evidence } });
+      this.queueOverseerEvent(room.room_id, eventSeq, input.agent_id);
       this.db.prepare(`UPDATE room_goals SET status = ?, evidence = ?, closed_by = ?, closed_at = ?, closure_event_seq = ?
         WHERE room_id = ? AND id = ?`).run(input.status, evidence, input.agent_id, timestamp, eventSeq, room.room_id, goal.goal_id.slice(1));
       return this.getGoal(input);
@@ -2954,7 +2983,12 @@ export class TalkingStickService {
       const timestamp = this.now().toISOString();
       const id = this.db.prepare("INSERT INTO room_blockers (room_id, author_agent_id, body, created_at, goal_id) VALUES (?, ?, ?, ?, ?)")
         .run(input.room_id, input.agent_id, body, timestamp, goal?.goal_id.slice(1) ?? null).lastInsertRowid;
-      return this.requireBlocker(input.room_id, `B${id}`);
+      const blocker = this.requireBlocker(input.room_id, `B${id}`);
+      const seq = this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "blocker_added",
+        from_agent_id: input.agent_id, to_agent_id: null, handoff: null, reason: null, created_at: timestamp,
+        blocker: { blocker_id: blocker.blocker_id, goal_id: blocker.goal_id ?? null, status: "open", body } });
+      this.queueOverseerEvent(room.room_id, seq, input.agent_id);
+      return blocker;
     });
   }
 
@@ -2971,6 +3005,11 @@ export class TalkingStickService {
       const timestamp = this.now().toISOString();
       this.db.prepare(`UPDATE room_blockers SET closed_at = ?, closed_by_agent_id = ?, withdrawal_reason = ? WHERE id = ?`)
         .run(timestamp, input.agent_id, reason, blocker.blocker_id.slice(1));
+      const room = this.requireRoom(input.room_id);
+      const seq = this.appendEvent({ room_id: room.room_id, turn_id: room.turn_id, event_type: "blocker_withdrawn",
+        from_agent_id: input.agent_id, to_agent_id: null, handoff: null, reason: null, created_at: timestamp,
+        blocker: { blocker_id: blocker.blocker_id, goal_id: blocker.goal_id ?? null, status: "withdrawn", reason } });
+      this.queueOverseerEvent(room.room_id, seq, input.agent_id);
       return this.requireBlocker(input.room_id, blocker.blocker_id);
     });
   }
@@ -3023,6 +3062,7 @@ export class TalkingStickService {
         body, deliveryHint, timestamp, "visitor");
       this.db.prepare(`UPDATE room_blockers SET closed_at = ?, closed_by_agent_id = ?, resolution_event_seq = ? WHERE id = ?`)
         .run(timestamp, input.agent_id, sent.event_seq, blocker.blocker_id.slice(1));
+      this.queueOverseerEvent(input.room_id, sent.event_seq, input.agent_id);
       return { ...sent, resolves: blocker.blocker_id };
     });
 
@@ -3484,7 +3524,7 @@ export class TalkingStickService {
     // never delivered (killed after commit, or a long wait that queued them).
     const rooms = roomId ? [roomId] : [...new Set([...this.wakeRooms,
       ...this.db.prepare<[], { room_id: string }>(
-        "SELECT room_id FROM member_wake_endpoints WHERE wake_pending = 1 UNION SELECT room_id FROM interrupt_deliveries WHERE status = 'pending' UNION SELECT room_id FROM visitor_reply_deliveries WHERE status = 'pending'"
+        "SELECT room_id FROM member_wake_endpoints WHERE wake_pending = 1 UNION SELECT room_id FROM interrupt_deliveries WHERE status = 'pending' UNION SELECT room_id FROM visitor_reply_deliveries WHERE status = 'pending' UNION SELECT room_id FROM overseer_deliveries WHERE status = 'pending'"
       ).all().map((row) => row.room_id)])];
     for (const room of rooms) {
       // A recipient-scoped flush leaves other recipients queued for a later
@@ -3505,6 +3545,15 @@ export class TalkingStickService {
       for (const row of pending) {
         if (agentId && row.agent_id !== agentId) continue;
         const job = this.dispatchWake(room, row.agent_id);
+        this.wakeJobs.set(job, { room, agent: row.agent_id });
+        void job.finally(() => this.wakeJobs.delete(job)).catch(() => {});
+      }
+      const notifications = this.db.prepare<[string], OverseerDeliveryRow>(
+        "SELECT * FROM overseer_deliveries WHERE room_id = ? AND status = 'pending' ORDER BY event_seq"
+      ).all(room);
+      for (const row of notifications) {
+        if (agentId && row.agent_id !== agentId) continue;
+        const job = this.dispatchOverseerEvent(row);
         this.wakeJobs.set(job, { room, agent: row.agent_id });
         void job.finally(() => this.wakeJobs.delete(job)).catch(() => {});
       }
@@ -3531,7 +3580,9 @@ export class TalkingStickService {
   ): Promise<SendMessageResult> {
     const result = this.sendMessage(input);
     const targets = result.deliveries?.map((delivery) => delivery.agent_id) ?? [];
-    const held = this.noticeHeldRecipients(input, result.held);
+    const overseer = input.resolves ? this.designatedOverseer(input.room_id) : undefined;
+    const notification = overseer ? this.flushWakes(input.room_id, overseer.agent_id) : Promise.resolve();
+    const held = Promise.all([this.noticeHeldRecipients(input, result.held), notification]).then(([notified]) => notified);
     if (targets.length === 0) return held.then((notified) => ({ ...result, ...(notified ? { held: notified } : {}) }));
     return Promise.all([Promise.all(targets.map((target) => this.flushWakes(input.room_id, target).then(() => {
       const delivery = this.describeDelivery(input.room_id, target, result.event_seq, input.delivery_hint);
@@ -3901,6 +3952,197 @@ export class TalkingStickService {
     };
   }
 
+  private overseerInbox(alias: string): OverseerInboxRow | undefined {
+    return this.db.prepare<[string], OverseerInboxRow>("SELECT * FROM overseer_inboxes WHERE alias = ?").get(alias);
+  }
+
+  private designatedOverseer(roomId: string): OverseerInboxRow | undefined {
+    return this.db.prepare<[string], OverseerInboxRow>(`SELECT i.* FROM room_overseers r
+      JOIN overseer_inboxes i USING (inbox_id) WHERE r.room_id = ?`).get(roomId);
+  }
+
+  private overseerAlive(inbox: OverseerInboxRow): boolean {
+    const { host_id, pid, process_started_at, harness_session_id } = inbox;
+    return host_id === this.hostId && this.processLivenessChecker({
+      host_id, pid, process_started_at, harness_session_id, harness_host_id: host_id,
+      harness_pid: pid, harness_process_started_at: process_started_at
+    }) === "alive";
+  }
+
+  private publicOverseer(inbox: OverseerInboxRow): OverseerInboxSummary {
+    return { alias: inbox.alias, agent_id: inbox.agent_id, transport: inbox.transport, reachable: this.overseerAlive(inbox) };
+  }
+
+  private requireNoOverseerInbox(agentId: string, metadata: RequiredProcessMetadata): void {
+    if (this.db.prepare(`SELECT 1 FROM overseer_inboxes WHERE agent_id = ? OR
+      (harness_session_id = ? AND host_id = ?) LIMIT 1`)
+      .get(agentId, metadata.harness_session_id, metadata.harness_host_id ?? metadata.host_id)) {
+      throw new ProtocolError("overseer_registered", "Unregister this session's overseer inbox before joining a room.");
+    }
+  }
+
+  registerOverseer(input: { alias: string; agent_id: string; endpoint: VisitorReturnAddressInput }): OverseerInboxSummary {
+    assertNonEmpty(input.agent_id, "agent_id");
+    const alias = input.alias.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(alias)) {
+      throw new ProtocolError("invalid_input", "Choose an overseer alias of up to 48 letters, digits, underscores or hyphens.");
+    }
+    const endpoint = this.normalizeVisitorReturnAddress(input.agent_id, input.endpoint);
+    if (!endpoint || !endpoint.harness_session_id.startsWith("harness:") || endpoint.harness_session_id.length <= 8 ||
+        !input.endpoint.host_id || endpoint.host_id !== this.hostId || !endpoint.pid || endpoint.pid <= 1 ||
+        !endpoint.process_started_at || (endpoint.transport === "codex_queue" &&
+          endpoint.address !== endpoint.harness_session_id.slice("harness:".length))) {
+      throw new ProtocolError("invalid_input", "Register from a local harness with a verified native session and process.");
+    }
+    const inbox = { ...endpoint, alias, agent_id: input.agent_id, inbox_id: randomUUID(),
+      pid: endpoint.pid, process_started_at: endpoint.process_started_at };
+    if (!this.overseerAlive(inbox)) throw new ProtocolError("invalid_input", "The overseer's exact process could not be verified.");
+    return this.writeTransaction(() => {
+      if (this.db.prepare(`SELECT 1 FROM room_members WHERE agent_id = ? OR
+        (harness_session_id = ? AND COALESCE(harness_host_id, host_id) = ?) LIMIT 1`)
+        .get(input.agent_id, inbox.harness_session_id, inbox.host_id)) {
+        throw new ProtocolError("overseer_registered", "Leave room membership before registering an overseer inbox.");
+      }
+      const existing = this.overseerInbox(alias);
+      if (existing) {
+        const fields = ["agent_id", "harness_session_id", "host_id", "pid", "process_started_at", "transport", "address", "secret"] as const;
+        if (fields.every(field => inbox[field] === existing[field])) return this.publicOverseer(existing);
+        throw new ProtocolError("invalid_input", "That alias is already registered. Unregister its old inbox first.");
+      }
+      if (this.db.prepare("SELECT 1 FROM overseer_inboxes WHERE host_id = ? AND harness_session_id = ?")
+        .get(inbox.host_id, inbox.harness_session_id)) {
+        throw new ProtocolError("overseer_registered", "This session already has an inbox.");
+      }
+      this.db.prepare(`INSERT INTO overseer_inboxes
+        (inbox_id, alias, agent_id, harness_session_id, host_id, pid, process_started_at, transport, address, secret)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(inbox.inbox_id, alias, inbox.agent_id, inbox.harness_session_id,
+          inbox.host_id, inbox.pid, inbox.process_started_at, inbox.transport, inbox.address, inbox.secret);
+      return this.publicOverseer(inbox);
+    });
+  }
+
+  unregisterOverseer(input: { alias: string; agent_id: string; harness_session_id?: string | null; host_id?: string | null }): boolean {
+    return this.writeTransaction(() => {
+      const inbox = this.overseerInbox(input.alias.trim().toLowerCase());
+      if (!inbox) return false;
+      if (!input.agent_id.startsWith("human:") && (input.agent_id !== inbox.agent_id ||
+          input.host_id !== inbox.host_id || input.harness_session_id !== inbox.harness_session_id)) {
+        throw new ProtocolError("operator_only", "Only the registered session or operator can unregister this inbox.");
+      }
+      this.db.prepare(`UPDATE overseer_deliveries SET status = 'failed', error = 'overseer_unregistered'
+        WHERE inbox_id = ? AND status = 'pending'`).run(inbox.inbox_id);
+      this.db.prepare("DELETE FROM overseer_inboxes WHERE inbox_id = ?").run(inbox.inbox_id);
+      return true;
+    });
+  }
+
+  setRoomOverseer(input: { room_id: string; agent_id: string; alias: string | null }): RoomOverseerSummary | null {
+    if (!input.agent_id.startsWith("human:")) throw new ProtocolError("operator_only", "Only the operator designates a room's overseer.");
+    return this.writeTransaction(() => {
+      const room = this.requireRoom(input.room_id);
+      if (room.state === "closed") throw new ProtocolError("room_closed", "Cannot change the overseer of a closed room.");
+      const previous = this.designatedOverseer(input.room_id);
+      const inbox = input.alias === null ? null : this.overseerInbox(input.alias.trim().toLowerCase());
+      if (input.alias !== null && !inbox) throw new ProtocolError("overseer_not_found", "No registered overseer matches that alias.");
+      if (previous?.inbox_id === inbox?.inbox_id) return this.getRoomOverseer(input.room_id);
+      this.db.prepare(`UPDATE overseer_deliveries SET status = 'failed', error = 'overseer_changed'
+        WHERE room_id = ? AND status = 'pending'`).run(input.room_id);
+      if (inbox) {
+        this.db.prepare(`INSERT INTO room_overseers (room_id, inbox_id) VALUES (?, ?)
+          ON CONFLICT (room_id) DO UPDATE SET inbox_id = excluded.inbox_id`).run(input.room_id, inbox.inbox_id);
+      } else {
+        this.db.prepare("DELETE FROM room_overseers WHERE room_id = ?").run(input.room_id);
+      }
+      return this.getRoomOverseer(input.room_id);
+    });
+  }
+
+  getRoomOverseer(roomId: string): RoomOverseerSummary | null {
+    const inbox = this.designatedOverseer(roomId);
+    if (!inbox) return null;
+    const counts = this.db.prepare<[string, string], { pending: number; unconfirmed: number; failed: number }>(`
+      SELECT COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+        COUNT(*) FILTER (WHERE status IN ('dispatching', 'queued', 'woken', 'ambiguous') AND acknowledged_at IS NULL) AS unconfirmed,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed
+      FROM overseer_deliveries WHERE room_id = ? AND inbox_id = ?`).get(roomId, inbox.inbox_id)!;
+    return { room_id: roomId, ...this.publicOverseer(inbox), ...counts };
+  }
+
+  /** Snapshot the explicitly designated recipient within the event transaction. */
+  private queueOverseerEvent(roomId: string, seq: number, actor: string): void {
+    const inbox = this.designatedOverseer(roomId);
+    if (!inbox || inbox.agent_id === actor) return;
+    this.db.prepare(`INSERT OR IGNORE INTO overseer_deliveries
+      (event_seq, token, room_id, inbox_id, agent_id, harness_session_id, host_id, transport, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`).run(seq, this.newDeliveryToken(), roomId, inbox.inbox_id, inbox.agent_id,
+        inbox.harness_session_id, inbox.host_id, inbox.transport);
+    this.wakeRooms.add(roomId);
+  }
+
+  private async dispatchOverseerEvent(row: OverseerDeliveryRow): Promise<void> {
+    const finish = (result: NativeWakeResult) => {
+      const status = result.outcome === "steered" ? "woken" : result.outcome;
+      this.db.prepare(`UPDATE overseer_deliveries SET status = ?, error = ?, error_detail = ?, attempted_at = ?
+        WHERE event_seq = ? AND status = 'dispatching'`).run(status, result.error ?? null, safeWakeDetail(result.detail) ?? null,
+          this.now().toISOString(), row.event_seq);
+    };
+    const claimed = this.writeTransaction(() => {
+      const updated = this.db.prepare("UPDATE overseer_deliveries SET status = 'dispatching' WHERE event_seq = ? AND status = 'pending'")
+        .run(row.event_seq);
+      if (!updated.changes) return null;
+      const inbox = this.designatedOverseer(row.room_id);
+      const room = this.getRoomRow(row.room_id);
+      const stored = this.getEventBySeq(row.event_seq);
+      if (!inbox || inbox.inbox_id !== row.inbox_id || !room || !stored || stored.room_id !== row.room_id) {
+        finish({ outcome: "failed", error: "overseer_changed" });
+        return null;
+      }
+      if (!this.overseerAlive(inbox)) {
+        finish({ outcome: "failed", error: "overseer_process_unverified" });
+        return null;
+      }
+      const event = this.mapEvent(stored);
+      const text = formatNativeEventText({ token: row.token, room_id: row.room_id, path: room.canonical_path,
+        recipient: row.agent_id, events: [{ ...event, to_agent_id: row.agent_id }] });
+      if (!text) {
+        finish({ outcome: "failed", error: "overseer_event_too_large" });
+        return null;
+      }
+      return { inbox, text };
+    });
+    if (!claimed) return;
+    const { transport, address, secret } = claimed.inbox;
+    const result = await this.deliverOutsideWake({ transport, address, secret, text: claimed.text }, () =>
+      Boolean(this.db.prepare(`UPDATE overseer_deliveries SET delivery_mode = 'codex_queue_held'
+        WHERE event_seq = ? AND status = 'dispatching' AND acknowledged_at IS NULL AND EXISTS (
+          SELECT 1 FROM room_overseers WHERE room_id = ? AND inbox_id = ?)`)
+        .run(row.event_seq, row.room_id, row.inbox_id).changes), () => {
+      try {
+        if (this.designatedOverseer(row.room_id)?.inbox_id === row.inbox_id) return true;
+        finish({ outcome: "failed", error: "overseer_changed" });
+      } catch {
+        // An asynchronous transport callback must fail closed if the DB is unavailable.
+      }
+      return false;
+    });
+    finish(result);
+  }
+
+  private async deliverOutsideWake(
+    input: { transport: VisitorReturnTransportName; address: string; secret: string | null; text: string },
+    onQueue: () => boolean,
+    canSend?: () => boolean
+  ): Promise<NativeWakeResult> {
+    try {
+      if (!this.nativeWakeTransport) return { outcome: "failed", error: "native_wake_unavailable" };
+      return await this.nativeWakeTransport.deliver({ ...input, interrupt: false, steer: false, start_queued: true,
+        ...(canSend ? { can_send: canSend } : {}),
+        ...(input.transport === "codex_queue" ? { on_queue: onQueue } : {}) });
+    } catch {
+      return { outcome: "failed", error: "native_wake_error" };
+    }
+  }
+
   private getVisitorReplyDeliveryRow(requestId: string, eventSeq: number): VisitorReplyDeliveryRow | undefined {
     return this.db.prepare<[string, number], VisitorReplyDeliveryRow>(
       "SELECT * FROM visitor_reply_deliveries WHERE request_id = ? AND event_seq = ?"
@@ -3999,32 +4241,10 @@ export class TalkingStickService {
       };
     });
     if (!claimed) return;
-    let result: NativeWakeResult;
-    try {
-      if (!this.nativeWakeTransport) {
-        result = { outcome: "failed", error: "native_wake_unavailable" };
-      } else {
-        // Always queue behind an active manager turn; steering is reserved for explicit interrupts.
-        result = await this.nativeWakeTransport.deliver({
-          transport: claimed.transport,
-          address: claimed.address,
-          secret: claimed.secret,
-          text: claimed.text,
-          interrupt: false,
-          steer: false,
-          start_queued: true,
-          ...(claimed.transport === "codex_queue" ? {
-            on_queue: () => Boolean(this.db.prepare(`UPDATE visitor_reply_deliveries
-              SET delivery_mode = 'codex_queue_held'
-              WHERE request_id = ? AND event_seq = ? AND status = 'dispatching' AND acknowledged_at IS NULL`)
-              .run(row.request_id, row.event_seq).changes)
-          } : {})
-        });
-      }
-    } catch {
-      result = { outcome: "failed", error: "native_wake_error" };
-    }
-    finish(result);
+    finish(await this.deliverOutsideWake(claimed, () => Boolean(this.db.prepare(`UPDATE visitor_reply_deliveries
+      SET delivery_mode = 'codex_queue_held'
+      WHERE request_id = ? AND event_seq = ? AND status = 'dispatching' AND acknowledged_at IS NULL`)
+      .run(row.request_id, row.event_seq).changes)));
   }
 
   // The endpoint row holds only its latest attempt. Report it only when that
@@ -4586,10 +4806,10 @@ export class TalkingStickService {
   }
 
   private newDeliveryToken(): string {
-    const taken = this.db.prepare<[string, string], { found: number }>(
-      "SELECT 1 AS found FROM native_delivery_batches WHERE token = ? UNION ALL SELECT 1 AS found FROM visitor_reply_deliveries WHERE token = ? LIMIT 1");
+    const taken = this.db.prepare<[string, string, string], { found: number }>(
+      "SELECT 1 AS found FROM native_delivery_batches WHERE token = ? UNION ALL SELECT 1 AS found FROM visitor_reply_deliveries WHERE token = ? UNION ALL SELECT 1 AS found FROM overseer_deliveries WHERE token = ? LIMIT 1");
     let token = newDeliveryToken();
-    while (taken.get(token, token)) token = newDeliveryToken();
+    while (taken.get(token, token, token)) token = newDeliveryToken();
     return token;
   }
 
@@ -4729,6 +4949,16 @@ export class TalkingStickService {
         host_id: string; event_seqs_json: string; acknowledged_at: string | null }>(
         "SELECT * FROM native_delivery_batches WHERE token = ?").get(input.token);
       if (!batch) {
+        const overseer = this.db.prepare<[string], OverseerDeliveryRow>("SELECT * FROM overseer_deliveries WHERE token = ?").get(input.token);
+        if (overseer) {
+          if (overseer.agent_id !== input.agent_id || overseer.harness_session_id !== input.harness_session_id ||
+              overseer.host_id !== (input.host_id ?? this.hostId) || overseer.status === "pending" || overseer.status === "failed") {
+            throw new ProtocolError("invalid_input", "Delivery token does not belong to this overseer session.");
+          }
+          if (overseer.acknowledged_at) return { status: "already_acknowledged", event_seqs: [overseer.event_seq] };
+          this.db.prepare("UPDATE overseer_deliveries SET acknowledged_at = ? WHERE token = ?").run(this.now().toISOString(), input.token);
+          return { status: "acknowledged", event_seqs: [overseer.event_seq] };
+        }
         const visitorDelivery = this.db.prepare<[string], VisitorReplyDeliveryRow>(
           "SELECT * FROM visitor_reply_deliveries WHERE token = ?"
         ).get(input.token);
@@ -5991,6 +6221,7 @@ export class TalkingStickService {
   ): void {
     const existing = this.getMember(roomId, agentId);
     const normalized = normalizeProcessMetadata(options.processMetadata);
+    if (options.allowCreate) this.requireNoOverseerInbox(agentId, normalized);
     const lost = existing ? null : this.getLostMember(roomId, agentId);
     if (lost) throw this.lostMemberError(lost);
     const revoked = existing ? undefined : this.db.prepare<[string, string], { revoked_at: string; revoked_by: string; harness_session_id: string }>(
@@ -6914,6 +7145,7 @@ export class TalkingStickService {
     created_at: string;
     payload?: MessagePayload | null;
     goal?: RoomGoalEvent;
+    blocker?: RoomBlockerEvent;
   }): number {
     const result = this.db
       .prepare(
@@ -6943,7 +7175,7 @@ export class TalkingStickService {
         input.handoff ? JSON.stringify(input.handoff) : null,
         input.reason,
         input.created_at,
-        input.payload || input.goal ? JSON.stringify(input.payload ?? input.goal) : null
+        input.payload || input.goal || input.blocker ? JSON.stringify(input.payload ?? input.goal ?? input.blocker) : null
       );
 
     return Number(result.lastInsertRowid);
@@ -7018,9 +7250,9 @@ export class TalkingStickService {
         `(
           (event_type = 'message_sent' AND (to_agent_id = ? OR (to_agent_id IS NULL AND from_agent_id != ?)))
           OR
-          (event_type IN ('join', 'leave', 'goal_added', 'goal_closed') AND from_agent_id != ?)
+          (event_type IN ('join', 'leave', 'goal_added', 'goal_closed', 'blocker_added', 'blocker_withdrawn') AND from_agent_id != ?)
           OR
-          (event_type NOT IN ('message_sent', 'join', 'leave', 'goal_added', 'goal_closed') AND (to_agent_id = ? OR from_agent_id = ?))
+          (event_type NOT IN ('message_sent', 'join', 'leave', 'goal_added', 'goal_closed', 'blocker_added', 'blocker_withdrawn') AND (to_agent_id = ? OR from_agent_id = ?))
         )`
       );
       params.push(
@@ -7912,7 +8144,9 @@ export class TalkingStickService {
       created_at: row.created_at,
       payload,
       ...((row.event_type === "goal_added" || row.event_type === "goal_closed") && row.payload_json
-        ? { goal: JSON.parse(row.payload_json) as RoomGoalEvent } : {})
+        ? { goal: JSON.parse(row.payload_json) as RoomGoalEvent } : {}),
+      ...((row.event_type === "blocker_added" || row.event_type === "blocker_withdrawn") && row.payload_json
+        ? { blocker: JSON.parse(row.payload_json) as RoomBlockerEvent } : {})
     };
   }
 }

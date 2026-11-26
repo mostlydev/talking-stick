@@ -660,6 +660,44 @@ const migrations: Migration[] = [
     );
     CREATE INDEX room_goals_open ON room_goals (room_id) WHERE status = 'open';
     ALTER TABLE room_blockers ADD COLUMN goal_id INTEGER;`
+  },
+  {
+    id: 39,
+    name: "designated_overseer_inboxes",
+    up: `CREATE TABLE overseer_inboxes (
+      inbox_id TEXT PRIMARY KEY,
+      alias TEXT NOT NULL UNIQUE,
+      agent_id TEXT NOT NULL,
+      harness_session_id TEXT NOT NULL,
+      host_id TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      process_started_at TEXT NOT NULL,
+      transport TEXT NOT NULL,
+      address TEXT NOT NULL,
+      secret TEXT,
+      UNIQUE (host_id, harness_session_id)
+    );
+    CREATE TABLE room_overseers (
+      room_id TEXT PRIMARY KEY REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      inbox_id TEXT NOT NULL REFERENCES overseer_inboxes(inbox_id) ON DELETE CASCADE
+    );
+    CREATE TABLE overseer_deliveries (
+      event_seq INTEGER PRIMARY KEY,
+      token TEXT NOT NULL UNIQUE,
+      room_id TEXT NOT NULL REFERENCES path_rooms(room_id) ON DELETE CASCADE,
+      inbox_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      harness_session_id TEXT NOT NULL,
+      host_id TEXT NOT NULL,
+      transport TEXT NOT NULL,
+      status TEXT NOT NULL,
+      delivery_mode TEXT,
+      error TEXT,
+      error_detail TEXT,
+      attempted_at TEXT,
+      acknowledged_at TEXT
+    );
+    CREATE INDEX overseer_deliveries_pending ON overseer_deliveries (room_id, event_seq) WHERE status = 'pending';`
   }
 ];
 

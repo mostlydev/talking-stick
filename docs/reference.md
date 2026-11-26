@@ -319,6 +319,38 @@ linked blockers explicitly when their decision is settled. An open goal keeps
 its room available after the last member leaves.
 
 
+### Designated overseer inbox
+
+An overseer invoked to manage rooms can register its own native inbox from
+outside all rooms:
+
+```sh
+tt overseer register launch-manager
+```
+
+The operator chooses the inbox for a room and can check or clear that choice:
+
+```sh
+tt overseer set launch-manager --in api
+tt overseer show --in api
+tt overseer clear --in api
+```
+
+The designated session receives newly raised blockers, resolutions,
+withdrawals, and goal closures. Each notification has the same event sequence
+as the room record. Native delivery queues behind an active overseer turn. An
+envelope supplies its `tt ack` command, which records receipt. A queued or
+unconfirmed attempt is sent once. Reassignment applies to new events and
+cancels pending notifications for the previous inbox.
+
+`tt room brief` and `tt room list --all` show the designation and delivery
+counts. If the overseer session or native route is unavailable, read the room
+brief or event stream. Replies to a question still route to that question's
+recorded return address.
+
+The session or operator can run `tt overseer unregister launch-manager` to
+clear its inbox and associated designations. Unregister before joining a room.
+
 ### Observing rooms from outside
 
 For a session whose whole job is watching rooms, such as a Claude Code or Codex session started

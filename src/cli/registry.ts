@@ -4,7 +4,7 @@ import { runCodexInboxHookCommand } from "./codex-inbox-hook.js";
 import { runSessionHookCommand } from "./session-hook.js";
 import { runAntigravityHookCommand } from "./antigravity-hook.js";
 import { runInterruptHookCommand } from "./interrupt-hook.js";
-import { GOAL_USAGE, handleBlockerCommand, handleGoalCommand, handleLiaisonCommand, handleRoomCommand } from "./room-admin.js";
+import { GOAL_USAGE, OVERSEER_USAGE, handleBlockerCommand, handleGoalCommand, handleLiaisonCommand, handleOverseerCommand, handleRoomCommand } from "./room-admin.js";
 import { handleRolesCommand } from "./role-commands.js";
 import { deriveCliIdentity } from "./identity.js";
 import { printResult } from "./output.js";
@@ -65,7 +65,7 @@ export interface CommandEntry {
 /** How help groups the public commands: managing rooms, taking turns inside one, and setup. */
 export const HELP_GROUPS = [
   { title: "Manage rooms",
-    commands: ["chat", "up", "room", "list", "roles", "liaison", "supervisor", "goal", "blocker", "kick"] },
+    commands: ["chat", "up", "room", "list", "roles", "liaison", "supervisor", "overseer", "goal", "blocker", "kick"] },
   { title: "Inside a room (the talking stick)",
     commands: ["join", "leave", "wait", "standby", "try", "take", "release", "pass", "assign", "msg", "ack", "notes",
       "state", "health", "events"] },
@@ -407,6 +407,12 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt chat [path] [--in ROOM] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse] [--theme lantern|tide|dusk]",
     description: "Open an operator chat console for a room's agents.",
     handler: ({ runtime, parsed }) => handleChatCommand(requireRuntime(runtime), parsed)
+  },
+  {
+    name: "overseer", needsRuntime: true, startupMaintenance: false, internal: false,
+    usage: OVERSEER_USAGE,
+    description: "Register a native inbox outside rooms or designate it for a room's blockers and goal outcomes.",
+    handler: ({ parsed, runtime }) => handleOverseerCommand(runtime!, parsed)
   },
   {
     name: "goal", needsRuntime: true, startupMaintenance: false, internal: false,

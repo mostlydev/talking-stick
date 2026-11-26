@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ROOM_DECLARATION_FILE, insideNestedRepository, isWithinOrSame, readDeclaration, resolveContextPath } from "../path-resolution.js";
 import { HUMAN_CHAT_SESSION_KIND } from "../types.js";
-import type { LostMember, PathRoom, RoomActivity, RoomBlocker, RoomGoal, RoomGoalEvent, RoomMember } from "../types.js";
+import type { LostMember, PathRoom, RoomActivity, RoomBlocker, RoomBlockerEvent, RoomGoal, RoomGoalEvent, RoomMember, RoomOverseerSummary } from "../types.js";
 import { describeLossCause, describeLossCauseShort, isDormant } from "../lost-member.js";
 import { formatRelativeTime, printResult } from "./output.js";
 import { getStringOption, hasOption, parseOptionalInteger, type ParsedCommand } from "./parser.js";
@@ -47,6 +47,41 @@ async function sendResolution(runtime: Runtime, parsed: ParsedCommand, target: s
     room_id: room.room_id, body: await readRoomText(parsed, rest), resolves
   });
   printResult(parsed, result, () => `${result.deduplicated ? "Already resolved" : "Resolved"} ${result.resolves} in message #${result.event_seq}.`);
+}
+
+export const OVERSEER_USAGE = [
+  "tt overseer register <alias> | unregister <alias>",
+  "tt overseer set <alias> [--in ROOM] | show [--in ROOM] | clear [--in ROOM]"
+].join("\n");
+
+function formatOverseer(inbox: RoomOverseerSummary | null): string {
+  if (!inbox) return "No overseer designated.";
+  const process = inbox.reachable ? "process live" : "process unverified";
+  return `Overseer ${inbox.alias} (${sanitizeChatText(inbox.agent_id)}, ${process}, ${inbox.transport}) · ${inbox.pending} pending · ${inbox.unconfirmed} unconfirmed · ${inbox.failed} failed`;
+}
+
+export function handleOverseerCommand(runtime: Runtime, parsed: ParsedCommand): void {
+  const [action, alias, ...rest] = parsed.positionals;
+  if (rest.length || !action || !["register", "unregister", "set", "show", "clear"].includes(action)) throw new Error(OVERSEER_USAGE);
+  if (Boolean(alias) !== (action === "register" || action === "unregister" || action === "set")) throw new Error(OVERSEER_USAGE);
+  const identity = deriveCliIdentity(parsed);
+  if (action === "register") {
+    if (hasOption(parsed, "in")) throw new Error("Register the inbox outside the room. Use overseer set to designate it for a room.");
+    const inbox = runtime.commands.registerOverseer(identity, alias);
+    printResult(parsed, inbox, () => `Registered overseer inbox ${inbox.alias} via ${inbox.transport}.`);
+    return;
+  }
+  if (action === "unregister") {
+    if (hasOption(parsed, "in")) throw new Error("Use overseer clear to remove one room's designation.");
+    const unregistered = runtime.commands.unregisterOverseer(identity, alias);
+    printResult(parsed, { unregistered }, () => unregistered ? "Overseer inbox unregistered." : "No such overseer inbox.");
+    return;
+  }
+  if (hasOption(parsed, "in") && !getStringOption(parsed, "in")) throw new Error("--in needs a room.");
+  const room = briefTarget(runtime, parsed, undefined);
+  const inbox = action === "show" ? runtime.commands.getRoomOverseer(room.room_id)
+    : runtime.commands.setRoomOverseer(identity, { room_id: room.room_id, alias: action === "clear" ? null : alias });
+  printResult(parsed, { room_id: room.room_id, overseer: inbox }, () => formatOverseer(inbox));
 }
 
 export const GOAL_USAGE = [
@@ -335,6 +370,7 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
         owner: room.owner,
         open_blockers: counts.get(room.room_id) ?? 0,
         open_goals: goalCounts.get(room.room_id) ?? 0,
+        overseer: runtime.commands.getRoomOverseer(room.room_id),
         agents: members.filter((member) => member.session_kind !== HUMAN_CHAT_SESSION_KIND).map((member) => member.agent_id),
         consoles: members.filter((member) => member.session_kind === HUMAN_CHAT_SESSION_KIND).map((member) => member.agent_id),
         lost_members: lost.map(listedLostMember),
@@ -362,6 +398,7 @@ function listHostRooms(runtime: Runtime, parsed: ParsedCommand): void {
       const lines = [`#${room.name}  ${who}${room.owner ? `  stick=${room.owner}${room.state === "stale_owner" ? " (stale)" : ""}` : ""}  active ${formatRelativeTime(room.last_activity_at)}`,
         `  ${room.canonical_path}  ${room.room_id}`];
       lines.push(...formatLostMembers(room.lost_members).map((line) => `  ${line}`));
+      if (room.overseer) lines.push(`  ${formatOverseer(room.overseer)}`);
       if (room.open_goals) lines.push(`  ${room.open_goals} open goal${room.open_goals === 1 ? "" : "s"}`);
       if (room.open_blockers) lines.push(`  ${room.open_blockers} open blocker${room.open_blockers === 1 ? "" : "s"}`);
       if (room.last_handoff) {
@@ -379,7 +416,7 @@ const BRIEF_MAX_MESSAGES = 200;
 const BRIEF_BODY_CHARS = 1000;
 const BRIEF_NOTES = 10;
 const BRIEF_GOALS = 10;
-const BRIEF_EVENT_TYPES = ["message_sent", "release", "pass", "takeover", "goal_added", "goal_closed"] as const;
+const BRIEF_EVENT_TYPES = ["message_sent", "release", "pass", "takeover", "goal_added", "goal_closed", "blocker_added", "blocker_withdrawn"] as const;
 
 function clip(text: string, limit: number): { text: string; truncated: boolean } {
   return text.length > limit ? { text: `${text.slice(0, limit - 1)}…`, truncated: true } : { text, truncated: false };
@@ -436,7 +473,11 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
     const clippedGoal: RoomGoalEvent | undefined = goal?.status === "open"
       ? { ...goal, brief: goalClip[0].text, completion_criterion: goalClip[1].text }
       : goal ? { ...goal, evidence: goalClip[0].text } : undefined;
-    const truncated = body?.truncated || handoff?.status.truncated || handoff?.next_action.truncated || goalClip.some(part => part.truncated);
+    const blocker = event.blocker;
+    const blockerClip = blocker ? clip(blocker.status === "open" ? blocker.body : blocker.reason, BRIEF_BODY_CHARS) : undefined;
+    const clippedBlocker = blocker?.status === "open" ? { ...blocker, body: blockerClip!.text }
+      : blocker ? { ...blocker, reason: blockerClip!.text } : undefined;
+    const truncated = blockerClip?.truncated || body?.truncated || handoff?.status.truncated || handoff?.next_action.truncated || goalClip.some(part => part.truncated);
     return {
       event_seq: event.event_seq,
       event_type: event.event_type,
@@ -445,6 +486,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
       created_at: event.created_at,
       ...(body ? { body: body.text } : {}),
       ...(clippedGoal ? { goal: clippedGoal } : {}),
+      ...(clippedBlocker ? { blocker: clippedBlocker } : {}),
       ...(handoff ? { status: handoff.status.text, next_action: handoff.next_action.text } : {}),
       // A visitor's question, or an answer to one (sent to the visitor, so
       // its to is null like a room message).
@@ -482,6 +524,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
       body: clip(note.body, BRIEF_BODY_CHARS).text
     })),
     notes_total: notes.total,
+    overseer: runtime.commands.getRoomOverseer(room.room_id),
     goals: goals.slice(0, BRIEF_GOALS).map(goal => ({ ...goal, brief: clip(goal.brief, BRIEF_BODY_CHARS).text,
       completion_criterion: clip(goal.completion_criterion, BRIEF_BODY_CHARS).text })),
     more_goals: goals.length > BRIEF_GOALS,
@@ -500,11 +543,12 @@ function formatBrief(brief: {
   lost_members: ListedLostMember[];
   last_handoff: RoomActivity["last_handoff"];
   notes: { author_agent_id: string; body: string }[]; notes_total: number;
+  overseer: RoomOverseerSummary | null;
   goals: RoomGoal[];
   more_goals: boolean;
   blockers: RoomBlocker[];
   recent: { event_seq: number; event_type: string; from_agent_id: string | null; to: unknown; created_at: string;
-    body?: string; goal?: RoomGoalEvent; status?: string; next_action?: string; full?: string; request_id?: string; in_reply_to?: string; resolves?: string }[];
+    body?: string; goal?: RoomGoalEvent; blocker?: RoomBlockerEvent; status?: string; next_action?: string; full?: string; request_id?: string; in_reply_to?: string; resolves?: string }[];
   older: string | null; updates_since: string;
 }): string {
   const lines = [`#${brief.name}  ${brief.canonical_path}  ${brief.room_id}`];
@@ -514,6 +558,7 @@ function formatBrief(brief: {
   lines.push(`members: ${brief.members.map((member) =>
     `${member.agent_id}${member.kind === "console" ? " (console)" : ""}${memberPresence(member)}`).join(", ") || "none"}`);
   lines.push(...formatLostMembers(brief.lost_members));
+  if (brief.overseer) lines.push(formatOverseer(brief.overseer));
   if (brief.goals.length) lines.push("", "Open goals", ...brief.goals.map(goal =>
     `  ${goal.goal_id} · opened ${formatRelativeTime(goal.created_at)} · ${sanitizeChatText(excerpt(goal.brief))}`));
   if (brief.more_goals) lines.push(`  More goals in tt goal list --in ${brief.room_id}`);
@@ -538,7 +583,10 @@ function formatBrief(brief: {
       const goal = event.goal;
       const goalText = goal?.status === "open" ? `${goal.goal_id} · ${goal.brief}\nDone when ${goal.completion_criterion}` :
         goal ? `${goal.goal_id} · ${goal.status} · ${goal.evidence}` : undefined;
-      const text = event.body ?? (goalText ? sanitizeChatText(goalText) :
+      const blocker = event.blocker;
+      const blockerText = blocker ? `${blocker.blocker_id} · ${blocker.status} · ${blocker.status === "open" ? blocker.body : blocker.reason}` : undefined;
+      const eventText = goalText ?? blockerText;
+      const text = event.body ?? (eventText ? sanitizeChatText(eventText) :
         [event.status, event.next_action && `next: ${event.next_action}`].filter(Boolean).join(" "));
       if (text.trim()) lines.push(...text.trimEnd().split("\n").map((line) => `    ${line}`));
       if (event.full) lines.push(`    (clipped; full: ${event.full})`);
