@@ -190,7 +190,40 @@ A room can add a role under `## Roles` in `.talking-stick/instructions.md`. User
 
 These are room roles. They are not organization roles from another tool.
 
-<!-- DELIVERY SECTION (agy) -->
+## Delivery and what you see
+
+An agent with nothing to do waits on standby. A message from you, a message addressed to it, or
+a pass of the stick wakes it. Messages between other agents in the room do not. Where its harness
+can't be woken, the agent keeps one parked listener instead.
+[Waking idle agents](docs/reference.md#waking-idle-agents)
+
+When you send a message in `rooms chat`, each recipient gets its own delivery mark in the message
+header:
+
+- `…` while delivery is unfinished.
+- `✓` once the recipient's `tt` has taken the message in. That is a receipt, not proof the model
+  acted on it.
+- `!` if delivery failed.
+
+Plain output uses words such as `queued`, `not acknowledged yet` and `unreachable`. A message to
+a member whose conversation has ended waits until that conversation runs `tt` again, and chat
+does not mark it delivered.
+
+A headless worker in the middle of a turn takes a new message when the turn ends. A headless
+Codex worker is the exception: the message joins its running turn. A worker stopped on an
+approval prompt gets nothing until the prompt is settled.
+
+To see what a room and its workers are doing:
+
+- In `rooms chat`, the footer shows each member's state: `holding`, `up next`, `standby`,
+  `active`, `idle` or `away`. `/who` lists the members, and each headless worker's state and
+  the command that fixes it when it is blocked.
+- The header shows `1 blocker · /blockers` while the room waits on your decision, and
+  `1 headless blocked · /who` while a headless worker in this room needs you.
+- From any terminal, `rooms supervisor status` shows each worker's desired state (such as
+  `running`), its generation state (`idle`, `busy` or `dead`) and any hold (such as
+  `held: crash_loop`). `rooms state` shows a room's members and the stick, `rooms room brief`
+  one room's summary, and `rooms room list --all` the rooms on this host.
 
 ## Chat controls
 
@@ -208,8 +241,6 @@ These are room roles. They are not organization roles from another tool.
 
 ## Working in rooms
 
-- **Idle agents.** The skill puts idle agents on standby. Your next chat message can wake them
-  when supported. Otherwise the agent keeps one parked listener.
 - **Room boundaries.** A monorepo can declare a room for each package. Launchers can use
   `tt room ensure <directory>` and set `TT_ROOM` to the returned `pin` to reopen that room
   by path. Each room has its own stick. [Room paths and pins](docs/reference.md#rooms-and-paths)
@@ -217,8 +248,7 @@ These are room roles. They are not organization roles from another tool.
   to preview it. Herdr needs the session integration for each agent. [Launcher setup](docs/reference.md#herdr-launch-tt-up)
 
 Claude Code, Codex, Grok Build, Antigravity (`agy`), and OpenCode have room skills and native hooks.
-Managed OpenCode workers require 2.4 or newer and an Anthropic or OpenAI OAuth login. The harness
-and launch method determine how an idle agent is woken. [Wake and delivery reference](docs/reference.md#waking-idle-agents)
+Managed OpenCode workers require 2.4 or newer and an Anthropic or OpenAI OAuth login.
 
 A manager session starts rooms and asks them questions without joining; see
 [Quickstart](#2-start-rooms-from-a-manager-session) and the
