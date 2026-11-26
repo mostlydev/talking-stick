@@ -11,8 +11,15 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Changed
+
+- The README now opens with why each project gets its own room: one shared space makes every agent's context converge and then collapse, while a room with its own subject keeps its working knowledge. It describes what a room holds and who comes and goes, how to brief a room, turns and room roles, and how messages are delivered and what chat shows about each member and worker. The quickstart's example requests are now complete briefs.
+- Agents are told to work from a brief. The rooms skill and the bundled room instructions say to check what a result is for, who will use it, and how to check that it works, and to ask the sender for missing purpose or context before building. The `rooms-oversee` skill says a manager's brief must let a room work on its own: the purpose, earlier decisions the room hasn't seen, and what must work in use.
+- An operator's approval to merge or release is now raised as a blocker, once the work is otherwise ready, instead of being asked for in chat. The bundled room instructions now mention blockers, so an agent whose loaded skill predates them still learns of them when it joins.
+
 ### Fixed
 
+- `tt chat` now shows joined headless workers as `working <duration>` (and `(<n> queued)` when room envelopes are waiting behind the active turn) in the footer and `/who`, instead of `standby`. `tt supervisor status` reports `queued_inputs` and `generation.last_model_activity_at`, and the supervisor persists `busy` as soon as a turn write succeeds.
 - Codex members no longer drop off room member lists. A Codex app-server ends an idle conversation's session after 30 minutes with no client showing it, and keeps running. The member was lost but could still rejoin, yet only `tt state --json` listed it. Such a member now shows as **dormant** while its app-server reads as running, and as **lost, recoverable** once that process is gone or can't be checked, and when any other harness ends a session. Both show with how long and why, in chat's footer, `/who` and `/members`, in `tt state`, `tt room brief` and `tt room list --all`. A room whose only agent is dormant or lost is still listed. The `member_lost` error and recovery notice name Codex's reasons: idle, archive, delete or shutdown. `/kick` and the member picker can remove a dormant or lost member; `/kick` takes an exact agent ID over any prefix match. Recovery, held messages and cleanup are unchanged: a running app-server doesn't prove the conversation will reopen, so messages still wait and a wake isn't counted as delivered.
 
 ## [0.40.0] — 2026-11-25

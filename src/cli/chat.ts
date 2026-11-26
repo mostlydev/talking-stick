@@ -33,7 +33,7 @@ import { createMemberMenu, memberMenuKey, renderMemberMenu, type MemberMenu } fr
 import { RoomNavigator, type NavigatorRoom } from "./room-navigator.js";
 import { readSupervisorSnapshot, type SupervisorSnapshot } from "../supervisor/snapshot.js";
 import {
-  EMPTY_HEADLESS_VIEW, createHeadlessLookups, headlessCounts, headlessMarker, headlessTransitions, headlessWhoLines,
+  EMPTY_HEADLESS_VIEW, createHeadlessLookups, headlessBusyMembers, headlessCounts, headlessMarker, headlessTransitions, headlessWhoLines,
   routeHeadlessWorkers, unopenedHeadlessRooms, workersInRoom, type HeadlessView, type HeadlessWorker
 } from "./chat-supervisor.js";
 import { createDeclaredRoom } from "./room-admin.js";
@@ -420,12 +420,14 @@ export async function runChatSession(
   let headless: HeadlessView = EMPTY_HEADLESS_VIEW;
   let headlessHere: Map<string, HeadlessWorker> | null = null;
   let headlessMarkerForms: string[] = [];
+  let lastBusySignature = "";
   let lastHeadlessRefresh = 0;
   let blockerCounts = new Map<string, number>();
   const blockerCount = (id: string) => blockerCounts.get(id) ?? 0;
   const headlessLookups = createHeadlessLookups(runtime.commands, HEADLESS_ROUTE_TTL_MS);
   const headlessInRoom = (room: { room_id: string; canonical_path: string }) =>
     workersInRoom(headless, { room_id: room.room_id, room_path: room.canonical_path });
+  const busyMembers = () => headlessBusyMembers(headlessInRoom(joined));
   // Blocked workers in this console's repository, outside the current room.
   const blockedElsewhere = (here: readonly HeadlessWorker[]): number => {
     const anchor = consoleState?.anchor;
@@ -979,7 +981,7 @@ export async function runChatSession(
       .map((member) => ({ agent_id: member.agent_id, name: member.display_name || nameOf(member.agent_id),
         status: member.process_liveness === "gone" ? "ended" : describeMemberState(member, {
           members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
-          columns: dimensions().columns, interrupt_statuses: interruptStatuses()
+          columns: dimensions().columns, interrupt_statuses: interruptStatuses(), busy_members: busyMembers()
         }) })), goRooms);
   // Inline drawing: the composer occupies the last rows of the normal screen.
   // Erasing walks back up every row it drew, so a wrapped draft never leaves
@@ -1025,7 +1027,7 @@ export async function runChatSession(
     const draft = editor?.draft ?? { line: "", cursor: 0 };
     return {
       room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: viewAttention(), release: releaseStatus, transcript, format: formatContext(),
-      status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses(), lost_members: lostMembers },
+      status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(), interrupt_statuses: interruptStatuses(), lost_members: lostMembers, busy_members: busyMembers() },
       draft, hint: currentHint(), completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
       completion_index: editor?.completionIndex ?? 0, ...dimensions()
     };
@@ -1115,7 +1117,7 @@ export async function runChatSession(
       const frame = renderInlinePanel({
         room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, release: releaseStatus, transcript, format: formatContext(),
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
-          interrupt_statuses: interruptStatuses(), lost_members: lostMembers },
+          interrupt_statuses: interruptStatuses(), lost_members: lostMembers, busy_members: busyMembers() },
         draft, hint: currentHint(),
         completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
         completion_index: editor?.completionIndex ?? 0,
@@ -1184,7 +1186,8 @@ export async function runChatSession(
             reserved_for: reservedFor,
             now: new Date(),
             interrupt_statuses: interruptStatuses(),
-            lost_members: lostMembers
+            lost_members: lostMembers,
+            busy_members: busyMembers()
           },
           draft: editor?.draft ?? { line: "", cursor: 0 },
           hint: currentHint(),
@@ -1325,7 +1328,7 @@ export async function runChatSession(
       const panel = resolveAttentionFrame(attention, pins => {
         const frame = renderInlinePanel({ room_path: joined.canonical_path, room_strip: roomStrip, panel: rolesPanelLines(), attention: pins, release: releaseStatus, transcript, format: formatContext(),
         status: { members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
-          interrupt_statuses: interruptStatuses(), lost_members: lostMembers },
+          interrupt_statuses: interruptStatuses(), lost_members: lostMembers, busy_members: busyMembers() },
         draft, hint: currentHint(), completions: editor?.completionVisible && unreadReview === null ? completionsFor(draft) : [],
         completion_index: editor?.completionIndex ?? 0, ...dimensions() });
         const height = Math.max(0, dimensions().rows - frame.lines.length);
@@ -1490,7 +1493,7 @@ export async function runChatSession(
     const elsewhere = blockedElsewhere(here);
     return [
       ...(here.length ? ["Headless workers here (tt supervisor):",
-        ...headlessWhoLines(here, (id) => nameOf(id)).map((line) => `  ${sanitizeChatText(line)}`)] : []),
+        ...headlessWhoLines(here, (id) => nameOf(id), new Date()).map((line) => `  ${sanitizeChatText(line)}`)] : []),
       ...(elsewhere ? [`${elsewhere} headless blocked in other rooms · /rooms`] : []),
       ...(headless.notice ? [sanitizeChatText(headless.notice)] : [])
     ];
@@ -1513,7 +1516,13 @@ export async function runChatSession(
     const changed = next.join("\n") !== headlessMarkerForms.join("\n");
     headlessMarkerForms = next;
     if (changed) composeStrip();
-    return changed;
+    const busySignature = [...headlessBusyMembers(here).entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([id, info]) => `${id}:${info.label ?? ""}:${info.since ?? ""}:${info.queued}`)
+      .join("\n");
+    const busyChanged = busySignature !== lastBusySignature;
+    lastBusySignature = busySignature;
+    return changed || busyChanged;
   };
 
   // One line when someone raises or withdraws a blocker in this room, so a new

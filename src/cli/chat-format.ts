@@ -474,6 +474,12 @@ function paint(context: ChatFormatContext, code: string, text: string): string {
   return context.color ? `\u001b[${code}m${text}\u001b[0m` : text;
 }
 
+export interface BusyMemberInfo {
+  label: string | null;
+  since: string | null;
+  queued: number;
+}
+
 export interface ChatStatusInput {
   members: RoomMember[];
   owner: AgentId | null;
@@ -484,6 +490,7 @@ export interface ChatStatusInput {
   interrupt_statuses?: ReadonlyMap<AgentId, string>;
   /** Members whose harness reported the session ended; each can still rejoin. */
   lost_members?: readonly LostMember[];
+  busy_members?: ReadonlyMap<AgentId, BusyMemberInfo>;
 }
 
 // One dim line of room state for the operator: each agent
@@ -555,7 +562,8 @@ export function chatTextWidth(text: string): number {
 function rankMember(member: RoomMember, input: ChatStatusInput): number {
   if (member.agent_id === input.owner) return 0;
   if (member.agent_id === input.reserved_for) return 1;
-  return member.status === "active" ? 2 : 3;
+  if (input.busy_members?.get(member.agent_id)?.label) return 2;
+  return member.status === "active" ? 3 : 4;
 }
 
 export function describeMemberState(
@@ -564,16 +572,25 @@ export function describeMemberState(
 ): string {
   const interruptStatus = input.interrupt_statuses?.get(member.agent_id);
   if (interruptStatus) return interruptStatus;
+  const busy = input.busy_members?.get(member.agent_id);
+  const queuedSuffix = busy && busy.queued > 0 ? ` (${busy.queued} queued)` : "";
   if (member.agent_id === input.owner) {
-    return input.owner_since
+    const base = input.owner_since
       ? `holding ${formatDuration(input.now, input.owner_since)}`
       : "holding";
+    return `${base}${queuedSuffix}`;
   }
   if (member.agent_id === input.reserved_for) {
-    return "up next";
+    return `up next${queuedSuffix}`;
+  }
+  if (busy?.label) {
+    const base = busy.since
+      ? `${busy.label} ${formatDuration(input.now, busy.since)}`
+      : busy.label;
+    return `${base}${queuedSuffix}`;
   }
   if (member.standby_transport) {
-    return "standby";
+    return `standby${queuedSuffix}`;
   }
   if (member.status !== "active" && member.process_liveness !== "alive") {
     return "away";

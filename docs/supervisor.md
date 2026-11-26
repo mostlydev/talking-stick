@@ -114,8 +114,10 @@ Each worker gets the rooms skill bootstrap for the room resolved from its worksp
 
 `tt chat` shows each worker's state:
 
-- `/who` lists the current room's workers, joined or not, with its state, unrestricted permission mode when set,
-  and the action that unblocks it.
+- The footer shows a joined worker as `working <duration>` while its turn runs (with `(<n> queued)`
+  when envelopes are waiting behind the active turn), instead of `standby`.
+- `/who` lists the current room's workers, joined or not, with its state, turn duration, queued count,
+  unrestricted permission mode when set, and the action that unblocks it.
 - `/rooms` counts headless and blocked workers in each room. A worker whose room isn't open yet
   gets a row of its own, and Enter opens that room.
 - The header shows a short marker while a worker in the room is blocked.

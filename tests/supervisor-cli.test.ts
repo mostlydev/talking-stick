@@ -73,7 +73,13 @@ function setup() {
     cleanup.push(() => opened.close());
     return opened;
   };
-  return { root, dataDir, cwd, run, store };
+  const runText = async (args: string[], options: Record<string, string | true> = {}) => {
+    const parsed: ParsedCommand = { name: "supervisor", positionals: args, options: new Map<string, string | true>(Object.entries(options)) };
+    output.length = 0;
+    await handleSupervisorCommand(parsed);
+    return output.join("");
+  };
+  return { root, dataDir, cwd, run, runText, store };
 }
 
 describe("tt supervisor add", () => {
@@ -86,7 +92,7 @@ describe("tt supervisor add", () => {
   });
 
   test("records explicit permissions and environment references, never values it wasn't given", async () => {
-    const { cwd, run, store } = setup();
+    const { cwd, run, runText, store } = setup();
     expect(await run(["add", "w1"], { harness: "codex", cwd, sandbox: "workspace-write", approval: "on-request",
       env: "PATH\0MODE=literal:fast" })).toMatchObject({ status: "added", worker: "w1", desired: "running" });
     const spec = JSON.parse(store().worker("w1")!.spec_json);
@@ -211,7 +217,7 @@ describe("controls", () => {
   });
 
   test("status keeps its worker JSON shape and omits the chat process binding", async () => {
-    const { cwd, run, store } = setup();
+    const { cwd, run, runText, store } = setup();
     await run(["add", "w1"], { harness: "claude", cwd, restricted: true });
     store().recordGeneration({ worker_id: "w1", generation: 1, pid: 12, process_started_at: "process start",
       pgid: 12, session_id: "session", state: "idle", started_at: "started" });
@@ -219,11 +225,13 @@ describe("controls", () => {
       daemon: "stopped",
       workers: [{
         worker_id: "w1", harness: "claude", cwd, desired: "running", desired_version: 1,
-        hold_reason: null, next_start_at: null, uncertain_inputs: 0, denied_requests: 0,
-        generation: { generation: 1, state: "idle", pid: 12, session_id: "session", started_at: "started", ended_at: null }
+        hold_reason: null, next_start_at: null, queued_inputs: 0, uncertain_inputs: 0, denied_requests: 0,
+        generation: { generation: 1, state: "idle", pid: 12, session_id: "session", started_at: "started", ended_at: null, last_model_activity_at: null }
       }],
       recent_requests: []
     });
+    store().journalInput({ input_id: "in1", worker_id: "w1", generation: 1, mode: "start_turn", source: "tt_envelope", created_at: "started", batch_token: "bt1" });
+    expect(await runText(["status"])).toContain("1 queued");
   });
 
   test.each([

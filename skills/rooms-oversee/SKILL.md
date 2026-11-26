@@ -54,11 +54,14 @@ For visible agents in Herdr or tmux panes instead, use `tt up --path <dir> --age
 
 Use `tt room ask` for anything you send: a question, a follow-up, a task, or an approval. Address a named agent (`--to codex`, or an exact id) when you can; the stick holder usually knows the most. `--to room` reaches every live agent.
 
-Write each message so it stands alone, since recipients have not seen your conversation:
+Write each message so it stands alone, since recipients have not seen your conversation. A task is a brief the room must be able to work from on its own, even if you were gone:
 
 - Say what you want: an answer, an action, or both.
+- Say what the result is for and who will use it, the decisions from conversations the room has not seen, and what must work in use for it to be done. Include any limits, and where to find the evidence.
 - When relaying the user's instruction or approval, quote it, name the user as its source and when they gave it, and state its scope and limits ("Wojtek, in my desktop session at 22:05: 'run the tests and release. I approve all.' Covers the paid rollcall test and the cllama release; nothing else."). You are its sender, and agents see your identity, not the user's: never claim to be the user or write as `human:*`.
 - Ask the recipient to reply with whether it accepts, what it will do, and any blocker; and, if it declines, the rule or instruction that stops it. A transport is not a reason to refuse, but an agent may follow its own rules, which can require the user to confirm in that room's console; if so, tell the user exactly that.
+
+If the room asks for the purpose or missing context, answer in the room, so the next member can find it. When you report back to the user, say what was verified and what still needs a decision.
 
 Give every message a `--request-key` you can reuse (for example `wojtek-release-approval-1`). If a send errors or you are unsure it went through, run the same command with the same key and text: it returns the original request instead of asking twice. A different message needs a new key.
 
