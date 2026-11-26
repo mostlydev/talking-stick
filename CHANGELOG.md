@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+## [0.41.0] — 2026-11-26
+
+Full notes: [`docs/releases/0.41.0.md`](docs/releases/0.41.0.md).
+
 ### Added
 
 - `rooms prompt` shows the current folder's room in your shell prompt, such as `#shrooms 4 ▸claude !1 @2`: its agents, the stick holder, open blockers, and messages waiting for you. Outside a room it prints nothing. `rooms prompt init zsh|bash|fish` prints the setup line. zsh and fish refresh in the background and repaint, so the prompt never waits, and a result for a folder you've left is dropped. It reads the database without writing or running Git. Bash refreshes synchronously. `--format` and `--json` customize it.
@@ -1267,6 +1271,7 @@ Initial alpha. Core room protocol, SQLite-backed persistence, multi-process
 contention coverage, MCP smoke coverage, human guardian flow, harness
 installers, and the portable `talking-stick` skill.
 
+[0.41.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.41.0
 [0.40.1]: https://github.com/mostlydev/shrooms/releases/tag/v0.40.1
 [0.40.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.40.0
 [0.39.0]: https://github.com/mostlydev/shrooms/releases/tag/v0.39.0
