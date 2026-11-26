@@ -123,9 +123,14 @@ export function holdRemedy(workerId: string, reason: HoldReason): string {
 
 export function workerState(worker: SupervisorWorkerStatus, daemon: SupervisorDaemonStatus):
   Pick<HeadlessWorker, "state" | "held" | "blocked" | "remedy"> {
+  if (worker.hold_reason === "adoption_pending" && worker.desired === "running") {
+    return { state: "moving to headless", held: null, blocked: true, remedy: "Exit the interactive harness normally." };
+  }
   if (worker.hold_reason) {
     return { state: `held: ${worker.hold_reason}`, held: worker.hold_reason, blocked: true,
-      remedy: holdRemedy(worker.worker_id, worker.hold_reason) };
+      remedy: worker.hold_reason === "resume_failed" && worker.adoption
+        ? `Stop and remove ${worker.worker_id}, then request the handoff again.`
+        : holdRemedy(worker.worker_id, worker.hold_reason) };
   }
   if (worker.desired === "paused") return { state: "paused", held: null, blocked: false, remedy: null };
   if (worker.desired === "stopped") return { state: worker.stop_reason ? `stopped: ${worker.stop_reason.replace(/_/g, " ")}` : "stopped", held: null, blocked: false, remedy: null };
@@ -170,6 +175,7 @@ export function routeHeadlessWorkers(snapshot: SupervisorSnapshot, lookups: Head
     try { member = joinedMember(worker, lookups); } catch { /* treated as not joined */ }
     let room: { room_path: string; room_id: string | null };
     if (member) room = { room_path: member.canonical_path, room_id: member.room_id };
+    else if (worker.adoption?.room_path) room = { room_id: worker.adoption.room_id, room_path: worker.adoption.room_path };
     else {
       try { room = lookups.roomForPath(worker.cwd); } catch { room = { room_path: worker.cwd, room_id: null }; }
     }

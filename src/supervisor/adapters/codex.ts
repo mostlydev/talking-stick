@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -138,6 +139,19 @@ export class CodexAdapter implements HarnessAdapter {
     const handle = new CodexHandle(spec, generation, this.options, evidence ? (session) => evidence.bindSession(session) : undefined);
     try {
       const command = this.options.command ?? resolveCodexExecutable(env);
+      if (spec.adoption) {
+        let version: string;
+        try {
+          version = execFileSync(command, ["--version"], { cwd: spec.cwd, env, timeout: 2_000, encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"] }).trim();
+        } catch {
+          throw new Error("Could not verify the native Codex CLI version for adoption.");
+        }
+        const match = /^codex-cli (\d+)\.(\d+)\.(\d+)$/.exec(version);
+        if (!match || (Number(match[1]) === 0 && Number(match[2]) < 172)) {
+          throw new Error("Codex adoption requires a stable Codex CLI 0.172.0 or later with rollout writer exclusion.");
+        }
+      }
       const child = await spawnManagedProcess({ command,
         args: [...(this.options.argsPrefix ?? []), "app-server", "--listen", "stdio://"], cwd: spec.cwd, env, signal,
         onSpawn: (process) => {

@@ -12,6 +12,8 @@ import {
   type JoinRecovery,
   type PathRoom
 } from "../index.js";
+import os from "node:os";
+import path from "node:path";
 import { resolveContextPath } from "../path-resolution.js";
 import { getStringOption, type ParsedCommand } from "./parser.js";
 import type { Runtime } from "./runtime.js";
@@ -153,7 +155,7 @@ export function upsertSessionFromJoin(identity: DerivedIdentity, joined: {
   cursor_event_seq: number;
   recovered?: JoinRecovery;
   recovery_credential?: string;
-}): void {
+}, contextPath?: string): void {
   const sessionPath = resolveCliSessionPath();
   const existing = findCliSessionByRoom(
     sessionPath,
@@ -165,6 +167,12 @@ export function upsertSessionFromJoin(identity: DerivedIdentity, joined: {
     room_id: joined.room_id,
     canonical_path: joined.canonical_path,
     workspace_root: joined.workspace_root,
+    ...(contextPath ? { context_path: resolveContextPath(contextPath).canonical_context_path,
+      harness_profile: { home: path.resolve(process.env.HOME || os.homedir()),
+        ...(identity.process_metadata?.harness_name === "codex" ?
+          { codex_home: path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex")) } : {}),
+        ...(identity.process_metadata?.harness_name === "claude" && process.env.CLAUDE_CONFIG_DIR ?
+          { claude_config_dir: path.resolve(process.env.CLAUDE_CONFIG_DIR) } : {}) } } : {}),
     event_cursor_seq: existing?.event_cursor_seq ?? joined.cursor_event_seq,
     ...(joined.recovery_credential ? { recovery_credential: joined.recovery_credential } : {}),
     updated_at: new Date().toISOString()

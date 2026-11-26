@@ -221,6 +221,10 @@ export class Supervisor {
     const handle = this.handles.get(worker.worker_id);
     if (worker.desired !== "running") {
       if (handle && !this.stopping.has(worker.worker_id)) await this.stopHandle(worker.worker_id, handle);
+      if ((JSON.parse(worker.spec_json) as WorkerSpec).adoption && !this.starting.has(worker.worker_id)) {
+        this.bridge?.abortAdoption?.(worker.worker_id);
+        this.store.clearAdoptionHold(worker.worker_id);
+      }
       return;
     }
     if (handle) {
@@ -251,7 +255,7 @@ export class Supervisor {
     }
     // The tick's snapshot can be stale: another worker's reconcile may have held or stopped this one.
     const current = this.store.worker(worker.worker_id);
-    if (!current || current.desired !== "running" || current.hold_reason || this.starting.has(worker.worker_id) ||
+    if (!current || current.desired !== "running" || (current.hold_reason && current.hold_reason !== "adoption_pending") || this.starting.has(worker.worker_id) ||
         this.stopping.has(worker.worker_id)) return;
     if (worker.restart_next) this.store.clearRestart(worker.worker_id);
     if (worker.next_start_at && Date.parse(worker.next_start_at) > this.now().getTime()) return;
@@ -288,11 +292,28 @@ export class Supervisor {
     // generation decides, including a fresh start that recorded no session.
     const latest = this.store.latestGeneration(worker.worker_id);
     if (latest && !worker.fresh_next && this.store.refuseDepartedResume(worker, this.at())) return;
-    const resume = worker.fresh_next ? undefined
-      : latest ? latest.session_id ?? undefined : spec.resume_session_id;
+    let adoptionSession: string | undefined;
+    if (spec.adoption) {
+      try {
+        const ready = this.bridge?.adoptionReady?.(worker.worker_id, spec.adoption.room_id, spec.adoption.agent_id);
+        if (!ready || !this.bridge?.finishAdoption || !this.socketPath) throw new Error("Supervisor has no room handoff bridge.");
+        if (ready === "waiting") return;
+        if (typeof ready === "object") adoptionSession = ready.session;
+      } catch (error) {
+        this.failAdoption(worker.worker_id, error);
+        return;
+      }
+    }
+    const resume = adoptionSession ?? (worker.fresh_next ? undefined
+      : latest ? latest.session_id ?? undefined : spec.resume_session_id);
+    if (spec.adoption && !resume) {
+      this.failAdoption(worker.worker_id, new Error("An adopted worker cannot start a new conversation."));
+      return;
+    }
     // Continuing a conversation the adapter cannot resume would quietly start a new one.
     if (resume && !adapter.capabilities().resume) {
-      this.store.hold(worker.worker_id, "resume_failed", this.at());
+      if (adoptionSession) this.failAdoption(worker.worker_id, new Error("Harness cannot resume this conversation."));
+      else this.store.hold(worker.worker_id, "resume_failed", this.at());
       return;
     }
     // The intent is durable before the spawn, and the child the moment it
@@ -321,6 +342,11 @@ export class Supervisor {
       this.starting.delete(worker.worker_id);
       if (this.shuttingDown || signal.aborted) {
         this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "stopped", during: "start" });
+        return;
+      }
+      if (adoptionSession) {
+        this.store.endGeneration(worker.worker_id, generation, this.at(), { reason: "resume_failed" });
+        this.failAdoption(worker.worker_id, error);
         return;
       }
       // Not on a subscription login: held for the operator, never retried as a crash.
@@ -366,11 +392,30 @@ export class Supervisor {
       await this.stopHandle(worker.worker_id, handle);
       return;
     }
+    if (adoptionSession) {
+      try {
+        if (handle.sessionId() !== adoptionSession || !supervised) throw new Error("Harness did not confirm the requested conversation.");
+        this.bridge!.finishAdoption!(worker.worker_id, { session_id: adoptionSession, pid: handle.pid,
+          process_started_at: handle.processStartedAt, endpoint_address: supervised.address, delivery_secret: supervised.token });
+      } catch (error) {
+        await this.stopHandle(worker.worker_id, handle);
+        this.failAdoption(worker.worker_id, error);
+        return;
+      }
+    }
+    if (spec.adoption) this.store.clearAdoptionHold(worker.worker_id);
     if (resume) {
       this.recoverMembership(current, handle);
       this.store.updateGeneration(worker.worker_id, generation, { state: this.reportedState.get(worker.worker_id) ?? "idle" });
     }
     this.bootstrapWorker(handle, worker.worker_id);
+    if (adoptionSession) await this.bridge?.flushAdoption?.(worker.worker_id);
+  }
+
+  private failAdoption(workerId: string, error: unknown): void {
+    this.bridge?.abortAdoption?.(workerId);
+    this.store.hold(workerId, "resume_failed", this.at());
+    this.store.audit(this.at(), "supervisor", "adoption_failed", workerId, { error: safeDetail(String(error)) });
   }
 
   private bootstrapWorker(handle: WorkerHandle, workerId: string): void {
@@ -378,7 +423,8 @@ export class Supervisor {
     const worker = this.store.worker(workerId);
     if (!this.bootstrap || !this.bridge || !this.deliveryTokens.has(workerId) || !session || !worker ||
         this.shuttingDown || this.stopping.has(workerId) || this.probeUnknown.has(workerId) ||
-        worker.desired !== "running" || worker.hold_reason || this.reportedState.get(workerId) !== "idle") return;
+        worker.desired !== "running" || worker.hold_reason || this.reportedState.get(workerId) !== "idle" ||
+        (JSON.parse(worker.spec_json) as WorkerSpec).adoption) return;
     const inputId = this.newId();
     if (!this.store.claimBootstrap(workerId, session, inputId, handle.generation, this.at())) return;
     const text = `Use the rooms skill (${resolveBundledSkillPath()}/SKILL.md). ` +
@@ -682,7 +728,7 @@ export class Supervisor {
       this.bridge.sessionStarted({ harness: spec.harness, session_id: session, pid: handle.pid, process_started_at: handle.processStartedAt });
     }
     const result = this.bridge.recover({ harness: spec.harness, session_id: session, pid: handle.pid,
-      process_started_at: handle.processStartedAt, endpoint_address: token.address, delivery_secret: token.token });
+      process_started_at: handle.processStartedAt, endpoint_address: token.address, delivery_secret: token.token, target: spec.adoption });
     for (const agentId of result.recovered) this.store.audit(this.at(), "supervisor", "recovered_membership", worker.worker_id, { agent_id: agentId });
     for (const refused of result.refused) {
       const key = `${worker.worker_id}\u0000${handle.generation}\u0000${refused.agent_id}\u0000${refused.error}`;
@@ -759,6 +805,7 @@ export class Supervisor {
 interface SupervisorOwner {
   pid: number;
   process_started_at: string;
+  headless_adoption?: true;
 }
 
 export function readSupervisorOwnerLock(lockPath: string): SupervisorOwner | "missing" | "unknown" {
@@ -766,7 +813,8 @@ export function readSupervisorOwnerLock(lockPath: string): SupervisorOwner | "mi
     const owner = JSON.parse(fs.readFileSync(lockPath, "utf8")) as Partial<SupervisorOwner> | null;
     if (typeof owner?.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 &&
         typeof owner.process_started_at === "string" && owner.process_started_at.trim()) {
-      return { pid: owner.pid, process_started_at: owner.process_started_at };
+      return { pid: owner.pid, process_started_at: owner.process_started_at,
+        ...(owner.headless_adoption === true ? { headless_adoption: true as const } : {}) };
     }
     return "unknown";
   } catch (error) {

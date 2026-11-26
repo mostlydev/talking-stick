@@ -126,6 +126,7 @@ const STATE_CHANGE_EVENTS = new Set<EventType>([
   "leave",
   "kick",
   "session_superseded",
+  "headless_adoption",
   "claim",
   "release",
   "pass",
@@ -979,7 +980,7 @@ export async function runChatSession(
     members.filter((member) => member.agent_id !== selfId && member.session_kind !== HUMAN_CHAT_SESSION_KIND)
       .sort((a, b) => Number(b.process_liveness === "gone") - Number(a.process_liveness === "gone") || a.agent_id.localeCompare(b.agent_id))
       .map((member) => ({ agent_id: member.agent_id, name: member.display_name || nameOf(member.agent_id),
-        status: member.process_liveness === "gone" ? "ended" : describeMemberState(member, {
+        status: member.process_liveness === "gone" && !member.headless_handoff ? "ended" : describeMemberState(member, {
           members, owner, owner_since: ownerSince, reserved_for: reservedFor, now: new Date(),
           columns: dimensions().columns, interrupt_statuses: interruptStatuses(), busy_members: busyMembers()
         }) })), goRooms);

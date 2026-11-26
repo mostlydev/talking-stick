@@ -17,7 +17,7 @@ export type GenerationState =
 
 export type HoldReason =
   | "crash_loop" | "prior_generation_alive" | "prior_generation_unknown"
-  | "resume_failed" | "overflow" | "start_failed" | "executable_ready" | "protocol_error" | "bootstrap_failed"
+  | "resume_failed" | "adoption_pending" | "overflow" | "start_failed" | "executable_ready" | "protocol_error" | "bootstrap_failed"
   /** Not on a subscription login: not signed in, or signed in with an API key or another provider. */
   | "auth_required" | "wrong_auth_mode"
   /** A permission prompt's denial couldn't be delivered, so the worker may still be waiting on it. */
@@ -238,8 +238,10 @@ export class SupervisorStore {
 
   addWorker(spec: WorkerSpec, actor: string, at: string): WorkerRow {
     return this.transaction(() => {
-      this.db.prepare(`INSERT INTO workers (worker_id, spec_json, desired, desired_version, created_by, created_at)
-        VALUES (?, ?, 'running', 1, ?, ?)`).run(spec.worker_id, JSON.stringify(spec), actor, at);
+      // Old daemons ignore the extra spec fields. The hold keeps them from
+      // starting a worker while a newer supervisor is still proving its handoff.
+      this.db.prepare(`INSERT INTO workers (worker_id, spec_json, desired, desired_version, created_by, created_at, hold_reason)
+        VALUES (?, ?, 'running', 1, ?, ?, ?)`).run(spec.worker_id, JSON.stringify(spec), actor, at, spec.adoption ? "adoption_pending" : null);
       this.audit(at, actor, "add", spec.worker_id, { harness: spec.harness });
       return this.worker(spec.worker_id)!;
     });
@@ -268,7 +270,7 @@ export class SupervisorStore {
     return this.transaction(() => {
       if (desired === "running") this.requireFreshAfterDeparture(workerId);
       const changed = this.db.prepare(`UPDATE workers SET desired = ?, desired_version = desired_version + 1
-        ${clearHold ? ", hold_reason = NULL, next_start_at = NULL" : ""} WHERE worker_id = ?`).run(desired, workerId);
+        ${clearHold ? ", hold_reason = CASE WHEN hold_reason = 'adoption_pending' THEN hold_reason END, next_start_at = NULL" : ""} WHERE worker_id = ?`).run(desired, workerId);
       if (changed.changes !== 1) throw new Error(`No worker named ${workerId}.`);
       this.audit(at, actor, desired === "running" ? "resume" : desired === "paused" ? "pause" : "stop", workerId);
       return this.worker(workerId)!;
@@ -320,6 +322,10 @@ export class SupervisorStore {
   hold(workerId: string, reason: HoldReason, at: string): void {
     this.db.prepare("UPDATE workers SET hold_reason = ?, next_start_at = NULL WHERE worker_id = ?").run(reason, workerId);
     this.audit(at, "supervisor", "hold", workerId, { reason });
+  }
+
+  clearAdoptionHold(workerId: string): void {
+    this.db.prepare("UPDATE workers SET hold_reason = NULL WHERE worker_id = ? AND hold_reason = 'adoption_pending'").run(workerId);
   }
 
   setNextStart(workerId: string, at: string | null): void {
@@ -439,9 +445,13 @@ export class SupervisorStore {
    */
   requestRestart(workerId: string, fresh: boolean, actor: string, at: string): WorkerRow {
     return this.transaction(() => {
+      if (fresh && (JSON.parse(this.worker(workerId)?.spec_json ?? "{}") as Partial<WorkerSpec>).adoption) {
+        throw new Error("An adopted worker keeps its conversation. Remove it and add a different worker for a fresh session.");
+      }
       if (!fresh) this.requireFreshAfterDeparture(workerId);
       const changed = this.db.prepare(`UPDATE workers SET desired = 'running', desired_version = desired_version + 1,
-        hold_reason = NULL, next_start_at = NULL, restart_next = 1, fresh_next = ? WHERE worker_id = ?`).run(fresh ? 1 : 0, workerId);
+        hold_reason = CASE WHEN hold_reason = 'adoption_pending' THEN hold_reason END,
+        next_start_at = NULL, restart_next = 1, fresh_next = ? WHERE worker_id = ?`).run(fresh ? 1 : 0, workerId);
       if (changed.changes !== 1) throw new Error(`No worker named ${workerId}.`);
       this.audit(at, actor, fresh ? "restart_fresh" : "restart", workerId);
       return this.worker(workerId)!;

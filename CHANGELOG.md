@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- `rooms restart <agent-id> --headless` moves an eligible interactive Claude Code, Antigravity CLI or Codex CLI session to the supervisor after its original process exits. The room keeps the same conversation and identity. `--print` previews the move.
+
 ## [0.41.0] — 2026-11-26
 
 Full notes: [`docs/releases/0.41.0.md`](docs/releases/0.41.0.md).

@@ -360,6 +360,8 @@ function describeSystemEvent(
         : `${name(event.from_agent_id)} left`;
     case "kick":
       return `${name(event.to_agent_id)} was removed by ${name(event.from_agent_id)}`;
+    case "headless_adoption":
+      return `${name(event.from_agent_id)} · ${sanitizeChatText(event.reason ?? "Moved to headless")}`;
     case "kick_stop":
       return `${name(event.to_agent_id)} · ${sanitizeChatText(event.reason ?? "Stop result recorded")}`;
     case "close":
@@ -570,6 +572,7 @@ export function describeMemberState(
   member: RoomMember,
   input: ChatStatusInput
 ): string {
+  if (member.headless_handoff) return "moving to headless";
   const interruptStatus = input.interrupt_statuses?.get(member.agent_id);
   if (interruptStatus) return interruptStatus;
   const busy = input.busy_members?.get(member.agent_id);

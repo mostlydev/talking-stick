@@ -1,7 +1,7 @@
 import { resolveDatabasePath } from "../db.js";
 import { findHarnessRootInAncestry } from "../identity.js";
 import { createSystemProcessInspector, type ProcessInspector } from "../process-utils.js";
-import { TalkingStickService } from "../service.js";
+import { classifyHarnessProcess, TalkingStickService } from "../service.js";
 import { openSqlite, type SqliteDatabase } from "../sqlite.js";
 
 export async function runAntigravityHookCommand(event: string | undefined, options: {
@@ -34,7 +34,7 @@ export async function runAntigravityHookCommand(event: string | undefined, optio
     const sessionId = input.conversationId.trim();
     if (event === "SessionStart") {
       service.recordSessionLifecycle({ harness: "antigravity", sessionId, pid: root.pid,
-        processStartedAt: root.startTime, event, processKind: "shared_host" });
+        processStartedAt: root.startTime, event, processKind: classifyHarnessProcess("antigravity", inspector.inspect(root.pid)?.command) });
       return;
     }
     const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths : [];
