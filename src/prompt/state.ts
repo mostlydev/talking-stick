@@ -15,7 +15,7 @@ import {
   resolveGitRootsFromFilesystem,
   roomCandidatePaths
 } from "../path-resolution.js";
-import { openSqlite, type SqliteDatabase } from "../sqlite.js";
+import { isBunRuntime, openSqlite, type SqliteDatabase } from "../sqlite.js";
 
 export interface PromptState {
   room_id: string;
@@ -51,21 +51,40 @@ export function readPromptState(options: PromptStateOptions = {}): PromptState |
   const env = options.env ?? process.env;
   const file = path.join(resolveDataDir({ env }), "rooms.sqlite");
   if (!fs.existsSync(file)) return null;
-  let db: SqliteDatabase | null = null;
+  const read = (immutable = false) => {
+    const db = openSqlite(file, { readonly: true, immutable, timeout: 25 });
+    try {
+      const room = findRoom(db, options.cwd ?? process.cwd(), env.TT_ROOM?.trim() || null);
+      return room ? describeRoom(db, room, {
+        human: humanId(env),
+        now: options.now ?? new Date(),
+        processAlive: options.processAlive ?? processAlive
+      }) : null;
+    } finally {
+      db.close();
+    }
+  };
+
   try {
-    db = openSqlite(file, { readonly: true, timeout: 25 });
-    const room = findRoom(db, options.cwd ?? process.cwd(), env.TT_ROOM?.trim() || null);
-    if (!room) return null;
-    return describeRoom(db, room, {
-      human: humanId(env),
-      now: options.now ?? new Date(),
-      processAlive: options.processAlive ?? processAlive
-    });
+    if (!isBunRuntime()) return read();
+    const before = fs.statSync(file, { bigint: true });
+    if (hasSqliteSidecars(file)) return read();
+
+    // The standalone SQLite reader can refuse to open a checkpointed WAL
+    // database once the last writer removes its sidecars. An immutable read
+    // needs no sidecars. Discard it if a writer appeared or changed the file.
+    const state = read(true);
+    const after = fs.statSync(file, { bigint: true });
+    if (hasSqliteSidecars(file)) return null;
+    return before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+      before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs ? state : null;
   } catch {
     return null;
-  } finally {
-    try { db?.close(); } catch { /* read-only; nothing to lose */ }
   }
+}
+
+function hasSqliteSidecars(file: string): boolean {
+  return fs.existsSync(`${file}-wal`) || fs.existsSync(`${file}-shm`) || fs.existsSync(`${file}-journal`);
 }
 
 function findRoom(db: SqliteDatabase, cwd: string, pin: string | null): RoomRow | null {

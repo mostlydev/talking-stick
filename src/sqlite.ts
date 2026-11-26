@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import type BetterSqlite3 from "better-sqlite3";
 
 // The store speaks better-sqlite3's API. Under Node that is the real driver;
@@ -10,6 +11,8 @@ export type SqliteDatabase = BetterSqlite3.Database;
 export interface OpenSqliteOptions {
   /** Open an existing database without write access. */
   readonly?: boolean;
+  /** Bun only: read a stable database without locking or looking for a WAL. */
+  immutable?: boolean;
   /** Fail instead of creating the file when it does not exist. */
   fileMustExist?: boolean;
   /** Busy timeout in milliseconds applied when the database opens. */
@@ -17,6 +20,8 @@ export interface OpenSqliteOptions {
 }
 
 const requireModule = createRequire(import.meta.url);
+const SQLITE_OPEN_READONLY = 0x01;
+const SQLITE_OPEN_URI = 0x40;
 
 export function isBunRuntime(): boolean {
   return typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
@@ -24,6 +29,7 @@ export function isBunRuntime(): boolean {
 
 export function openSqlite(file: string, options: OpenSqliteOptions = {}): SqliteDatabase {
   if (!isBunRuntime()) {
+    if (options.immutable) throw new Error("Immutable SQLite reads require Bun");
     const Database = requireModule("better-sqlite3") as typeof BetterSqlite3;
     // better-sqlite3 rejects options that are present but undefined.
     const access = options.readonly ? { readonly: true, fileMustExist: true }
@@ -36,7 +42,15 @@ export function openSqlite(file: string, options: OpenSqliteOptions = {}): Sqlit
   const { Database } = requireModule("bun:sqlite") as { Database: BunDatabaseConstructor };
   // strict: a missing bind throws, as in better-sqlite3, instead of binding NULL.
   const access = options.readonly ? { readonly: true } : { readwrite: true, create: !options.fileMustExist };
-  const db = new Database(file, { strict: true, ...access });
+  let db: BunDatabase;
+  if (options.immutable) {
+    const uri = pathToFileURL(file);
+    uri.searchParams.set("immutable", "1");
+    // The object form does not set SQLITE_OPEN_URI on Linux.
+    db = new Database(uri.href, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI);
+  } else {
+    db = new Database(file, { strict: true, ...access });
+  }
   if (options.timeout !== undefined) db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(options.timeout))}`);
   return wrapBunDatabase(db);
 }
@@ -55,7 +69,7 @@ interface BunDatabase {
   close(): void;
 }
 
-type BunDatabaseConstructor = new (file: string, options?: {
+type BunDatabaseConstructor = new (file: string, options?: number | {
   strict?: boolean; readonly?: boolean; readwrite?: boolean; create?: boolean;
 }) => BunDatabase;
 

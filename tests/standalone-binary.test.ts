@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { digestDirectory, recordManagedContent } from "../src/managed-content.js";
+import { TalkingStickService } from "../src/service.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Builds the real `bun build --compile` binary, installs it with
@@ -71,6 +72,37 @@ describe.skipIf(!hasBun || !supported)("standalone binary", () => {
       expect(updatePlan).toContain(path.join(install, "releases"));
       expect(aliasPlan).toBe(updatePlan);
     }
+  });
+
+  it("keeps the shell prompt after the last WAL writer closes", () => {
+    const project = fs.realpathSync(root);
+    const dataDir = path.join(root, "cold room #1?");
+    const file = path.join(dataDir, "rooms.sqlite");
+    const agent = { agent_id: "codex:cold", context_path: project };
+    const prompt = () => JSON.parse(execFileSync(path.join(bin, "rooms"), ["prompt", "--json"],
+      { cwd: project, env: { ...env(), TALKING_STICK_DATA_DIR: dataDir }, encoding: "utf8" }));
+    const initial = new TalkingStickService({ dataDir });
+    const { room_id } = initial.joinPath(agent);
+    initial.close();
+
+    const before = fs.readFileSync(file);
+    expect(fs.existsSync(`${file}-wal`)).toBe(false);
+    expect(fs.existsSync(`${file}-shm`)).toBe(false);
+    expect(prompt()).toMatchObject({ room_id, members: 1, blockers: 0 });
+    expect(fs.readFileSync(file).equals(before)).toBe(true);
+    expect(fs.existsSync(`${file}-wal`)).toBe(false);
+    expect(fs.existsSync(`${file}-shm`)).toBe(false);
+
+    const writer = new TalkingStickService({ dataDir });
+    try {
+      writer.addBlocker({ room_id, agent_id: agent.agent_id, body: "Approve the next step?" });
+      expect(fs.statSync(`${file}-wal`).size).toBeGreaterThan(0);
+      expect(prompt()).toMatchObject({ room_id, members: 1, blockers: 1 });
+    } finally {
+      writer.close();
+    }
+    expect(fs.existsSync(`${file}-wal`)).toBe(false);
+    expect(prompt()).toMatchObject({ room_id, members: 1, blockers: 1 });
   });
 
   it("leaves an unrelated rooms entry in the install bin directory alone", () => {
