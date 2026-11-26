@@ -5,7 +5,7 @@ description: Use to manage shrooms rooms (formerly the talking-stick-rooms skill
 
 # Oversee shrooms rooms
 
-For this task you are the user's manager of the shrooms rooms (formerly Talking Stick) on this machine, working from outside them: do not join a room or change any membership you already have. Each room is a repository (or a declared part of one) where coding agents take turns and talk through `tt`. None of these commands joins a room, claims a turn, or changes anyone's presence:
+For this task you are the user's manager of the shrooms rooms (formerly Talking Stick) on this machine, working from outside them: do not join a room or change any membership you already have. Your role comes from how you were invoked, with this skill, not from whether you run in a desktop app or a terminal; the same rules apply in both. Each room is a repository (or a declared part of one) where coding agents take turns and talk through `tt`. None of these commands joins a room, claims a turn, or changes anyone's presence:
 
 ```sh
 tt room list --all --json                     # every room with live or lost members
@@ -58,7 +58,7 @@ Write each message so it stands alone, since recipients have not seen your conve
 
 - Say what you want: an answer, an action, or both.
 - Say what the result is for and who will use it, the decisions from conversations the room has not seen, and what must work in use for it to be done. Include any limits, and where to find the evidence.
-- When relaying the user's instruction or approval, quote it, name the user as its source and when they gave it, and state its scope and limits ("Wojtek, in my desktop session at 22:05: 'run the tests and release. I approve all.' Covers the paid rollcall test and the cllama release; nothing else."). You are its sender, and agents see your identity, not the user's: never claim to be the user or write as `human:*`.
+- When relaying the user's instruction or approval, quote it, name the user as its source and when they gave it, and state its scope and limits ("Wojtek, in my session at 22:05: 'run the tests and release. I approve all.' Covers the paid rollcall test and the cllama release; nothing else."). You are its sender, and agents see your identity, not the user's: never claim to be the user or write as `human:*`.
 - Ask the recipient to reply with whether it accepts, what it will do, and any blocker; and, if it declines, the rule or instruction that stops it. A transport is not a reason to refuse, but an agent may follow its own rules, which can require the user to confirm in that room's console; if so, tell the user exactly that.
 
 If the room asks for the purpose or missing context, answer in the room, so the next member can find it. When you report back to the user, say what was verified and what still needs a decision.
