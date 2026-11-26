@@ -3764,7 +3764,7 @@ export class TalkingStickService {
     return this.writeTransaction(() => {
       const request = this.requireVisitorRequest(input.request_id);
       if (!this.getMember(request.room_id, input.agent_id)) {
-        throw new ProtocolError("unknown_member", "Join the room before answering a visitor.");
+        throw new ProtocolError("unknown_member", "Agent must join the room before answering a visitor.");
       }
       if (request.scope === "room") {
         const liaison = this.resolveLiaison(request.room_id, now, request.requester_agent_id);
