@@ -1,4 +1,5 @@
 import { selectedRoom } from "./room-selector.js";
+import { sanitizeChatText } from "./chat-format.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { deriveCliIdentity, resolveCliIdentity } from "./identity.js";
@@ -81,6 +82,10 @@ export function handleJoinCommand(
 
   printResult(parsed, { ...joined, recovery_credential: joined.recovery_credential ? "(saved)" : undefined }, () => {
     const lines = [`Joined ${joined.canonical_path} as ${joined.agent_id}`];
+    if (joined.room_handoff) {
+      const logbook = joined.room_handoff;
+      lines.push(`Inherited room logbook from ${sanitizeChatText(logbook.source_path)} on ${logbook.created_at} (${logbook.story_count} stories). Run tt handoff show.`);
+    }
     if (joined.recovered) {
       lines.push(`Recovered the membership lost at ${joined.recovered.lost_at}; tt wait replays events after #${joined.recovered.replay_from_event_seq}.`);
     }

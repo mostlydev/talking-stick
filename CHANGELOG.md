@@ -11,6 +11,10 @@ changes will be called out under **Breaking changes**.
 
 ## Unreleased
 
+### Added
+
+- `rooms handoff` asks each live member for a story and saves a private room logbook with shared context. A new room for the same declared project inherits the logbook after a folder move. Export it as `CONTEXT.md` and individual stories for a portable copy.
+
 ## [0.42.0] — 2026-11-26
 
 Full notes: [`docs/releases/0.42.0.md`](docs/releases/0.42.0.md).

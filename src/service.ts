@@ -1,3 +1,4 @@
+import { enableRoomHandoff, RoomHandoffStore, type RoomHandoffLogbook, type RoomHandoffPointer } from "./room-handoff.js";
 import type { GoalOutcome, OverseerInboxSummary, RoomBlocker, RoomBlockerEvent, RoomGoal, RoomGoalEvent, RoomOverseerSummary } from "./types.js";
 import { PROFILE_NOTICES } from "./profile-notices.js";
 import { humanAttentionIdentity, humanAttentionWhere, isHumanDirected } from "./human-attention.js";
@@ -754,6 +755,7 @@ export class TalkingStickService {
         policy: { ...this.policy },
         room_state: this.mapRoom(roomInspection, now),
         handoff_template: handoffTemplate(),
+        ...(!existingMember ? this.joinHandoff(freshRoom) : {}),
         ...(recovered ? { recovered: recovered.recovery } : {}),
         ...(recoveryCredential ? { recovery_credential: recoveryCredential } : {})
       };
@@ -3615,6 +3617,79 @@ export class TalkingStickService {
       const rightWake = this.canWakeLiaison(roomId, right) ? 0 : 1;
       return leftWake - rightWake || left.ordinal - right.ordinal;
     })[0]?.agent_id ?? null;
+  }
+
+  private joinHandoff(room: PathRoomRow): { room_handoff?: RoomHandoffPointer } {
+    const pointer = new RoomHandoffStore(this.db).pointer(room.canonical_path, room.room_id);
+    return pointer?.inherited ? { room_handoff: pointer } : {};
+  }
+
+  roomHandoffPointer(roomId: string): RoomHandoffPointer | null {
+    const room = this.requireRoom(roomId);
+    return new RoomHandoffStore(this.db).pointer(room.canonical_path, roomId);
+  }
+
+  showRoomHandoff(roomId: string, snapshotId?: string): RoomHandoffLogbook | null {
+    return new RoomHandoffStore(this.db).show(this.requireRoom(roomId).canonical_path, snapshotId);
+  }
+
+  startRoomHandoff(roomId: string, agentId: string): RoomHandoffLogbook {
+    const now = this.now();
+    const timestamp = now.toISOString();
+    return this.writeTransaction(() => {
+      const room = this.requireRoom(roomId);
+      this.requireRoomHandoffWriter(room, agentId);
+      enableRoomHandoff(room.canonical_path);
+      const requested = this.getMembers(roomId).filter(member => this.liaisonCandidate(member, now))
+        .map(member => member.agent_id);
+      const turn = this.getRoomActivity({ room_id: roomId }).last_handoff;
+      const goals = this.listGoals({ room_id: roomId }).filter(goal => goal.status === "open");
+      const blockers = this.listBlockers({ room_id: roomId });
+      const context = [
+        "## Shared facts",
+        `- Room: ${room.canonical_path}`,
+        `- Members: ${requested.join(", ") || "none"}`,
+        `- Stick holder: ${room.owner ?? "none"}`,
+        ...(turn?.handoff ? [`- Last turn handoff: ${turn.handoff.status}`, `- Next action: ${turn.handoff.next_action}`] : []),
+        "## Open goals", ...goals.map(goal => `- ${goal.goal_id}: ${goal.brief} (done when: ${goal.completion_criterion})`),
+        "## Open blockers", ...blockers.map(blocker => `- ${blocker.blocker_id}: ${blocker.body}`)
+      ].join("\n");
+      const snapshot = new RoomHandoffStore(this.db).insert(room.canonical_path, roomId,
+        { source_path: room.canonical_path, created_at: timestamp, context, requested, stories: [] });
+      const message = `Room handoff ${snapshot.snapshot_id}: write a short first-person account of your work, what you learned, and what the next session should know. Submit it with tt handoff add --in ${roomId} --snapshot ${snapshot.snapshot_id} --stdin. This is a room logbook and does not move the stick.`;
+      for (const recipient of requested) {
+        if (recipient !== agentId) {
+          this.sendMessageLocked({ room_id: roomId, agent_id: agentId, to_agent_id: recipient, body: message },
+            message, "normal", timestamp, "visitor");
+        }
+      }
+      return snapshot;
+    });
+  }
+
+  addRoomHandoffStory(roomId: string, agentId: string, body: string, snapshotId?: string) {
+    return this.writeTransaction(() => {
+      const room = this.requireRoom(roomId);
+      if (!this.getMember(roomId, agentId)) throw new ProtocolError("unknown_member", "Join the room before contributing a story.");
+      return new RoomHandoffStore(this.db).add(room.canonical_path, roomId,
+        { agent_id: agentId, created_at: this.now().toISOString(), body }, snapshotId);
+    });
+  }
+
+  importRoomHandoff(roomId: string, agentId: string, logbook: RoomHandoffLogbook): RoomHandoffLogbook {
+    return this.writeTransaction(() => {
+      const room = this.requireRoom(roomId);
+      this.requireRoomHandoffWriter(room, agentId);
+      enableRoomHandoff(room.canonical_path);
+      return new RoomHandoffStore(this.db).insert(room.canonical_path, roomId, logbook);
+    });
+  }
+
+  private requireRoomHandoffWriter(room: PathRoomRow, agentId: string): void {
+    if (room.state === "closed") throw new ProtocolError("room_closed", "The room is closed.");
+    if (!agentId.startsWith("human:") && !this.getMember(room.room_id, agentId)) {
+      throw new ProtocolError("unknown_member", "Join this room before starting a handoff.");
+    }
   }
 
   setLiaison(input: { agent_id: AgentId; room_id: string; liaison_agent_id: AgentId | null }): {

@@ -1,3 +1,4 @@
+import { ROOM_HANDOFF_USAGE, handleRoomHandoffCommand } from "./room-handoff-commands.js";
 import { runOpencodeHookCommand } from "./opencode-hook.js";
 import { runGrokInboxHookCommand } from "./grok-inbox-hook.js";
 import { runCodexInboxHookCommand } from "./codex-inbox-hook.js";
@@ -65,7 +66,7 @@ export interface CommandEntry {
 /** How help groups the public commands: managing rooms, taking turns inside one, and setup. */
 export const HELP_GROUPS = [
   { title: "Manage rooms",
-    commands: ["chat", "up", "room", "list", "roles", "liaison", "supervisor", "overseer", "goal", "blocker", "kick"] },
+    commands: ["chat", "up", "room", "list", "roles", "liaison", "supervisor", "overseer", "handoff", "goal", "blocker", "kick"] },
   { title: "Inside a room (the talking stick)",
     commands: ["join", "leave", "wait", "standby", "try", "take", "release", "pass", "assign", "msg", "ack", "notes",
       "state", "health", "events"] },
@@ -407,6 +408,12 @@ export const COMMAND_REGISTRY: CommandEntry[] = [
     usage: "tt chat [path] [--in ROOM] [--history N] [--events] [--fullscreen] [--mouse|--no-mouse] [--theme lantern|tide|dusk]",
     description: "Open an operator chat console for a room's agents.",
     handler: ({ runtime, parsed }) => handleChatCommand(requireRuntime(runtime), parsed)
+  },
+  {
+    name: "handoff", needsRuntime: true, startupMaintenance: false, internal: false,
+    usage: ROOM_HANDOFF_USAGE,
+    description: "Hand the room to whoever comes next with shared context and each member's story.",
+    handler: ({ parsed, runtime }) => handleRoomHandoffCommand(requireRuntime(runtime), parsed)
   },
   {
     name: "overseer", needsRuntime: true, startupMaintenance: false, internal: false,
