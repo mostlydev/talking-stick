@@ -1,4 +1,4 @@
-import { enableRoomHandoff, RoomHandoffStore, type RoomHandoffLogbook, type RoomHandoffPointer } from "./room-handoff.js";
+import { enableRoomHandoff, RoomHandoffStore, type RoomHandoffDeclarationChange, type RoomHandoffLogbook, type RoomHandoffPointer } from "./room-handoff.js";
 import type { GoalOutcome, OverseerInboxSummary, RoomBlocker, RoomBlockerEvent, RoomGoal, RoomGoalEvent, RoomOverseerSummary } from "./types.js";
 import { PROFILE_NOTICES } from "./profile-notices.js";
 import { humanAttentionIdentity, humanAttentionWhere, isHumanDirected } from "./human-attention.js";
@@ -3633,13 +3633,13 @@ export class TalkingStickService {
     return new RoomHandoffStore(this.db).show(this.requireRoom(roomId).canonical_path, snapshotId);
   }
 
-  startRoomHandoff(roomId: string, agentId: string): RoomHandoffLogbook {
+  startRoomHandoff(roomId: string, agentId: string): RoomHandoffLogbook & { declaration?: RoomHandoffDeclarationChange } {
     const now = this.now();
     const timestamp = now.toISOString();
     return this.writeTransaction(() => {
       const room = this.requireRoom(roomId);
       this.requireRoomHandoffWriter(room, agentId);
-      enableRoomHandoff(room.canonical_path);
+      const declaration = enableRoomHandoff(room.canonical_path);
       const requested = this.getMembers(roomId).filter(member => this.liaisonCandidate(member, now))
         .map(member => member.agent_id);
       const turn = this.getRoomActivity({ room_id: roomId }).last_handoff;
@@ -3663,7 +3663,7 @@ export class TalkingStickService {
             message, "normal", timestamp, "visitor");
         }
       }
-      return snapshot;
+      return { ...snapshot, ...(declaration ? { declaration } : {}) };
     });
   }
 
@@ -3676,12 +3676,13 @@ export class TalkingStickService {
     });
   }
 
-  importRoomHandoff(roomId: string, agentId: string, logbook: RoomHandoffLogbook): RoomHandoffLogbook {
+  importRoomHandoff(roomId: string, agentId: string, logbook: RoomHandoffLogbook): RoomHandoffLogbook & { declaration?: RoomHandoffDeclarationChange } {
     return this.writeTransaction(() => {
       const room = this.requireRoom(roomId);
       this.requireRoomHandoffWriter(room, agentId);
-      enableRoomHandoff(room.canonical_path);
-      return new RoomHandoffStore(this.db).insert(room.canonical_path, roomId, logbook);
+      const declaration = enableRoomHandoff(room.canonical_path);
+      const imported = new RoomHandoffStore(this.db).insert(room.canonical_path, roomId, logbook);
+      return { ...imported, ...(declaration ? { declaration } : {}) };
     });
   }
 

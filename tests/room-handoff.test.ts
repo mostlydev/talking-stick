@@ -39,6 +39,7 @@ test("after a physical rename, the new room inherits stories but no live state",
   const direct = service.getRoomEvents({ room_id: oldRoom, agent_id: OPERATOR, include_all: true })
     .filter(event => event.event_type === "message_sent");
   expect(direct.map(event => event.to_agent_id)).toEqual([ALPHA, BETA]);
+  expect(direct.every(event => !event.payload?.request_id)).toBe(true);
   expect(direct.every(event => event.payload?.body?.includes(snapshot.snapshot_id))).toBe(true);
   expect(() => service.addRoomHandoffStory(oldRoom, "codex:visitor", "Cannot add")).toThrow("Join");
   const story = service.addRoomHandoffStory(oldRoom, ALPHA, "From my seat, the work is ready.", snapshot.snapshot_id);
@@ -89,8 +90,10 @@ test("export and import preserve dates and authors and never overwrite an existi
   const story = service.addRoomHandoffStory(source, ALPHA, "A first-person account.");
   const output = path.join(root, "portable");
   const pathToContext = exportRoomLogbook(output, service.showRoomHandoff(source)!);
-  expect(fs.readFileSync(pathToContext, "utf8")).toMatch(/\[claude:first\]\(story-1.md\)/);
-  expect(fs.readFileSync(path.join(output, "story-1.md"), "utf8")).toContain(story.body);
+  const context = fs.readFileSync(pathToContext, "utf8");
+  const name = /\[claude:first\]\((story-claude-first-[0-9a-f]+\.md)\)/.exec(context)?.[1];
+  expect(name).toBeDefined();
+  expect(fs.readFileSync(path.join(output, name!), "utf8")).toContain(story.body);
   expect(() => exportRoomLogbook(output, service.showRoomHandoff(source)!)).toThrow(/EEXIST/);
   const past = readRoomLogbookExport(output);
   expect(past.stories).toEqual([story]);
@@ -100,8 +103,20 @@ test("export and import preserve dates and authors and never overwrite an existi
   const target = service.joinPath({ context_path: other, agent_id: BETA }).room_id;
   service.startRoomHandoff(target, OPERATOR);
   const imported = service.importRoomHandoff(target, OPERATOR, past);
-  expect(service.showRoomHandoff(target)).toEqual(imported);
+  expect(service.showRoomHandoff(target)).toMatchObject({ snapshot_id: imported.snapshot_id, stories: imported.stories });
   expect(imported.snapshot_id).not.toBe(past.snapshot_id);
   expect(imported.stories).toEqual([story]);
   expect(imported.created_at).toBe(past.created_at);
+});
+
+test("enabling the repository root preserves the original room and its members", () => {
+  const { project, service } = setup();
+  const old = service.joinPath({ context_path: project, agent_id: ALPHA });
+  const snapshot = service.startRoomHandoff(old.room_id, OPERATOR);
+  expect(snapshot.declaration).toMatchObject({ change: "created", id: expect.any(String) });
+  const current = service.joinPath({ context_path: project, agent_id: BETA });
+  expect(current.room_id).toBe(old.room_id);
+  expect(current.canonical_path).toBe(old.canonical_path);
+  expect(current.members.map(member => member.agent_id)).toEqual([ALPHA, BETA]);
+  expect(service.startRoomHandoff(old.room_id, OPERATOR).declaration).toBeUndefined();
 });

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ProtocolError } from "./errors.js";
@@ -51,7 +51,13 @@ function declarationIdentity(directory: string): { id: string; scope: string } |
 }
 
 /** Seed older declarations explicitly. Join and other read paths never write to the checkout. */
-export function enableRoomHandoff(directory: string): void {
+export interface RoomHandoffDeclarationChange {
+  file: string;
+  id: string;
+  change: "created" | "enabled";
+}
+
+export function enableRoomHandoff(directory: string): RoomHandoffDeclarationChange | undefined {
   const file = path.join(directory, ROOM_DECLARATION_FILE);
   const existing = fs.statSync(file, { throwIfNoEntry: false });
   if (existing && readDeclaration(file).id) return;
@@ -75,10 +81,12 @@ export function enableRoomHandoff(directory: string): void {
       if (declaration.id) return;
     }
     const text = old ? fs.readFileSync(file, "utf8") : "# shrooms room boundary.\n";
-    fs.writeFileSync(temporary, `${text}${text.endsWith("\n") ? "" : "\n"}id = "${randomUUID()}"\n`,
+    const id = randomUUID();
+    fs.writeFileSync(temporary, `${text}${text.endsWith("\n") ? "" : "\n"}id = "${id}"\n`,
       { flag: "wx", mode: old?.mode ?? 0o644 });
     if (!old) fs.linkSync(temporary, file);
     else fs.renameSync(temporary, file);
+    return { file, id, change: old ? "enabled" : "created" };
   } finally {
     fs.rmSync(temporary, { force: true });
     fs.closeSync(fd);
@@ -161,12 +169,18 @@ export class RoomHandoffStore {
   }
 }
 
+function storyFile(agentId: string): string {
+  const readable = agentId.replace(/[^a-zA-Z0-9.-]+/g, "-").slice(0, 80);
+  const suffix = createHash("sha256").update(agentId).digest("hex").slice(0, 12);
+  return `story-${readable}-${suffix}.md`;
+}
+
 export function renderRoomLogbook(logbook: RoomHandoffLogbook): string {
   const lines = ["# Room logbook", "", `Snapshot: ${logbook.snapshot_id}`, `Date: ${logbook.created_at}`,
     `Source room: ${logbook.source_path}`, "", logbook.context, "", "## Individual stories", ""];
   const authors = new Set(logbook.stories.map(story => story.agent_id));
-  for (const [index, story] of logbook.stories.entries()) {
-    lines.push(`- [${story.agent_id}](story-${index + 1}.md) · ${story.created_at}`);
+  for (const story of logbook.stories) {
+    lines.push(`- [${story.agent_id}](${storyFile(story.agent_id)}) · ${story.created_at}`);
   }
   const missing = logbook.requested.filter(agent => !authors.has(agent));
   if (missing.length) lines.push("", `Still missing: ${missing.join(", ")}`);
@@ -187,8 +201,8 @@ export function exportRoomLogbook(directory: string, logbook: RoomHandoffLogbook
       try { fs.writeFileSync(fd, value); }
       finally { fs.closeSync(fd); }
     };
-    for (const [index, story] of logbook.stories.entries()) {
-      write(`story-${index + 1}.md`, `# ${story.agent_id}\n\n${story.created_at}\n\n${story.body}\n`);
+    for (const story of logbook.stories) {
+      write(storyFile(story.agent_id), `# ${story.agent_id}\n\n${story.created_at}\n\n${story.body}\n`);
     }
     write("handoff.json", encoded);
     write("CONTEXT.md", renderRoomLogbook(logbook));

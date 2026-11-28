@@ -1,8 +1,5 @@
-import { randomUUID } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
-import { resolveDataDir } from "../config.js";
-import { exportRoomLogbook, readRoomLogbookExport, renderRoomLogbook } from "../room-handoff.js";
+import { exportRoomLogbook, readRoomLogbookExport, renderRoomLogbook, type RoomHandoffDeclarationChange } from "../room-handoff.js";
 import { sanitizeChatText } from "./chat-format.js";
 import { readAllStdin } from "./handoff.js";
 import { deriveCliIdentity } from "./identity.js";
@@ -14,9 +11,15 @@ import type { Runtime } from "./runtime.js";
 export const ROOM_HANDOFF_USAGE = [
   "tt handoff [--in ROOM]",
   "tt handoff add --stdin [--in ROOM] [--snapshot ID]",
-  "tt handoff show [ROOM] | refresh [--in ROOM] [--snapshot ID]",
+  "tt handoff show [ROOM] [--in ROOM] [--snapshot ID]",
   "tt handoff export <new-directory> | import <directory> [--in ROOM]"
 ].join("\n");
+
+function declarationNotice(declaration?: RoomHandoffDeclarationChange): string {
+  if (!declaration) return "";
+  const verb = declaration.change === "created" ? "Created" : "Enabled handoffs in";
+  return `\n${verb} ${sanitizeChatText(declaration.file)} with id ${declaration.id}. Keep the declaration with the project so moves can inherit the logbook.`;
+}
 
 export async function handleRoomHandoffCommand(runtime: Runtime, parsed: ParsedCommand): Promise<void> {
   const [action, argument, ...extra] = parsed.positionals;
@@ -25,7 +28,7 @@ export async function handleRoomHandoffCommand(runtime: Runtime, parsed: ParsedC
   const room = briefTarget(runtime, parsed, action === "show" ? argument : undefined);
   if (!action) {
     const snapshot = runtime.commands.startRoomHandoff(deriveCliIdentity(parsed), room.room_id);
-    printResult(parsed, snapshot, () => `Room handoff ${snapshot.snapshot_id} requested ${snapshot.requested.length} stories. See tt handoff show.`);
+    printResult(parsed, snapshot, () => `Room handoff ${snapshot.snapshot_id} requested ${snapshot.requested.length} stories. See tt handoff show.${declarationNotice(snapshot.declaration)}`);
     return;
   }
   if (action === "add" && !argument && hasOption(parsed, "stdin")) {
@@ -35,10 +38,10 @@ export async function handleRoomHandoffCommand(runtime: Runtime, parsed: ParsedC
   }
   if (action === "import" && argument) {
     const imported = runtime.commands.importRoomHandoff(deriveCliIdentity(parsed), room.room_id, readRoomLogbookExport(path.resolve(argument)));
-    printResult(parsed, imported, () => `Imported ${imported.stories.length} stories. See tt handoff show.`);
+    printResult(parsed, imported, () => `Imported ${imported.stories.length} stories. See tt handoff show.${declarationNotice(imported.declaration)}`);
     return;
   }
-  if (action !== "show" && !(action === "refresh" && !argument) && !(action === "export" && argument)) {
+  if (action !== "show" && !(action === "export" && argument)) {
     throw new Error(ROOM_HANDOFF_USAGE);
   }
   const snapshot = runtime.commands.showRoomHandoff(room.room_id, snapshotId);
@@ -53,14 +56,6 @@ export async function handleRoomHandoffCommand(runtime: Runtime, parsed: ParsedC
     ].join("\n")));
     return;
   }
-  let directory: string;
-  if (action === "export") {
-    directory = path.resolve(argument!);
-  } else {
-    const parent = path.join(resolveDataDir(), "handoffs");
-    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
-    directory = path.join(parent, snapshot.snapshot_id + "-" + randomUUID());
-  }
-  const contextFile = exportRoomLogbook(directory, snapshot);
+  const contextFile = exportRoomLogbook(path.resolve(argument!), snapshot);
   printResult(parsed, { snapshot_id: snapshot.snapshot_id, context_file: contextFile }, () => contextFile);
 }
