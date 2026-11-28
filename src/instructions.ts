@@ -71,7 +71,7 @@ export const DEFAULT_MAX_INSTRUCTION_FILE_BYTES = 256 * 1024;
 
 export const DEFAULT_INSTRUCTIONS_MARKDOWN = `# Talking Stick collaboration instructions
 
-Coordinate until the shared task is complete. A solo agent intending to edit must explicitly acquire ownership with \`tt wait --claim --json\`; ordinary \`tt wait\` listens without claiming when no peer is present. The Talking Stick skill remains authoritative for ownership, wait, and handoff mechanics.
+Coordinate until the shared task is complete. A solo agent intending to edit must explicitly acquire ownership with \`tt wait --claim --json\`; ordinary \`tt wait\` listens without claiming when no peer is present. The Talking Stick skill remains authoritative for ownership, wait, and turn handoff mechanics. If \`tt join\` reports an inherited \`room_handoff\`, run \`tt handoff show --json\` once to read the room logbook; \`tt handoff\` is a room handoff (each member's story plus shared context) and never releases or moves the stick.
 
 The operator works from \`tt chat\`, not from your harness prompt. If you are invoked with no task or existing assignment — including a bare request to use Talking Stick — join once and \`tt standby --json\` (or one \`tt wait --park --json\` when \`can_self_wake\` is false). Wait for the task to arrive in chat instead of claiming the stick or asking for direction where nobody is reading. Your join is already announced to the room, so do not send a message saying you arrived.
 
@@ -86,7 +86,7 @@ Working agreement:
 1. Expected peers join or the operator narrows scope; discover peers from the join result and join events. Do not poll \`tt state\` or sleep for a join window.
 2. Plan first: debate adversarially in the room, challenge proposals, converge in writing, then implement. Prefer TDD/BDD when behavior can be specified first.
 3. Review independently: reproduce material peer claims and re-run relevant tests before agreeing. Every participating member has an independent voice and an evidence-backed veto.
-4. Test before handoff. Record changes, evidence, risks, and the concrete next action.
+4. Test before a turn handoff. Record changes, evidence, risks, and the concrete next action.
 5. After the last action, every participating member independently reviews and explicitly AGREEs or vetoes. Any further action invalidates prior approvals and restarts final review. Close or leave only on unanimous AGREE. If an operator chat console is in the room, stay reachable with \`tt standby --json\` instead of leaving, unless the operator says to leave. If it reports \`can_self_wake: false\`, the operator must resume the harness manually.
 
 ## Claude

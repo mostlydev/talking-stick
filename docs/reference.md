@@ -37,7 +37,7 @@ tt room create [path] [--name NAME]                       # declare a room bound
 tt room ensure <path> [--name NAME]                       # declare it unless already declared; same room either way (for launchers)
 tt room list [path]                                       # this repository's rooms, live agents in each, current marked
 tt room list --all                                        # every room on this host with live or lost members or open blockers, most recent activity first
-tt room brief [room] [--limit N] [--before SEQ]           # room holder, members, last handoff, notes, and messages
+tt room brief [room] [--limit N] [--before SEQ]           # room holder, members, last turn handoff, logbook, notes, and messages
 tt room ask <room> --to <agents|room> <body...> [--stdin] [--request-key KEY]
 tt room replies <request-id> [--after SEQ] [--limit N] [--timeout S] # read answers; --timeout waits up to 60s
 tt msg reply <request-id> <body...> [--stdin]             # answer a visitor's question
@@ -64,7 +64,7 @@ tt instructions show [path] [--harness claude|codex|antigravity|grok|opencode|al
 tt instructions edit [path] [--user|--project]            # edit user or project prompt
 tt instructions update [path] [--user|--project] [--replace]
 tt instructions reset [path] (--user|--project)           # delete a user or project prompt
-tt release [path] (--status TEXT --next-action TEXT | --stdin)   # normal handoff
+tt release [path] (--status TEXT --next-action TEXT | --stdin)   # normal turn handoff
 tt pass [path] (--status TEXT --next-action TEXT | --stdin)      # pass/end your turn
 tt assign <target|next> [path] (--status TEXT --next-action TEXT | --stdin) [--operator-requested]
 tt take [path] [--reason TEXT] [--operator-requested]     # deliberate claim when the holder is gone/stuck
@@ -73,6 +73,11 @@ tt notes add <body> [--turn N] [--path DIR] [--stdin]     # leave an async note
 tt notes list [--all] [--after ID] [--limit N] [--path DIR]
 tt goal add <brief> --done-when CRITERION [--in ROOM] [--stdin]
 tt goal list [--all] [--in ROOM]
+tt handoff [--in ROOM]                                    # request a room handoff story from live agents (each other live agent if run by a member)
+tt handoff add --stdin [--in ROOM] [--snapshot ID]        # save your own room handoff story
+tt handoff show [room] [--snapshot ID]                    # assemble logbook text (or structured JSON with requested + stories) from private SQLite
+tt handoff export <new-directory> [--in ROOM] [--snapshot ID] # write CONTEXT.md and separate per-member Markdown files to a new directory
+tt handoff import <directory> [--in ROOM]                 # import an exported handoff bundle into this room
 tt goal show <id> [--in ROOM]
 tt goal close <id> <done|failed|withdrawn> <evidence or reason> [--in ROOM] [--stdin]
 tt blocker add <facts and question> [--goal G<N>] [--stdin] [--in ROOM]  # raise a decision for the room
@@ -275,7 +280,7 @@ An agent is a member of one room per repository. Joining another room in the sam
 `holds_turn_elsewhere` while the agent holds or is next for the turn in a room it would leave;
 release there first. Chat consoles are observers and are never moved.
 
-`room.toml` accepts only `name = "..."` today. Any other content, including the reserved
+`room.toml` accepts `name = "..."` and an optional opaque `id = "..."` that shrooms records for room handoff inheritance across folder moves. Any other content, including the reserved
 `channels` and `default_channel` keys, still declares the room, and joins report it. A custom `name` is found by `--in` when the keyed path exists in the main
 checkout; for a package that exists only on a linked worktree's branch, use its directory name,
 a path suffix, or the room id. `tt room remove` refuses while agents are in the room. Otherwise
@@ -362,9 +367,9 @@ Any agent or person on the host can see what each room is doing without joining 
 or open blockers, most recent room activity first. Room activity includes lease renewals, so it means the room is in use, not that its
 conversation moved. `tt room brief <room>` then shows one room: the stick holder (marked stale
 once the lease has expired) or the reservation, members with their kind and whether each is
-live, inactive, or gone, the latest handoff in full, the newest ten open notes with the real open
-count, open goals and their age, and the last 20 messages, handoffs and goal events. `--limit N` (up to 200) changes how many recent
-events to show. Message bodies are cut at 1,000 characters and handoffs at 160; each clipped
+live, inactive, or gone, the latest turn handoff in full, any room logbook pointer (`room_handoff`), the newest ten open notes with the real open
+count, open goals and their age, and the last 20 messages, turn handoffs and goal events. `--limit N` (up to 200) changes how many recent
+events to show. Message bodies are cut at 1,000 characters and turn handoffs at 160; each clipped
 event carries a `full` command that reads it whole. `older` pages back with `--before <seq>`, and
 `updates_since` reads everything after the brief's cursor. A visitor's question carries its
 `request_id`, and an answer carries `in_reply_to`; an answer goes to the visitor, so its `to` is
@@ -521,14 +526,43 @@ tt wait --json
   a structured `hidden.older_count` summary. Default `tt health` is a concise action card backed by
   the receiver registry; use `tt health --verbose` or `--all` for full diagnostics.
 
-**When to message vs note vs handoff.**
+**When to message vs note vs turn handoff vs room handoff.**
 
 - **Message** — conversational, addressed to whoever is listening now. Messages are recorded in the
   room event log, but they are read in passing rather than tracked to resolution, and they cost no
   stick churn.
 - **Note** (`tt notes add`) — durable, resolvable artifacts. Leave a note when the next holder should
-  consider something at handoff, or when the observation should outlive the conversation.
-- **Handoff** (`tt release` / `tt pass`) — transfer of work. Messages do not replace handoffs.
+  consider something at turn handoff, or when the observation should outlive the conversation.
+- **Turn handoff** (`tt release` / `tt pass` / `tt assign`) — transfer of writer ownership with a
+  structured `status` / `next_action` payload. Messages do not replace turn handoffs.
+- **Room handoff** (`tt handoff`) — the room-wide narrative logbook (shared context plus each
+  member's own dated story) for restarts, folder renames, and newcomers. Never releases, passes, or
+  claims the talking stick.
+
+### Room handoff
+
+`tt handoff [--in ROOM]` starts a dated room handoff snapshot (authorized for the operator or a
+joined room member) and sends a direct request to live agents (bypassing liaison-only room-wide
+routing) so each member can write its own account: from the operator it reaches every live agent;
+from a joined agent it directs each other live agent without waking itself. `tt handoff import`
+likewise requires the operator or a room member. Each member saves its narrative with
+`tt handoff add --stdin [--snapshot ID]` without needing the stick; stories are stored in private
+SQLite per member (up to 32 KB each) and never merged away.
+
+`tt handoff show [room] [--snapshot ID]` reads directly from private SQLite: text output assembles
+the current logbook index with every saved story, its author and date, and missing authors, while
+`--json` returns structured `requested` and `stories` fields. Visitors can read it without joining,
+and `tt room brief` includes a `room_handoff` pointer.
+
+Stories stay private in the local data directory (never committed to git by default) and are keyed
+by the opaque `id` in `.talking-stick/room.toml` plus the declared room scope (starting or
+importing a handoff reports when it creates or enables that declaration). When a declared project
+folder is moved or renamed, a new room opened there inherits the logbook automatically —
+preserving each story's author and timestamp while copying no members, turns, leases, or
+permissions — and `tt join` reports `room_handoff` on first join. `tt handoff export <new-directory>`
+writes `CONTEXT.md` and per-member stories to a new directory (never overwriting an existing
+`CONTEXT.md`), and `tt handoff import <directory>` reads that bundle into a clone or machine
+without a matching declaration.
 
 **`to_agent_id` is routing, not ACL.** A directed or scoped message is filtered out of other agents'
 default waits, so addressing someone does narrow who is prompted with it. It does not make the
@@ -537,7 +571,7 @@ the stick — a non-holder paging the holder gets attention, not write authority
 
 ## Waking idle agents
 
-When a directed message, assignment, pass, or pending handoff targets an agent that has no live
+When a directed message, assignment, pass, or pending turn handoff targets an agent that has no live
 `tt wait`, Talking Stick wakes that agent's harness session directly. For Claude Code and Codex, no
 keystrokes are typed and no model polls while idle.
 
@@ -1168,7 +1202,7 @@ hook deliveries may retry after one minute at the next hook. Hooks never auto-jo
 - **Declared rooms.** An agent at any depth under `/repo/` joins the `/repo/` room automatically,
   unless a nearer directory declares its own room with `.talking-stick/room.toml`. A repository never
   joins a room above its checkout; linked worktrees share the main checkout's rooms.
-- **Structured handoffs.** `tt release` and `tt pass` carry a typed `Handoff` with required `status` /
+- **Structured turn handoffs.** `tt release` and `tt pass` carry a typed `Handoff` with required `status` /
   `next_action`. With `--stdin`, pass a JSON object with both nonempty strings and optional
   `artifacts`, `open_questions`, and `do_not` arrays. Without `--stdin`, omitted
   `--status` or `--next-action` values receive placeholders.
