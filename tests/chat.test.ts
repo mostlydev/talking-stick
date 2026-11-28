@@ -3156,7 +3156,8 @@ test.each([true, false])("typing during a Ctrl-G review returns to the composer 
     await until(() => bytes.includes("Type to message the room"));
     service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "first for op" });
     service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "second for op" });
-    await until(() => bytes.includes("second for op"));
+    for (let i = 0; i < 40; i++) service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, body: `draft-flow-${i}` });
+    await until(() => bytes.includes("draft-flow-39"));
     await new Promise(resolve => setTimeout(resolve, 30));
     input.write("half typed\u001b[D\u001b[D\u001b[D\u001b[D\u001b[D");
     await new Promise(resolve => setTimeout(resolve, 60));
@@ -3262,10 +3263,36 @@ test("browsing during an unread review never reads context, even after returning
     input.write("\u001b"); // A lone Escape resolves after the key-sequence wait.
     await new Promise(resolve => setTimeout(resolve, 150)); await flush();
     expect(screen().some(line => line.includes("review-flow-29"))).toBe(true);
-    input.write("\u001b[1;2A"); // A one-row live scroll near the tail crosses nothing old.
+    input.write("\u001b[1;2A"); // A one-row live scroll is activity, so a message still on screen is read.
     await new Promise(resolve => setTimeout(resolve, 60)); await flush();
-    expect(pending()).toEqual([context.event_seq]);
+    expect(pending()).toEqual([]);
   } finally { input.end(); await session; vt.dispose(); }
+});
+
+test.each([true, false])("a visible message is read only while the console is present (inline=%s)", async (inline) => {
+  const { root, service } = setupService();
+  const joined = service.joinPath({ agent_id: "codex:attention", context_path: root });
+  const input = Object.assign(new PassThrough(), { setRawMode() {} });
+  const output = Object.assign(new PassThrough(), { columns: 100, rows: 28 });
+  let bytes = "";
+  output.on("data", chunk => { bytes += chunk.toString(); });
+  const pending = () => service.getHumanAttention({ room_id: joined.room_id, human_id: "human:op" }).messages.map(event => event.event_seq);
+  const session = runChatSession({ runtime: { commands: new TalkingStickCommands(service), close() {} },
+    identity: observerIdentity(), context_path: root, input, output, terminal: true, inline,
+    color: false, history: 0, show_turn_events: false, poll_ms: 5 });
+  try {
+    await until(() => bytes.includes("Type to message the room"));
+    expect(bytes).toContain("\u001b[?1004h");
+    const quiet = service.sendMessage({ agent_id: "codex:attention", room_id: joined.room_id, to_agent_id: "human:op", body: "quiet arrival" });
+    await until(() => bytes.includes("quiet arrival"));
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(pending()).toEqual([quiet.event_seq]);
+    input.write("\u001b[O");
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(pending()).toEqual([quiet.event_seq]);
+    input.write("h");
+    await until(() => pending().length === 0);
+  } finally { input.end(); await session; }
 });
 
 test.each([true, false].flatMap(inline => [undefined, false, true].map(mouse => ({ inline, mouse }))))(

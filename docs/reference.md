@@ -929,13 +929,17 @@ While every unread message is still on screen, inline output keeps flowing into 
 scrollback as usual. The bar takes over the top of the pane only once an unread message has
 scrolled off, and stays until nothing is unread.
 
-Scrolling across an unread message reads it, durably, in fullscreen mode and in inline Herdr
-chat where scroll position is known. Browsing during an unread review never does. In inline
-Herdr chat, only rows written while the bar was showing can be placed in native scrollback;
-a message that scrolled off before the bar appeared stays unread until you visit it. While native Herdr scrollback is away from the tail,
-updates buffer without repainting what you are reading; returning flushes the full history.
-Outside Herdr, native scroll position is unknown, so use Ctrl-G, the control, `/unread`, or `/ack`.
-Typing alone never acknowledges a message.
+A message addressed to you is read when it is drawn in the viewport while this console is
+present. Present means the terminal has not reported that it lost focus, and you typed or used
+the mouse in the last two minutes. A message that arrives and scrolls away while the console
+is quiet stays unread. Scrolling across one still reads it, in fullscreen mode and in inline
+Herdr chat where scroll position is known. Browsing during an unread review never reads the
+rows around the message you opened. In inline Herdr chat, only rows written while the bar was
+showing can be placed in native scrollback; a message that scrolled off before the bar appeared
+stays unread until you visit it. While native Herdr scrollback is away from the tail, updates
+buffer without repainting what you are reading; returning flushes the full history. Outside
+Herdr, native scroll position is unknown, so a message that has left the screen waits for
+Ctrl-G, the control, `/unread`, or `/ack`.
 
 `/ack` acknowledges visible highlighted messages, `/ack #123` one message, and `/ack all`
 every pending message. Acknowledgements persist per room and local human across restarts,
