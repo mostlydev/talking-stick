@@ -23,6 +23,10 @@ export interface ChatInputOptions {
   /** Ctrl-G: the next unread message addressed to this human. */
   onNextUnread?: () => void;
   onCycleRoom?: (direction: -1 | 1) => void;
+  /** A key, click, wheel, or scroll. Focus reports are not activity. */
+  onActivity?: () => void;
+  /** Terminal focus in or out (CSI I / CSI O). */
+  onFocus?: (focused: boolean) => void;
   /**
    * Ctrl+V, or a paste with no text: the clipboard image's marker, or null.
    * Keys typed while it resolves wait, so the marker lands where the paste was.
@@ -293,6 +297,7 @@ export class ChatInputController {
       }
       // Skip any other escape sequence or character (pastes, mouse reports).
       const sequence = /^\u001b\[[0-?]*[ -/]*[@-~]/.exec(rest)?.[0] ?? /^\u001b./.exec(rest)?.[0] ?? rest[0];
+      if (sequence === "\u001b[I" || sequence === "\u001b[O") this.options.onFocus?.(sequence === "\u001b[I");
       rest = rest.slice(sequence.length);
     }
     return "";
@@ -423,7 +428,12 @@ export class ChatInputController {
     } else this.requestEmptyEscape();
   }
 
-  private writeKeys(text: string): void {
+  private activity(): void {
+    this.options.onActivity?.();
+  }
+
+  private writeKeys(text: string, countAsActivity = true): void {
+    if (countAsActivity) this.activity();
     this.completionDismissed = false;
     this.verticalColumn = undefined;
     this.selectedCompletion = 0;
@@ -500,6 +510,7 @@ export class ChatInputController {
       if (this.pending[0] === "\u0007") {
         const rest = this.pending.slice(1);
         this.pending = "";
+        // Ctrl-G opens a review. It must not mark every visible message read.
         this.options.onNextUnread?.();
         this.pending = this.modal ? this.feedModal(rest) : rest;
         continue;
@@ -532,7 +543,10 @@ export class ChatInputController {
           this.pending = this.pending.slice(sequence.length);
           let legacy: string | null;
           const mouse = /^\u001b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(sequence);
-          if (mouse) {
+          if (sequence === "\u001b[I" || sequence === "\u001b[O") {
+            this.options.onFocus?.(sequence === "\u001b[I");
+          } else if (mouse) {
+            this.activity();
             if (mouse[4] === "M") {
               const button = Number(mouse[1]);
               if ((button & 195) === 0 && (button & 32) === 0) this.options.onClick?.(Number(mouse[2]), Number(mouse[3]));
@@ -544,20 +558,25 @@ export class ChatInputController {
               }
             }
           } else if (isShiftEnter(sequence)) {
+            this.activity();
             this.insertNewline();
           } else if (isSuperPaste(sequence)) {
             this.requestImage(true);
           } else if (sequence === "\u001b[27u") {
             // An enhanced Escape report is complete; no timeout is needed.
+            this.activity();
             this.pressEscape();
           } else if ((legacy = legacyKey(sequence)) !== null) {
             // An enhanced report of an ordinary key: decode it as typed.
             this.pending = legacy + this.pending;
           } else if (sequence === "\u001b[A" || sequence === "\u001b[B") {
+            this.activity();
             this.moveVertical(sequence.endsWith("A") ? -1 : 1, sequence);
           } else if (sequence === "\u001b[5~" || sequence === "\u001b[6~") {
+            this.activity();
             this.options.onScroll("pages", sequence === "\u001b[5~" ? -1 : 1);
           } else if (sequence === "\u001b[1;2A" || sequence === "\u001b[1;2B") {
+            this.activity();
             this.options.onScroll("lines", sequence.endsWith("A") ? -1 : 1);
           } else if (sequence === "\u001b[1;5F" || sequence === "\u001b[4;5~") {
             this.options.onBottom();
@@ -568,7 +587,7 @@ export class ChatInputController {
             // manager consumes Alt+Arrow before the chat sees it.
             this.options.onCycleRoom?.(sequence === "\u001b[5;5~" ? -1 : 1);
           } else if (sequence !== PASTE_END) {
-            this.writeKeys(sequence);
+            this.writeKeys(sequence, false);
           }
           continue;
         }
@@ -576,14 +595,16 @@ export class ChatInputController {
         const length = this.pending[1] === "O" ? 3 : 2;
         const sequence = this.pending.slice(0, length);
         if (sequence === "\u001b\r" || sequence === "\u001b\n") {
+          this.activity();
           this.insertNewline();
         } else if (sequence === "\u001bOA" || sequence === "\u001bOB") {
+          this.activity();
           this.moveVertical(sequence.endsWith("A") ? -1 : 1, sequence);
         } else if ((sequence === "\u001bb" || sequence === "\u001bf") && this.options.onCycleRoom && !this.draft.line) {
           // macOS terminals commonly encode Option+Arrow as Meta-b/f. In a
           // draft, keep readline's word-back/word-forward bindings.
           this.options.onCycleRoom(sequence === "\u001bb" ? -1 : 1);
-        } else this.writeKeys(sequence);
+        } else this.writeKeys(sequence, false);
         this.pending = this.pending.slice(length);
         continue;
       }

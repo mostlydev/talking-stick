@@ -103,6 +103,14 @@ import {
 } from "./parser.js";
 import type { Runtime } from "./runtime.js";
 import { ENHANCED_KEYS_OFF, ENHANCED_KEYS_ON } from "./terminal-keys.js";
+import {
+  consoleIsPresent,
+  FOCUS_REPORTING_OFF,
+  FOCUS_REPORTING_ON,
+  noteConsoleFocus,
+  noteConsoleInput,
+  type ConsolePresence
+} from "./chat-presence.js";
 import { readClipboardText } from "../clipboard.js";
 
 const DEFAULT_HISTORY = 20;
@@ -781,14 +789,14 @@ export async function runChatSession(
           externalEditorActive = true;
           if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
           if (inline) eraseComposer();
-          output.write("\u001b[?2026l\u001b[?2004l\u001b[?1000l\u001b[?1006l\u001b[?25h" + ENHANCED_KEYS_OFF + (fullscreen ? "\u001b[?1049l" : ""));
+          output.write("\u001b[?2026l\u001b[?2004l\u001b[?1000l\u001b[?1006l" + FOCUS_REPORTING_OFF + "\u001b[?25h" + ENHANCED_KEYS_OFF + (fullscreen ? "\u001b[?1049l" : ""));
           mouseActive = false;
           editor?.suspend();
         },
         resume: () => {
           externalEditorActive = false;
           if (closed) return;
-          output.write((fullscreen ? "\u001b[?1049h" : "") + "\u001b[?2004h" + ENHANCED_KEYS_ON + (fullscreen && options.mouse ? "\u001b[?1000h\u001b[?1006h" : ""));
+          output.write((fullscreen ? "\u001b[?1049h" : "") + "\u001b[?2004h" + FOCUS_REPORTING_ON + ENHANCED_KEYS_ON + (fullscreen && options.mouse ? "\u001b[?1000h\u001b[?1006h" : ""));
           previousFrame = null;
           syncMouse();
           editor?.resume();
@@ -1059,6 +1067,7 @@ export async function runChatSession(
     visibleAttention = new Set([...(frame.attention ?? []), ...(frame.human_messages ?? [])].map(hit => hit.event_seq));
     syncMouse();
     completeUnreadVisit(frame);
+    acknowledgeVisible();
   };
   const freezeInlineHistory = () => {
     transcript.setOutputBuffered(true);
@@ -1147,6 +1156,7 @@ export async function runChatSession(
     for (const [seq, row] of inlineReceiptRows) if (row < inlineVisibleFloor) inlineReceiptRows.delete(seq);
     for (const row of inlineHumanRows.keys()) if (row < inlineVisibleFloor) inlineHumanRows.delete(row);
     for (const seq of inlineHumanRows.values()) visibleAttention.add(seq);
+    acknowledgeVisible();
     const up = frame.lines.length - 1 - frame.cursor.row;
     output.write(`\r${up > 0 ? `\u001b[${up}A` : ""}${frame.cursor.col > 0 ? `\u001b[${frame.cursor.col}C` : ""}\u001b[?2026l`);
     syncMouse();
@@ -1199,6 +1209,7 @@ export async function runChatSession(
         output.write(diffChatFrame(previousFrame, frame));
         previousFrame = frame;
         completeUnreadVisit(frame);
+        acknowledgeVisible();
       } catch (error) {
         failure = error;
         stop();
@@ -1281,13 +1292,13 @@ export async function runChatSession(
     editor?.close();
     if (inlineActive) {
       eraseComposer();
-      output.write("\u001b[?2026l\u001b[?2004l\u001b[?1000l\u001b[?1006l" + ENHANCED_KEYS_OFF);
+      output.write("\u001b[?2026l\u001b[?2004l\u001b[?1000l\u001b[?1006l" + FOCUS_REPORTING_OFF + ENHANCED_KEYS_OFF);
       inlineActive = false;
     }
     if (!screenActive) return;
     screenActive = false;
     output.write(
-      "\u001b[?2026l\u001b[?1000l\u001b[?1006l\u001b[?2004l" + ENHANCED_KEYS_OFF + "\u001b[?1049l\u001b[?25h"
+      "\u001b[?2026l\u001b[?1000l\u001b[?1006l\u001b[?2004l" + FOCUS_REPORTING_OFF + ENHANCED_KEYS_OFF + "\u001b[?1049l\u001b[?25h"
     );
   };
   const stop = () => {
@@ -1448,6 +1459,7 @@ export async function runChatSession(
         if (visible.length) break;
       }
     }
+    noteActivity();
     transcript.scrollBy(amount, height, columns - 1, formatContext(), unreadReview === null);
     acknowledgeTraversed();
     redraw();
@@ -1662,6 +1674,22 @@ export async function runChatSession(
     for (const event of attention.messages.filter(candidate => transcript.wasManuallyTraversed(candidate.event_seq))) {
       acknowledge(String(event.event_seq));
     }
+  };
+  // Drawn in the viewport while this console is present. A review still
+  // acknowledges only the message it visits.
+  const presence: ConsolePresence = { focused: null, lastInputAt: null };
+  const noteActivity = () => {
+    noteConsoleInput(presence, Date.now());
+    acknowledgeVisible();
+  };
+  const acknowledgeVisible = () => {
+    if (!selfId.startsWith("human:") || unreadReview !== null || nativeAway) return;
+    // A slash command is how the operator opens /unread or /ack. Typing it
+    // must not mark the messages read before the command runs.
+    if ((editor?.draft.line ?? "").startsWith("/")) return;
+    if (!consoleIsPresent(presence, Date.now())) return;
+    const visible = attention.messages.filter(event => visibleAttention.has(event.event_seq)).map(event => event.event_seq);
+    for (const seq of visible) acknowledge(String(seq));
   };
   const completeUnreadVisit = (frame: ChatFrame) => {
     const seq = pendingVisit;
@@ -2263,10 +2291,17 @@ export async function runChatSession(
         if (closed) return;
         const away = scroll.offset_from_bottom > 0;
         const awayChanged = away !== nativeAway;
-        if (away && awayChanged) { freezeInlineHistory(); paintBrowsingFrame(); }
+        if (away && awayChanged) {
+          // The live viewport is no longer what is on screen. Drop it so a
+          // later key cannot mark those rows read.
+          visibleAttention = new Set();
+          freezeInlineHistory();
+          paintBrowsingFrame();
+        }
         nativeAway = away;
         const seqs = unreadReview === null ? nativeScrollLedger.observe(scroll) : [];
         transcript.markHumanMessagesTraversed(seqs);
+        if (seqs.length) noteActivity();
         acknowledgeTraversed();
         if (!away && awayChanged && inlineNeedsRebuild) {
           resumeInlineTail();
@@ -2276,12 +2311,14 @@ export async function runChatSession(
     if (fullscreen) {
       screenActive = true;
       output.write(
-        "\u001b[?1049h\u001b[?2004h" + ENHANCED_KEYS_ON +
+        "\u001b[?1049h\u001b[?2004h" + FOCUS_REPORTING_ON + ENHANCED_KEYS_ON +
           (options.mouse === true ? "\u001b[?1000h\u001b[?1006h" : "")
       );
       editor = new ChatInputController({
         input: options.input,
         columns: dimensions().columns - 1,
+        onActivity: noteActivity,
+        onFocus: (focused) => noteConsoleFocus(presence, focused),
         onChange: () => {
           if (editor?.draft.line && editor.draft.line !== hintDraft) { hint = null; interruptHint = null; hintDraft = undefined; }
           redraw();
@@ -2343,10 +2380,12 @@ export async function runChatSession(
       const row = await queryCursorRow(options.input, output);
       const rows = dimensions().rows;
       if (row !== null && row < rows) output.write("\n".repeat(rows - row));
-      output.write("\u001b[?2004h" + ENHANCED_KEYS_ON);
+      output.write("\u001b[?2004h" + FOCUS_REPORTING_ON + ENHANCED_KEYS_ON);
       editor = new ChatInputController({
         input: options.input,
         columns: dimensions().columns - 1,
+        onActivity: noteActivity,
+        onFocus: (focused) => noteConsoleFocus(presence, focused),
         onChange: () => {
           if (editor?.draft.line) interruptHint = null;
           drawComposer();
