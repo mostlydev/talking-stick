@@ -167,7 +167,7 @@ describe("path resolution", () => {
     services.push(service);
 
     const resolved = resolveContextPath(path.join(api, "src"));
-    expect(resolved.declaration).toEqual({ directory: realPath(api), rel_path: "packages/api", name: "api", problem: null });
+    expect(resolved.declaration).toEqual({ directory: realPath(api), rel_path: "packages/api", name: "api", id: null, problem: null });
     expect(resolved.room_path).toBe(realPath(api));
 
     const root = service.joinPath({ agent_id: "claude:root", context_path: repo });

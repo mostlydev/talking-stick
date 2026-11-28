@@ -1,3 +1,4 @@
+import type { RoomHandoffPointer } from "./room-handoff.js";
 import type { MessageAttachment } from "./attachments.js";
 import type { NativeWakeState, NativeWakeTransportName } from "./native-wake.js";
 export type AgentId = string;
@@ -253,6 +254,7 @@ export interface JoinPathResult {
   policy: Policy;
   room_state: PathRoom;
   handoff_template: Handoff;
+  room_handoff?: RoomHandoffPointer;
   recovered?: JoinRecovery;
   /** Issued once per session; keep it private to recover after a loss. */
   recovery_credential?: string;

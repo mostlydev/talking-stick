@@ -1,3 +1,4 @@
+import type { RoomHandoffLogbook } from "./room-handoff.js";
 import os from "node:os";
 import { ProtocolError } from "./errors.js";
 import { recordManagedGuard } from "./supervisor/membership-gc.js";
@@ -292,6 +293,26 @@ export class TalkingStickCommands {
 
   getOpenNotes(input: { room_id: string; limit: number }): { notes: Note[]; total: number } {
     return this.service.getOpenNotes(input);
+  }
+
+  roomHandoffPointer(roomId: string) {
+    return this.service.roomHandoffPointer(roomId);
+  }
+
+  showRoomHandoff(roomId: string, snapshotId?: string) {
+    return this.service.showRoomHandoff(roomId, snapshotId);
+  }
+
+  startRoomHandoff(identity: DerivedIdentity, roomId: string) {
+    return this.service.startRoomHandoff(roomId, identity.agent_id);
+  }
+
+  addRoomHandoffStory(identity: DerivedIdentity, roomId: string, body: string, snapshotId?: string) {
+    return this.service.addRoomHandoffStory(roomId, identity.agent_id, body, snapshotId);
+  }
+
+  importRoomHandoff(identity: DerivedIdentity, roomId: string, logbook: RoomHandoffLogbook) {
+    return this.service.importRoomHandoff(roomId, identity.agent_id, logbook);
   }
 
   joinPath(

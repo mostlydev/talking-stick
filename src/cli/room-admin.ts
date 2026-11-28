@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ROOM_DECLARATION_FILE, insideNestedRepository, isWithinOrSame, readDeclaration, resolveContextPath } from "../path-resolution.js";
@@ -206,7 +207,7 @@ function writeDeclaration(directory: string, name: string | undefined): string {
   if (fs.existsSync(file)) throw new DeclarationExistsError(`${file} already declares a room.`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const staged = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(staged, `# Talking Stick room boundary. Commit this file to share the layout.\n${name ? `name = "${name}"\n` : ""}`);
+  fs.writeFileSync(staged, `# Talking Stick room boundary. Commit this file to share the layout.\n${name ? `name = "${name}"\n` : ""}id = "${randomUUID()}"\n`);
   try {
     fs.linkSync(staged, file);
   } catch (error) {
@@ -429,7 +430,7 @@ function isPathSyntax(target: string): boolean {
 }
 
 // The named room, the --in/TT_ROOM room, or the caller's directory's room.
-function briefTarget(runtime: Runtime, parsed: ParsedCommand, target: string | undefined): PathRoom {
+export function briefTarget(runtime: Runtime, parsed: ParsedCommand, target: string | undefined): PathRoom {
   if (target !== undefined && !isPathSyntax(target)) {
     return resolveRoomSelector(runtime.commands.listRooms({}).rooms, target);
   }
@@ -519,6 +520,7 @@ function briefRoom(runtime: Runtime, parsed: ParsedCommand, target: string | und
     })),
     lost_members: (state.lost_members ?? []).map(listedLostMember),
     last_handoff: activity.last_handoff,
+    room_handoff: runtime.commands.roomHandoffPointer(room.room_id),
     notes: notes.notes.map((note) => ({
       note_id: note.note_id, author_agent_id: note.author_agent_id, created_at: note.created_at,
       body: clip(note.body, BRIEF_BODY_CHARS).text
@@ -542,6 +544,7 @@ function formatBrief(brief: {
   members: { agent_id: string; kind: string; live: boolean; process_liveness: string }[];
   lost_members: ListedLostMember[];
   last_handoff: RoomActivity["last_handoff"];
+  room_handoff: ReturnType<Runtime["commands"]["roomHandoffPointer"]>;
   notes: { author_agent_id: string; body: string }[]; notes_total: number;
   overseer: RoomOverseerSummary | null;
   goals: RoomGoal[];
@@ -559,6 +562,7 @@ function formatBrief(brief: {
     `${member.agent_id}${member.kind === "console" ? " (console)" : ""}${memberPresence(member)}`).join(", ") || "none"}`);
   lines.push(...formatLostMembers(brief.lost_members));
   if (brief.overseer) lines.push(formatOverseer(brief.overseer));
+  if (brief.room_handoff) lines.push(`Room logbook from ${brief.room_handoff.created_at} · ${brief.room_handoff.story_count} stories · tt handoff show ${brief.room_id}`);
   if (brief.goals.length) lines.push("", "Open goals", ...brief.goals.map(goal =>
     `  ${goal.goal_id} · opened ${formatRelativeTime(goal.created_at)} · ${sanitizeChatText(excerpt(goal.brief))}`));
   if (brief.more_goals) lines.push(`  More goals in tt goal list --in ${brief.room_id}`);

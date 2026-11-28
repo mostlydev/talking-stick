@@ -22,6 +22,7 @@ export interface RoomDeclaration {
   /** Path of that directory relative to the checkout root ("" for the root). */
   rel_path: string;
   name: string | null;
+  id: string | null;
   /** Set when the file has content tt does not understand; it still declares the room. */
   problem: string | null;
 }
@@ -272,6 +273,7 @@ function findRoomDeclaration(startPath: string, checkoutRoot: string | null): Ro
         directory: current,
         rel_path: checkoutRoot ? path.relative(checkoutRoot, current).split(path.sep).join("/") : "",
         name: parsed.name,
+        id: parsed.id,
         problem: parsed.problem
       };
     }
@@ -286,29 +288,35 @@ function findRoomDeclaration(startPath: string, checkoutRoot: string | null): Ro
 // is reported so a typo is visible instead of silently ignored.
 // Channels are reserved for a later release; accepting their keys silently
 // would suggest they work.
-const DECLARATION_KEYS = new Set(["name"]);
-export function readDeclaration(file: string): { name: string | null; problem: string | null } {
+const DECLARATION_KEYS = new Set(["name", "id"]);
+export const ROOM_DECLARATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export function readDeclaration(file: string): { name: string | null; id: string | null; problem: string | null } {
   let text: string;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch (error) {
-    return { name: null, problem: `${file} is unreadable: ${error instanceof Error ? error.message : String(error)}` };
+    return { name: null, id: null, problem: `${file} is unreadable: ${error instanceof Error ? error.message : String(error)}` };
   }
   let name: string | null = null;
+  let id: string | null = null;
   for (const [index, raw] of text.split(/\r?\n/).entries()) {
     const line = raw.replace(/\s+#.*$/, "").trim();
     if (!line || line.startsWith("#")) continue;
     const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/.exec(line);
     if (!match || !DECLARATION_KEYS.has(match[1])) {
-      return { name, problem: `${file}:${index + 1} is not understood: ${raw.trim()}` };
+      return { name, id: null, problem: `${file}:${index + 1} is not understood: ${raw.trim()}` };
     }
+    const value = /^"([^"\n]*)"$/.exec(match[2]);
+    if (!value) return { name, id: null, problem: `${file}:${index + 1}: ${match[1]} must be a quoted string` };
     if (match[1] === "name") {
-      const value = /^"([^"\n]*)"$/.exec(match[2]);
-      if (!value) return { name, problem: `${file}:${index + 1}: name must be a quoted string` };
       name = value[1].trim() || null;
+    } else if (id || !ROOM_DECLARATION_ID.test(value[1])) {
+      return { name, id: null, problem: `${file}:${index + 1}: id must be a single lowercase UUID` };
+    } else {
+      id = value[1];
     }
   }
-  return { name, problem: null };
+  return { name, id, problem: null };
 }
 
 function findNearestWorkspaceMarker(startPath: string): string | null {

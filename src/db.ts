@@ -698,6 +698,28 @@ const migrations: Migration[] = [
       acknowledged_at TEXT
     );
     CREATE INDEX overseer_deliveries_pending ON overseer_deliveries (room_id, event_seq) WHERE status = 'pending';`
+  },
+  {
+    id: 40,
+    name: "room_handoff_logbooks",
+    up: `CREATE TABLE room_handoff_snapshots (
+      snapshot_id TEXT PRIMARY KEY,
+      declaration_id TEXT NOT NULL,
+      room_scope TEXT NOT NULL,
+      source_room_id TEXT NOT NULL,
+      source_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      context TEXT NOT NULL,
+      requested_json TEXT NOT NULL
+    );
+    CREATE INDEX room_handoff_latest ON room_handoff_snapshots (declaration_id, room_scope);
+    CREATE TABLE room_handoff_stories (
+      snapshot_id TEXT NOT NULL REFERENCES room_handoff_snapshots (snapshot_id) ON DELETE CASCADE,
+      agent_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      body TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, agent_id)
+    );`
   }
 ];
 
