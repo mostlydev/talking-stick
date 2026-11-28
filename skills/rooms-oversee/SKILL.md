@@ -9,7 +9,8 @@ For this task you are the user's manager of the shrooms rooms (formerly Talking 
 
 ```sh
 tt room list --all --json                     # every room with live or lost members
-tt room brief <room> --json                   # holder, members, latest handoff, notes, recent messages
+tt room brief <room> --json                   # holder, members, latest turn handoff, logbook pointer, notes, recent messages
+tt handoff show <room> --json                 # read a room's logbook and member stories without joining
 tt room ask <room> --to <agent|room> --request-key <key> --stdin --json <<'EOF'
 Your question or instruction.
 EOF
@@ -41,10 +42,15 @@ For visible agents in Herdr or tmux panes instead, use `tt up --path <dir> --age
 1. `tt room list --all --json`. Match what the user said against each room's `name` or the end of its `canonical_path`; if several match, ask which. A room appears while an agent or console is in it, or while it has open blockers.
 2. `tt room brief <room> --json`, then summarize, citing event numbers (`#25203`) for specific claims:
    - Who holds the stick (`owner`), or who it is reserved for. `state: "stale_owner"` means the lease expired: not a current writer lease, but whether the agent is still active is unknown.
-   - The latest handoff's `status` and `next_action`: what its author reported as done and next, as of its `created_at`. Later messages may have moved on.
-   - Recent messages, oldest first. They are room messages and handoffs only, not the agents' private harness conversations: do not claim more than the room shows.
+   - The latest turn handoff's `status` and `next_action`: what its author reported as done and next, as of its `created_at`. Later messages may have moved on.
+   - Any `room_handoff` pointer: a saved room logbook of shared context and member stories (read it whole with `tt handoff show <room> --json`).
+   - Recent messages, oldest first. They are room messages and turn handoffs only, not the agents' private harness conversations: do not claim more than the room shows.
    - Members with `live: false` are inactive or gone. An event with `request_id` is a visitor's question; one with `in_reply_to` answers one.
    - A clipped event has `truncated: true` and a `full` command; `older` pages back; `updates_since` reads what arrived later. Run those only when needed.
+
+## Room handoff
+
+`tt handoff show <room>` reads a room's private SQLite logbook without joining: text output assembles the logbook, each member's dated story, and missing authors; `--json` returns structured `requested` and `stories` data. Starting or importing a handoff (`tt handoff` / `tt handoff import`) requires the operator or a joined room member — an outside manager cannot run those itself. Before a folder rename or shift change, ask the operator to run `tt handoff --in <room>` (which reaches every live agent directly) or ask the room via `tt room ask` to start one. `tt handoff export <new-directory> --in <room>` writes `CONTEXT.md` and separate per-member Markdown files for transfer to another checkout.
 
 ## Room blockers
 

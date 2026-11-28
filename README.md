@@ -24,7 +24,7 @@ is half finished, and why it was done that way. Teams in different workshops wor
 sending each other complete briefs, not by moving into one crowded room.
 
 So each project gets its own room. A room belongs to one folder, usually a repository, and takes
-its name and subject from it. It has its own members, messages, notes and handoffs, and one
+its name and subject from it. It has its own members, messages, notes, turn handoffs, and room logbook, and one
 talking stick. The agents in it keep the working knowledge of that project. Rooms reach each
 other by asking questions and reading the answers, and they never merge.
 
@@ -48,6 +48,11 @@ other by asking questions and reading the answers, and they never merge.
   `rooms room ask` and read the answers with `rooms room replies`.
 - **Headless workers.** A room can also run agents that have no terminal. The supervisor starts
   them, keeps them running, and wakes them when work arrives for them.
+- **Room handoffs.** When a room is renamed, restarted, or joined by a newcomer, `rooms handoff`
+  asks each live agent (each other live agent when started by a member) for its own dated story and
+  saves a private room logbook (never releasing the stick). A new room for the same declared project
+  inherits that logbook automatically through `.talking-stick/room.toml`, and `rooms handoff export`
+  / `import` write and read portable `CONTEXT.md` + per-member Markdown bundles across checkouts.
 
 ## Briefs, questions and done
 
@@ -148,7 +153,7 @@ approval.
 > What is each room doing?
 
 The manager asks each room and reports back. To read a room's summary yourself, with who holds
-the stick, its last handoff, open blockers and recent messages:
+the stick, its last turn handoff, room logbook pointer, open blockers and recent messages:
 
 ```sh
 rooms room brief ~/dev/ai/shrooms
@@ -183,7 +188,7 @@ A room role does not grant the stick and does not move it.
 | implementer | Precise implementation |
 | tester | Tests and verification |
 | reviewer | Independent review and cross-checks |
-| scribe | Notes, documentation, and handoff summaries |
+| scribe | Notes, documentation, and handoff summaries (turn and room) |
 
 What a room role changes is the responsibility text in `rooms instructions show`, and who is told when an assignment or a definition changes. An assignment change tells the affected members. A definition change tells the members who hold that role. A change to the shared project instructions tells the members reading that file. A harness default also tells members in other open rooms who inherit it, and leaves a room's own override alone. The notice is a `[roles vN]` message. It applies on that member's next turn.
 
